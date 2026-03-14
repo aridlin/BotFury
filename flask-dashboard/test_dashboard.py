@@ -91,9 +91,10 @@ def test_send_command_empty(client):
 
 def test_botprocess_send_command_error():
     from unittest.mock import patch
+    import requests as req
     from bot_manager import BotProcess
     bot = BotProcess(bot_id=1, server_ip="127.0.0.1", port=8765, name="TestBot")
     with patch('requests.get') as mock_get:
-        mock_get.side_effect = Exception("Mocked connection error")
+        mock_get.side_effect = req.ConnectionError("Mocked connection error")
         result = bot.send_command("test")
         assert result == "Command failed (bot unreachable)"

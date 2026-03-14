@@ -5,60 +5,114 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BotFury - Command Center</title>
     <link rel="stylesheet" href="/static/style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
-    <header>
-        <div class="header-content">
-            <h1>🌀 BotFury</h1>
-            <div class="status-bar">
-                <span>Next Server: <input type="text" id="serverIP" value="{{ server_ip }}" onchange="changeServerIP()"></span>
+    <header class="topbar">
+        <div class="topbar-inner">
+            <div>
+                <h1>🌀 BotFury</h1>
+                <p class="subtitle">Remote multi-host bot dashboard</p>
+            </div>
+
+            <div class="server-box">
+                <label for="serverIP">Minecraft server target</label>
+                <div class="server-row">
+                    <input
+                        type="text"
+                        id="serverIP"
+                        value="{{ server_ip }}"
+                        placeholder="minecraft.pl"
+                    >
+                    <button onclick="changeServerIP()" class="primary">Save</button>
+                </div>
             </div>
         </div>
     </header>
 
-    <div class="main-container">
-        <aside class="controls">
-            <section>
-                <h2>Global Actions</h2>
-                <button class="primary" onclick="addBot()">Add New Bot Instance</button>
-                <div class="input-group" style="margin-top: 10px;">
-                    <input type="text" id="remotePort" placeholder="Port (e.g., 8765)">
-                    <button onclick="addRemoteBot()">Add Remote Bot</button>
+    <div class="layout">
+        <aside class="sidebar">
+            <section class="panel">
+                <h2>Attach one bot</h2>
+                <p class="muted">
+                    Attach a running BotFury mod by host and port.
+                </p>
+                <div class="input-col">
+                    <input type="text" id="remoteHost" placeholder="Host, e.g. 192.168.1.42">
+                    <input type="text" id="remotePort" placeholder="Port, e.g. 8765">
+                    <button onclick="addRemoteBot()" class="primary">Attach bot</button>
                 </div>
-                <button class="secondary" style="margin-top: 10px;" onclick="sendCommand('all', 'toggle_render')">Toggle All Render</button>
             </section>
 
-            <section>
-                <h2>Broadcast Chat</h2>
-                <div class="input-group">
-                    <input type="text" id="broadcastChat" placeholder="Type a message or Baritone command...">
-                    <button onclick="broadcastChat()">Send</button>
+            <section class="panel">
+                <h2>Attach all on one host</h2>
+                <p class="muted">
+                    Scan one IP/hostname and attach every reachable bot from port X to Y.
+                </p>
+                <div class="input-col">
+                    <input type="text" id="scanHost" placeholder="Host, e.g. 192.168.1.42">
+                    <div class="input-row">
+                        <input type="text" id="scanStartPort" placeholder="Start port">
+                        <input type="text" id="scanEndPort" placeholder="End port">
+                    </div>
+                    <button onclick="scanHostRange()" class="primary">Scan and attach range</button>
                 </div>
-                <small>Prefix with # for Baritone (e.g., #mine diamond_ore)</small>
             </section>
 
-            <section>
-                <h2>Quick Tasks</h2>
-                <div class="grid">
+            <section class="panel">
+                <h2>Broadcast</h2>
+                <div class="input-col">
+                    <input type="text" id="broadcastChat" placeholder="Message or #baritone command">
+                    <button onclick="broadcastChat()">Send to all attached bots</button>
+                </div>
+                <p class="muted">
+                    Example: <code>#mine diamond_ore</code> or <code>Hello</code>
+                </p>
+            </section>
+
+            <section class="panel">
+                <h2>Global actions</h2>
+                <div class="button-grid">
+                    <button onclick="connectAll()">Connect all</button>
+                    <button onclick="toggleAllRender()">Toggle render</button>
+                    <button onclick="stopAllBaritone()">Stop Baritone</button>
+                    <button onclick="gotoSpawnAll()">Goto Spawn</button>
+                </div>
+            </section>
+
+            <section class="panel">
+                <h2>Quick tasks</h2>
+                <div class="button-grid">
                     <button onclick="sendCommand('all', 'chat:#mine diamond_ore')">Mine Diamond</button>
                     <button onclick="sendCommand('all', 'chat:#mine iron_ore')">Mine Iron</button>
-                    <button onclick="sendCommand('all', 'chat:#stop')">Stop Baritone</button>
-                    <button onclick="sendCommand('all', 'chat:#goto 0 64 0')">Goto Spawn</button>
+                    <button onclick="sendCommand('all', 'chat:#follow aridlin')">Follow Me</button>
+                    <button onclick="sendCommand('all', 'chat:#pause')">Pause</button>
                 </div>
+            </section>
+
+            <section class="panel">
+                <h2>Command log</h2>
+                <div id="commandLog" class="log-box"></div>
             </section>
         </aside>
 
-        <main class="bot-grid" id="botGrid">
-            <!-- Bot cards will be injected here -->
+        <main class="content">
+            <div class="content-header">
+                <h2>Attached bots</h2>
+                <button onclick="refreshBots()">Refresh</button>
+            </div>
+
+            <div id="botGrid" class="bot-grid">
+                <div class="empty-state">
+                    No bots attached yet.<br>
+                    Launch bots on any machine, then attach them by host and port.
+                </div>
+            </div>
         </main>
     </div>
 
+    <div id="toast" class="toast hidden"></div>
+
     <script src="/static/script.js"></script>
-    <script>
-        // Start polling for bot status
-        setInterval(refreshBots, 2000);
-        refreshBots();
-    </script>
 </body>
 </html>

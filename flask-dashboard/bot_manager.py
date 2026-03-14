@@ -1,126 +1,134 @@
-import subprocess
-import os
-import requests
 import json
+import os
 import re
+import socket
 import urllib.parse
 from typing import Dict, Optional, List
-import socket
-import re
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "botfury.json")
+import requests
+
+CONFIG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "config",
+    "botfury.json"
+)
+
 
 def load_config():
     default_config = {
-        "max_bot_instances": 10,
-        "default_bot_names": ["Bot01", "Bot02", "Bot03"],
-        "rendering_settings": {"enabled": True},
+        "max_bot_instances": 50,
+        "default_bot_names": [],
         "webhook_url": ""
     }
 
     config_dir = os.path.dirname(CONFIG_PATH)
-    if not os.path.exists(config_dir):
-        os.makedirs(config_dir)
+    os.makedirs(config_dir, exist_ok=True)
 
     if not os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH, 'w') as f:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(default_config, f, indent=4)
         return default_config
 
     try:
-        with open(CONFIG_PATH, 'r') as f:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             config = json.load(f)
-            # Merge with default config to ensure all keys exist
-            for k, v in default_config.items():
-                if k not in config:
-                    config[k] = v
-            return config
+        for k, v in default_config.items():
+            if k not in config:
+                config[k] = v
+        return config
     except Exception:
         return default_config
+
 
 def is_valid_hostname(hostname: str) -> bool:
     if not hostname or not isinstance(hostname, str) or len(hostname) > 255:
         return False
 
-    # Remove port if present
-    if ':' in hostname and not hostname.startswith('['):
-        hostname = hostname.split(':')[0]
+    hostname = hostname.strip()
 
-    if hostname[-1] == ".":
-        hostname = hostname[:-1]
-
-    # Check IPv6
-    if hostname.startswith('[') and hostname.endswith(']'):
+    if hostname.startswith("[") and hostname.endswith("]"):
         try:
             socket.inet_pton(socket.AF_INET6, hostname[1:-1])
             return True
-        except socket.error:
+        except OSError:
             return False
 
     try:
         socket.inet_pton(socket.AF_INET6, hostname)
         return True
-    except socket.error:
+    except OSError:
         pass
 
-    # Check IPv4
+    host_only = hostname
+    if ":" in hostname and not hostname.startswith("["):
+        # host:port typed accidentally
+        parts = hostname.rsplit(":", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            host_only = parts[0]
+
     try:
-        socket.inet_pton(socket.AF_INET, hostname)
+        socket.inet_pton(socket.AF_INET, host_only)
         return True
-    except socket.error:
+    except OSError:
         pass
 
-    # Hostname check
-    allowed = re.compile(r"(?!-)[A-Z\d-]{1,63}(?<!-)$", re.IGNORECASE)
-    return all(allowed.match(x) for x in hostname.split("."))
+    if host_only.endswith("."):
+        host_only = host_only[:-1]
 
-class BotProcess:
-    def __init__(self, bot_id: int, server_ip: str, port: int, name: str, is_remote: bool = False):
+    allowed = re.compile(r"(?!-)[A-Z\d-]{1,63}(?<!-)$", re.IGNORECASE)
+    return all(allowed.match(x) for x in host_only.split("."))
+
+
+class RemoteBot:
+    def __init__(self, bot_id: int, host: str, port: int, name: str):
         self.bot_id = bot_id
-        if not is_remote and not is_valid_hostname(server_ip):
-            raise ValueError(f"Invalid server IP or hostname: {server_ip}")
-        self.server_ip = server_ip
+        self.host = host
         self.port = port
         self.name = name
-        self.is_remote = is_remote
-        self.process: Optional[subprocess.Popen] = None
 
-    def start(self):
-        if self.is_remote or (self.process and self.process.poll() is None):
+    @property
+    def base_url(self) -> str:
+        return f"http://{self.host}:{self.port}"
+
+    def get_status(self) -> dict:
+        try:
+            r = requests.get(f"{self.base_url}/status", timeout=1.5)
+            r.raise_for_status()
+            data = r.json()
+
+            return {
+                "connected": bool(data.get("connected", False)),
+                "renderEnabled": bool(data.get("renderEnabled", True)),
+                "player": str(data.get("player", "None"))
+            }
+        except (requests.RequestException, ValueError):
+            return {
+                "connected": False,
+                "renderEnabled": True,
+                "player": "None"
+            }
+
+    def send_command(self, command: str) -> str:
+        try:
+            encoded_cmd = urllib.parse.quote(command, safe="")
+            r = requests.get(f"{self.base_url}/command?cmd={encoded_cmd}", timeout=2)
+            r.raise_for_status()
+            return r.text.strip() or "ok"
+        except requests.RequestException:
+            return f"Command failed ({self.host}:{self.port} unreachable)"
+
+    def is_reachable(self) -> bool:
+        try:
+            r = requests.get(f"{self.base_url}/status", timeout=0.8)
+            return r.ok
+        except requests.RequestException:
             return False
 
-        cmd = ["python3", os.path.join(os.path.dirname(__file__), "dummy_bot.py"),
-               "--bot_id", str(self.bot_id), "--server_ip", self.server_ip, "--port", str(self.port)]
-
-        self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        return True
-
-    def stop(self):
-        if self.process and self.process.poll() is None:
-            self.process.terminate()
-            self.process.wait()
-        self.process = None
-
-    def get_status(self):
-        try:
-            r = requests.get(f"http://localhost:{self.port}/status", timeout=1)
-            return r.json()
-        except:
-            return {"connected": False, "renderEnabled": True, "player": "None"}
-
-    def send_command(self, command: str):
-        try:
-            encoded_cmd = urllib.parse.quote(command)
-            r = requests.get(f"http://localhost:{self.port}/command?cmd={encoded_cmd}", timeout=1)
-            return r.text
-        except:
-            return "Command failed (bot unreachable)"
 
 class BotManager:
     def __init__(self):
-        self.bots: Dict[int, BotProcess] = {}
+        self.bots: Dict[int, RemoteBot] = {}
         self.next_bot_id = 1
-        self.next_port = 8765
         self.config = load_config()
 
     def send_webhook(self, message: str):
@@ -139,70 +147,92 @@ class BotManager:
             return default_names[bot_id - 1]
         return f"Bot{bot_id:02}"
 
-    def add_bot(self, server_ip: str):
-        if len(self.bots) >= self.config.get("max_bot_instances", 10):
-            return -1 # Max instances reached
+    def _already_attached(self, host: str, port: int) -> bool:
+        return any(bot.host == host and bot.port == port for bot in self.bots.values())
 
-        if not is_valid_hostname(server_ip):
-            return -2 # Invalid hostname
+    def add_remote_bot(self, host: str, port: int) -> int:
+        if len(self.bots) >= self.config.get("max_bot_instances", 50):
+            return -1
 
-        bot_id = self.next_bot_id
-        self.next_bot_id += 1
-        port = self.next_port
-        self.next_port += 1
-
-        name = self.get_bot_name(bot_id)
-        bot = BotProcess(bot_id, server_ip, port, name)
-        self.bots[bot_id] = bot
-        bot.start()
-
-        self.send_webhook(f"🚀 Bot `{name}` started and connecting to `{server_ip}`.")
-        return bot_id
-
-    def add_remote_bot(self, port: int):
-        if len(self.bots) >= self.config.get("max_bot_instances", 10):
-            return -1 # Max instances reached
+        if self._already_attached(host, port):
+            return -2
 
         bot_id = self.next_bot_id
         self.next_bot_id += 1
 
         name = self.get_bot_name(bot_id)
-        bot = BotProcess(bot_id, "remote", port, name, is_remote=True)
+        bot = RemoteBot(bot_id, host, port, name)
         self.bots[bot_id] = bot
 
-        self.send_webhook(f"🌐 Remote bot `{name}` added on port `{port}`.")
+        self.send_webhook(f"🌐 Attached remote bot `{name}` at `{host}:{port}`.")
         return bot_id
 
-    def stop_bot(self, bot_id: int):
-        if bot_id in self.bots:
-            name = self.bots[bot_id].name
-            self.bots[bot_id].stop()
-            del self.bots[bot_id]
-            self.send_webhook(f"🛑 Bot `{name}` stopped.")
+    def scan_and_attach_range(self, host: str, start_port: int, end_port: int) -> List[dict]:
+        attached = []
 
-    def get_all_bots(self):
+        for port in range(start_port, end_port + 1):
+            if len(self.bots) >= self.config.get("max_bot_instances", 50):
+                break
+
+            if self._already_attached(host, port):
+                continue
+
+            candidate = RemoteBot(-1, host, port, "temp")
+            if candidate.is_reachable():
+                new_id = self.add_remote_bot(host, port)
+                if new_id > 0:
+                    attached.append({
+                        "bot_id": new_id,
+                        "host": host,
+                        "port": port
+                    })
+
+        return attached
+
+    def stop_bot(self, bot_id: int) -> bool:
+        if bot_id not in self.bots:
+            return False
+
+        name = self.bots[bot_id].name
+        del self.bots[bot_id]
+        self.send_webhook(f"🛑 Detached bot `{name}`.")
+        return True
+
+    def get_all_bots(self) -> List[dict]:
         results = []
-        # Sort by ID to keep the list stable
+
         for bot_id in sorted(self.bots.keys()):
             bot = self.bots[bot_id]
             status = bot.get_status()
+
             results.append({
                 "id": bot_id,
                 "name": bot.name,
+                "host": bot.host,
                 "port": bot.port,
-                "is_remote": bot.is_remote,
-                "status": "Running" if bot.is_remote or (bot.process and bot.process.poll() is None) else "Stopped",
+                "status": "Attached",
                 "ingame": status["connected"],
                 "render": status["renderEnabled"],
                 "player": status["player"]
             })
+
         return results
 
-    def send_command(self, bot_id: int, command: str):
+    def send_command(self, bot_id: int, command: str) -> str:
         if bot_id in self.bots:
             return self.bots[bot_id].send_command(command)
         return "Bot not found"
 
-    def broadcast_command(self, command: str):
-        for bot in self.bots.values():
-            bot.send_command(command)
+    def broadcast_command(self, command: str) -> List[dict]:
+        results = []
+
+        for bot_id, bot in self.bots.items():
+            result = bot.send_command(command)
+            results.append({
+                "bot_id": bot_id,
+                "host": bot.host,
+                "port": bot.port,
+                "result": result
+            })
+
+        return results

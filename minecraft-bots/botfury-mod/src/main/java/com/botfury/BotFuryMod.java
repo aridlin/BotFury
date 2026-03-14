@@ -21,27 +21,35 @@ import java.util.concurrent.Executors;
 public class BotFuryMod implements ClientModInitializer {
     private HttpServer server;
     public static boolean renderEnabled = true;
-
+    private static boolean started = false;
     @Override
     public void onInitializeClient() {
         startHttp();
     }
 
     private void startHttp() {
-        String portStr = System.getProperty("botfury.port", "8765");
-        int port = Integer.parseInt(portStr);
-        try {
-            server = HttpServer.create(new InetSocketAddress(port), 0);
-            server.createContext("/command", this::handleCommand);
-            server.createContext("/status", this::handleStatus);
-            server.setExecutor(Executors.newSingleThreadExecutor());
-            server.start();
-            System.out.println("[BotFury] HTTP server started on port " + port);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
+      if (started) {
+        System.out.println("[BotFury] HTTP server already started, skipping");
+        return;
+      }
 
+      String portStr = System.getProperty("botfury.port", "8765");
+      int port = Integer.parseInt(portStr);
+
+      try {
+        server = HttpServer.create(new InetSocketAddress("0.0.0.0", port), 0); 
+        server.createContext("/command", this::handleCommand);
+        server.createContext("/status", this::handleStatus);
+        server.setExecutor(Executors.newSingleThreadExecutor());
+        server.start();
+
+        started = true;
+
+        System.out.println("[BotFury] HTTP server started on port " + port);
+      } catch (IOException e) {
+        e.printStackTrace();
+      }
+    }
     private void handleStatus(HttpExchange exchange) throws IOException {
         MinecraftClient client = MinecraftClient.getInstance();
         boolean connected = client.getNetworkHandler() != null && client.world != null;

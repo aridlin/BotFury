@@ -13,41 +13,32 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
 
       - name: Install Python dependencies
-        run: |
-          pip install flask requests pytest
+        run: pip install -r flask-dashboard/requirements.txt
 
       - name: Run Python tests
-        run: |
-          cd flask-dashboard
-          pytest -v
+        run: pytest -v
+        working-directory: flask-dashboard
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
-
-      - name: Make scripts executable
-        run: chmod +x binaries/*.sh
-
-      - name: Unpack binaries
-        run: ./binaries/unpack_all.sh
 
       - name: Grant execute permission for gradlew
         run: chmod +x minecraft-bots/botfury-mod/gradlew
 
       - name: Build with Gradle and test
-        run: |
-          cd minecraft-bots/botfury-mod
-          ./gradlew build test
+        run: ./gradlew build
+        working-directory: minecraft-bots/botfury-mod
 
       - name: Verify build artifact
         run: |
@@ -76,7 +67,7 @@ jobs:
           path: .
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: botfury-0.1.0.jar
         env:

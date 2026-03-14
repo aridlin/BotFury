@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "botfury",
-  "version": "0.1.0",
+  "version": "${version}",
   "name": "BotFury",
   "description": "Remote-controlled Minecraft bot mod.",
   "authors": ["BotFury"],

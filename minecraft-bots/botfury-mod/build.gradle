@@ -17,6 +17,24 @@ java {
 
 def minecraftVersion = '1.20.1'
 
+def cleanIntProp = { name, fallback ->
+    def raw = System.getProperty(name, fallback.toString())
+    return (raw ==~ /\d+/) ? raw : fallback.toString()
+}
+
+def botfuryRunPort = System.getProperty('botfury.port', '8765')
+def botfuryRunUsername = System.getProperty('botfury.offlineUsername',
+        System.getProperty('botfury.username', 'Bot01'))
+def botfuryRunDisableRendering = System.getProperty('botfury.disableRendering', 'false')
+def botfuryRunDir = System.getProperty('botfury.runDir', "run/${botfuryRunUsername}")
+def botfuryAutoJoin = System.getProperty('botfury.autoJoin', 'false')
+def botfuryServerIp = System.getProperty('botfury.serverIp', 'localhost')
+def botfuryServerPort = cleanIntProp('botfury.serverPort', 25565)
+def botfuryMinHeapMb = cleanIntProp('botfury.minHeapMb', 128)
+def botfuryMaxHeapMb = cleanIntProp('botfury.maxHeapMb', 768)
+def botfuryActiveProcessors = cleanIntProp('botfury.activeProcessors', 1)
+def botfuryMaxFps = cleanIntProp('botfury.maxFps', 10)
+
 repositories {
     mavenCentral()
     maven { url 'https://maven.fabricmc.net/' }
@@ -36,6 +54,30 @@ processResources {
     inputs.property 'version', project.version
     filesMatching('fabric.mod.json') {
         expand 'version': project.version
+    }
+}
+
+loom {
+    runs {
+        client {
+            runDir botfuryRunDir
+            vmArgs "-Xms${botfuryMinHeapMb}m",
+                    "-Xmx${botfuryMaxHeapMb}m",
+                    "-XX:ActiveProcessorCount=${botfuryActiveProcessors}",
+                    "-XX:CICompilerCount=2",
+                    "-XX:+UseSerialGC",
+                    "-XX:+DisableExplicitGC",
+                    "-Dsun.java2d.opengl=false"
+            property 'botfury.port', botfuryRunPort
+            property 'botfury.offlineUsername', botfuryRunUsername
+            property 'botfury.username', botfuryRunUsername
+            property 'botfury.disableRendering', botfuryRunDisableRendering
+            property 'botfury.autoJoin', botfuryAutoJoin
+            property 'botfury.serverIp', botfuryServerIp
+            property 'botfury.serverPort', botfuryServerPort
+            property 'botfury.maxFps', botfuryMaxFps
+            programArgs '--username', botfuryRunUsername
+        }
     }
 }
 

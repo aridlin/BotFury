@@ -77,7 +77,57 @@ cd BotFury
    
    Or simply download the latest JAR from [GitHub Releases](https://github.com/IgorkotYT/BotFury/releases).
 
-### 🌐 Setting Up the Flask Web Dashboard
+### Primary Dashboard: FT
+
+BotFury now includes an FT-based dashboard in `ft-dashboard/`. It replaces the
+old Flask dashboard as the recommended control surface and supports:
+
+- attaching and scanning BotFury HTTP endpoints
+- launching multiple local instances from a Minecraft launch command
+- generated offline usernames such as `Bot01`, `Bot02`, `Bot03`
+- automatic attachment to launched ports
+- optional auto-launch on dashboard startup
+
+Run it on Windows:
+
+```cmd
+cd ft-dashboard
+run_dashboard.bat
+```
+
+You can also double-click `ft-dashboard\run_dashboard.bat`; it starts the GUI
+dashboard by default. Pass `--web` or `--tui` to use FT's other modes.
+
+Run it on Linux:
+
+```bash
+cd ft-dashboard
+sh run_dashboard.sh
+```
+
+When launched from bash or zsh, the Linux script starts web mode by default.
+Then open `http://127.0.0.1:8080/`.
+
+Configure `launch_command` in `config/botfury.json` or in the dashboard. This is
+the OS command BotFury runs to start Minecraft for each bot. It supports
+`{username}`, `{port}`, `{bot_id}`, `{server_ip}`,
+`{server_port}`, `{disable_rendering}`, and `{cwd}`. Pass `-Dbotfury.port={port}`
+to the JVM so each mod instance exposes a unique HTTP port, and pass
+`{username}` wherever your offline launcher accepts the offline account name.
+The dashboard includes platform wrapper presets. Windows uses
+`ft-dashboard\botfury-launch.bat`; Linux uses `sh botfury-launch.sh`. Both run
+the bundled Fabric dev client from `minecraft-bots\botfury-mod`, assign names
+like `Bot01`, auto-join the configured server, and use separate run directories
+like `run\Bot01`. The first launch can take a while while Gradle prepares
+Minecraft and downloads assets. You can still edit the wrapper later if you
+want to swap in Prism, the official launcher, or another Minecraft setup.
+
+The bundled wrapper is tuned for low resource usage: rendering is disabled by
+default, the client JVM is capped at 768 MB, the game sees one processor, Gradle
+uses one worker, and each bot run directory gets minimal Minecraft video/audio
+options before launch.
+
+### Legacy Dashboard: Flask
 
 1. **Install Python Dependencies**:
    ```bash
@@ -152,7 +202,7 @@ The mod reads configuration from `config/botfury.json` (created on first launch)
   "max_bots": 10,
   "dashboard_port": 5000,
   "baritone_command_prefix": "#",
-  "disable_rendering_on_start": false,
+  "disable_rendering_on_start": true,
   "server_ip": "localhost",
   "server_port": 25565,
   "webhook_url": null

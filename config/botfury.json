@@ -1,12 +1,25 @@
 {
     "max_bot_instances": 10,
+    "dashboard_port": 8080,
+    "server_ip": "localhost",
+    "server_port": 25565,
+    "bot_port_base": 8765,
+    "launch_count": 3,
+    "offline_username_prefix": "Bot",
+    "offline_username_start": 1,
+    "launch_command": "botfury-launch.bat {username} {port} {server_ip} {server_port} {disable_rendering}",
+    "launch_working_directory": "",
+    "auto_attach_launched": true,
+    "auto_launch_on_start": false,
+    "startup_attach_scan_seconds": 20,
+    "disable_rendering_on_start": true,
     "default_bot_names": [
         "Bot01",
         "Bot02",
         "Bot03"
     ],
     "rendering_settings": {
-        "enabled": true
+        "enabled": false
     },
     "webhook_url": ""
 }

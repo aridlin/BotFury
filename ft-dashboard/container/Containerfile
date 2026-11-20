@@ -1,0 +1,24 @@
+FROM docker.io/library/eclipse-temurin:21-jdk-jammy AS prepare
+ENV GRADLE_USER_HOME=/opt/botfury-gradle
+WORKDIR /opt/botfury/mod
+COPY mod/ .
+RUN sh ./gradlew --no-daemon prepareBotFuryClient
+
+FROM docker.io/library/eclipse-temurin:17-jre-jammy
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl libgl1 libgl1-mesa-dri libopenal1 libasound2 tigervnc-standalone-server \
+        x11-utils xfonts-base fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=prepare /opt/botfury/mod/build/classes /opt/botfury/mod/build/classes
+COPY --from=prepare /opt/botfury/mod/build/resources /opt/botfury/mod/build/resources
+COPY --from=prepare /opt/botfury/mod/build/botfury-client/client.args /opt/botfury/mod/build/botfury-client/client.args
+COPY --from=prepare /opt/botfury/mod/.gradle/loom-cache /opt/botfury/mod/.gradle/loom-cache
+COPY --from=prepare /opt/botfury-gradle/caches /opt/botfury-gradle/caches
+COPY options.txt /opt/botfury/options.txt
+COPY entrypoint.sh /opt/botfury/entrypoint.sh
+RUN mkdir -p /game/tmp && chown -R 10001:10001 /game
+USER 10001:10001
+ENV HOME=/game DISPLAY=:1 LIBGL_ALWAYS_SOFTWARE=1 LP_NUM_THREADS=2 ALSOFT_DRIVERS=null
+WORKDIR /game
+EXPOSE 8765 5900
+ENTRYPOINT ["/bin/sh", "/opt/botfury/entrypoint.sh"]

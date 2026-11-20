@@ -6,8 +6,9 @@
   "description": "Remote-controlled Minecraft bot mod.",
   "authors": ["BotFury"],
   "license": "MIT",
-  "environment": "client",
+  "environment": "*",
   "entrypoints": {
+    "main": ["com.botfury.FormationServer"],
     "client": ["com.botfury.BotFuryMod"]
   },
   "mixins": [

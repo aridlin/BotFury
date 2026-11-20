@@ -6,87 +6,42 @@ BOT_PORT="${2:-8765}"
 SERVER_IP="${3:-localhost}"
 SERVER_PORT="${4:-25565}"
 DISABLE_RENDERING="${5:-true}"
+AUTO_JOIN="${6:-true}"
+
+case "$BOT_USERNAME" in
+    *[!a-zA-Z0-9_]*) echo "Invalid Minecraft username" >&2; exit 64 ;;
+esac
 
 DASHBOARD_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 BOTFURY_ROOT=$(CDPATH= cd "$DASHBOARD_DIR/.." && pwd)
 MOD_DIR="$BOTFURY_ROOT/minecraft-bots/botfury-mod"
-RUN_DIR="run/$BOT_USERNAME"
+RUNTIME="$MOD_DIR/build/botfury-client"
+RUN_DIR="$MOD_DIR/run/$BOT_USERNAME"
 
-if [ ! -f "$MOD_DIR/gradlew" ]; then
-    echo "BotFury Gradle project not found: $MOD_DIR"
-    exit 2
+if [ ! -s "$RUNTIME/client.args" ] || [ ! -s "$RUNTIME/java-path.txt" ]; then
+    echo "Prepare the BotFury Minecraft runtime with: sh ./gradlew prepareBotFuryClient" >&2
+    echo "Run this in $MOD_DIR" >&2
+    exit 78
+fi
+IFS= read -r JAVA_EXEC < "$RUNTIME/java-path.txt"
+if [ ! -x "$JAVA_EXEC" ]; then
+    echo "Prepared Java executable is unavailable. Run prepareBotFuryClient again." >&2
+    exit 78
 fi
 
-if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
-    PATH="$JAVA_HOME/bin:$PATH"
-fi
-if ! command -v java >/dev/null 2>&1; then
-    echo "Java 17 or newer was not found. Install a JDK 17+ and rerun the dashboard."
-    exit 3
+mkdir -p "$RUN_DIR/tmp"
+cd "$RUN_DIR"
+if [ ! -e options.txt ]; then
+    cp "$BOTFURY_ROOT/config/bot-options.txt" options.txt
 fi
 
-MAX_HEAP_MB=768
-MIN_HEAP_MB=128
-ACTIVE_PROCESSORS=1
-MAX_FPS=10
-RENDER_DISTANCE=2
-SIMULATION_DISTANCE=5
-if [ "$DISABLE_RENDERING" != "false" ] && [ "$DISABLE_RENDERING" != "FALSE" ]; then
-    DISABLE_RENDERING=true
-fi
-
-echo "Launching $BOT_USERNAME on BotFury port $BOT_PORT"
-echo "Target server: $SERVER_IP:$SERVER_PORT"
-echo "Mod project: $MOD_DIR"
-
-cd "$MOD_DIR"
-ABS_RUN_DIR="$MOD_DIR/$RUN_DIR"
-mkdir -p "$ABS_RUN_DIR"
-cat > "$ABS_RUN_DIR/options.txt" <<EOF
-version:3465
-autoJump:false
-enableVsync:false
-maxFps:$MAX_FPS
-renderDistance:$RENDER_DISTANCE
-simulationDistance:$SIMULATION_DISTANCE
-entityDistanceScaling:0.5
-graphicsMode:1
-ao:false
-renderClouds:"false"
-particles:2
-mipmapLevels:0
-biomeBlendRadius:0
-bobView:false
-entityShadows:false
-fovEffectScale:0.0
-darknessEffectScale:0.0
-soundCategory_master:0.0
-soundCategory_music:0.0
-soundCategory_weather:0.0
-soundCategory_block:0.0
-soundCategory_hostile:0.0
-soundCategory_neutral:0.0
-soundCategory_player:0.0
-soundCategory_ambient:0.0
-soundCategory_voice:0.0
-showAutosaveIndicator:false
-syncChunkWrites:false
-tutorialStep:none
-EOF
-
-exec nice -n 10 sh ./gradlew --no-daemon --no-problems-report \
-    -Dbotfury.port="$BOT_PORT" \
-    -Dbotfury.offlineUsername="$BOT_USERNAME" \
-    -Dbotfury.username="$BOT_USERNAME" \
-    -Dbotfury.serverIp="$SERVER_IP" \
-    -Dbotfury.serverPort="$SERVER_PORT" \
-    -Dbotfury.autoJoin=true \
-    -Dbotfury.disableRendering="$DISABLE_RENDERING" \
-    -Dbotfury.runDir="$RUN_DIR" \
-    -Dbotfury.minHeapMb="$MIN_HEAP_MB" \
-    -Dbotfury.maxHeapMb="$MAX_HEAP_MB" \
-    -Dbotfury.activeProcessors="$ACTIVE_PROCESSORS" \
-    -Dbotfury.maxFps="$MAX_FPS" \
-    -Dbotfury.renderDistance="$RENDER_DISTANCE" \
-    -Dbotfury.simulationDistance="$SIMULATION_DISTANCE" \
-    runClient
+exec nice -n 10 "$JAVA_EXEC" \
+    "-Djava.io.tmpdir=$RUN_DIR/tmp" \
+    "-Dbotfury.port=$BOT_PORT" \
+    -Dbotfury.managedHttp=true -Dbotfury.strictPort=true -Dbotfury.httpBindAddress=127.0.0.1 \
+    "-Dbotfury.offlineUsername=$BOT_USERNAME" \
+    "-Dbotfury.serverIp=$SERVER_IP" \
+    "-Dbotfury.serverPort=$SERVER_PORT" \
+    "-Dbotfury.autoJoin=$AUTO_JOIN" \
+    "-Dbotfury.disableRendering=$DISABLE_RENDERING" \
+    -Dbotfury.maxFps=10 "@$RUNTIME/client.args" --username "$BOT_USERNAME"

@@ -79,53 +79,33 @@ cd BotFury
 
 ### Primary Dashboard: FT
 
-BotFury now includes an FT-based dashboard in `ft-dashboard/`. It replaces the
-old Flask dashboard as the recommended control surface and supports:
+Use the [FT dashboard](ft-dashboard/README.md) to start, stop, kill, and
+restart individual instances. On Linux, its Podman backend can provision
+one container checkpoint per bot at the Minecraft title screen and restore
+it on subsequent launches. The dashboard can also start Minecraft directly
+with Java and tile local game or viewer windows.
 
-- attaching and scanning BotFury HTTP endpoints
-- launching multiple local instances from a Minecraft launch command
-- generated offline usernames such as `Bot01`, `Bot02`, `Bot03`
-- automatic attachment to launched ports
-- optional auto-launch on dashboard startup
+### In-game formations (Fabric 1.20.1)
 
-Run it on Windows:
+Install the same BotFury JAR and the Fabric API on the server and the
+controller client. Join with the bots, then use `/botfury enroll <bot>`
+for each online non-operator bot account. Operators can check the active
+roster with `/botfury list`, remove an online bot with `/botfury release <bot>`,
+or clear the roster with `/botfury clear`. Enrollment lasts for the current
+server session.
 
-```cmd
-cd ft-dashboard
-run_dashboard.bat
-```
+| Default key | Action |
+| --- | --- |
+| J | Saturn orbit. Bots move around the operator and attack nearby eligible targets. |
+| K | Lightning strike. Aim at a target to send the bots along a zigzag, then blink around it and attack. |
+| `]` | Stop the active formation. |
 
-You can also double-click `ft-dashboard\run_dashboard.bat`; it starts the GUI
-dashboard by default. Pass `--web` or `--tui` to use FT's other modes.
-
-Run it on Linux:
-
-```bash
-cd ft-dashboard
-sh run_dashboard.sh
-```
-
-When launched from bash or zsh, the Linux script starts web mode by default.
-Then open `http://127.0.0.1:8080/`.
-
-Configure `launch_command` in `config/botfury.json` or in the dashboard. This is
-the OS command BotFury runs to start Minecraft for each bot. It supports
-`{username}`, `{port}`, `{bot_id}`, `{server_ip}`,
-`{server_port}`, `{disable_rendering}`, and `{cwd}`. Pass `-Dbotfury.port={port}`
-to the JVM so each mod instance exposes a unique HTTP port, and pass
-`{username}` wherever your offline launcher accepts the offline account name.
-The dashboard includes platform wrapper presets. Windows uses
-`ft-dashboard\botfury-launch.bat`; Linux uses `sh botfury-launch.sh`. Both run
-the bundled Fabric dev client from `minecraft-bots\botfury-mod`, assign names
-like `Bot01`, auto-join the configured server, and use separate run directories
-like `run\Bot01`. The first launch can take a while while Gradle prepares
-Minecraft and downloads assets. You can still edit the wrapper later if you
-want to swap in Prism, the official launcher, or another Minecraft setup.
-
-The bundled wrapper is tuned for low resource usage: rendering is disabled by
-default, the client JVM is capped at 768 MB, the game sees one processor, Gradle
-uses one worker, and each bot run directory gets minimal Minecraft video/audio
-options before launch.
+The operator keys are configurable under **Controls → BotFury**. The server
+applies the movements, chooses supported landing blocks, and enforces attack
+range, line of sight, teams, and player-versus-player rules. Enrolled bots
+must be in the same dimension and within 32 blocks. A strike ends when its
+target is lost or after ten seconds. The controller can disable its local
+HTTP endpoint with the JVM option `-Dbotfury.httpEnabled=false`.
 
 ### Legacy Dashboard: Flask
 

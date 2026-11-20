@@ -19,6 +19,8 @@
 
 #define FT_IMPLEMENTATION
 #include "vendor/ft.hpp"
+#include "managed_process.hpp"
+#include "window_tiling.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -26,6 +28,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <csignal>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -55,6 +58,9 @@ struct DashboardConfig {
     int server_port = 25565;
     bool auto_attach_launched = true;
     bool auto_launch_on_start = false;
+    bool auto_tile_windows = true;
+    bool warm_instances = true;
+    bool use_containers = false;
     bool disable_rendering_on_start = true;
     std::string server_ip = "localhost";
     std::string offline_username_prefix = "Bot";
@@ -74,6 +80,7 @@ struct HttpResult {
 struct BotStatus {
     bool reachable = false;
     bool connected = false;
+    bool ready = false;
     bool render_enabled = true;
     int http_port = 0;
     int uptime_millis = 0;
@@ -87,19 +94,9 @@ struct Bot {
     std::string name;
     std::string host;
     int port = 0;
+    bool in_container = false;
     BotStatus status;
     std::chrono::steady_clock::time_point last_seen{};
-};
-
-struct LaunchedProcess {
-    int bot_id = 0;
-    int port = 0;
-    unsigned long pid = 0;
-#ifdef _WIN32
-    uintptr_t handle = 0;
-#endif
-    std::string username;
-    std::string command;
 };
 
 struct LaunchPreset {
@@ -108,12 +105,25 @@ struct LaunchPreset {
     const char* note;
 };
 
+enum class ContainerOperation { Stop, Kill, View };
+
+struct ContainerTask {
+    ContainerOperation operation;
+    LaunchedProcess process;
+};
+
 struct AppState {
     DashboardConfig config;
     fs::path config_path;
     fs::path dashboard_dir;
     std::vector<Bot> bots;
     std::vector<LaunchedProcess> launched;
+    std::vector<ContainerTask> container_tasks;
+    std::vector<ClientWindow> tiled_windows;
+    LaunchedProcess::Clock::time_point next_tile{};
+    bool auto_tile_windows = true;
+    bool warm_instances = true;
+    bool use_containers = false;
     int next_bot_id = 1;
     int tab = 0;
     std::string log = "[boot] FT dashboard initialized";
@@ -147,8 +157,8 @@ static const LaunchPreset k_launch_presets[] = {
 #ifdef _WIN32
     {
         "Windows batch wrapper",
-        "botfury-launch.bat {username} {port} {server_ip} {server_port} {disable_rendering}",
-        "Default Windows launcher. It starts the bundled Fabric dev client with the generated offline username, BotFury HTTP port, server, and render mode."
+        "botfury-launch.bat {username} {port} {server_ip} {server_port} {disable_rendering} {auto_join}",
+        "Starts the prepared Fabric client with a separate game directory for each bot."
     },
     {
         "PowerShell wrapper",
@@ -163,8 +173,8 @@ static const LaunchPreset k_launch_presets[] = {
 #else
     {
         "Linux shell wrapper",
-        "sh botfury-launch.sh {username} {port} {server_ip} {server_port} {disable_rendering}",
-        "Default Linux launcher. It starts the bundled Fabric dev client in bot mode, passes the generated offline username, and auto-joins the configured server."
+        "sh botfury-launch.sh {username} {port} {server_ip} {server_port} {disable_rendering} {auto_join}",
+        "Starts the prepared Fabric client with a separate game directory for each bot."
     },
     {
         "Direct Java command",
@@ -173,7 +183,7 @@ static const LaunchPreset k_launch_presets[] = {
     },
     {
         "Windows batch wrapper",
-        "botfury-launch.bat {username} {port} {server_ip} {server_port} {disable_rendering}",
+        "botfury-launch.bat {username} {port} {server_ip} {server_port} {disable_rendering} {auto_join}",
         "Windows-only wrapper preset, kept here for shared configs."
     }
 #endif
@@ -409,6 +419,9 @@ static DashboardConfig load_config(const fs::path& path) {
     cfg.server_port = json_int_value(text, "server_port", cfg.server_port);
     cfg.auto_attach_launched = json_bool_value(text, "auto_attach_launched", cfg.auto_attach_launched);
     cfg.auto_launch_on_start = json_bool_value(text, "auto_launch_on_start", cfg.auto_launch_on_start);
+    cfg.auto_tile_windows = json_bool_value(text, "auto_tile_windows", cfg.auto_tile_windows);
+    cfg.warm_instances = json_bool_value(text, "warm_instances", cfg.warm_instances);
+    cfg.use_containers = json_bool_value(text, "use_containers", cfg.use_containers);
     cfg.disable_rendering_on_start = json_bool_value(text, "disable_rendering_on_start", cfg.disable_rendering_on_start);
     cfg.server_ip = json_string_value(text, "server_ip", cfg.server_ip);
     cfg.offline_username_prefix = json_string_value(text, "offline_username_prefix", cfg.offline_username_prefix);
@@ -445,6 +458,9 @@ static bool save_config(const fs::path& path, const DashboardConfig& cfg, std::s
     out << "    \"launch_command\": \"" << json_escape(cfg.launch_command) << "\",\n";
     out << "    \"launch_working_directory\": \"" << json_escape(cfg.launch_working_directory) << "\",\n";
     out << "    \"auto_attach_launched\": " << (cfg.auto_attach_launched ? "true" : "false") << ",\n";
+    out << "    \"auto_tile_windows\": " << (cfg.auto_tile_windows ? "true" : "false") << ",\n";
+    out << "    \"warm_instances\": " << (cfg.warm_instances ? "true" : "false") << ",\n";
+    out << "    \"use_containers\": " << (cfg.use_containers ? "true" : "false") << ",\n";
     out << "    \"auto_launch_on_start\": " << (cfg.auto_launch_on_start ? "true" : "false") << ",\n";
     out << "    \"startup_attach_scan_seconds\": " << cfg.startup_attach_scan_seconds << ",\n";
     out << "    \"disable_rendering_on_start\": " << (cfg.disable_rendering_on_start ? "true" : "false") << ",\n";
@@ -523,6 +539,11 @@ static void sync_config_to_inputs(AppState& app) {
     std::snprintf(app.attach_scan_seconds, sizeof(app.attach_scan_seconds), "%d", app.config.startup_attach_scan_seconds);
     app.auto_attach_launched = app.config.auto_attach_launched;
     app.auto_launch_on_start = app.config.auto_launch_on_start;
+    app.auto_tile_windows = app.config.auto_tile_windows;
+    app.warm_instances = app.config.warm_instances;
+#ifdef __linux__
+    app.use_containers = app.config.use_containers;
+#endif
     app.disable_rendering_on_start = app.config.disable_rendering_on_start;
 }
 
@@ -540,6 +561,9 @@ static void sync_inputs_to_config(AppState& app) {
     app.config.startup_attach_scan_seconds = parse_int(app.attach_scan_seconds, 20, 0, 300);
     app.config.auto_attach_launched = app.auto_attach_launched;
     app.config.auto_launch_on_start = app.auto_launch_on_start;
+    app.config.auto_tile_windows = app.auto_tile_windows;
+    app.config.warm_instances = app.warm_instances;
+    app.config.use_containers = app.use_containers;
     app.config.disable_rendering_on_start = app.disable_rendering_on_start;
 }
 
@@ -740,7 +764,11 @@ static HttpResult http_get(const std::string& host, int port, const std::string&
     const char* data = request.c_str();
     int remaining = (int)request.size();
     while (remaining > 0) {
+#ifdef MSG_NOSIGNAL
+        int sent = send(sock, data, remaining, MSG_NOSIGNAL);
+#else
         int sent = send(sock, data, remaining, 0);
+#endif
         if (sent <= 0) {
             close_socket_handle(sock);
             result.error = "send failed";
@@ -793,6 +821,7 @@ static BotStatus fetch_bot_status(const Bot& bot, int timeout_ms = 700) {
 
     status.reachable = true;
     status.connected = json_bool_value(res.body, "connected", false);
+    status.ready = json_bool_value(res.body, "ready", true);
     status.render_enabled = json_bool_value(res.body, "renderEnabled", true);
     status.player = json_string_value(res.body, "player", "None");
     status.offline_username = json_string_value(res.body, "offlineUsername", "");
@@ -837,219 +866,8 @@ static std::string expand_launch_template(const AppState& app, int slot, int por
     command = replace_all(command, "{server_port}", std::to_string(parse_int(app.server_port, 25565, 1, 65535)));
     command = replace_all(command, "{cwd}", trim(app.launch_cwd));
     command = replace_all(command, "{disable_rendering}", app.disable_rendering_on_start ? "true" : "false");
+    command = replace_all(command, "{auto_join}", app.warm_instances ? "false" : "true");
     return command;
-}
-
-static bool process_running(const LaunchedProcess& process) {
-    if (process.pid == 0) return false;
-#ifdef _WIN32
-    if (!process.handle) return false;
-    DWORD exit_code = 0;
-    if (!GetExitCodeProcess((HANDLE)process.handle, &exit_code)) return false;
-    return exit_code == STILL_ACTIVE;
-#else
-    return kill((pid_t)process.pid, 0) == 0;
-#endif
-}
-
-static const char* generated_batch_wrapper() {
-    return R"bat(@echo off
-setlocal
-
-set "BOT_USERNAME=%~1"
-set "BOT_PORT=%~2"
-set "SERVER_IP=%~3"
-set "SERVER_PORT=%~4"
-set "DISABLE_RENDERING=%~5"
-
-set "DASHBOARD_DIR=%~dp0"
-for %%I in ("%DASHBOARD_DIR%..") do set "BOTFURY_ROOT=%%~fI"
-set "MOD_DIR=%BOTFURY_ROOT%\minecraft-bots\botfury-mod"
-set "RUN_DIR=run\%BOT_USERNAME%"
-
-if not exist "%MOD_DIR%\gradlew.bat" (
-    echo BotFury Gradle project not found: %MOD_DIR%
-    exit /b 2
-)
-
-set "BF_JAVA_HOME="
-if exist "C:\Program Files\Eclipse Adoptium\jdk-21.0.4.7-hotspot\bin\java.exe" set "BF_JAVA_HOME=C:\Program Files\Eclipse Adoptium\jdk-21.0.4.7-hotspot"
-if not defined BF_JAVA_HOME for /d %%J in ("C:\Program Files\Eclipse Adoptium\jdk-*") do if exist "%%~fJ\bin\java.exe" set "BF_JAVA_HOME=%%~fJ"
-if not defined BF_JAVA_HOME for /d %%J in ("C:\Program Files\Java\jdk-*") do if exist "%%~fJ\bin\java.exe" set "BF_JAVA_HOME=%%~fJ"
-if not defined BF_JAVA_HOME for /d %%J in ("C:\Program Files\Microsoft\jdk-*") do if exist "%%~fJ\bin\java.exe" set "BF_JAVA_HOME=%%~fJ"
-
-if defined BF_JAVA_HOME (
-    set "JAVA_HOME=%BF_JAVA_HOME%"
-)
-
-if defined JAVA_HOME if exist "%JAVA_HOME%\bin\java.exe" set "PATH=%JAVA_HOME%\bin;%PATH%"
-where java >nul 2>nul
-if errorlevel 1 (
-    echo Java 17 or newer was not found. Install a JDK 17+ and rerun the dashboard.
-    exit /b 3
-)
-
-set "MAX_HEAP_MB=768"
-set "MIN_HEAP_MB=128"
-set "ACTIVE_PROCESSORS=1"
-set "MAX_FPS=10"
-set "RENDER_DISTANCE=2"
-set "SIMULATION_DISTANCE=5"
-if /I not "%DISABLE_RENDERING%"=="false" set "DISABLE_RENDERING=true"
-
-echo Launching %BOT_USERNAME% on BotFury port %BOT_PORT%
-echo Target server: %SERVER_IP%:%SERVER_PORT%
-echo Mod project: %MOD_DIR%
-
-cd /d "%MOD_DIR%"
-set "ABS_RUN_DIR=%MOD_DIR%\%RUN_DIR%"
-if not exist "%ABS_RUN_DIR%" mkdir "%ABS_RUN_DIR%"
-> "%ABS_RUN_DIR%\options.txt" (
-    echo version:3465
-    echo autoJump:false
-    echo enableVsync:false
-    echo maxFps:%MAX_FPS%
-    echo renderDistance:%RENDER_DISTANCE%
-    echo simulationDistance:%SIMULATION_DISTANCE%
-    echo entityDistanceScaling:0.5
-    echo graphicsMode:1
-    echo ao:false
-    echo renderClouds:"false"
-    echo particles:2
-    echo mipmapLevels:0
-    echo biomeBlendRadius:0
-    echo bobView:false
-    echo entityShadows:false
-    echo fovEffectScale:0.0
-    echo darknessEffectScale:0.0
-    echo soundCategory_master:0.0
-    echo soundCategory_music:0.0
-    echo soundCategory_weather:0.0
-    echo soundCategory_block:0.0
-    echo soundCategory_hostile:0.0
-    echo soundCategory_neutral:0.0
-    echo soundCategory_player:0.0
-    echo soundCategory_ambient:0.0
-    echo soundCategory_voice:0.0
-    echo showAutosaveIndicator:false
-    echo syncChunkWrites:false
-    echo tutorialStep:none
-)
-
-call gradlew.bat --no-daemon --no-problems-report ^
-    -Dbotfury.port=%BOT_PORT% ^
-    -Dbotfury.offlineUsername=%BOT_USERNAME% ^
-    -Dbotfury.username=%BOT_USERNAME% ^
-    -Dbotfury.serverIp=%SERVER_IP% ^
-    -Dbotfury.serverPort=%SERVER_PORT% ^
-    -Dbotfury.autoJoin=true ^
-    -Dbotfury.disableRendering=%DISABLE_RENDERING% ^
-    -Dbotfury.runDir=%RUN_DIR% ^
-    -Dbotfury.minHeapMb=%MIN_HEAP_MB% ^
-    -Dbotfury.maxHeapMb=%MAX_HEAP_MB% ^
-    -Dbotfury.activeProcessors=%ACTIVE_PROCESSORS% ^
-    -Dbotfury.maxFps=%MAX_FPS% ^
-    -Dbotfury.renderDistance=%RENDER_DISTANCE% ^
-    -Dbotfury.simulationDistance=%SIMULATION_DISTANCE% ^
-    runClient
-exit /b %ERRORLEVEL%
-)bat";
-}
-
-static const char* generated_shell_wrapper() {
-    return R"sh(#!/usr/bin/env sh
-set -eu
-
-BOT_USERNAME="${1:-Bot01}"
-BOT_PORT="${2:-8765}"
-SERVER_IP="${3:-localhost}"
-SERVER_PORT="${4:-25565}"
-DISABLE_RENDERING="${5:-true}"
-
-DASHBOARD_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
-BOTFURY_ROOT=$(CDPATH= cd "$DASHBOARD_DIR/.." && pwd)
-MOD_DIR="$BOTFURY_ROOT/minecraft-bots/botfury-mod"
-RUN_DIR="run/$BOT_USERNAME"
-
-if [ ! -f "$MOD_DIR/gradlew" ]; then
-    echo "BotFury Gradle project not found: $MOD_DIR"
-    exit 2
-fi
-
-if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
-    PATH="$JAVA_HOME/bin:$PATH"
-fi
-if ! command -v java >/dev/null 2>&1; then
-    echo "Java 17 or newer was not found. Install a JDK 17+ and rerun the dashboard."
-    exit 3
-fi
-
-MAX_HEAP_MB=768
-MIN_HEAP_MB=128
-ACTIVE_PROCESSORS=1
-MAX_FPS=10
-RENDER_DISTANCE=2
-SIMULATION_DISTANCE=5
-if [ "$DISABLE_RENDERING" != "false" ] && [ "$DISABLE_RENDERING" != "FALSE" ]; then
-    DISABLE_RENDERING=true
-fi
-
-echo "Launching $BOT_USERNAME on BotFury port $BOT_PORT"
-echo "Target server: $SERVER_IP:$SERVER_PORT"
-echo "Mod project: $MOD_DIR"
-
-cd "$MOD_DIR"
-ABS_RUN_DIR="$MOD_DIR/$RUN_DIR"
-mkdir -p "$ABS_RUN_DIR"
-cat > "$ABS_RUN_DIR/options.txt" <<EOF
-version:3465
-autoJump:false
-enableVsync:false
-maxFps:$MAX_FPS
-renderDistance:$RENDER_DISTANCE
-simulationDistance:$SIMULATION_DISTANCE
-entityDistanceScaling:0.5
-graphicsMode:1
-ao:false
-renderClouds:"false"
-particles:2
-mipmapLevels:0
-biomeBlendRadius:0
-bobView:false
-entityShadows:false
-fovEffectScale:0.0
-darknessEffectScale:0.0
-soundCategory_master:0.0
-soundCategory_music:0.0
-soundCategory_weather:0.0
-soundCategory_block:0.0
-soundCategory_hostile:0.0
-soundCategory_neutral:0.0
-soundCategory_player:0.0
-soundCategory_ambient:0.0
-soundCategory_voice:0.0
-showAutosaveIndicator:false
-syncChunkWrites:false
-tutorialStep:none
-EOF
-
-exec nice -n 10 sh ./gradlew --no-daemon --no-problems-report \
-    -Dbotfury.port="$BOT_PORT" \
-    -Dbotfury.offlineUsername="$BOT_USERNAME" \
-    -Dbotfury.username="$BOT_USERNAME" \
-    -Dbotfury.serverIp="$SERVER_IP" \
-    -Dbotfury.serverPort="$SERVER_PORT" \
-    -Dbotfury.autoJoin=true \
-    -Dbotfury.disableRendering="$DISABLE_RENDERING" \
-    -Dbotfury.runDir="$RUN_DIR" \
-    -Dbotfury.minHeapMb="$MIN_HEAP_MB" \
-    -Dbotfury.maxHeapMb="$MAX_HEAP_MB" \
-    -Dbotfury.activeProcessors="$ACTIVE_PROCESSORS" \
-    -Dbotfury.maxFps="$MAX_FPS" \
-    -Dbotfury.renderDistance="$RENDER_DISTANCE" \
-    -Dbotfury.simulationDistance="$SIMULATION_DISTANCE" \
-    runClient
-)sh";
 }
 
 static bool known_wrapper_file(const std::string& file_name) {
@@ -1065,35 +883,6 @@ static fs::path wrapper_token_from_command(const std::string& command) {
         if (known_wrapper_file(file_name)) return token_path;
     }
     return {};
-}
-
-static const char* generated_wrapper_for(const fs::path& path) {
-    std::string file_name = path.filename().string();
-    if (equal_ascii_ci(file_name, "botfury-launch.sh")) return generated_shell_wrapper();
-    return generated_batch_wrapper();
-}
-
-static bool create_launch_wrapper(const fs::path& path, std::string& error) {
-    std::error_code ec;
-    if (fs::exists(path, ec)) return true;
-
-    fs::path parent = path.parent_path();
-    if (!parent.empty()) {
-        fs::create_directories(parent, ec);
-        if (ec) {
-            error = "could not create wrapper directory: " + ec.message();
-            return false;
-        }
-    }
-
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) {
-        error = "could not write " + path.string();
-        return false;
-    }
-
-    out << generated_wrapper_for(path);
-    return true;
 }
 
 static bool validate_launch_command(const AppState& app, const std::string& command, std::string& error) {
@@ -1114,12 +903,7 @@ static bool validate_launch_command(const AppState& app, const std::string& comm
     fs::path base = trim(app.launch_cwd).empty() ? fs::current_path() : fs::path(trim(app.launch_cwd));
     fs::path candidate = token_path.is_absolute() ? token_path : base / token_path;
     if (!fs::exists(candidate, ec)) {
-        std::string write_error;
-        if (create_launch_wrapper(candidate, write_error)) {
-            error = "created " + candidate.string() + ". Review it, then press Launch again.";
-        } else {
-            error = file_name + " was not found and could not be created: " + write_error;
-        }
+        error = file_name + " was not found in the working directory.";
         return false;
     }
 
@@ -1139,112 +923,55 @@ static bool validate_launch_command(const AppState& app, const std::string& comm
     return true;
 }
 
-static bool launch_process(const std::string& command, const std::string& cwd, LaunchedProcess& launched, std::string& error) {
-    if (command.empty()) {
-        error = "launch command is empty";
-        return false;
-    }
-
-#ifdef _WIN32
-    std::string shell_command = "cmd.exe /S /C \"" + command + "\"";
-    std::vector<char> cmdline(shell_command.begin(), shell_command.end());
-    cmdline.push_back('\0');
-
-    STARTUPINFOA si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    std::string cwd_copy = cwd;
-    const char* cwd_ptr = cwd_copy.empty() ? nullptr : cwd_copy.c_str();
-
-    DWORD creation_flags = CREATE_NEW_PROCESS_GROUP | BELOW_NORMAL_PRIORITY_CLASS;
-    BOOL ok = CreateProcessA(
-        nullptr,
-        cmdline.data(),
-        nullptr,
-        nullptr,
-        FALSE,
-        creation_flags,
-        nullptr,
-        cwd_ptr,
-        &si,
-        &pi);
-
-    if (!ok) {
-        error = "CreateProcess failed: " + std::to_string(GetLastError());
-        return false;
-    }
-
-    CloseHandle(pi.hThread);
-    launched.pid = (unsigned long)pi.dwProcessId;
-    launched.handle = (uintptr_t)pi.hProcess;
-    if (WaitForSingleObject(pi.hProcess, 250) == WAIT_OBJECT_0) {
-        DWORD exit_code = 0;
-        if (GetExitCodeProcess(pi.hProcess, &exit_code) && exit_code != 0) {
-            error = "launch command exited immediately with code " + std::to_string(exit_code);
-            CloseHandle(pi.hProcess);
-            launched.handle = 0;
-            launched.pid = 0;
+static bool run_container_action(AppState& app, LaunchedProcess& instance, ContainerOperation operation,
+                                 std::string& error) {
+    for (const ContainerTask& task : app.container_tasks) {
+        if (task.process.port == instance.port && (task.operation == ContainerOperation::View)
+                == (operation == ContainerOperation::View)) {
+            error = operation == ContainerOperation::View ? "Viewer already open." : "Container operation in progress.";
             return false;
         }
     }
-    return true;
-#else
-    pid_t pid = fork();
-    if (pid < 0) {
-        error = "fork failed";
-        return false;
+    ContainerTask task{};
+    task.operation = operation;
+    task.process.port = instance.port;
+    task.process.username = instance.username;
+    task.process.working_directory = app.dashboard_dir.string();
+    const char* name = operation == ContainerOperation::Stop ? "stop" :
+                       operation == ContainerOperation::Kill ? "kill" : "view";
+    task.process.command = std::string("sh botfury-container.sh ") + name + " " + instance.username
+                           + " " + std::to_string(instance.port);
+    task.process.log_path = instance.log_path.parent_path() / (std::to_string(instance.port) + "-" + name + ".log");
+    if (!launch_process(task.process, error)) return false;
+    app.container_tasks.push_back(std::move(task));
+    if (operation != ContainerOperation::View) {
+        instance.stop_requested = true;
+        if (!instance.container_ready) {
+            std::ofstream cancel(instance.ready_path.string() + ".cancel");
+        }
     }
-    if (pid == 0) {
-        setsid();
-        if (!cwd.empty()) chdir(cwd.c_str());
-        execl("/bin/sh", "sh", "-lc", command.c_str(), (char*)nullptr);
-        _exit(127);
-    }
-    launched.pid = (unsigned long)pid;
     return true;
-#endif
 }
 
-static bool kill_launched_process(LaunchedProcess& process, std::string& error) {
-    if (process.pid == 0) {
-        error = "process has no pid";
-        return false;
+static bool request_stop_instance(AppState& app, LaunchedProcess& instance, bool force, std::string& error) {
+    if (instance.container) {
+        return run_container_action(app, instance, force ? ContainerOperation::Kill : ContainerOperation::Stop, error);
     }
-
-#ifdef _WIN32
-    bool was_running = process_running(process);
-    std::string command = "taskkill /PID " + std::to_string(process.pid) + " /T /F >nul 2>nul";
-    int rc = std::system(command.c_str());
-    if (process.handle) {
-        WaitForSingleObject((HANDLE)process.handle, 2000);
-        CloseHandle((HANDLE)process.handle);
-        process.handle = 0;
-    }
-    if (rc != 0 && was_running) {
-        error = "taskkill failed for pid " + std::to_string(process.pid);
-        return false;
-    }
-    process.pid = 0;
-    return was_running || rc == 0;
-#else
-    pid_t pid = (pid_t)process.pid;
-    if (kill(-pid, SIGTERM) != 0 && kill(pid, SIGTERM) != 0) {
-        error = "kill failed for pid " + std::to_string(process.pid);
-        return false;
-    }
-    process.pid = 0;
-    return true;
+#ifndef _WIN32
+    if (!force) return stop_launched_process(instance, error);
 #endif
+    return kill_launched_process(instance, error);
 }
 
 static int kill_launched_instances(AppState& app) {
     int killed = 0;
     for (LaunchedProcess& process : app.launched) {
-        if (process.pid == 0 || !process_running(process)) continue;
+        process.restart_pending = false;
+        if (!process_running(process)) continue;
 
         std::string error;
-        if (kill_launched_process(process, error)) {
-            append_log(app, "killed launched instance " + process.username);
+        if (request_stop_instance(app, process, true, error)) {
+            append_log(app, "kill requested for " + process.username);
             ++killed;
         } else {
             append_log(app, "kill failed for " + process.username + ": " + error);
@@ -1252,7 +979,7 @@ static int kill_launched_instances(AppState& app) {
     }
 
     app.launch_message = "Kill requested for " + std::to_string(killed) + " launched instance(s).";
-    if (killed > 0) ft::toast_success(("Killed " + std::to_string(killed) + " instance(s)").c_str());
+    if (killed > 0) ft::toast_success(("Kill requested for " + std::to_string(killed) + " instance(s)").c_str());
     else ft::toast_warning("No running launched instances");
     return killed;
 }
@@ -1275,9 +1002,9 @@ static std::string default_bot_name(const AppState& app, int bot_id) {
 
 static int attach_bot(AppState& app, const std::string& host, int port, const std::string& preferred_name, bool probe_now = true) {
     if (host.empty() || port < 1 || port > 65535) return -1;
-    if ((int)app.bots.size() >= app.config.max_bot_instances) return -2;
     int existing = find_bot_by_endpoint(app, host, port);
     if (existing) return existing;
+    if ((int)app.bots.size() >= app.config.max_bot_instances) return -2;
 
     Bot bot;
     bot.id = app.next_bot_id++;
@@ -1295,7 +1022,16 @@ static int attach_bot(AppState& app, const std::string& host, int port, const st
 
 static std::string send_bot_command(const Bot& bot, const std::string& command) {
     if (command.empty()) return "empty command";
-    HttpResult res = http_get(bot.host, bot.port, "/command?cmd=" + url_encode(command), 1200);
+    std::string local_command = command;
+    if (bot.in_container) {
+        for (const char* loopback : {"connect:localhost:", "connect:127.0.0.1:", "connect:[::1]:"}) {
+            if (command.rfind(loopback, 0) == 0) {
+                local_command = "connect:host.containers.internal:" + command.substr(std::strlen(loopback));
+                break;
+            }
+        }
+    }
+    HttpResult res = http_get(bot.host, bot.port, "/command?cmd=" + url_encode(local_command), 1200);
     if (!res.ok) return res.error.empty() ? "command failed" : res.error;
     return trim(res.body).empty() ? "ok" : trim(res.body);
 }
@@ -1357,68 +1093,191 @@ static int scan_and_attach(AppState& app, const std::string& host, int start_por
     return attached;
 }
 
+static LaunchedProcess* instance_for_port(AppState& app, int port) {
+    for (LaunchedProcess& instance : app.launched) {
+        if (instance.port == port) return &instance;
+    }
+    return nullptr;
+}
+
+static bool start_managed_instance(AppState& app, LaunchedProcess& instance) {
+    std::string error;
+    socket_handle socket = invalid_socket_handle;
+    if (instance.container) {
+        std::error_code ec;
+        fs::remove(instance.ready_path, ec);
+        fs::remove(instance.ready_path.string() + ".cancel", ec);
+        instance.container_ready = false;
+        instance.bot_id = 0;
+    } else {
+        socket = connect_with_timeout("127.0.0.1", instance.port, 40, error);
+    }
+    if (socket != invalid_socket_handle) {
+        close_socket_handle(socket);
+        error = "port " + std::to_string(instance.port) + " is already in use";
+    } else if (launch_process(instance, error)) {
+        if (!instance.container && app.config.auto_attach_launched) {
+            instance.bot_id = std::max(0, attach_bot(app, "127.0.0.1", instance.port, instance.username, false));
+            if (Bot* bot = find_bot_by_id(app, instance.bot_id)) bot->in_container = false;
+        }
+        append_log(app, "started " + instance.username + " on port " + std::to_string(instance.port)
+                        + " (PID " + std::to_string(instance.pid) + ")");
+        return true;
+    }
+
+    instance.exit_status = "Start failed";
+    app.launch_message = instance.username + ": " + error;
+    append_log(app, app.launch_message);
+    ft::toast_error(app.launch_message.c_str());
+    return false;
+}
+
+static bool launch_slot(AppState& app, int slot) {
+    int port = app.config.bot_port_base + slot;
+    if (port > 65535) {
+        app.launch_message = "Instance port exceeds 65535.";
+        return false;
+    }
+    LaunchedProcess* instance = instance_for_port(app, port);
+    if (instance && (process_running(*instance) || instance->restart_pending)) return false;
+
+    std::string username = padded_username(app, slot);
+    std::string command = expand_launch_template(app, slot, port, username);
+    std::string error;
+    if (username.size() > 16 || username.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            "abcdefghijklmnopqrstuvwxyz0123456789_") != std::string::npos) {
+        app.launch_message = "Minecraft usernames must have at most 16 letters, digits, or underscores.";
+        return false;
+    }
+    if (app.config.use_containers && (port < 1024 || port > 55535)) {
+        app.launch_message = "Container bot ports must be 1024–55535.";
+        return false;
+    }
+    if (!app.config.use_containers && !validate_launch_command(app, command, error)) {
+        app.launch_message = error;
+        append_log(app, error);
+        return false;
+    }
+    if (std::any_of(app.launched.begin(), app.launched.end(), [&](const LaunchedProcess& other) {
+            return other.port != port && (process_running(other) || other.restart_pending)
+                    && equal_ascii_ci(other.username, username);
+        })) {
+        app.launch_message = username + " is already assigned to another active instance.";
+        return false;
+    }
+    if (!instance) {
+        app.launched.emplace_back();
+        instance = &app.launched.back();
+    }
+    instance->port = port;
+    instance->username = username;
+    instance->container = app.config.use_containers;
+    instance->command = command;
+    instance->working_directory = app.config.launch_working_directory;
+    if (instance->container) {
+        instance->working_directory = app.dashboard_dir.string();
+        std::string ready_file = "build/instance-logs/" + std::to_string(port) + ".ready";
+        instance->ready_path = app.dashboard_dir / ready_file;
+        instance->command = "sh botfury-container.sh run " + username + " " + std::to_string(port)
+                            + " " + (app.config.disable_rendering_on_start ? "true" : "false") + " " + ready_file;
+    }
+    instance->log_path = app.dashboard_dir / "build" / "instance-logs" / (std::to_string(port) + ".log");
+    return start_managed_instance(app, *instance);
+}
+
 static int launch_instances(AppState& app) {
     sync_inputs_to_config(app);
-
-    int count = app.config.launch_count;
-    int base_port = app.config.bot_port_base;
-    if (app.config.launch_command.empty()) {
-        app.launch_message = "Minecraft launch command is empty.";
-        append_log(app, "launch skipped: " + app.launch_message);
-        ft::toast_warning("Set a Minecraft launch command first");
-        return 0;
+    app.launch_message.clear();
+    int count = 0;
+    for (int slot = 0; slot < app.config.launch_count; ++slot) {
+        if (launch_slot(app, slot)) ++count;
     }
-
-    std::string validation_error;
-    std::string validation_command = expand_launch_template(app, 0, base_port, padded_username(app, 0));
-    if (!validate_launch_command(app, validation_command, validation_error)) {
-        app.launch_message = validation_error;
-        append_log(app, "launch skipped: " + validation_error);
-        ft::toast_error("Launch command is not ready");
-        return 0;
+    if (count > 0 && app.launch_message.empty()) {
+        app.launch_message = "Started " + std::to_string(count) + " instance(s).";
     }
+    return count;
+}
 
-    int launched_count = 0;
-    for (int slot = 0; slot < count; ++slot) {
-        int port = base_port + slot;
-        if (port < 1 || port > 65535) {
-            append_log(app, "launch skipped: invalid port " + std::to_string(port));
+static int tile_instances(AppState& app, bool force) {
+    std::vector<const LaunchedProcess*> windows;
+    for (const LaunchedProcess& instance : app.launched) {
+        if (!instance.container) windows.push_back(&instance);
+    }
+    for (const ContainerTask& task : app.container_tasks) {
+        if (task.operation == ContainerOperation::View) windows.push_back(&task.process);
+    }
+    return tile_client_windows(windows, app.tiled_windows, force);
+}
+
+static void poll_container_tasks(AppState& app) {
+    auto& tasks = app.container_tasks;
+    for (auto task = tasks.begin(); task != tasks.end();) {
+        if (!reap_launched_process(task->process)) {
+            ++task;
             continue;
         }
-
-        std::string username = padded_username(app, slot);
-        std::string command = expand_launch_template(app, slot, port, username);
-
-        LaunchedProcess launched;
-        launched.port = port;
-        launched.username = username;
-        launched.command = command;
-
-        std::string error;
-        if (!launch_process(command, app.config.launch_working_directory, launched, error)) {
-            app.launch_message = username + ": " + error;
-            append_log(app, "launch failed for " + username + ": " + error);
-            ft::toast_error("Launch failed");
-            continue;
+        if (task->process.exit_status != "Exit 0" && task->process.exit_status != "Stopped") {
+            if (LaunchedProcess* instance = instance_for_port(app, task->process.port);
+                    instance && task->operation != ContainerOperation::View) {
+                instance->stop_requested = false;
+                instance->restart_pending = false;
+            }
+            app.launch_message = task->process.username + ": container operation failed. See the instance logs.";
+            append_log(app, app.launch_message);
         }
+        task = tasks.erase(task);
+    }
+}
 
-        if (app.config.auto_attach_launched) {
-            int id = attach_bot(app, "127.0.0.1", port, username, false);
-            launched.bot_id = id > 0 ? id : 0;
-            append_log(app, "tracking expected endpoint 127.0.0.1:" + std::to_string(port));
+static void poll_instances(AppState& app) {
+    poll_container_tasks(app);
+    auto now = LaunchedProcess::Clock::now();
+    for (LaunchedProcess& instance : app.launched) {
+        if (instance.container && process_running(instance) && !instance.container_ready) {
+            std::error_code ec;
+            if (fs::exists(instance.ready_path, ec)) {
+                instance.container_ready = true;
+                if (app.config.auto_attach_launched) {
+                    instance.bot_id = std::max(0, attach_bot(app, "127.0.0.1", instance.port, instance.username, false));
+                    if (Bot* bot = find_bot_by_id(app, instance.bot_id)) bot->in_container = true;
+                }
+            }
         }
-
-        app.launched.push_back(launched);
-        append_log(app, "launched " + username + " on port " + std::to_string(port) +
-                        " pid=" + std::to_string(launched.pid));
-        ++launched_count;
+        if (process_running(instance) && instance.stop_deadline != LaunchedProcess::Clock::time_point{}
+                && now >= instance.stop_deadline) {
+            std::string error;
+            if (!kill_launched_process(instance, error)) {
+                append_log(app, instance.username + ": " + error);
+                instance.stop_deadline = {};
+            }
+        }
+        if (reap_launched_process(instance)) {
+            if (instance.container && !instance.container_ready && instance.exit_status != "Stopped") {
+                app.launch_message = instance.username + ": container startup failed. See the instance log.";
+            }
+            for (ContainerTask& task : app.container_tasks) {
+                if (task.operation == ContainerOperation::View && task.process.port == instance.port) {
+                    std::string error;
+                    kill_launched_process(task.process, error);
+                }
+            }
+            if (Bot* bot = find_bot_by_id(app, instance.bot_id)) bot->status = {};
+            append_log(app, instance.username + ": " + instance.exit_status);
+            if (instance.restart_pending) instance.stop_deadline = now + std::chrono::milliseconds(250);
+        }
+        if (instance.restart_pending && !process_running(instance) && now >= instance.stop_deadline
+                && std::none_of(app.container_tasks.begin(), app.container_tasks.end(), [&](const ContainerTask& task) {
+                    return task.process.port == instance.port && task.operation != ContainerOperation::View;
+                })) {
+            instance.restart_pending = false;
+            start_managed_instance(app, instance);
+        }
     }
-
-    if (launched_count > 0) {
-        app.launch_message = "Launched " + std::to_string(launched_count) + " instance(s).";
-        ft::toast_success(("Launched " + std::to_string(launched_count) + " instance(s)").c_str());
+    if (app.auto_tile_windows && now >= app.next_tile
+            && (!app.tiled_windows.empty() || std::any_of(app.launched.begin(), app.launched.end(), process_running))) {
+        tile_instances(app, false);
+        app.next_tile = now + std::chrono::milliseconds(500);
     }
-    return launched_count;
 }
 
 static void save_from_ui(AppState& app) {
@@ -1456,7 +1315,8 @@ static std::string last_seen_text(const Bot& bot) {
 
 static LaunchedProcess* launched_process_for(AppState& app, const Bot& bot) {
     for (LaunchedProcess& process : app.launched) {
-        if ((bot.id > 0 && process.bot_id == bot.id) || process.port == bot.port) {
+        if ((bot.id > 0 && process.bot_id == bot.id)
+                || ((bot.host == "127.0.0.1" || bot.host == "localhost") && process.port == bot.port)) {
             return &process;
         }
     }
@@ -1540,10 +1400,11 @@ static void render_bot_card(AppState& app, Bot& bot) {
             std::string result = send_bot_command(bot, "chat:#stop");
             append_log(app, bot.name + " #stop -> " + result);
         }
-        if (ft::button("Kill Proc", ft::ColorRole::Warning)) {
+        if (ft::button(("Kill##fleet-" + std::to_string(bot.id)).c_str(), ft::ColorRole::Warning)) {
             if (process && process_running(*process)) {
                 std::string error;
-                if (kill_launched_process(*process, error)) append_log(app, bot.name + " process killed");
+                process->restart_pending = false;
+                if (request_stop_instance(app, *process, true, error)) append_log(app, bot.name + " kill requested");
                 else append_log(app, bot.name + " process kill failed: " + error);
             } else {
                 append_log(app, bot.name + " has no running tracked process");
@@ -1760,10 +1621,62 @@ static void render_fleet_tab(AppState& app) {
     }
 }
 
-static void render_launch_tab(AppState& app) {
-    ft::text_wrapped("This is the command BotFury runs to start Minecraft for each bot. Use {port} for -Dbotfury.port and {username} wherever your launcher accepts an offline username.");
-    ft::separator();
+static void render_instance(AppState& app, LaunchedProcess* instance, int slot, int port) {
+    bool running = instance && process_running(*instance);
+    std::string username = instance && (running || slot < 0) ? instance->username : padded_username(app, slot);
+    std::string status = instance && !instance->exit_status.empty() ? instance->exit_status : "Stopped";
+    if (running) {
+        Bot* bot = find_bot_by_id(app, instance->bot_id);
+        status = instance->stop_requested ? "Stopping" :
+            (bot && bot->status.connected ? "In game" :
+             bot && bot->status.ready ? "Ready" : instance->bot_id ? "Starting" : "Running");
+    }
+    if (instance && instance->container && running && !instance->container_ready && !instance->stop_requested) {
+        status = "Preparing container";
+    }
+    if (instance && instance->restart_pending) status = "Restarting";
 
+    const std::string id = "##instance-" + std::to_string(port);
+    ft::row({2.6f, 1.0f, 1.0f, 1.0f, 1.0f}, [&]() {
+        ft::text_wrapped((username + "  ·  " + std::to_string(port) + "  ·  " + status).c_str());
+        if (running && !instance->stop_requested) {
+            if (instance->container && instance->container_ready && ft::button(("View" + id).c_str())) {
+                std::string error;
+                if (!run_container_action(app, *instance, ContainerOperation::View, error)) app.launch_message = error;
+            }
+#ifndef _WIN32
+            if (ft::button(("Stop" + id).c_str())) {
+                std::string error;
+                if (!request_stop_instance(app, *instance, false, error)) app.launch_message = error;
+            }
+#endif
+            if (ft::button(("Restart" + id).c_str())) {
+                std::string error;
+                if (request_stop_instance(app, *instance, false, error)) instance->restart_pending = true;
+                else app.launch_message = error;
+            }
+        }
+        if (running) {
+            if (ft::button(("Kill" + id).c_str(), ft::ColorRole::Warning)) {
+                instance->restart_pending = false;
+                std::string error;
+                if (!request_stop_instance(app, *instance, true, error)) app.launch_message = error;
+            }
+        } else if ((!instance || !instance->restart_pending) && port <= 65535) {
+            if (ft::button(("Start" + id).c_str(), ft::ColorRole::Accent)) {
+                app.launch_message.clear();
+                if (slot >= 0) {
+                    sync_inputs_to_config(app);
+                    launch_slot(app, slot);
+                } else {
+                    start_managed_instance(app, *instance);
+                }
+            }
+        }
+    });
+}
+
+static void render_launch_tab(AppState& app) {
     ft::row({0.65f, 0.65f, 0.8f, 0.8f}, [&]() {
         ft::input("Instances", app.launch_count, sizeof(app.launch_count), ft::InputFlags::CharsDecimal);
         ft::input("Base port", app.port_base, sizeof(app.port_base), ft::InputFlags::CharsDecimal);
@@ -1771,46 +1684,44 @@ static void render_launch_tab(AppState& app) {
         ft::input("Username start", app.username_start, sizeof(app.username_start), ft::InputFlags::CharsDecimal);
     });
 
-    ft::row(3, [&]() {
+#ifdef __linux__
+    ft::checkbox("Podman checkpoints", &app.use_containers);
+#endif
+    ft::row(5, [&]() {
         ft::checkbox("Auto attach launched", &app.auto_attach_launched);
         ft::checkbox("Auto launch on start", &app.auto_launch_on_start);
+        if (!app.use_containers) ft::checkbox("Warm at title screen", &app.warm_instances);
+        if (ft::checkbox("Auto tile windows", &app.auto_tile_windows)) app.tiled_windows.clear();
         ft::checkbox("Disable render on start", &app.disable_rendering_on_start);
     });
 
-    const char* preset_names[k_launch_preset_count];
-    for (int i = 0; i < k_launch_preset_count; ++i) {
-        preset_names[i] = k_launch_presets[i].name;
-    }
-    if (app.launch_preset < 0 || app.launch_preset >= k_launch_preset_count) {
-        app.launch_preset = 0;
-    }
-
-    ft::row({1.4f, 0.8f}, [&]() {
-        ft::dropdown("Preset", preset_names, k_launch_preset_count, &app.launch_preset, k_launch_preset_count);
-        if (ft::button("Use preset")) {
-            copy_text(app.launch_command, sizeof(app.launch_command), k_launch_presets[app.launch_preset].command);
-            append_log(app, std::string("applied launch preset: ") + k_launch_presets[app.launch_preset].name);
-            ft::toast_success("Preset applied");
+    if (!app.use_containers) {
+        const char* preset_names[k_launch_preset_count];
+        for (int i = 0; i < k_launch_preset_count; ++i) {
+            preset_names[i] = k_launch_presets[i].name;
         }
-    });
-    ft::text_wrapped(k_launch_presets[app.launch_preset].note);
+        if (app.launch_preset < 0 || app.launch_preset >= k_launch_preset_count) {
+            app.launch_preset = 0;
+        }
 
-    ft::input("Working directory", app.launch_cwd, sizeof(app.launch_cwd));
-    ft::text_area_ex("Minecraft launch command", app.launch_command, sizeof(app.launch_command), 6,
-                      ft::TextAreaFlags::WordWrap);
+        ft::row({1.4f, 0.8f}, [&]() {
+            ft::dropdown("Preset", preset_names, k_launch_preset_count, &app.launch_preset, k_launch_preset_count);
+            if (ft::button("Use preset")) {
+                copy_text(app.launch_command, sizeof(app.launch_command), k_launch_presets[app.launch_preset].command);
+                append_log(app, std::string("applied launch preset: ") + k_launch_presets[app.launch_preset].name);
+                ft::toast_success("Preset applied");
+            }
+        });
+        ft::text_wrapped(k_launch_presets[app.launch_preset].note);
+
+        ft::input("Working directory", app.launch_cwd, sizeof(app.launch_cwd));
+        ft::text_area_ex("Minecraft launch command", app.launch_command, sizeof(app.launch_command), 6,
+                          ft::TextAreaFlags::WordWrap);
+    }
     if (!app.launch_message.empty()) {
         std::string status = "Launch status: " + app.launch_message;
         ft::text_wrapped(status.c_str());
     }
-
-    int preview_count = parse_int(app.launch_count, 1, 1, 8);
-    int preview_base = parse_int(app.port_base, 8765, 1, 65535);
-    std::string preview = "Preview:";
-    for (int i = 0; i < preview_count && i < 4; ++i) {
-        std::string username = padded_username(app, i);
-        preview += "\n  " + username + " -> port " + std::to_string(preview_base + i);
-    }
-    ft::log_view("Generated usernames", preview.c_str(), 5, ft::LogViewFlags::WordWrap);
 
     ft::row(4, [&]() {
         if (ft::button("Launch instances", ft::ColorRole::Accent)) {
@@ -1831,17 +1742,22 @@ static void render_launch_tab(AppState& app) {
     });
 
     ft::separator();
-    if (app.launched.empty()) {
-        ft::text_wrapped("No instances launched from this dashboard session yet.");
-    } else {
-        std::string lines = "Launched process audit:";
-        for (const LaunchedProcess& proc : app.launched) {
-            lines += "\n";
-            lines += process_running(proc) ? "[running] " : "[exited]  ";
-            lines += proc.username + " port=" + std::to_string(proc.port) +
-                     " pid=" + std::to_string(proc.pid);
+    if (ft::button("Tile windows")) {
+        if (tile_instances(app, true) == 0) {
+            ft::toast_warning("No managed Minecraft windows found.");
         }
-        ft::log_view("Launched processes", lines.c_str(), 8, ft::LogViewFlags::WordWrap);
+    }
+    int base = parse_int(app.port_base, 8765, 1, 65535);
+    int count = std::min(parse_int(app.launch_count, 1, 1, 64), 65536 - base);
+    for (int slot = 0; slot < count; ++slot) {
+        int port = base + slot;
+        render_instance(app, instance_for_port(app, port), slot, port);
+    }
+    for (size_t index = 0; index < app.launched.size(); ++index) {
+        auto& instance = app.launched[index];
+        if (instance.port < base || instance.port >= base + count) {
+            render_instance(app, &instance, -1, instance.port);
+        }
     }
 }
 
@@ -1865,6 +1781,10 @@ static void apply_cli_overrides(AppState& app, int argc, char** argv) {
         if (arg == "--launch-bots") {
             app.auto_launch_on_start = true;
             app.config.auto_launch_on_start = true;
+#ifdef __linux__
+        } else if (arg == "--containers") {
+            app.use_containers = true;
+#endif
         } else if (arg == "--no-open") {
             // handled in main
         } else if (arg.rfind("--count=", 0) == 0) {
@@ -1878,18 +1798,37 @@ static void apply_cli_overrides(AppState& app, int argc, char** argv) {
     sync_inputs_to_config(app);
 }
 
+static volatile std::sig_atomic_t shutdown_requested = 0;
+
+static void request_shutdown(int) {
+    shutdown_requested = 1;
+}
+
+static bool dashboard_request_allowed(int port) {
+    auto& request = ftht::internal::ctx();
+    std::string host = ftht::internal::header_value(request.req_headers, "host");
+    if (host != "127.0.0.1:" + std::to_string(port) && host != "localhost:" + std::to_string(port)
+            && !(port == 80 && (host == "127.0.0.1" || host == "localhost"))) return false;
+    if (request.req_method == "GET") return request.req_query.empty();
+    return request.req_method == "POST"
+            && ftht::internal::header_value(request.req_headers, "origin") == "http://" + host;
+}
+
 int main(int argc, char** argv) {
+    std::signal(SIGINT, request_shutdown);
+    std::signal(SIGTERM, request_shutdown);
     AppState app;
     app.config_path = find_config_path(argc > 0 ? argv[0] : nullptr);
     app.dashboard_dir = find_dashboard_dir(argc > 0 ? argv[0] : nullptr, app.config_path);
     app.config = load_config(app.config_path);
-    if (app.config.launch_command.empty()
-#ifndef _WIN32
-        || app.config.launch_command.find("botfury-launch.bat") != std::string::npos
-#else
-        || app.config.launch_command.find("botfury-launch.sh") != std::string::npos
-#endif
-    ) {
+    const std::string legacy_arguments = " {username} {port} {server_ip} {server_port} {disable_rendering}";
+    const std::string old_shell = "sh botfury-launch.sh" + legacy_arguments;
+    const std::string old_batch = "botfury-launch.bat" + legacy_arguments;
+    const std::string new_shell = old_shell + " {auto_join}";
+    const std::string new_batch = old_batch + " {auto_join}";
+    if (app.config.launch_command.empty() || app.config.launch_command == old_shell
+            || app.config.launch_command == old_batch || app.config.launch_command == new_shell
+            || app.config.launch_command == new_batch) {
         app.config.launch_command = k_launch_presets[0].command;
     }
     if (app.config.launch_working_directory.empty()) {
@@ -1903,6 +1842,7 @@ int main(int argc, char** argv) {
     cfg.mode = ft::Mode::Auto;
     cfg.width = 1180;
     cfg.height = 780;
+    cfg.web_host = "127.0.0.1";
     cfg.web_port = app.config.dashboard_port;
     cfg.web_client_poll_ms = 1500;
     cfg.web_dark_mode = true;
@@ -1933,20 +1873,26 @@ int main(int argc, char** argv) {
         launch_instances(app);
     }
 
-    static const char* tabs[] = {"Fleet", "Launch", "Settings"};
-    for (;;) {
-        bool pumped = ft::pump();
+    static const char* tabs[] = {"Fleet", "Instances", "Settings"};
+    while (!shutdown_requested) {
+        bool pumped = serving_web ? ftht::pump(100) : ft::pump();
+        poll_instances(app);
         if (!pumped) {
             if (!serving_web) break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
+        if (ft::detail::render_mode() == ft::Mode::Web && !dashboard_request_allowed(cfg.web_port)) {
+            ftht::begin();
+            ftht::set_status(403, "Forbidden");
+            ftht::text("Open BotFury from its local dashboard address.");
+            ftht::end();
             continue;
         }
 
         refresh_bots(app);
 
         ft::begin();
-        ft::text("BotFury command center");
-        ft::text_wrapped("Control attached BotFury clients, launch local offline instances with generated usernames, and keep ports aligned with the mod HTTP servers.");
+        ft::text("BotFury");
         ft::separator();
         ft::tabs(tabs, 3, &app.tab);
         ft::separator();
@@ -1958,12 +1904,24 @@ int main(int argc, char** argv) {
         ft::end();
     }
 
-    ft::shutdown();
-#ifdef _WIN32
-    for (LaunchedProcess& process : app.launched) {
-        if (process.handle) CloseHandle((HANDLE)process.handle);
-        process.handle = 0;
+    for (ContainerTask& task : app.container_tasks) {
+        if (task.operation == ContainerOperation::View) {
+            std::string error;
+            kill_launched_process(task.process, error);
+        }
     }
-#endif
+    for (LaunchedProcess& instance : app.launched) {
+        instance.restart_pending = false;
+        if (!process_running(instance)) continue;
+        std::string error;
+        kill_launched_process(instance, error);
+    }
+    auto deadline = LaunchedProcess::Clock::now() + std::chrono::seconds(2);
+    while (running_launched_count(app) && LaunchedProcess::Clock::now() < deadline) {
+        for (LaunchedProcess& instance : app.launched) reap_launched_process(instance);
+        poll_container_tasks(app);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ft::shutdown();
     return 0;
 }

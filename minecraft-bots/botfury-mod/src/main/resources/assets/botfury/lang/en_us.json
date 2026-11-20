@@ -1,0 +1,8 @@
+{
+  "category.botfury": "BotFury",
+  "key.botfury.saturn": "Saturn formation",
+  "key.botfury.strike": "Lightning strike",
+  "key.botfury.stop": "Stop formation",
+  "botfury.formation.aim": "Aim at a living target.",
+  "botfury.formation.unavailable": "This server does not support BotFury formations."
+}

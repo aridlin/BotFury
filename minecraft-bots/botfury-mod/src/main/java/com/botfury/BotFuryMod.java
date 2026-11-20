@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpServer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.api.ClientModInitializer;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.screen.AccessibilityOnboardingScreen;
 import net.minecraft.client.gui.screen.ConnectScreen;
 import net.minecraft.client.gui.screen.TitleScreen;
 import net.minecraft.client.network.ServerAddress;
@@ -20,7 +21,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executors;
 
 public class BotFuryMod implements ClientModInitializer {
+    private static final boolean MANAGED_HTTP = Boolean.getBoolean("botfury.managedHttp");
     private HttpServer server;
+    private static volatile boolean ready;
     public static volatile boolean renderEnabled = true;
     private static boolean started = false;
     private static int httpPort = -1;
@@ -34,7 +37,17 @@ public class BotFuryMod implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         renderEnabled = !Boolean.parseBoolean(System.getProperty("botfury.disableRendering", "false"));
-        startHttp();
+        FormationClient.register();
+        if (Boolean.parseBoolean(System.getProperty("botfury.httpEnabled", "true"))) startHttp();
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            if (client.getOverlay() != null) return;
+            if (MANAGED_HTTP && client.currentScreen instanceof AccessibilityOnboardingScreen) {
+                client.options.onboardAccessibility = false;
+                client.options.write();
+                client.setScreen(new TitleScreen());
+            }
+            if (client.currentScreen instanceof TitleScreen || client.world != null) ready = true;
+        });
         registerAutoJoin();
     }
 
@@ -51,7 +64,7 @@ public class BotFuryMod implements ClientModInitializer {
       for (int attempt = 0; attempt <= retries; attempt++) {
         int port = requestedPort + attempt;
         try {
-          server = HttpServer.create(new InetSocketAddress("0.0.0.0", port), 0);
+          server = HttpServer.create(new InetSocketAddress(System.getProperty("botfury.httpBindAddress", "0.0.0.0"), port), 0);
           server.createContext("/command", this::handleCommand);
           server.createContext("/status", this::handleStatus);
           server.setExecutor(Executors.newCachedThreadPool());
@@ -88,7 +101,7 @@ public class BotFuryMod implements ClientModInitializer {
         autoJoinRegistered = true;
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            if (client == null) return;
+            if (client == null || !ready || client.getOverlay() != null) return;
             if (!Boolean.parseBoolean(System.getProperty("botfury.autoJoin", "false"))) return;
             if (client.getNetworkHandler() != null || client.world != null) return;
             if (client.currentScreen instanceof ConnectScreen) return;
@@ -123,7 +136,7 @@ public class BotFuryMod implements ClientModInitializer {
     }
 
     private void handleStatus(HttpExchange exchange) throws IOException {
-        if (handleCorsPreflight(exchange)) return;
+        if (rejectHttpRequest(exchange)) return;
 
         MinecraftClient client = MinecraftClient.getInstance();
         boolean connected = client.getNetworkHandler() != null && client.world != null;
@@ -134,8 +147,9 @@ public class BotFuryMod implements ClientModInitializer {
                 "");
         long uptimeMillis = System.currentTimeMillis() - startedAtMillis;
         String status = String.format(
-                "{\"connected\":%b,\"renderEnabled\":%b,\"player\":\"%s\",\"offlineUsername\":\"%s\",\"httpPort\":%d,\"uptimeMillis\":%d}",
+                "{\"connected\":%b,\"ready\":%b,\"renderEnabled\":%b,\"player\":\"%s\",\"offlineUsername\":\"%s\",\"httpPort\":%d,\"uptimeMillis\":%d}",
                 connected,
+                ready,
                 renderEnabled,
                 jsonEscape(playerName),
                 jsonEscape(offlineUsername),
@@ -146,7 +160,7 @@ public class BotFuryMod implements ClientModInitializer {
     }
 
     private void handleCommand(HttpExchange exchange) throws IOException {
-        if (handleCorsPreflight(exchange)) return;
+        if (rejectHttpRequest(exchange)) return;
 
         URI requestURI = exchange.getRequestURI();
         String query = requestURI.getQuery();
@@ -167,7 +181,17 @@ public class BotFuryMod implements ClientModInitializer {
         sendResponse(exchange, code, "text/plain; charset=utf-8", response);
     }
 
-    private boolean handleCorsPreflight(HttpExchange exchange) throws IOException {
+    private boolean rejectHttpRequest(HttpExchange exchange) throws IOException {
+        if (MANAGED_HTTP) {
+            String host = exchange.getRequestHeaders().getFirst("Host");
+            if (host == null || !host.matches("(127\\.0\\.0\\.1|localhost)(:[0-9]+)?")
+                    || exchange.getRequestHeaders().containsKey("Origin")
+                    || exchange.getRequestHeaders().containsKey("Sec-Fetch-Mode")) {
+                sendResponse(exchange, 403, "text/plain; charset=utf-8", "Local BotFury controller required.");
+                return true;
+            }
+            return false;
+        }
         exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
         exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, OPTIONS");
         exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type");
@@ -182,9 +206,11 @@ public class BotFuryMod implements ClientModInitializer {
     private void sendResponse(HttpExchange exchange, int statusCode, String contentType, String response) throws IOException {
         byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", contentType);
-        exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
-        exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, OPTIONS");
-        exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type");
+        if (!MANAGED_HTTP) {
+            exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+            exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, OPTIONS");
+            exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type");
+        }
         exchange.sendResponseHeaders(statusCode, bytes.length);
         try (OutputStream os = exchange.getResponseBody()) {
             os.write(bytes);
@@ -222,6 +248,7 @@ public class BotFuryMod implements ClientModInitializer {
             if (ip.isEmpty()) {
                 return "error: empty server";
             }
+            if (!ready) return "error: Minecraft is still loading";
             autoJoinAttempts = MAX_AUTO_JOIN_ATTEMPTS;
             client.execute(() -> connectToServer(client, ip));
             return "connecting to " + ip;
@@ -230,7 +257,7 @@ public class BotFuryMod implements ClientModInitializer {
     }
 
     private static void connectToServer(MinecraftClient client, String target) {
-        if (client.getNetworkHandler() != null || client.world != null) return;
+        if (client.getOverlay() != null || client.getNetworkHandler() != null || client.world != null) return;
 
         ServerAddress address = ServerAddress.parse(target);
         ServerInfo serverInfo = new ServerInfo("BotFury Server", target, false);

@@ -1,78 +1,91 @@
-# BotFury FT Dashboard
+# BotFury dashboard
 
-This is the primary BotFury dashboard. It uses the combined `ft.hpp` header from
-`aridlin/ft` and starts through FT's normal mode selection. On Windows desktop
-that means GUI by default. On Linux, `run_dashboard.sh` starts web mode by
-default when launched from bash or zsh. Pass `--gui`, `--web`, or `--tui` when
-you want a specific mode.
+The FT dashboard runs in GUI, web, or terminal mode. Start it from
+`ft-dashboard` with `sh run_dashboard.sh --web` on Linux or
+`run_dashboard.bat` on Windows. Browser mode listens on
+`http://127.0.0.1:8080/` by default.
 
-## Build And Run
+## Linux containers with checkpoints
 
-Windows:
-
-```bat
-cd ft-dashboard
-run_dashboard.bat
-```
-
-You can also double-click `run_dashboard.bat` or `build\botfury-dashboard.exe`.
-
-Linux:
+Use current rootful Podman, CRIU, and a CRIU-capable OCI runtime such as crun
+or runc. TigerVNC Viewer is required for the **View** button. From
+`ft-dashboard`, prepare the image once and start the dashboard from the
+same terminal:
 
 ```sh
-cd ft-dashboard
-sh run_dashboard.sh
+sudo -v
+sh botfury-container.sh prepare
+sh run_dashboard.sh --web --containers
 ```
 
-Linux shell launches default to browser mode from bash/zsh. Open
-`http://127.0.0.1:8080/` unless `config/botfury.json` sets another
-`dashboard_port`. Pass `--no-open` when you want web mode to start without
-opening a browser.
+On the **Instances** tab, choose **Start** for individual slots or
+**Launch instances** for the batch. On its first start, each slot boots in
+a temporary container, waits for Minecraft to reach the title screen, and
+captures Minecraft and its virtual display as a local Podman checkpoint
+image. The dashboard restores that image into a named container and
+publishes the control and viewer ports on loopback. Later starts restore
+the same checkpoint for that slot and username. A failed restore is
+reported in the instance log.
 
-## Minecraft Launch Command
+- **Fleet → Connect all** joins the configured server from the restored
+  title screens. The bundled client uses generated offline usernames.
+  For loopback server addresses, container bots connect through Podman's
+  host gateway. A Minecraft server on the same host must listen on an
+  address reachable from the container bridge.
+- **View** opens a TigerVNC window. **Auto tile windows** arranges open
+  viewers on the X11 desktop. XWayland viewers require an EWMH-compatible
+  compositor. **Tile windows** reapplies the layout manually.
+- **Stop** gives the container five seconds to shut down. **Kill** ends the
+  named container immediately. **Restart** stops it and restores the title
+  screen checkpoint. Checkpoint images survive these operations.
+- Containers survive dashboard exit. Click **Start** for the same slot to
+  resume dashboard supervision of a running container. Re-run `sudo -v`
+  in the launching terminal when the authorization has expired.
+- Viewer access relies on the loopback-only port mapping. Use the locally built image and its own checkpoints,
+  with a compatible host, kernel, and runtime. Checkpoint images contain
+  process memory and can be large.
 
-The default Windows preset runs `botfury-launch.bat`; the default Linux preset
-runs `sh botfury-launch.sh`. Both start the bundled Fabric dev client from
-`minecraft-bots/botfury-mod`. They pass each generated offline username into
-Minecraft, give each bot a unique BotFury HTTP port, auto-join the configured
-server, and use a separate run directory such as `run\Bot01` or `run/Bot01`.
+Checkpoint tags include the bot port, lowercase username, and the render
+setting, for example `localhost/botfury-checkpoint:8765-bot01-true`.
+After changing the image, stop the affected slot and remove its old
+checkpoint image with Podman if you want its next start to capture the
+new build. Changing the port, username, or render setting selects a
+separate checkpoint. Host bot ports in this mode can be 1024–55535.
+Each viewer uses the bot port plus 10000.
 
-You can still replace the command in the dashboard or in `config/botfury.json`
-when you want to use Prism, the official launcher, or another Minecraft setup.
-The command can use these placeholders:
+Instance logs are in `ft-dashboard/build/instance-logs`. If a slot fails to
+start or restore, read its numbered log for the Podman or CRIU error.
+The container engine documentation describes [checkpoint creation](https://docs.podman.io/en/latest/markdown/podman-container-checkpoint.1.html)
+and [restoring checkpoint images](https://docs.podman.io/en/latest/markdown/podman-container-restore.1.html).
+
+## Direct Java mode
+
+Turn off **Podman checkpoints** to use local process groups on Linux or
+Windows job objects. From `minecraft-bots/botfury-mod`, run
+`sh ./gradlew prepareBotFuryClient` on Linux or
+`gradlew.bat prepareBotFuryClient` on Windows. Use a Gradle-compatible
+JDK 21 or 25 for this step. The preparation task resolves the Minecraft
+runtime once. Each bot then starts with Java directly and gets its own game
+directory and log. Re-run preparation after changing the mod or moving the
+checkout.
+
+Enable **Warm at title screen** to stage bots before using **Fleet →
+Connect all**. Disable it for immediate auto-join. Ordinary dashboard exit
+cleans up dashboard-owned local processes. External commands should keep
+the game in their foreground process tree so the dashboard can manage it.
+
+Custom commands support these placeholders.
 
 | Placeholder | Meaning |
 | --- | --- |
-| `{username}` | Generated offline username, such as `Bot01` |
-| `{port}` | BotFury HTTP port for this instance |
-| `{bot_id}` | 1-based launch slot |
-| `{server_ip}` | Configured Minecraft server host |
-| `{server_port}` | Configured Minecraft server port |
-| `{disable_rendering}` | `true` or `false` from dashboard settings |
-| `{cwd}` | Configured launch working directory |
+| `{username}` | Offline Minecraft username |
+| `{port}` | BotFury HTTP port |
+| `{bot_id}` | One-based launch slot |
+| `{server_ip}` | Minecraft server hostname |
+| `{server_port}` | Minecraft server port |
+| `{disable_rendering}` | Whether to disable world rendering |
+| `{auto_join}` | Whether to join immediately |
+| `{cwd}` | Launch working directory |
 
-The dashboard includes presets. The platform wrapper is the default and works
-against this repo. The first launch may take a while while Gradle prepares
-Minecraft and downloads assets.
-
-The default wrapper is tuned for bots, not visuals. It caps the client JVM at
-768 MB, exposes one processor to the game JVM, runs the dashboard-launched
-process tree at below-normal priority, disables rendering on start, and writes
-minimal Minecraft options into each per-bot run directory before launch.
-
-The command should pass the port to the mod, usually as:
-
-```text
--Dbotfury.port={port}
-```
-
-For custom launchers, pass `{username}` wherever your launcher accepts an
-offline account name, and optionally mirror it to the mod for status display:
-
-```text
--Dbotfury.offlineUsername={username}
-```
-
-The dashboard can auto-attach launched bots at `127.0.0.1:{port}`. If a bot is
-still booting, it will appear offline until the mod HTTP server becomes
-reachable.
+For third-party commands, pass `-Dbotfury.port={port}` to the game JVM.
+`-Dbotfury.strictPort=true` makes a bind failure visible on the assigned port.

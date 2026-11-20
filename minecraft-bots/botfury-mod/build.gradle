@@ -95,3 +95,36 @@ publishing {
 test {
     useJUnitPlatform()
 }
+
+// Resolve and prepare Minecraft once. The dashboard wrappers launch Java directly.
+tasks.register('prepareBotFuryClient') {
+    group = 'botfury'
+    description = 'Prepare the local Minecraft runtime used by BotFury instances.'
+    dependsOn 'classes', 'configureClientLaunch'
+    def template = layout.buildDirectory.dir('botfury-client')
+    doLast {
+        JavaExec client = tasks.named('runClient', JavaExec).get()
+        // Loom may include its own classpath argfile. Java cannot expand nested argfiles.
+        def arguments = client.allJvmArgs.findAll { !it.startsWith('-Dbotfury.') && !it.startsWith('@') }
+        arguments += ['-classpath', client.classpath.asPath, client.mainClass.get()]
+        def gameArguments = client.argumentProviders.collectMany { it.asArguments().toList() }
+        int username = gameArguments.indexOf('--username')
+        if (username >= 0) {
+            gameArguments.remove(username)
+            gameArguments.remove(username)
+        }
+        arguments.addAll(gameArguments)
+
+        File directory = template.get().asFile
+        directory.mkdirs()
+        def pending = new File(directory, 'client.args.tmp')
+        pending.setText(arguments.collect { argument ->
+            '"' + argument.replace('\\', '\\\\').replace('"', '\\"') + '"'
+        }.join('\n') + '\n', 'UTF-8')
+        java.nio.file.Files.move(pending.toPath(), new File(directory, 'client.args').toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        new File(directory, 'java-path.txt').setText(client.javaLauncher.get().executablePath.asFile.absolutePath
+                + System.lineSeparator(), 'UTF-8')
+        logger.lifecycle("BotFury runtime ready in {}", directory)
+    }
+}

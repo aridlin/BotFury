@@ -1,4 +1,10 @@
 minecraft-bots/botfury-mod/build/
 minecraft-bots/botfury-mod/.gradle/
+minecraft-bots/botfury-mod/run/
+ft-dashboard/build/
+.gradle-tmp/
 __pycache__/
 *.pyc
+
+/config/.advanced-modules
+/config/baritone-fabric.jar

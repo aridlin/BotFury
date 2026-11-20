@@ -1,0 +1,26 @@
+{
+  "snapshot": "2026-11-10",
+  "project": "botfury",
+  "status": "prerelease local-work snapshot",
+  "artifacts": [
+    {
+      "path": "ft-dashboard/build/botfury-dashboard",
+      "size": 1350880,
+      "sha256": "52b870eacc1ed54d35591215db39c19a37b7ca650b137e22eb299b20b9c144d7"
+    },
+    {
+      "path": "minecraft-bots/botfury-mod/build/libs/botfury-0.1.0.jar",
+      "size": 9213,
+      "sha256": "d11fde16297af91b55c000a785c2ca5690c93ef19450d96592329824c315b402"
+    }
+  ],
+  "checks": [
+    {
+      "job": "botfury-dashboard",
+      "passed": true,
+      "command": ""
+    }
+  ],
+  "notes": [],
+  "runtime": "Linux x86_64 dynamic system libraries for ELF binaries; .exe cross-compiled Windows x64; APK preview/debug; OXT platform independent. Source/API compatibility and hardware behavior are not implied by compilation."
+}

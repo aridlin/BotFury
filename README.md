@@ -77,7 +77,45 @@ cd BotFury
    
    Or simply download the latest JAR from [GitHub Releases](https://github.com/IgorkotYT/BotFury/releases).
 
-### 🌐 Setting Up the Flask Web Dashboard
+### Primary Dashboard: FT
+
+Use the [FT dashboard](ft-dashboard/README.md) to start, stop, kill, and
+restart individual instances. On Linux, its Podman backend can provision
+one container checkpoint per bot at the Minecraft title screen and restore
+it on subsequent launches. The dashboard can also start Minecraft directly
+with Java and tile local game or viewer windows.
+
+### In-game formations (Fabric 1.20.1)
+
+Install BotFury and Fabric API on the controller and bots. Saturn orbit and
+Scatter work with local managed clients on Paper and vanilla multiplayer.
+Install Fabric Baritone on the bots for approach and movement. The bundled
+launchers can share a Fabric 1.20.1 Baritone JAR placed at
+`config/baritone-fabric.jar` before running `prepareBotFuryClient` or
+building the container image.
+
+Join the same server and dimension, then confirm authorization under
+**Settings → Advanced modules** in the dashboard. **Movement only** uses
+Baritone. **Operator teleports** uses vanilla `/tp` when the controller has
+operator permission and the destination is loaded. Distant bots approach
+via Baritone before entering the orbit. Local discovery defaults to
+ports 8765–8774. Custom launchers can configure the controller with
+`botfury.formationBasePort`, `botfury.formationPortCount`, and
+`botfury.advancedModulesFile` JVM properties.
+
+| Default key | Action |
+| --- | --- |
+| J | Start or stop Saturn orbit around the controller. |
+| H | Scatter bots outward. The client command is `/botfury-scatter`. |
+| `]` | Stop the active formation. |
+| K | Targeted Lightning strike with the optional Fabric server companion. |
+
+For Lightning on a Fabric server, an operator enrolls online non-operator
+bot accounts with `/botfury enroll <bot>`. The server applies movement and
+enforces combat range, line of sight, teams, and player-versus-player rules.
+Enrollment lasts for the server session.
+
+### Legacy Dashboard: Flask
 
 1. **Install Python Dependencies**:
    ```bash
@@ -152,7 +190,7 @@ The mod reads configuration from `config/botfury.json` (created on first launch)
   "max_bots": 10,
   "dashboard_port": 5000,
   "baritone_command_prefix": "#",
-  "disable_rendering_on_start": false,
+  "disable_rendering_on_start": true,
   "server_ip": "localhost",
   "server_port": 25565,
   "webhook_url": null

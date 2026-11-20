@@ -17,6 +17,24 @@ java {
 
 def minecraftVersion = '1.20.1'
 
+def cleanIntProp = { name, fallback ->
+    def raw = System.getProperty(name, fallback.toString())
+    return (raw ==~ /\d+/) ? raw : fallback.toString()
+}
+
+def botfuryRunPort = System.getProperty('botfury.port', '8765')
+def botfuryRunUsername = System.getProperty('botfury.offlineUsername',
+        System.getProperty('botfury.username', 'Bot01'))
+def botfuryRunDisableRendering = System.getProperty('botfury.disableRendering', 'false')
+def botfuryRunDir = System.getProperty('botfury.runDir', "run/${botfuryRunUsername}")
+def botfuryAutoJoin = System.getProperty('botfury.autoJoin', 'false')
+def botfuryServerIp = System.getProperty('botfury.serverIp', 'localhost')
+def botfuryServerPort = cleanIntProp('botfury.serverPort', 25565)
+def botfuryMinHeapMb = cleanIntProp('botfury.minHeapMb', 128)
+def botfuryMaxHeapMb = cleanIntProp('botfury.maxHeapMb', 768)
+def botfuryActiveProcessors = cleanIntProp('botfury.activeProcessors', 1)
+def botfuryMaxFps = cleanIntProp('botfury.maxFps', 10)
+
 repositories {
     mavenCentral()
     maven { url 'https://maven.fabricmc.net/' }
@@ -28,6 +46,11 @@ dependencies {
     modImplementation "net.fabricmc:fabric-loader:0.14.24"
     modImplementation "net.fabricmc.fabric-api:fabric-api:0.86.0+${minecraftVersion}"
 
+    def runtimeBaritone = file(System.getProperty('botfury.baritoneJar', '../../config/baritone-fabric.jar'))
+    if (runtimeBaritone.isFile()) {
+        modRuntimeOnly files(runtimeBaritone)
+    }
+
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
@@ -36,6 +59,30 @@ processResources {
     inputs.property 'version', project.version
     filesMatching('fabric.mod.json') {
         expand 'version': project.version
+    }
+}
+
+loom {
+    runs {
+        client {
+            runDir botfuryRunDir
+            vmArgs "-Xms${botfuryMinHeapMb}m",
+                    "-Xmx${botfuryMaxHeapMb}m",
+                    "-XX:ActiveProcessorCount=${botfuryActiveProcessors}",
+                    "-XX:CICompilerCount=2",
+                    "-XX:+UseSerialGC",
+                    "-XX:+DisableExplicitGC",
+                    "-Dsun.java2d.opengl=false"
+            property 'botfury.port', botfuryRunPort
+            property 'botfury.offlineUsername', botfuryRunUsername
+            property 'botfury.username', botfuryRunUsername
+            property 'botfury.disableRendering', botfuryRunDisableRendering
+            property 'botfury.autoJoin', botfuryAutoJoin
+            property 'botfury.serverIp', botfuryServerIp
+            property 'botfury.serverPort', botfuryServerPort
+            property 'botfury.maxFps', botfuryMaxFps
+            programArgs '--username', botfuryRunUsername
+        }
     }
 }
 
@@ -52,4 +99,37 @@ publishing {
 
 test {
     useJUnitPlatform()
+}
+
+// Resolve and prepare Minecraft once. The dashboard wrappers launch Java directly.
+tasks.register('prepareBotFuryClient') {
+    group = 'botfury'
+    description = 'Prepare the local Minecraft runtime used by BotFury instances.'
+    dependsOn 'classes', 'configureClientLaunch'
+    def template = layout.buildDirectory.dir('botfury-client')
+    doLast {
+        JavaExec client = tasks.named('runClient', JavaExec).get()
+        // Loom may include its own classpath argfile. Java cannot expand nested argfiles.
+        def arguments = client.allJvmArgs.findAll { !it.startsWith('-Dbotfury.') && !it.startsWith('@') }
+        arguments += ['-classpath', client.classpath.asPath, client.mainClass.get()]
+        def gameArguments = client.argumentProviders.collectMany { it.asArguments().toList() }
+        int username = gameArguments.indexOf('--username')
+        if (username >= 0) {
+            gameArguments.remove(username)
+            gameArguments.remove(username)
+        }
+        arguments.addAll(gameArguments)
+
+        File directory = template.get().asFile
+        directory.mkdirs()
+        def pending = new File(directory, 'client.args.tmp')
+        pending.setText(arguments.collect { argument ->
+            '"' + argument.replace('\\', '\\\\').replace('"', '\\"') + '"'
+        }.join('\n') + '\n', 'UTF-8')
+        java.nio.file.Files.move(pending.toPath(), new File(directory, 'client.args').toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        new File(directory, 'java-path.txt').setText(client.javaLauncher.get().executablePath.asFile.absolutePath
+                + System.lineSeparator(), 'UTF-8')
+        logger.lifecycle("BotFury runtime ready in {}", directory)
+    }
 }

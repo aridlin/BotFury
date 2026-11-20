@@ -2,7 +2,7 @@ FROM docker.io/library/eclipse-temurin:21-jdk-jammy AS prepare
 ENV GRADLE_USER_HOME=/opt/botfury-gradle
 WORKDIR /opt/botfury/mod
 COPY mod/ .
-RUN sh ./gradlew --no-daemon prepareBotFuryClient
+RUN sh ./gradlew --no-daemon -Dbotfury.baritoneJar=/opt/botfury/mod/baritone.jar prepareBotFuryClient
 
 FROM docker.io/library/eclipse-temurin:17-jre-jammy
 RUN apt-get update && apt-get install -y --no-install-recommends \

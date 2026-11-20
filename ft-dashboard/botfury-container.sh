@@ -37,6 +37,9 @@ if [ "$operation" = prepare ]; then
     cp "$root/config/bot-options.txt" "$stage/options.txt"
     cp -R "$mod/gradle" "$mod/src" "$mod/gradlew" "$mod/build.gradle" \
         "$mod/settings.gradle" "$mod/gradle.properties" "$stage/mod/"
+    if [ -f "$root/config/baritone-fabric.jar" ]; then
+        cp "$root/config/baritone-fabric.jar" "$stage/mod/baritone.jar"
+    fi
     podman_local build --tag "$image" --file "$stage/Containerfile" "$stage"
     exit
 fi

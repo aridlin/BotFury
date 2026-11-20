@@ -87,25 +87,33 @@ with Java and tile local game or viewer windows.
 
 ### In-game formations (Fabric 1.20.1)
 
-Install the same BotFury JAR and the Fabric API on the server and the
-controller client. Join with the bots, then use `/botfury enroll <bot>`
-for each online non-operator bot account. Operators can check the active
-roster with `/botfury list`, remove an online bot with `/botfury release <bot>`,
-or clear the roster with `/botfury clear`. Enrollment lasts for the current
-server session.
+Install BotFury and Fabric API on the controller and bots. Saturn orbit and
+Scatter work with local managed clients on Paper and vanilla multiplayer.
+Install Fabric Baritone on the bots for approach and movement. The bundled
+launchers can share a Fabric 1.20.1 Baritone JAR placed at
+`config/baritone-fabric.jar` before running `prepareBotFuryClient` or
+building the container image.
+
+Join the same server and dimension, then confirm authorization under
+**Settings → Advanced modules** in the dashboard. **Movement only** uses
+Baritone. **Operator teleports** uses vanilla `/tp` when the controller has
+operator permission and the destination is loaded. Distant bots approach
+via Baritone before entering the orbit. Local discovery defaults to
+ports 8765–8774. Custom launchers can configure the controller with
+`botfury.formationBasePort`, `botfury.formationPortCount`, and
+`botfury.advancedModulesFile` JVM properties.
 
 | Default key | Action |
 | --- | --- |
-| J | Saturn orbit. Bots move around the operator and attack nearby eligible targets. |
-| K | Lightning strike. Aim at a target to send the bots along a zigzag, then blink around it and attack. |
+| J | Start or stop Saturn orbit around the controller. |
+| H | Scatter bots outward. The client command is `/botfury-scatter`. |
 | `]` | Stop the active formation. |
+| K | Targeted Lightning strike with the optional Fabric server companion. |
 
-The operator keys are configurable under **Controls → BotFury**. The server
-applies the movements, chooses supported landing blocks, and enforces attack
-range, line of sight, teams, and player-versus-player rules. Enrolled bots
-must be in the same dimension and within 32 blocks. A strike ends when its
-target is lost or after ten seconds. The controller can disable its local
-HTTP endpoint with the JVM option `-Dbotfury.httpEnabled=false`.
+For Lightning on a Fabric server, an operator enrolls online non-operator
+bot accounts with `/botfury enroll <bot>`. The server applies movement and
+enforces combat range, line of sight, teams, and player-versus-player rules.
+Enrollment lasts for the server session.
 
 ### Legacy Dashboard: Flask
 

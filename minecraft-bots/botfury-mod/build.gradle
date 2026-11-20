@@ -46,6 +46,11 @@ dependencies {
     modImplementation "net.fabricmc:fabric-loader:0.14.24"
     modImplementation "net.fabricmc.fabric-api:fabric-api:0.86.0+${minecraftVersion}"
 
+    def runtimeBaritone = file(System.getProperty('botfury.baritoneJar', '../../config/baritone-fabric.jar'))
+    if (runtimeBaritone.isFile()) {
+        modRuntimeOnly files(runtimeBaritone)
+    }
+
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }

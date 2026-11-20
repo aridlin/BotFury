@@ -19,6 +19,7 @@
 #endif
 
 struct LaunchedProcess {
+    int slot_number = 0;
     int bot_id = 0;
     int port = 0;
     unsigned long pid = 0;

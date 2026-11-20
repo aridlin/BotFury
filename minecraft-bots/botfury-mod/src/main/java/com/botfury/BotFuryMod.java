@@ -69,6 +69,7 @@ public class BotFuryMod implements ClientModInitializer {
           server = HttpServer.create(new InetSocketAddress(System.getProperty("botfury.httpBindAddress", "0.0.0.0"), port), 0);
           server.createContext("/command", this::handleCommand);
           server.createContext("/status", this::handleStatus);
+          if (MANAGED_HTTP) server.createContext("/local-formation", this::handleLocalFormation);
           server.setExecutor(Executors.newCachedThreadPool());
           server.start();
 
@@ -162,6 +163,21 @@ public class BotFuryMod implements ClientModInitializer {
         sendResponse(exchange, 200, "application/json", status);
     }
 
+    private void handleLocalFormation(HttpExchange exchange) throws IOException {
+        if (rejectHttpRequest(exchange)) return;
+        if ("GET".equals(exchange.getRequestMethod())) {
+            sendResponse(exchange, 200, "application/json", LocalFormation.status());
+            return;
+        }
+        if (!"POST".equals(exchange.getRequestMethod())) {
+            sendResponse(exchange, 405, "text/plain", "Use GET or POST.");
+            return;
+        }
+        byte[] body = exchange.getRequestBody().readNBytes(1025);
+        boolean accepted = body.length <= 1024 && LocalFormation.receive(new String(body, StandardCharsets.UTF_8));
+        sendResponse(exchange, accepted ? 200 : 400, "text/plain", accepted ? "accepted" : "unknown local session");
+    }
+
     private void handleCommand(HttpExchange exchange) throws IOException {
         if (rejectHttpRequest(exchange)) return;
 
@@ -239,13 +255,11 @@ public class BotFuryMod implements ClientModInitializer {
             renderEnabled = !renderEnabled;
             return "render toggled: " + renderEnabled;
         } else if (cmd.startsWith("baritone:")) {
-            String bCmd = cmd.substring(9);
-            if (client.player != null) {
-                client.execute(() -> client.player.networkHandler.sendChatMessage("#" + bCmd));
-                return "baritone command sent: " + bCmd;
-            } else {
-                return "not in-game";
-            }
+            if (!BaritoneClient.available()) return "error: Baritone is not installed in this client";
+            String command = cmd.substring(9);
+            if (client.player == null) return "error: client is not in game";
+            client.execute(() -> BaritoneClient.execute(command));
+            return "Baritone command queued";
         } else if (cmd.startsWith("connect:")) {
             String ip = cmd.substring(8).trim();
             if (ip.isEmpty()) {

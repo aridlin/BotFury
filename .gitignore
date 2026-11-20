@@ -5,3 +5,6 @@ ft-dashboard/build/
 .gradle-tmp/
 __pycache__/
 *.pyc
+
+/config/.advanced-modules
+/config/baritone-fabric.jar

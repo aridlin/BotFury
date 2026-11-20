@@ -34,8 +34,10 @@ failed restore or mismatched runtime ID appears in the instance log.
   host gateway. A Minecraft server on the same host must listen on an
   address reachable from the container bridge.
 - **View** opens a TigerVNC window. **Auto tile windows** arranges open
-  viewers on the X11 desktop. XWayland viewers require an EWMH-compatible
-  compositor. **Tile windows** reapplies the layout manually.
+  viewers on the monitor above the primary display when available. The
+  primary display is the fallback. On Linux, XWayland viewers require an EWMH-compatible
+  compositor. **Tile windows** reapplies the layout manually. Each managed
+  window title shows its bot slot and username.
 - **Stop** gives the container five seconds to shut down. **Kill** ends the
   named container immediately. **Restart** stops it and restores the title
   screen checkpoint. Checkpoint images survive these operations.

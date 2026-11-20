@@ -37,6 +37,7 @@ fi
 
 exec nice -n 10 "$JAVA_EXEC" \
     "-Djava.io.tmpdir=$RUN_DIR/tmp" \
+    "-Dbotfury.advancedModulesFile=${BOTFURY_ADVANCED_MODULES_FILE:-$BOTFURY_ROOT/config/.advanced-modules}" \
     "-Dbotfury.port=$BOT_PORT" \
     -Dbotfury.managedHttp=true -Dbotfury.strictPort=true -Dbotfury.httpBindAddress=127.0.0.1 \
     "-Dbotfury.offlineUsername=$BOT_USERNAME" \

@@ -25,9 +25,60 @@ struct WorkArea {
     int y = 0;
     int width = 0;
     int height = 0;
+
+    bool operator==(const WorkArea& other) const {
+        return x == other.x && y == other.y && width == other.width && height == other.height;
+    }
 };
 
+struct TilingMonitor {
+    WorkArea screen;
+    WorkArea work;
+    bool primary;
+};
+
+static WorkArea preferred_monitor_area(const std::vector<TilingMonitor>& monitors, WorkArea fallback) {
+    if (monitors.empty()) return fallback;
+    auto primary = std::find_if(monitors.begin(), monitors.end(), [](const TilingMonitor& monitor) {
+        return monitor.primary;
+    });
+    if (primary == monitors.end()) primary = monitors.begin();
+
+    auto selected = primary;
+    int selected_overlap = 0;
+    for (auto monitor = monitors.begin(); monitor != monitors.end(); ++monitor) {
+        const WorkArea& screen = monitor->screen;
+        if (screen.width <= 0 || screen.height <= 0 || screen.y + screen.height > primary->screen.y) continue;
+        int overlap = std::min(screen.x + screen.width, primary->screen.x + primary->screen.width)
+                    - std::max(screen.x, primary->screen.x);
+        if (overlap > 0 && (selected == primary || screen.y < selected->screen.y
+                || (screen.y == selected->screen.y && overlap > selected_overlap))) {
+            selected = monitor;
+            selected_overlap = overlap;
+        }
+    }
+    return selected->work;
+}
+
+#if defined(_WIN32) || defined(__linux__)
+static std::string bot_window_title(const LaunchedProcess& instance) {
+    return "Bot " + std::to_string(instance.slot_number) + " - " + instance.username;
+}
+#endif
+
 #ifdef _WIN32
+static BOOL CALLBACK collect_tiling_monitor(HMONITOR monitor, HDC, LPRECT, LPARAM parameter) {
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (!GetMonitorInfoW(monitor, &info)) return TRUE;
+    auto& monitors = *reinterpret_cast<std::vector<TilingMonitor>*>(parameter);
+    RECT screen = info.rcMonitor;
+    RECT work = info.rcWork;
+    monitors.push_back({{screen.left, screen.top, screen.right - screen.left, screen.bottom - screen.top},
+                        {work.left, work.top, work.right - work.left, work.bottom - work.top},
+                        (info.dwFlags & MONITORINFOF_PRIMARY) != 0});
+    return TRUE;
+}
 static BOOL CALLBACK collect_client_window(HWND window, LPARAM parameter) {
     if (!IsWindowVisible(window) || GetWindow(window, GW_OWNER)) return TRUE;
     wchar_t class_name[32]{};
@@ -56,7 +107,7 @@ static std::vector<unsigned long> window_property(Display* display, Window windo
     return values;
 }
 
-static WorkArea primary_work_area(Display* display, Window root, WorkArea work) {
+static WorkArea linux_work_area(Display* display, Window root, WorkArea work) {
 #if __has_include(<X11/extensions/Xrandr.h>)
     // Xlib stores extension callbacks on each open Display.
     static void* const library = dlopen("libXrandr.so.2", RTLD_LAZY | RTLD_LOCAL);
@@ -65,23 +116,45 @@ static WorkArea primary_work_area(Display* display, Window root, WorkArea work) 
     auto free_monitors = reinterpret_cast<decltype(&XRRFreeMonitors)>(dlsym(library, "XRRFreeMonitors"));
     int count = 0;
     XRRMonitorInfo* monitors = get_monitors && free_monitors ? get_monitors(display, root, True, &count) : nullptr;
-    if (monitors && count > 0) {
-        const XRRMonitorInfo* end = monitors + count;
-        auto primary = std::find_if(static_cast<const XRRMonitorInfo*>(monitors), end,
-                                    [](const XRRMonitorInfo& monitor) { return monitor.primary; });
-        if (primary == end) primary = monitors;
-        int x = std::max(work.x, primary->x);
-        int y = std::max(work.y, primary->y);
-        int right = std::min(work.x + work.width, primary->x + primary->width);
-        int bottom = std::min(work.y + work.height, primary->y + primary->height);
-        if (right > x && bottom > y) work = {x, y, right - x, bottom - y};
+    std::vector<TilingMonitor> areas;
+    for (int index = 0; monitors && index < count; ++index) {
+        const XRRMonitorInfo& monitor = monitors[index];
+        WorkArea screen{monitor.x, monitor.y, monitor.width, monitor.height};
+        if (screen.width <= 0 || screen.height <= 0) continue;
+        int x = std::max(work.x, screen.x);
+        int y = std::max(work.y, screen.y);
+        int right = std::min(work.x + work.width, screen.x + screen.width);
+        int bottom = std::min(work.y + work.height, screen.y + screen.height);
+        WorkArea usable = right > x && bottom > y ? WorkArea{x, y, right - x, bottom - y} : screen;
+        areas.push_back({screen, usable, monitor.primary != 0});
     }
     if (monitors) free_monitors(monitors);
+    work = preferred_monitor_area(areas, work);
 #else
     (void)display;
     (void)root;
 #endif
     return work;
+}
+
+static void label_x11_window(Display* display, Window window, const LaunchedProcess& instance) {
+    const auto label = bot_window_title(instance);
+    const Atom name = XInternAtom(display, "_NET_WM_NAME", False);
+    const Atom utf8 = XInternAtom(display, "UTF8_STRING", False);
+    Atom found = 0;
+    int format = 0;
+    unsigned long length = 0;
+    unsigned long remaining = 0;
+    unsigned char* data = nullptr;
+    int result = XGetWindowProperty(display, window, name, 0, 128, False, utf8,
+                                     &found, &format, &length, &remaining, &data);
+    bool unchanged = result == 0 && found == utf8 && format == 8 && data && remaining == 0
+                  && std::string(reinterpret_cast<const char*>(data), length) == label;
+    if (data) XFree(data);
+    if (unchanged) return;
+    XStoreName(display, window, label.c_str());
+    XChangeProperty(display, window, name, utf8, 8, PropModeReplace,
+                    reinterpret_cast<const unsigned char*>(label.data()), static_cast<int>(label.size()));
 }
 
 // A window may close between reading the desktop list and querying its PID.
@@ -91,13 +164,16 @@ static int ignore_closed_window(Display*, XErrorEvent*) {
 #endif
 
 static int tile_client_windows(const std::vector<const LaunchedProcess*>& instances, std::vector<ClientWindow>& previous,
-                               bool force) {
+                               WorkArea& previous_area, bool auto_tile, bool force) {
     WorkArea area;
     std::vector<ClientWindow> windows;
 #ifdef _WIN32
     RECT rect{};
     if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &rect, 0)) return 0;
     area = {rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top};
+    std::vector<TilingMonitor> monitors;
+    EnumDisplayMonitors(nullptr, nullptr, collect_tiling_monitor, reinterpret_cast<LPARAM>(&monitors));
+    area = preferred_monitor_area(monitors, area);
     std::vector<ClientWindow> candidates;
     EnumWindows(collect_client_window, reinterpret_cast<LPARAM>(&candidates));
     for (const auto& instance : instances) {
@@ -110,7 +186,14 @@ static int tile_client_windows(const std::vector<const LaunchedProcess*>& instan
             BOOL belongs = FALSE;
             IsProcessInJob(process, instance->job, &belongs);
             CloseHandle(process);
-            if (belongs) windows.push_back(window);
+            if (belongs) {
+                windows.push_back(window);
+                auto label = bot_window_title(*instance);
+                std::wstring title(label.begin(), label.end());
+                wchar_t current[96]{};
+                GetWindowTextW(window, current, 96);
+                if (title != current) SetWindowTextW(window, title.c_str());
+            }
         }
     }
 #elif defined(__linux__)
@@ -126,7 +209,7 @@ static int tile_client_windows(const std::vector<const LaunchedProcess*>& instan
         area = {static_cast<int>(work[offset]), static_cast<int>(work[offset + 1]),
                 static_cast<int>(work[offset + 2]), static_cast<int>(work[offset + 3])};
     }
-    area = primary_work_area(display, root, area);
+    area = linux_work_area(display, root, area);
     auto candidates = window_property(display, root, "_NET_CLIENT_LIST", XA_WINDOW);
     for (Window window : candidates) {
         const auto pids = window_property(display, window, "_NET_WM_PID", XA_CARDINAL, 1);
@@ -136,13 +219,16 @@ static int tile_client_windows(const std::vector<const LaunchedProcess*>& instan
         auto owner = std::find_if(instances.begin(), instances.end(), [group](const LaunchedProcess* instance) {
             return !instance->stop_requested && instance->pid == static_cast<unsigned long>(group);
         });
-        if (owner != instances.end()) windows.push_back(window);
+        if (owner != instances.end()) {
+            windows.push_back(window);
+            label_x11_window(display, window, **owner);
+        }
     }
 #else
     (void)instances;
 #endif
 
-    if ((force || windows != previous) && !windows.empty() && area.width > 0 && area.height > 0) {
+    if ((force || (auto_tile && (windows != previous || !(area == previous_area)))) && !windows.empty() && area.width > 0 && area.height > 0) {
         int columns = static_cast<int>(std::ceil(std::sqrt(windows.size() * area.width / (1.55 * area.height))));
         columns = std::clamp(columns, 1, static_cast<int>(windows.size()));
         int rows = (static_cast<int>(windows.size()) + columns - 1) / columns;
@@ -176,6 +262,7 @@ static int tile_client_windows(const std::vector<const LaunchedProcess*>& instan
         }
     }
     previous = std::move(windows);
+    previous_area = area;
 #if defined(__linux__) && !defined(_WIN32)
     XCloseDisplay(display);
     XSetErrorHandler(old_handler);

@@ -120,6 +120,7 @@ struct AppState {
     std::vector<LaunchedProcess> launched;
     std::vector<ContainerTask> container_tasks;
     std::vector<ClientWindow> tiled_windows;
+    WorkArea tiled_area;
     LaunchedProcess::Clock::time_point next_tile{};
     bool auto_tile_windows = true;
     bool warm_instances = true;
@@ -935,6 +936,7 @@ static bool run_container_action(AppState& app, LaunchedProcess& instance, Conta
     ContainerTask task{};
     task.operation = operation;
     task.process.port = instance.port;
+    task.process.slot_number = instance.slot_number;
     task.process.username = instance.username;
     task.process.working_directory = app.dashboard_dir.string();
     const char* name = operation == ContainerOperation::Stop ? "stop" :
@@ -1170,6 +1172,7 @@ static bool launch_slot(AppState& app, int slot) {
         instance = &app.launched.back();
     }
     instance->port = port;
+    instance->slot_number = slot + 1;
     instance->username = username;
     instance->container = app.config.use_containers;
     instance->command = command;
@@ -1206,7 +1209,7 @@ static int tile_instances(AppState& app, bool force) {
     for (const ContainerTask& task : app.container_tasks) {
         if (task.operation == ContainerOperation::View) windows.push_back(&task.process);
     }
-    return tile_client_windows(windows, app.tiled_windows, force);
+    return tile_client_windows(windows, app.tiled_windows, app.tiled_area, app.auto_tile_windows, force);
 }
 
 static void poll_container_tasks(AppState& app) {
@@ -1273,7 +1276,7 @@ static void poll_instances(AppState& app) {
             start_managed_instance(app, instance);
         }
     }
-    if (app.auto_tile_windows && now >= app.next_tile
+    if (now >= app.next_tile
             && (!app.tiled_windows.empty() || std::any_of(app.launched.begin(), app.launched.end(), process_running))) {
         tile_instances(app, false);
         app.next_tile = now + std::chrono::milliseconds(500);
@@ -1761,7 +1764,36 @@ static void render_launch_tab(AppState& app) {
     }
 }
 
+static void render_advanced_modules(AppState& app) {
+    const fs::path permission_file = app.config_path.parent_path() / ".advanced-modules";
+    std::string consent = trim(read_file(permission_file));
+    if (ft::button("Advanced modules")) ft::open_modal("Advanced modules");
+    ft::modal("Advanced modules", [&]() {
+        ft::text_wrapped("Confirm you have permission to use BotFury automation on the server you join.");
+        if (ft::button("Confirm movement only")) {
+            std::ofstream file(permission_file, std::ios::trunc);
+            file << "movement\n";
+            if (file) ft::close_modal();
+            else ft::toast_error("Could not save permission");
+        }
+        if (ft::button("Confirm with operator teleports")) {
+            std::ofstream file(permission_file, std::ios::trunc);
+            file << "teleport\n";
+            if (file) ft::close_modal();
+            else ft::toast_error("Could not save permission");
+        }
+        if (!consent.empty() && ft::button("Disable")) {
+            std::error_code error;
+            fs::remove(permission_file, error);
+            if (!error) ft::close_modal();
+            else ft::toast_error("Could not disable advanced modules");
+        }
+        if (ft::button("Cancel")) ft::close_modal();
+    });
+}
+
 static void render_settings_tab(AppState& app) {
+    render_advanced_modules(app);
     ft::row({1.0f, 1.0f, 1.0f}, [&]() {
         ft::input("Max bots", app.max_instances, sizeof(app.max_instances), ft::InputFlags::CharsDecimal);
         ft::input("Startup scan seconds", app.attach_scan_seconds, sizeof(app.attach_scan_seconds), ft::InputFlags::CharsDecimal);

@@ -116,6 +116,14 @@ clear_stopped() {
     esac
 }
 
+read_runtime_id() {
+    target=$1
+    response=$(podman_local exec "$target" curl -fsS --max-time 1 http://127.0.0.1:8765/status 2>/dev/null) || return 1
+    runtime_id=$(printf '%s\n' "$response" | sed -nE 's/.*"runtimeId":"([a-f0-9-]{36})".*/\1/p')
+    [ -n "$runtime_id" ] || return 1
+    printf '%s\n' "$runtime_id"
+}
+
 capture_checkpoint() {
     status=$(state "$bootstrap")
     if [ "$status" != running ]; then
@@ -139,6 +147,8 @@ capture_checkpoint() {
         stop_if_running "$bootstrap" stop
         fail "Minecraft did not reach the title screen."
     fi
+    expected_runtime=$(read_runtime_id "$bootstrap") || fail "The BotFury image lacks checkpoint verification. Rebuild the image."
+    podman_local exec "$bootstrap" sh -c 'printf "%s" "$1" > /game/.botfury-runtime-id' sh "$expected_runtime"
     # The title screen can briefly contact Realms or session services.
     quiet=false
     for attempt in $(seq 1 20); do
@@ -190,6 +200,21 @@ case "$operation" in
             cancelled
             podman_local container restore --file-locks --name "$container" \
                 --publish "127.0.0.1:$port:8765" --publish "127.0.0.1:$vnc_port:5900" "$checkpoint"
+            expected_runtime=$(podman_local exec "$container" cat /game/.botfury-runtime-id) || {
+                stop_if_running "$container" stop
+                fail "Checkpoint predates runtime verification. Recreate this slot’s checkpoint."
+            }
+            actual_runtime=
+            for attempt in $(seq 1 15); do
+                cancelled
+                if actual_runtime=$(read_runtime_id "$container"); then break; fi
+                sleep 1
+            done
+            if [ -z "$actual_runtime" ] || [ "$actual_runtime" != "$expected_runtime" ]; then
+                stop_if_running "$container" stop
+                fail "The restored bot did not report the checkpoint’s JVM identity."
+            fi
+            printf 'BOTFURY_CHECKPOINT_VERIFIED %s\n' "$actual_runtime"
         fi
         cancelled
         exec 9>&-

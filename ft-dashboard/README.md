@@ -24,8 +24,9 @@ a temporary container, waits for Minecraft to reach the title screen, and
 captures Minecraft and its virtual display as a local Podman checkpoint
 image. The dashboard restores that image into a named container and
 publishes the control and viewer ports on loopback. Later starts restore
-the same checkpoint for that slot and username. A failed restore is
-reported in the instance log.
+the same checkpoint for that slot and username. Startup checks that the
+live JVM reports the same runtime ID recorded before the checkpoint. A
+failed restore or mismatched runtime ID appears in the instance log.
 
 - **Fleet → Connect all** joins the configured server from the restored
   title screens. The bundled client uses generated offline usernames.
@@ -57,6 +58,15 @@ Instance logs are in `ft-dashboard/build/instance-logs`. If a slot fails to
 start or restore, read its numbered log for the Podman or CRIU error.
 The container engine documentation describes [checkpoint creation](https://docs.podman.io/en/latest/markdown/podman-container-checkpoint.1.html)
 and [restoring checkpoint images](https://docs.podman.io/en/latest/markdown/podman-container-restore.1.html).
+
+### Verify checkpoint restore without a viewer
+
+Run `sh checkpoint-smoke.sh` from `ft-dashboard` to build the image
+and restore one disposable bot twice. The script checks the JVM identity
+and loopback endpoint after each restore. It writes the report to
+`build/checkpoint-smoke.log`. On Arch-based systems,
+`sh checkpoint-smoke.sh --install` also installs the three dependencies
+through the local package manager.
 
 ## Direct Java mode
 

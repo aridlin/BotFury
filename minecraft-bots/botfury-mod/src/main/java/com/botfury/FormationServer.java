@@ -6,10 +6,12 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.block.BlockState;
+import net.minecraft.command.argument.EntityAnchorArgumentType;
 import net.minecraft.command.argument.EntityArgumentType;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.mob.MobEntity;
+import net.minecraft.particle.ParticleTypes;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.network.ServerPlayerEntity;
@@ -188,11 +190,11 @@ public final class FormationServer implements ModInitializer {
                     Vec3d vector = target.getPos().subtract(start);
                     Vec3d side = new Vec3d(-vector.z, 0, vector.x).normalize();
                     double offset = (age % 8 == 0 ? 1 : -1) * (2.4 - age * 0.09);
-                    move(world, bot, start.lerp(target.getPos(), (age + 4) / 24.0).add(side.multiply(offset)));
+                    strikeMove(world, bot, start.lerp(target.getPos(), (age + 4) / 24.0).add(side.multiply(offset)));
                 } else {
                     double angle = world.random.nextDouble() * 2 * Math.PI;
                     double radius = 1.6 + world.random.nextDouble() * 0.9;
-                    move(world, bot, target.getPos().add(Math.cos(angle) * radius, 0, Math.sin(angle) * radius));
+                    strikeMove(world, bot, target.getPos().add(Math.cos(angle) * radius, 0, Math.sin(angle) * radius));
                     attack(fleet, owner, bot, target);
                 }
             }
@@ -212,8 +214,25 @@ public final class FormationServer implements ModInitializer {
     private static void attack(Fleet fleet, ServerPlayerEntity owner, ServerPlayerEntity bot, LivingEntity target) {
         if (target == null || !canAttack(fleet, owner, bot, target) || bot.squaredDistanceTo(target) > 9
                 || !bot.canSee(target) || bot.getAttackCooldownProgress(0.5f) < 0.95f) return;
+        bot.lookAt(EntityAnchorArgumentType.EntityAnchor.EYES, target.getEyePos());
         bot.attack(target);
         bot.swingHand(Hand.MAIN_HAND);
+    }
+
+    private static void strikeMove(ServerWorld world, ServerPlayerEntity bot, Vec3d desired) {
+        Vec3d from = bot.getPos().add(0, 1, 0);
+        move(world, bot, desired);
+        Vec3d to = bot.getPos().add(0, 1, 0);
+        double distance = from.distanceTo(to);
+        if (distance < 0.1) return;
+
+        int samples = Math.min(10, (int) Math.ceil(distance * 2));
+        for (int point = 1; point <= samples; ++point) {
+            Vec3d position = from.lerp(to, point / (double) samples);
+            world.spawnParticles(ParticleTypes.END_ROD, position.x, position.y, position.z,
+                    1, 0.02, 0.02, 0.02, 0);
+        }
+        world.spawnParticles(ParticleTypes.ELECTRIC_SPARK, to.x, to.y, to.z, 10, 0.3, 0.55, 0.3, 0.05);
     }
 
     private static void move(ServerWorld world, ServerPlayerEntity bot, Vec3d desired) {

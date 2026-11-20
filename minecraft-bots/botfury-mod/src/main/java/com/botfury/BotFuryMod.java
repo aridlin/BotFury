@@ -18,6 +18,7 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 import java.util.concurrent.Executors;
 
 public class BotFuryMod implements ClientModInitializer {
@@ -27,6 +28,7 @@ public class BotFuryMod implements ClientModInitializer {
     public static volatile boolean renderEnabled = true;
     private static boolean started = false;
     private static int httpPort = -1;
+    private static final String runtimeId = UUID.randomUUID().toString();
     private static final long startedAtMillis = System.currentTimeMillis();
     private static boolean autoJoinRegistered = false;
     private static int autoJoinTicks = 0;
@@ -147,14 +149,15 @@ public class BotFuryMod implements ClientModInitializer {
                 "");
         long uptimeMillis = System.currentTimeMillis() - startedAtMillis;
         String status = String.format(
-                "{\"connected\":%b,\"ready\":%b,\"renderEnabled\":%b,\"player\":\"%s\",\"offlineUsername\":\"%s\",\"httpPort\":%d,\"uptimeMillis\":%d}",
+                "{\"connected\":%b,\"ready\":%b,\"renderEnabled\":%b,\"player\":\"%s\",\"offlineUsername\":\"%s\",\"httpPort\":%d,\"uptimeMillis\":%d,\"runtimeId\":\"%s\"}",
                 connected,
                 ready,
                 renderEnabled,
                 jsonEscape(playerName),
                 jsonEscape(offlineUsername),
                 httpPort,
-                uptimeMillis);
+                uptimeMillis,
+                runtimeId);
 
         sendResponse(exchange, 200, "application/json", status);
     }

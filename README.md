@@ -97,7 +97,7 @@ server session.
 | Default key | Action |
 | --- | --- |
 | J | Saturn orbit. Bots move around the operator and attack nearby eligible targets. |
-| K | Lightning strike. Aim at a target to send the bots along a zigzag, then blink around it and attack. |
+| K | Lightning strike. Aim at a target to send the bots along a zigzag with visible lightning trails, then blink around it and attack. |
 | `]` | Stop the active formation. |
 
 The operator keys are configurable under **Controls → BotFury**. The server

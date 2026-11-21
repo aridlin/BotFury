@@ -43,6 +43,11 @@ final class MiningTask {
     private static BlockPos target;
     private static Vec3d stand,origin,pickup;
     private static int pickupUntil;
+    private static BlockPos rememberedSite;
+    private static int rememberedUntil;
+    private static ProjectQueue.ResourceSite observedSite;
+
+    static ProjectQueue.ResourceSite observedSite() { return observedSite; }
     private static BaritoneSettings settings;
     private static final StallRecovery routeRecovery = new StallRecovery();
     private static final Map<BlockPos,Integer> rejected=new HashMap<>();
@@ -64,9 +69,17 @@ final class MiningTask {
         startMining(client, next, false, null);
     }
 
-    static void startProject(MinecraftClient client, Job next, ProjectGather.Area exclude) {
+    static void startProject(MinecraftClient client, Job next, ProjectGather.Area exclude, ProjectQueue.ResourceSite site) {
         stop();
         startMining(client, next, true, exclude);
+        if (job == null || site == null) return;
+        var location = new BlockPos(site.x(), site.y(), site.z());
+        if (client.world.isInBuildLimit(location) && client.world.getWorldBorder().contains(location)
+                && (exclude == null || !exclude.contains(location))) {
+            rememberedSite = location;
+            double distance = client.player.getPos().distanceTo(Vec3d.ofBottomCenter(location));
+            rememberedUntil = Math.min(2400, Math.max(600, (int) (distance * 12)));
+        }
     }
 
     private static void startMining(MinecraftClient client, Job next, boolean project, ProjectGather.Area exclude) {
@@ -77,6 +90,8 @@ final class MiningTask {
         for(String id:ids){var state=Registries.BLOCK.get(new Identifier(id)).getDefaultState();if(state.isAir()||state.getHardness(client.world,client.player.getBlockPos())<0){fail("Choose a breakable mining block");return;}}
         try{settings=new BaritoneSettings(exclude == null);}catch(ReflectiveOperationException|LinkageError e){fail("Could not configure mining approach");return;}
         projectMining=project;
+        rememberedSite = null;
+        observedSite = null;
         excluded=exclude;
         job=next;blocks=Set.copyOf(ids);generation++;owner=UUID.randomUUID()+"-"+client.player.getGameProfile().getName();
         var here=LocalFormation.here();world=here.server()+"|"+here.dimension();
@@ -111,6 +126,12 @@ final class MiningTask {
             if(client.player.squaredDistanceTo(stand)<=1.44&&eye.squaredDistanceTo(center)<=reach*reach&&ray.getType()==HitResult.Type.BLOCK&&((BlockHitResult)ray).getBlockPos().equals(target)){
                 stopPath();
                 if(!equip(client,target)){status="Need a suitable tool";return;}
+                if (projectMining) {
+                    var feet = client.player.getBlockPos();
+                    if (excluded == null || !excluded.contains(feet)) {
+                        observedSite = new ProjectQueue.ResourceSite(feet.getX(), feet.getY(), feet.getZ());
+                    }
+                }
                 client.player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES,center);
                 String blockName=Registries.BLOCK.getId(client.world.getBlockState(target).getBlock()).getPath();
                 client.interactionManager.updateBlockBreakingProgress(target,((BlockHitResult)ray).getSide());client.player.swingHand(Hand.MAIN_HAND);
@@ -135,7 +156,7 @@ final class MiningTask {
             }else if(age%20==0)pickupPath();
             status="Gathering mined drops";return;
         }
-        if (pathActive && recoverRoute(client, null)) return;
+        if (pathActive && recoverRoute(client, rememberedSite)) return;
         if(requesting||age<nextSearch)return;
         nextSearch=age+20;
         var position=client.player.getBlockPos();
@@ -149,6 +170,7 @@ final class MiningTask {
         candidates.sort(Comparator.comparingDouble(p->p.getSquaredDistance(position)));
         for(BlockPos ore:candidates){Vec3d place=standing(client,ore);if(place!=null){request(client,ore,place,"claim");return;}rejected.put(ore,age+100);}
         if(needsTool){status="Need a suitable tool for "+job.resource;stopPath();return;}
+        if (returnToResourceSite(client)) return;
         status=candidates.isEmpty()?"Exploring for "+job.resource:"Nearby mining positions are occupied";
         if(age>=nextPath){
             nextPath = age + (projectMining ? 400 : 200);
@@ -166,6 +188,23 @@ final class MiningTask {
             } else path("explore " + x + " " + z);
         }
     }
+    private static boolean returnToResourceSite(MinecraftClient client) {
+        if (rememberedSite == null) return false;
+        var point = Vec3d.ofBottomCenter(rememberedSite);
+        if (age < rememberedUntil && client.player.squaredDistanceTo(point) > 25) {
+            if (age < nextPath || path("goto " + rememberedSite.getX() + " " + rememberedSite.getY() + " " + rememberedSite.getZ())) {
+                if (age >= nextPath) nextPath = age + 100;
+                status = "Returning to gathering site " + rememberedSite.toShortString();
+                return true;
+            }
+        }
+        rememberedSite = null;
+        origin = client.player.getPos();
+        nextPath = age;
+        stopPath();
+        return false;
+    }
+
     private static boolean recoverRoute(MinecraftClient client, BlockPos goal) {
         var recovery = routeRecovery.tick(client, goal, pos -> excluded == null
                 || (!excluded.contains(pos) && !excluded.contains(pos.up())));

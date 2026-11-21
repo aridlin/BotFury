@@ -545,8 +545,10 @@ and the most recent stock observations.
 
 If a supplied project's next step needs materials from an offline worker,
 other workers can reacquire the materials after a 60-second grace period.
-Each material chain can be reacquired twice. Completed placements and
-unrelated material chains keep their progress.
+Each material chain can be reacquired twice. The coordinator remembers a
+nearby stand where a worker found each mining resource. A replacement that
+finds nothing nearby searches the recorded site before exploring farther.
+Completed placements and unrelated material chains keep their progress.
 
 Automatic supply uses the server's crafting and furnace recipes, including
 intermediate ingredients, when it can trace them to supported raw resources.

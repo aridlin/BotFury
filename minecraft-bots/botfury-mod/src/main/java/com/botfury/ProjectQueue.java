@@ -53,7 +53,19 @@ final class ProjectQueue {
     }
 
     record Job(Work work, State state, int attempts, String worker, UUID lease, long expiresAt,
-               String evidence, ChestObservation chest) {}
+               String evidence, ChestObservation chest, ResourceSite resourceSite) {
+        Job(Work work, State state, int attempts, String worker, UUID lease, long expiresAt,
+            String evidence, ChestObservation chest) {
+            this(work, state, attempts, worker, lease, expiresAt, evidence, chest, null);
+        }
+    }
+    record ResourceSite(int x, int y, int z) {
+        ResourceSite {
+            if (x < -30_000_000 || x > 30_000_000 || z < -30_000_000 || z > 30_000_000 || y < -2048 || y > 2048) {
+                throw new IllegalArgumentException("Invalid gathering site");
+            }
+        }
+    }
     record ChestReport(String location, Map<String, Integer> items, Integer free) {
         ChestReport(String location, Map<String, Integer> items) { this(location, items, null); }
 
@@ -312,7 +324,7 @@ final class ProjectQueue {
                 if (job.work.sameWorkerAs != null
                         && !worker.equalsIgnoreCase(find(project, job.work.sameWorkerAs).worker)) continue;
                 Job assigned = new Job(job.work, State.LEASED, job.attempts + 1, worker,
-                        UUID.randomUUID(), now + LEASE_MS, null, job.chest);
+                        UUID.randomUUID(), now + LEASE_MS, null, job.chest, job.resourceSite);
                 replace(project, assigned);
                 return new Assignment(project.id, project.world, assigned);
             }
@@ -344,11 +356,15 @@ final class ProjectQueue {
     }
 
     synchronized Job renew(String projectId, String jobId, UUID token, long now) throws IOException {
+        return renew(projectId, jobId, token, null, now);
+    }
+
+    synchronized Job renew(String projectId, String jobId, UUID token, ResourceSite site, long now) throws IOException {
         Project project = projects.get(projectId);
         Job job = find(project, jobId);
         if (!owns(job, token, now) || cancelled(project)) return null;
         Job renewed = new Job(job.work, State.LEASED, job.attempts, job.worker,
-                job.lease, now + LEASE_MS, null, job.chest);
+                job.lease, now + LEASE_MS, null, job.chest, gatheringSite(job, site));
         replace(project, renewed);
         markSeen(project.world, job.worker, now);
         return renewed;
@@ -361,6 +377,11 @@ final class ProjectQueue {
 
     synchronized boolean finish(String projectId, String jobId, UUID token, boolean success,
                                 String evidence, ChestReport chest, long now) throws IOException {
+        return finish(projectId, jobId, token, success, evidence, chest, null, now);
+    }
+
+    synchronized boolean finish(String projectId, String jobId, UUID token, boolean success,
+                                String evidence, ChestReport chest, ResourceSite site, long now) throws IOException {
         if (evidence == null || evidence.isBlank() || evidence.length() > 2048) {
             throw new IllegalArgumentException("Report an observed outcome or failure reason");
         }
@@ -369,7 +390,8 @@ final class ProjectQueue {
         Job job = find(project, jobId);
         if (job != null && job.state == State.DONE) {
             return success && Objects.equals(job.lease, token) && job.evidence.equals(evidence)
-                    && Objects.equals(job.chest == null ? null : job.chest.report, chest);
+                    && Objects.equals(job.chest == null ? null : job.chest.report, chest)
+                    && (site == null || site.equals(job.resourceSite));
         }
         if (!owns(job, token, now)) return false;
         if (chest != null && (job.work.kind != Kind.TRANSFER || !job.work.locks.contains(chest.location)
@@ -380,9 +402,10 @@ final class ProjectQueue {
             throw new IllegalArgumentException("Successful transfer requires a chest observation");
         }
         var observation = chest == null ? job.chest : new ChestObservation(chest, now);
+        var location = gatheringSite(job, site);
         Job result = success
-                ? new Job(job.work, State.DONE, job.attempts, job.worker, job.lease, 0, evidence, observation)
-                : retry(job, evidence, observation);
+                ? new Job(job.work, State.DONE, job.attempts, job.worker, job.lease, 0, evidence, observation, location)
+                : retry(job, evidence, observation, location);
         if (success && project.repeat != null && !project.repeat.cancelled && job.work.id.equals(lane(job.work.id) + "inspect")) {
             prepareOutputDeposit(project, result);
         } else if (success && project.repeat != null && job.work.id.equals(lane(job.work.id) + "deposit")) {
@@ -391,7 +414,7 @@ final class ProjectQueue {
             var reset = repeat.cancelled
                     ? project.jobs.stream().map(entry -> entry == job ? result : entry).toList()
                     : project.jobs.stream().map(entry -> lane(entry.work.id).equals(lane(job.work.id))
-                            ? new Job(entry.work, State.WAITING, 0, null, null, 0, null, null) : entry).toList();
+                            ? new Job(entry.work, State.WAITING, 0, null, null, 0, null, null, entry.resourceSite) : entry).toList();
             commit(new Project(project.id, project.world, reset, next, project.supplyChest, project.supplyRecoveries));
         } else replace(project, result);
         markSeen(project.world, job.worker, now);
@@ -509,7 +532,7 @@ final class ProjectQueue {
         recoveries.put(root, attempts + 1);
         rewind.add(waiting.work.id);
         var updated = project.jobs.stream().map(job -> rewind.contains(job.work.id)
-                ? new Job(job.work, State.WAITING, 0, null, null, 0, evidence + "; reacquiring materials", job.chest)
+                ? new Job(job.work, State.WAITING, 0, null, null, 0, evidence + "; reacquiring materials", job.chest, job.resourceSite)
                 : job).toList();
         commit(new Project(project.id, project.world, updated, project.repeat, project.supplyChest, recoveries));
     }
@@ -523,7 +546,7 @@ final class ProjectQueue {
                 Job job = project.jobs.get(i);
                 if (job.state == State.LEASED && job.expiresAt <= now) {
                     if (jobs == null) jobs = new ArrayList<>(project.jobs);
-                    jobs.set(i, retry(job, "Worker lease expired", job.chest));
+                    jobs.set(i, retry(job, "Worker lease expired", job.chest, job.resourceSite));
                 }
             }
             if (jobs != null) {
@@ -534,9 +557,14 @@ final class ProjectQueue {
         if (changed) persist(next);
     }
 
-    private static Job retry(Job job, String reason, ChestObservation chest) {
+    private static ResourceSite gatheringSite(Job job, ResourceSite site) {
+        if (site != null && job.work.kind != Kind.GATHER) throw new IllegalArgumentException("Only gathering reports a resource site");
+        return site == null ? job.resourceSite : site;
+    }
+
+    private static Job retry(Job job, String reason, ChestObservation chest, ResourceSite site) {
         State state = job.attempts < MAX_ATTEMPTS ? State.WAITING : State.FAILED;
-        return new Job(job.work, state, job.attempts, null, null, 0, reason, chest);
+        return new Job(job.work, state, job.attempts, null, null, 0, reason, chest, site);
     }
 
     private static boolean cancelled(Project project) {

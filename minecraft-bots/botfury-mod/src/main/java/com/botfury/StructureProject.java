@@ -290,8 +290,7 @@ final class StructureProject {
         List<String> prerequisites = List.copyOf(changes);
         for (int i = 0; i < cells.size(); i++) {
             var cell = cells.get(i);
-            var stand = chooseStand(client, cell.pos, desired);
-            if (stand == null) stand = findStand(client, cell.pos, null, true, pos -> safeStand(client, pos, desired));
+            var stand = verificationStand(client, cell.pos, desired);
             if (stand == null) throw new IllegalArgumentException("No safe verification position near " + cell.pos.toShortString());
             jobs.add(work("verify-" + i, ProjectQueue.Kind.VERIFY, cell.pos, cell.desired, stand, Direction.UP, prerequisites));
             area = StructureSupply.union(area, new ProjectBlock(cell.pos, stand, AIR));
@@ -459,9 +458,23 @@ final class StructureProject {
                         && safeStand(client, pos, Map.of()) && suitable.test(pos));
     }
 
+    private static BlockPos verificationStand(MinecraftClient client, BlockPos target, Map<BlockPos, BlockState> desired) {
+        int[] heights = {-1, -2, -3, 0, 1, 2, 3};
+        var exterior = findStand(client, target, null, true, heights, pos ->
+                !desired.containsKey(pos) && !desired.containsKey(pos.up()) && !desired.containsKey(pos.down())
+                        && safeStand(client, pos, Map.of()));
+        return exterior != null ? exterior
+                : findStand(client, target, null, true, heights, pos -> safeStand(client, pos, desired));
+    }
+
     private static BlockPos findStand(MinecraftClient client, BlockPos target, Direction face,
                                       boolean allowDiagonal, Predicate<BlockPos> suitable) {
-        for (int dy : new int[]{0, 1, -1}) for (int distance : new int[]{2, 1, 3}) {
+        return findStand(client, target, face, allowDiagonal, new int[]{0, 1, -1}, suitable);
+    }
+
+    private static BlockPos findStand(MinecraftClient client, BlockPos target, Direction face,
+                                      boolean allowDiagonal, int[] heights, Predicate<BlockPos> suitable) {
+        for (int dy : heights) for (int distance : new int[]{2, 1, 3}) {
             for (var direction : Direction.Type.HORIZONTAL) {
                 if (face != null && face != Direction.UP && direction != face) continue;
                 for (int lateral : allowDiagonal ? new int[]{0, 1, -1, 2, -2} : new int[]{0}) {

@@ -488,9 +488,12 @@ the detour, and returns to its assigned route. Stop cancels the detour.
 ### Project workers and structure builds
 
 Use `/bf project workers` on the controller to enable project work on the
-selected bots. Regular Stop cancels worker mode. Workers claim jobs from the
-controller's local `/projects` endpoint and use Baritone only for approach,
-with incidental block breaking and placement disabled while pathing.
+selected bots. Enrollment survives a disconnect or bot restart and resumes
+when that bot joins the same server and dimension. Regular Stop clears
+the saved enrollment. The normal launcher still controls when bots start
+and connect. Workers claim jobs from the controller's local `/projects`
+endpoint and use Baritone for approach, with incidental block breaking
+and placement disabled while pathing.
 
 Submit ordered jobs with a local HTTP POST to `/projects`. For `EXCAVATE` and
 `VERIFY`, the job's `payload` is a JSON string containing `target` and `stand`

@@ -1,6 +1,7 @@
 package com.botfury;
 
 import net.minecraft.block.BlockState;
+import net.minecraft.block.FallingBlock;
 import net.minecraft.block.PillarBlock;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.BlockItem;
@@ -27,7 +28,10 @@ final class ProjectPlacement {
     }
 
     static List<Direction> faces(BlockState state) {
-        if (!state.contains(PillarBlock.AXIS)) return List.of(Direction.UP);
+        if (!state.contains(PillarBlock.AXIS)) {
+            if (state.getBlock() instanceof FallingBlock) return List.of(Direction.UP);
+            return List.of(Direction.UP, Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST);
+        }
         return switch (state.get(PillarBlock.AXIS)) {
             case X -> List.of(Direction.EAST, Direction.WEST);
             case Z -> List.of(Direction.NORTH, Direction.SOUTH);

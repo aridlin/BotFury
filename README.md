@@ -529,6 +529,8 @@ axis, and the fleet replaces a log facing the wrong way.
 The planner clears exposed obstructions first, then uses newly opened
 standing positions to reach deeper blocks. Excavation must stay inside the
 schematic volume and starts from an accessible approach with a stable floor.
+Ordinary full blocks can attach to neighboring blocks to build a bridge or
+overhang. Material affected by gravity still needs support underneath.
 Bots can use permanent full-block steps already placed by the fleet to reach
 higher placements. The planner waits for the route's floor blocks and reserves
 the route during the placement. Full-block steps need clear headroom.

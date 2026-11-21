@@ -97,7 +97,7 @@ record ProjectBlock(BlockPos target, BlockPos stand, Identifier block, Map<Strin
         if (work.cleanup() != null && !key(target).equals(work.cleanup().site())) {
             throw new IllegalArgumentException("Cleanup site must match its target");
         }
-        return new ProjectQueue.Work(work.id(), work.kind(), work.payload(), work.needs(), locks, work.sameWorkerAs(), work.cleanup());
+        return new ProjectQueue.Work(work.id(), work.kind(), work.payload(), work.needs(), locks, work.sameWorkerAs(), work.cleanup(), work.constructionMaterial());
     }
 
     static String key(BlockPos block) {

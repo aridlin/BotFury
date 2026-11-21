@@ -17,6 +17,36 @@ class ProjectQueueTest {
         return new ProjectQueue.Work(id, kind, "", needs, Set.of(locks));
     }
 
+    @Test void constructionBatchesCreditDifferentWorkersAndSurviveRestart() throws Exception {
+        Path journal = directory.resolve("board.json");
+        var board = new ProjectQueue(journal);
+        String chest = "block:5,64,0";
+        String material = "minecraft:stone";
+        board.submitSupplied("house", WORLD, List.of(
+                job("store", TRANSFER, List.of(), chest),
+                new ProjectQueue.Work("take-west", TRANSFER, "", List.of("store"), Set.of(chest), null, null, material),
+                new ProjectQueue.Work("take-east", TRANSFER, "", List.of("store"), Set.of(chest), null, null, material),
+                new ProjectQueue.Work("west", BUILD, "", List.of("take-west"), Set.of("west"), "take-west"),
+                new ProjectQueue.Work("east", BUILD, "", List.of("take-east"), Set.of("east"), "take-east")
+        ), chest);
+        var store = board.claim(WORLD, "Supplier", Set.of(TRANSFER), 1).job();
+        var stock = new ProjectQueue.ChestReport(chest, java.util.Map.of(material, 4));
+        assertTrue(board.finish("house", "store", store.lease(), true, "Stored four", stock, 2));
+        var west = board.claim(WORLD, "West", Set.of(TRANSFER, BUILD), 3).job();
+        assertEquals("take-west", west.work().id());
+        assertTrue(board.finish("house", "take-west", west.lease(), true, "Collected two",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(material, 2)), 4));
+
+        board = new ProjectQueue(journal);
+        assertNull(board.claim(WORLD, "West", Set.of(TRANSFER), 5));
+        var east = board.claim(WORLD, "East", Set.of(TRANSFER, BUILD), 6).job();
+        assertEquals("take-east", east.work().id());
+        assertTrue(board.finish("house", "take-east", east.lease(), true, "Collected two",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of()), 7));
+        assertEquals("west", board.claim(WORLD, "West", Set.of(TRANSFER, BUILD), 8).job().work().id());
+        assertEquals("east", board.claim(WORLD, "East", Set.of(TRANSFER, BUILD), 9).job().work().id());
+    }
+
     @Test void fullJournalArchivesCompletedWorkAndKeepsItsReceiptsAfterRestart() throws Exception {
         Path journal = directory.resolve("board.json");
         var board = new ProjectQueue(journal);

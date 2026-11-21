@@ -78,7 +78,8 @@ final class ProjectChest {
             if (partner == null) return reserved;
             var locks = new HashSet<>(reserved.locks());
             locks.add(ProjectBlock.key(partner));
-            return new ProjectQueue.Work(work.id(), work.kind(), work.payload(), work.needs(), locks, work.sameWorkerAs());
+            return new ProjectQueue.Work(work.id(), work.kind(), work.payload(), work.needs(), locks, work.sameWorkerAs(),
+                    work.cleanup(), work.constructionMaterial());
         }
     }
     record Result(boolean success, String detail, Map<String, Integer> stock, Integer free) {

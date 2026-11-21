@@ -536,8 +536,12 @@ double chest outside the work area and run
 crafting table or furnace near the chest for materials that need one. Give
 workers suitable tools and unlock the crafting recipes. Workers gather,
 produce, and deposit the required blocks, then builders collect them from
-the chest. The console's **Projects** and **Chest stock** controls show job
-progress and the most recent stock observations.
+the chest. When multiple selected bots are online, the planner divides each
+material into pickup batches. Each batch goes to the bot that collects it,
+so different bots can place the same material on disjoint work sites. A bot
+can take another batch of that material after its current placements finish.
+The console's **Projects** and **Chest stock** controls show job progress
+and the most recent stock observations.
 
 If a supplied project's next step needs materials from an offline worker,
 other workers can reacquire the materials after a 60-second grace period.

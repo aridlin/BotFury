@@ -92,6 +92,20 @@ class ProjectQueueTest {
         assertTrue(recovered.chestStock("test|nether").isEmpty());
     }
 
+    @Test void inventoryContinuitySurvivesCoordinatorRestart() throws Exception {
+        Path journal = directory.resolve("board.json");
+        var board = new ProjectQueue(journal);
+        var carry = job("gather", GATHER, List.of(), "mine");
+        var smelt = new ProjectQueue.Work("smelt", SMELT, "", List.of("gather"), Set.of("furnace"), "gather");
+        board.submit("house", WORLD, List.of(carry, smelt));
+        var assignment = board.claim(WORLD, "Supplier", Set.of(GATHER), 0);
+        assertTrue(board.finish("house", "gather", assignment.job().lease(), true, "Carrying raw ore", 1));
+        board = new ProjectQueue(journal);
+        assertNull(board.claim(WORLD, "Other", Set.of(SMELT), 2));
+        var followup = board.claim(WORLD, "Supplier", Set.of(SMELT), 2);
+        assertEquals("smelt", followup.job().work().id());
+    }
+
     @Test void rejectsUnknownDependenciesBeforeWriting() throws Exception {
         var board = new ProjectQueue(directory.resolve("board.json"));
         assertThrows(IllegalArgumentException.class, () -> board.submit("broken", WORLD,

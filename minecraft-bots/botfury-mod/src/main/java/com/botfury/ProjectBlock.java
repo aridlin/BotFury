@@ -43,7 +43,7 @@ record ProjectBlock(BlockPos target, BlockPos stand, Identifier block) {
         locks.add(key(stand));
         locks.add(key(stand.down()));
         locks.add(key(stand.up()));
-        return new ProjectQueue.Work(work.id(), work.kind(), work.payload(), work.needs(), locks);
+        return new ProjectQueue.Work(work.id(), work.kind(), work.payload(), work.needs(), locks, work.sameWorkerAs());
     }
 
     static String key(BlockPos block) {

@@ -18,13 +18,14 @@ import java.util.concurrent.TimeUnit;
 final class ProjectWorker {
     private static final Gson JSON = new Gson();
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(750)).build();
-    private static final Set<ProjectQueue.Kind> KINDS = Set.of(ProjectQueue.Kind.EXCAVATE, ProjectQueue.Kind.VERIFY, ProjectQueue.Kind.TRANSFER, ProjectQueue.Kind.BUILD);
+    private static final Set<ProjectQueue.Kind> KINDS = Set.of(ProjectQueue.Kind.EXCAVATE, ProjectQueue.Kind.VERIFY, ProjectQueue.Kind.TRANSFER, ProjectQueue.Kind.BUILD, ProjectQueue.Kind.CRAFT, ProjectQueue.Kind.SMELT);
     private static int port;
     private static int generation;
     private static boolean pending;
     private static ProjectQueue.Assignment assignment;
     private static ProjectBlock block;
     private static ProjectChest chest;
+    private static ProjectProduction production;
     private static ProjectQueue.ChestReport chestReport;
     private static BaritoneSettings approach;
     private static Vec3d approachProgress;
@@ -66,6 +67,7 @@ final class ProjectWorker {
         assignment = null;
         block = null;
         chest = null;
+        production = null;
         chestReport = null;
         success = null;
         evidence = null;
@@ -75,6 +77,7 @@ final class ProjectWorker {
 
     private static void halt(MinecraftClient client) {
         if (chest != null) chest.close(client);
+        if (production != null) production.close(client);
         if (breaking && client.interactionManager != null) client.interactionManager.cancelBlockBreaking();
         breaking = false;
         if (approach != null) {
@@ -146,6 +149,11 @@ final class ProjectWorker {
                 if (result.stock() != null) chestReport = new ProjectQueue.ChestReport(ProjectBlock.key(target), result.stock());
                 finish(client, result.success(), result.detail());
             }
+            return;
+        }
+        if (production != null) {
+            var result = production.tick(client, now);
+            if (result != null) finish(client, result.success(), result.detail());
             return;
         }
         var state = client.world.getBlockState(target);
@@ -242,12 +250,17 @@ final class ProjectWorker {
                     assignment = JSON.fromJson(reply.body(), ProjectQueue.Assignment.class);
                     if (assignment == null) return;
                     deadline = deadline(assignment.job(), now);
-                    taskEnd = System.nanoTime() + seconds(45);
+
                     var work = assignment.job().work();
+                    taskEnd = System.nanoTime() + seconds(work.kind() == ProjectQueue.Kind.SMELT ? 300 : 45);
                     if (work.kind() == ProjectQueue.Kind.TRANSFER) {
                         var spec = ProjectChest.parse(work.payload());
                         block = spec.location();
                         chest = new ProjectChest(spec);
+                    } else if (work.kind() == ProjectQueue.Kind.CRAFT || work.kind() == ProjectQueue.Kind.SMELT) {
+                        var spec = ProjectProduction.parse(work.payload(), work.kind());
+                        block = spec.station();
+                        production = new ProjectProduction(spec);
                     } else block = ProjectBlock.parse(work.payload());
                     status = assignment.project() + "/" + assignment.job().work().id();
                 } else {

@@ -14,11 +14,15 @@ final class ProjectQueue {
     enum Kind { EXCAVATE, GATHER, CRAFT, SMELT, TRANSFER, BUILD, VERIFY }
     enum State { WAITING, LEASED, DONE, FAILED }
 
-    record Work(String id, Kind kind, String payload, List<String> needs, Set<String> locks) {
+    record Work(String id, Kind kind, String payload, List<String> needs, Set<String> locks, String sameWorkerAs) {
+        Work(String id, Kind kind, String payload, List<String> needs, Set<String> locks) {
+            this(id, kind, payload, needs, locks, null);
+        }
         Work {
             if (!validId(id) || kind == null || payload == null || payload.length() > 8192
                     || needs == null || locks == null || needs.size() > 256 || locks.size() > 128
                     || needs.stream().anyMatch(dep -> !validId(dep))
+                    || sameWorkerAs != null && !needs.contains(sameWorkerAs)
                     || locks.stream().anyMatch(key -> key == null || key.isBlank() || key.length() > 240)) {
                 throw new IllegalArgumentException("Invalid project job");
             }
@@ -119,6 +123,8 @@ final class ProjectQueue {
             for (Job job : project.jobs) {
                 if (job.state != State.WAITING || !kinds.contains(job.work.kind)
                         || !done.containsAll(job.work.needs) || !Collections.disjoint(reserved, job.work.locks)) continue;
+                if (job.work.sameWorkerAs != null
+                        && !worker.equalsIgnoreCase(find(project, job.work.sameWorkerAs).worker)) continue;
                 Job assigned = new Job(job.work, State.LEASED, job.attempts + 1, worker,
                         UUID.randomUUID(), now + LEASE_MS, null, job.chest);
                 replace(project, assigned);

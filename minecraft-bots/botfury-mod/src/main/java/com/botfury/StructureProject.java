@@ -39,7 +39,9 @@ final class StructureProject {
     private record TemporarySupport(BuildPose pillar, BlockPos stand) {}
     private record ScaffoldStep(BlockPos block, ProjectQueue.Work placement, BlockPos removalStand) {}
     private record Scaffold(List<ProjectQueue.Work> jobs, List<ScaffoldStep> blocks,
-                            Map<BlockPos, BlockState> layout, Map<BlockPos, String> placed) {}
+                            Map<BlockPos, BlockState> layout, Map<BlockPos, String> placed) {
+        String lastPlacement() { return blocks.get(blocks.size() - 1).placement.id(); }
+    }
     private static final BlockState SCAFFOLD = Blocks.COBBLESTONE.getDefaultState();
 
     private StructureProject() {}
@@ -230,20 +232,20 @@ final class StructureProject {
         }
 
         var exposedPlacements = new ArrayList<String>();
-        Scaffold scaffold = null;
+        var scaffolds = new ArrayList<Scaffold>();
         boolean allowTemporarySupport = false;
         while (!pending.isEmpty()) {
             int before = pending.size();
             for (var iterator = pending.entrySet().iterator(); iterator.hasNext(); ) {
                 var entry = iterator.next();
                 var cell = entry.getValue();
-                var pose = buildPose(client, cell, layout, ready, cleared, placed, scaffold != null);
+                var pose = buildPose(client, cell, layout, ready, cleared, placed, !scaffolds.isEmpty());
                 var temporary = pose == null && allowTemporarySupport ? temporarySupport(client, cell, layout, cleared) : null;
                 if (temporary != null) pose = temporary.pillar;
                 if (pose == null) continue;
                 var approachNeeds = new ArrayList<>(excavationFrontier);
                 approachNeeds.addAll(exposedPlacements);
-                if (scaffold != null) approachNeeds.add(scaffold.blocks.get(scaffold.blocks.size() - 1).placement.id());
+                if (!scaffolds.isEmpty()) approachNeeds.add(scaffolds.get(scaffolds.size() - 1).lastPlacement());
                 var needs = new LinkedHashSet<>(approachNeeds);
                 if (placed.containsKey(pose.support)) needs.add(placed.get(pose.support));
                 String id = "place-" + entry.getKey();
@@ -288,24 +290,25 @@ final class StructureProject {
                     continue;
                 }
                 var cell = pending.values().iterator().next();
-                if (scaffold == null) {
-                    var beforeScaffold = List.copyOf(changes);
-                    scaffold = scaffold(client, cell, pending.values(), layout, cleared, ready, placed, beforeScaffold);
-                    if (scaffold != null) {
-                        jobs.addAll(scaffold.jobs);
-                        layout.putAll(scaffold.layout);
-                        ready.putAll(scaffold.layout);
-                        placed.putAll(scaffold.placed);
-                        changes.add(scaffold.blocks.get(scaffold.blocks.size() - 1).placement.id());
-                        materials.merge(Registries.ITEM.getId(Blocks.COBBLESTONE.asItem()), scaffold.blocks.size(), Integer::sum);
-                        for (var step : scaffold.blocks) {
-                            var stand = ProjectBlock.parse(step.placement.payload()).stand();
-                            area = StructureSupply.union(area, new ProjectBlock(step.block, stand, AIR),
-                                    new ProjectBlock(step.block, step.removalStand, AIR));
-                        }
-                        allowTemporarySupport = false;
-                        continue;
+                int cleanupJobs = scaffolds.stream().mapToInt(entry -> entry.blocks.size()).sum() + cleanup.size();
+                int room = LIMIT - jobs.size() - cleanupJobs - cells.size() - pending.size();
+                var scaffold = scaffold(client, cell, pending.values(), layout, cleared, ready, placed,
+                        List.copyOf(changes), scaffolds.size(), room);
+                if (scaffold != null) {
+                    scaffolds.add(scaffold);
+                    jobs.addAll(scaffold.jobs);
+                    layout.putAll(scaffold.layout);
+                    ready.putAll(scaffold.layout);
+                    placed.putAll(scaffold.placed);
+                    changes.add(scaffold.lastPlacement());
+                    materials.merge(Registries.ITEM.getId(Blocks.COBBLESTONE.asItem()), scaffold.blocks.size(), Integer::sum);
+                    for (var step : scaffold.blocks) {
+                        var stand = ProjectBlock.parse(step.placement.payload()).stand();
+                        area = StructureSupply.union(area, new ProjectBlock(step.block, stand, AIR),
+                                new ProjectBlock(step.block, step.removalStand, AIR));
                     }
+                    allowTemporarySupport = false;
+                    continue;
                 }
                 throw new IllegalArgumentException("No reachable support face for " + cell.desired + " at " + cell.pos.toShortString());
             }
@@ -314,7 +317,7 @@ final class StructureProject {
         cleanup.forEach(job -> changes.add(job.id()));
         List<String> prerequisites = List.copyOf(changes);
         var verificationLayout = new HashMap<>(desired);
-        if (scaffold != null) verificationLayout.putAll(scaffold.layout);
+        for (var scaffold : scaffolds) verificationLayout.putAll(scaffold.layout);
         var inspections = new ArrayList<String>();
         for (int i = 0; i < cells.size(); i++) {
             var cell = cells.get(i);
@@ -325,10 +328,11 @@ final class StructureProject {
             inspections.add(id);
             area = StructureSupply.union(area, new ProjectBlock(cell.pos, stand, AIR));
         }
-        if (scaffold != null) {
-            var settledWork = new ArrayList<>(changes);
-            settledWork.addAll(inspections);
-            appendScaffoldCleanup(jobs, scaffold, settledWork);
+        var settledWork = new ArrayList<>(changes);
+        settledWork.addAll(inspections);
+        String previousCleanup = null;
+        for (int i = scaffolds.size() - 1; i >= 0; i--) {
+            previousCleanup = appendScaffoldCleanup(jobs, scaffolds.get(i), settledWork, previousCleanup);
         }
         if (jobs.size() > LIMIT) throw new IllegalArgumentException("Structure needs more than 256 jobs");
         return new Plan(List.copyOf(jobs), Map.copyOf(materials), area);
@@ -337,17 +341,24 @@ final class StructureProject {
     private static Scaffold scaffold(MinecraftClient client, Cell first, Collection<Cell> pending,
                                      Map<BlockPos, BlockState> layout, Map<BlockPos, BlockState> cleared,
                                      Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed,
-                                     List<String> prerequisites) {
-        int high = pending.stream().mapToInt(cell -> cell.pos.getY()).max().orElseThrow();
-        BlockPos highTarget = pending.stream().filter(cell -> cell.pos.getY() == high).findFirst().orElseThrow().pos;
-        for (int rise = 1; rise <= 5; rise++) {
+                                     List<String> prerequisites, int index, int room) {
+        if (room < 3) return null;
+        // A staircase is useful only around the work that can be reached from its upper steps.
+        var nearby = pending.stream().filter(cell -> horizontalDistance(first.pos, cell.pos) <= 36).toList();
+        BlockPos highTarget = nearby.stream().filter(cell -> horizontalDistance(first.pos, cell.pos) <= 4)
+                .max(Comparator.comparingInt(cell -> cell.pos.getY())).orElseThrow().pos;
+        int high = highTarget.getY();
+        String suffix = index == 0 ? "" : index + "-";
+        Scaffold best = null;
+        int fewestRemaining = nearby.size();
+        for (int rise = 1; rise <= 5 && 3 * rise * (rise + 1) / 2 <= room; rise++) {
             for (int feetY : new int[]{high - 1, high}) {
                 for (var side : Direction.Type.HORIZONTAL) for (var ascent : List.of(side.getOpposite(),
                         side.rotateYClockwise(), side.rotateYCounterclockwise())) {
                     for (int gap : new int[]{1, 2}) for (int lateral : new int[]{0, 1, -1}) {
                         var top = new BlockPos(highTarget.getX(), feetY - 1, highTarget.getZ())
                                 .offset(side, gap).offset(side.rotateYClockwise(), lateral);
-                        var trial = planScaffold(client, top, ascent, rise, layout, cleared, prerequisites);
+                        var trial = planScaffold(client, top, ascent, rise, layout, cleared, prerequisites, suffix);
                         if (trial == null) continue;
                         var expanded = new HashMap<>(layout);
                         expanded.putAll(trial.layout);
@@ -355,17 +366,28 @@ final class StructureProject {
                         expandedReady.putAll(trial.layout);
                         var expandedPlaced = new HashMap<>(placed);
                         expandedPlaced.putAll(trial.placed);
-                        if (buildPose(client, first, expanded, expandedReady, cleared, expandedPlaced, true) != null
-                                && verificationStand(client, highTarget, expanded) != null
-                                && canBuildWithScaffold(client, pending, expanded, cleared, expandedReady, expandedPlaced)) return trial;
+                        if (buildPose(client, first, expanded, expandedReady, cleared, expandedPlaced, true) == null
+                                || verificationStand(client, highTarget, expanded) == null) continue;
+                        int remaining = unsupportedWithScaffold(client, nearby, expanded, cleared, expandedReady, expandedPlaced);
+                        if (remaining == 0) return trial;
+                        if (remaining < fewestRemaining) {
+                            best = trial;
+                            fewestRemaining = remaining;
+                        }
                     }
                 }
             }
         }
-        return null;
+        return best;
     }
 
-    private static boolean canBuildWithScaffold(MinecraftClient client, Collection<Cell> pending,
+    private static long horizontalDistance(BlockPos first, BlockPos other) {
+        int dx = first.getX() - other.getX();
+        int dz = first.getZ() - other.getZ();
+        return (long) dx * dx + (long) dz * dz;
+    }
+
+    private static int unsupportedWithScaffold(MinecraftClient client, Collection<Cell> pending,
                                                 Map<BlockPos, BlockState> layout, Map<BlockPos, BlockState> cleared,
                                                 Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed) {
         var remaining = new ArrayList<>(pending);
@@ -378,14 +400,14 @@ final class StructureProject {
                 placed.put(cell.pos, "simulated-placement");
                 it.remove();
             }
-            if (remaining.size() == before) return false;
+            if (remaining.size() == before) break;
         }
-        return true;
+        return remaining.size();
     }
 
     private static Scaffold planScaffold(MinecraftClient client, BlockPos top, Direction ascent, int rise,
                                          Map<BlockPos, BlockState> layout, Map<BlockPos, BlockState> cleared,
-                                         List<String> prerequisites) {
+                                         List<String> prerequisites, String suffix) {
         var scaffold = new LinkedHashMap<BlockPos, BlockState>();
         int baseY = top.getY() - rise + 1;
         for (int height = 1; height <= rise; height++) {
@@ -409,9 +431,9 @@ final class StructureProject {
             var pose = buildPose(client, new Cell(pos, SCAFFOLD, Blocks.AIR.getDefaultState()), finalLayout, built, cleared, placed, false);
             if (pose == null) return null;
             int index = placements.size();
-            String check = "check-access-" + index;
+            String check = "check-access-" + suffix + index;
             jobs.add(work(check, ProjectQueue.Kind.VERIFY, pos, Blocks.AIR.getDefaultState(), pose.stand, Direction.UP, next));
-            String id = "place-access-" + index;
+            String id = "place-access-" + suffix + index;
             var placement = work(id, ProjectQueue.Kind.BUILD, pos, SCAFFOLD, pose.stand, pose.face, List.of(check));
             placements.add(placement);
             jobs.add(placement);
@@ -442,18 +464,20 @@ final class StructureProject {
         return new Scaffold(jobs, steps, scaffold, placed);
     }
 
-    private static void appendScaffoldCleanup(List<ProjectQueue.Work> jobs, Scaffold scaffold, List<String> settledWork) {
+    private static String appendScaffoldCleanup(List<ProjectQueue.Work> jobs, Scaffold scaffold,
+                                                List<String> settledWork, String previousCleanup) {
         var other = List.copyOf(settledWork);
-        String settled = scaffold.blocks.get(scaffold.blocks.size() - 1).placement.id();
+        String settled = previousCleanup == null ? scaffold.lastPlacement() : previousCleanup;
         for (int i = scaffold.blocks.size() - 1; i >= 0; i--) {
             var step = scaffold.blocks.get(i);
-            String id = "remove-access-" + i;
+            String id = "remove-" + step.placement.id().substring("place-".length());
             var removal = work(id, ProjectQueue.Kind.EXCAVATE, step.block, SCAFFOLD,
                     step.removalStand, Direction.UP, List.of(step.placement.id()));
             jobs.add(new ProjectQueue.Work(id, removal.kind(), removal.payload(), removal.needs(), removal.locks(),
                     null, new ProjectQueue.Cleanup(ProjectBlock.key(step.block), settled, other)));
             settled = id;
         }
+        return settled;
     }
 
     private static BuildPose buildPose(MinecraftClient client, Cell cell, Map<BlockPos, BlockState> desired,

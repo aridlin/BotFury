@@ -532,8 +532,9 @@ renewable water outside the work area and near the supply chest.
 A horizontal log needs a reachable face on a solid neighboring block
 along the requested axis. If the schematic provides no reachable support,
 the bots can place temporary cobblestone in a reachable air cell over a
-solid floor. They verify the cell is empty first and remove the cobblestone
-after the pillar finishes or exhausts its retries. Supplied builds acquire
+solid floor. The same temporary anchors can start raised platforms made
+of ordinary full blocks. The workers check the cell is empty first and
+clear it again after dry construction settles. Supplied builds acquire
 the extra cobblestone automatically. Verification checks the requested
 axis, and the fleet replaces a log facing the wrong way.
 The planner clears exposed obstructions first, then uses newly opened
@@ -545,8 +546,10 @@ Bots can use permanent full-block steps already placed by the fleet to reach
 higher placements. The planner waits for the route's floor blocks and reserves
 the route during the placement. Full-block steps need clear headroom.
 When permanent steps are unavailable, the planner can add temporary
-cobblestone staircases beside separated parts of the structure. It verifies
-the build before taking the staircases down in reverse construction order. Supplied builds include the
+cobblestone staircases beside separated parts of the structure. Steps can
+occupy explicit air cells. Workers verify the permanent blocks before
+taking the staircases down in reverse construction order and check those
+cells are air during teardown. Supplied builds include the
 scaffold material, and workers need a pickaxe for teardown.
 The planner accepts up to 32,768 cells and 4,096 jobs, with a separate
 limit on dependency count. For volumes above 128 cells, workers check up

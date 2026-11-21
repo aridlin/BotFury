@@ -5,6 +5,7 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.ChestBlock;
+import net.minecraft.block.FallingBlock;
 import net.minecraft.block.enums.ChestType;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.nbt.*;
@@ -370,8 +371,13 @@ final class StructureProject {
                 throw new IllegalArgumentException("No reachable support face for " + cell.desired + " at " + cell.pos.toShortString());
             }
         }
-        jobs.addAll(cleanup);
-        cleanup.forEach(job -> changes.add(job.id()));
+        var dryChanges = List.copyOf(changes);
+        for (var removal : cleanup) {
+            var support = removal.cleanup();
+            jobs.add(new ProjectQueue.Work(removal.id(), removal.kind(), removal.payload(), removal.needs(),
+                    removal.locks(), null, new ProjectQueue.Cleanup(support.site(), support.afterSettled(), dryChanges)));
+            changes.add(removal.id());
+        }
         if (!waterSources.isEmpty()) {
             String dryBarrier = "before-water";
             jobs.add(new ProjectQueue.Work(dryBarrier, ProjectQueue.Kind.BARRIER, "", List.copyOf(changes), Set.of()));
@@ -398,10 +404,17 @@ final class StructureProject {
             prerequisites = List.of("before-inspection");
         }
         var verificationLayout = new HashMap<>(desired);
-        for (var scaffold : scaffolds) verificationLayout.putAll(scaffold.layout);
+        var temporaryAccessCells = new HashSet<BlockPos>();
+        for (var scaffold : scaffolds) {
+            verificationLayout.putAll(scaffold.layout);
+            temporaryAccessCells.addAll(scaffold.layout.keySet());
+        }
         var inspections = new ArrayList<String>();
         if (!inspectionChunks.isEmpty()) {
-            for (var chunk : inspectionChunks.values()) {
+            for (var group : inspectionChunks.values()) {
+                // Stair removal observes air in any schematic cells temporarily used for access.
+                var chunk = group.stream().filter(cell -> !temporaryAccessCells.contains(cell.pos)).toList();
+                if (chunk.isEmpty()) continue;
                 var stand = inspectionStand(client, chunk, verificationLayout);
                 if (stand == null) throw new IllegalArgumentException("No safe inspection position in or near the chunk at " + chunk.get(0).pos.toShortString());
                 area = StructureSupply.include(StructureSupply.include(area, stand), stand.down());
@@ -418,6 +431,7 @@ final class StructureProject {
         } else {
             for (int i = 0; i < cells.size(); i++) {
                 var cell = cells.get(i);
+                if (temporaryAccessCells.contains(cell.pos)) continue;
                 var stand = verificationStand(client, cell.pos, verificationLayout);
                 if (stand == null) throw new IllegalArgumentException("No safe verification position near " + cell.pos.toShortString());
                 String id = "verify-" + i;
@@ -449,14 +463,15 @@ final class StructureProject {
         if (room < 3) return null;
         // A staircase is useful only around the work that can be reached from its upper steps.
         var nearby = pending.stream().filter(cell -> horizontalDistance(first.pos, cell.pos) <= 36).toList();
-        BlockPos highTarget = nearby.stream().filter(cell -> horizontalDistance(first.pos, cell.pos) <= 4)
+        BlockPos highTarget = nearby.stream().filter(cell -> horizontalDistance(first.pos, cell.pos) <= 4
+                        && cell.pos.getY() <= first.pos.getY() + 4)
                 .max(Comparator.comparingInt(cell -> cell.pos.getY())).orElseThrow().pos;
         int high = highTarget.getY();
         String suffix = index == 0 ? "" : index + "-";
         Scaffold best = null;
         int fewestRemaining = nearby.size();
         for (int rise = 1; rise <= 5 && 3 * rise * (rise + 1) / 2 <= room; rise++) {
-            for (int feetY : new int[]{high - 1, high}) {
+            for (int feetY : new int[]{high - 1, high, high + 1}) {
                 for (var side : Direction.Type.HORIZONTAL) for (var ascent : List.of(side.getOpposite(),
                         side.rotateYClockwise(), side.rotateYCounterclockwise())) {
                     for (int gap : new int[]{1, 2}) for (int lateral : new int[]{0, 1, -1}) {
@@ -520,7 +535,7 @@ final class StructureProject {
                     || !safeStand(client, column, layout)) return null;
             for (int layer = 0; layer < height; layer++) {
                 var pos = column.up(layer);
-                if (!loaded(client, pos) || layout.containsKey(pos) || !airAt(client, pos, cleared)) return null;
+                if (!loaded(client, pos) || !airAt(client, pos, layout) || !airAt(client, pos, cleared)) return null;
                 scaffold.put(pos, SCAFFOLD);
             }
         }
@@ -681,7 +696,8 @@ final class StructureProject {
 
     private static TemporarySupport temporarySupport(MinecraftClient client, Cell cell, Map<BlockPos, BlockState> layout,
                                                        Map<BlockPos, BlockState> cleared) {
-        if (ProjectShapedBlock.recognized(cell.desired) || ProjectPlacement.faces(cell.desired).contains(Direction.UP)) return null;
+        if (cell.desired.getBlock() instanceof FallingBlock
+                || !cell.desired.isFullCube(client.world, cell.pos)) return null;
         for (var face : ProjectPlacement.faces(cell.desired)) {
             var support = cell.pos.offset(face.getOpposite());
             var floorPos = support.down();
@@ -694,12 +710,14 @@ final class StructureProject {
                     || !layout.getOrDefault(floorPos, floor).equals(floor)) continue;
             var simulated = new HashMap<>(layout);
             simulated.put(support, Blocks.COBBLESTONE.getDefaultState());
-            var supportStand = chooseStand(client, support, simulated, Direction.UP,
-                    pos -> clearBuildFace(client, pos, support, floorPos, Direction.UP, simulated)
+            var supportStand = findStand(client, support, Direction.UP, true,
+                    pos -> safeStand(client, pos, cleared) && safeStand(client, pos, simulated)
+                            && clearBuildFace(client, pos, support, floorPos, Direction.UP, simulated)
                             && canRemoveBlock(client, pos, support, simulated));
             if (supportStand == null) continue;
-            var pillarStand = chooseStand(client, cell.pos, simulated, face,
-                    pos -> clearBuildFace(client, pos, cell.pos, support, face, simulated));
+            var pillarStand = findStand(client, cell.pos, face, true,
+                    pos -> safeStand(client, pos, cleared) && safeStand(client, pos, simulated)
+                            && clearBuildFace(client, pos, cell.pos, support, face, simulated));
             if (pillarStand != null) return new TemporarySupport(new BuildPose(pillarStand, face, support, false), supportStand);
         }
         return null;

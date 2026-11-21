@@ -14,7 +14,20 @@ final class ProjectQueue {
     enum Kind { EXCAVATE, GATHER, CRAFT, SMELT, TRANSFER, BUILD, VERIFY }
     enum State { WAITING, LEASED, DONE, FAILED }
 
-    record Work(String id, Kind kind, String payload, List<String> needs, Set<String> locks, String sameWorkerAs) {
+    record Cleanup(String site, String afterSettled) {
+        Cleanup {
+            if (site == null || !site.matches("block:-?[0-9]+,-?[0-9]+,-?[0-9]+") || !validId(afterSettled)) {
+                throw new IllegalArgumentException("Invalid temporary support cleanup");
+            }
+        }
+    }
+
+    record Work(String id, Kind kind, String payload, List<String> needs, Set<String> locks, String sameWorkerAs,
+                Cleanup cleanup) {
+        Work(String id, Kind kind, String payload, List<String> needs, Set<String> locks, String sameWorkerAs) {
+            this(id, kind, payload, needs, locks, sameWorkerAs, null);
+        }
+
         Work(String id, Kind kind, String payload, List<String> needs, Set<String> locks) {
             this(id, kind, payload, needs, locks, null);
         }
@@ -23,6 +36,8 @@ final class ProjectQueue {
                     || needs == null || locks == null || needs.size() > 256 || locks.size() > 128
                     || needs.stream().anyMatch(dep -> !validId(dep))
                     || sameWorkerAs != null && !needs.contains(sameWorkerAs)
+                    || cleanup != null && (kind != Kind.EXCAVATE || needs.size() != 1
+                    || sameWorkerAs != null || !locks.contains(cleanup.site))
                     || locks.stream().anyMatch(key -> key == null || key.isBlank() || key.length() > 240)) {
                 throw new IllegalArgumentException("Invalid project job");
             }
@@ -124,13 +139,23 @@ final class ProjectQueue {
     private static String reservedStorage(Project project) {
         if (project.repeat != null && !project.repeat.cancelled) return project.repeat.chest;
         if (project.supplyChest == null) return null;
-        Set<String> blocked = new HashSet<>();
+        var blocked = blockedJobs(project);
         for (Job job : project.jobs) {
-            if (job.state == State.FAILED || job.work.needs.stream().anyMatch(blocked::contains)) {
-                blocked.add(job.work.id);
-            } else if (job.state == State.WAITING || job.state == State.LEASED) return project.supplyChest;
+            if (!blocked.contains(job.work.id) && (job.state == State.WAITING || job.state == State.LEASED)) {
+                return project.supplyChest;
+            }
         }
         return null;
+    }
+
+    private static Set<String> blockedJobs(Project project) {
+        Set<String> blocked = new HashSet<>();
+        for (Job job : project.jobs) {
+            if (job.state == State.FAILED || (job.state == State.WAITING && job.work.needs.stream().anyMatch(blocked::contains))) {
+                blocked.add(job.work.id);
+            }
+        }
+        return blocked;
     }
 
     synchronized boolean cancelOutput(String world, String chest) throws IOException {
@@ -156,7 +181,9 @@ final class ProjectQueue {
         Set<String> defined = new HashSet<>();
         List<Job> jobs = new ArrayList<>();
         for (Work item : work) {
-            if (item == null || !defined.containsAll(item.needs) || !defined.add(item.id)) {
+            if (item == null || !defined.containsAll(item.needs)
+                    || item.cleanup != null && (repeat != null || !defined.contains(item.cleanup.afterSettled))
+                    || !defined.add(item.id)) {
                 throw new IllegalArgumentException("Jobs must be unique and follow their dependencies");
             }
             jobs.add(new Job(item, State.WAITING, 0, null, null, 0, null, null));
@@ -172,10 +199,16 @@ final class ProjectQueue {
         expire(now);
         recoverMissingSuppliers(world, now);
         Set<String> reserved = new HashSet<>();
-        Map<String, String> outputChests = new HashMap<>();
+        Map<String, String> projectReservations = new HashMap<>();
         for (Project project : projects.values()) {
+            if (!world.equals(project.world)) continue;
             var storage = reservedStorage(project);
-            if (world.equals(project.world) && storage != null) outputChests.put(storage, project.id);
+            if (storage != null) projectReservations.putIfAbsent(storage, project.id);
+            var blocked = blockedJobs(project);
+            for (Job job : project.jobs) {
+                if (job.work.cleanup != null && (job.state == State.WAITING || job.state == State.LEASED)
+                        && !blocked.contains(job.work.id)) projectReservations.putIfAbsent(job.work.cleanup.site, project.id);
+            }
         }
         for (Project project : projects.values()) {
             for (Job job : project.jobs) {
@@ -205,14 +238,17 @@ final class ProjectQueue {
             if (!world.equals(project.world) || cancelled(project) || (ownedOrder != null && ownedOrder != project)) continue;
             Set<String> done = new HashSet<>();
             for (Job job : project.jobs) if (job.state == State.DONE) done.add(job.work.id);
+            var blocked = blockedJobs(project);
             String deposit = project.repeat == null ? null : pendingDeposit(project, done);
             for (Job job : project.jobs) {
                 if (ownedLane != null && !ownedLane.equals(lane(job.work.id))) continue;
                 if (deposit != null && job.work.kind == Kind.TRANSFER && !deposit.equals(job.work.id)) continue;
                 if (job.state != State.WAITING || job.expiresAt > now || !kinds.contains(job.work.kind)
                         || !done.containsAll(job.work.needs) || !Collections.disjoint(reserved, job.work.locks)) continue;
-                if (job.work.locks.stream().anyMatch(key -> outputChests.containsKey(key)
-                        && !project.id.equals(outputChests.get(key)))) continue;
+                if (job.work.cleanup != null && !done.contains(job.work.cleanup.afterSettled)
+                        && !blocked.contains(job.work.cleanup.afterSettled)) continue;
+                if (job.work.locks.stream().anyMatch(key -> projectReservations.containsKey(key)
+                        && !project.id.equals(projectReservations.get(key)))) continue;
                 if (job.work.sameWorkerAs != null
                         && !worker.equalsIgnoreCase(find(project, job.work.sameWorkerAs).worker)) continue;
                 Job assigned = new Job(job.work, State.LEASED, job.attempts + 1, worker,

@@ -517,8 +517,12 @@ coordinates take precedence over the stored paste offset.
 The vanilla importer uses a single palette. Both formats accept explicit
 air, full single-state blocks, and full blocks with an axis, such as logs.
 A horizontal log needs a reachable face on a solid neighboring block
-along the requested axis. The planner can place that support first.
-Verification checks the axis, and a log facing the wrong way is replaced.
+along the requested axis. If the schematic provides no reachable support,
+the bots can place temporary cobblestone in a reachable air cell over a
+solid floor. They verify the cell is empty first and remove the cobblestone
+after the pillar finishes or exhausts its retries. Supplied builds acquire
+the extra cobblestone automatically. Verification checks the requested
+axis, and the fleet replaces a log facing the wrong way.
 The planner rejects entities, block entities, and plans over 256 jobs. Use an already prepared site with room for the
 bots to walk to the stands. Vanilla chest jobs and explicit project jobs
 remain available through the local API.

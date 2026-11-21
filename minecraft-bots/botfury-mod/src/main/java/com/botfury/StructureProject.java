@@ -3,10 +3,12 @@ package com.botfury;
 import com.google.gson.Gson;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.block.BlockState;
+import net.minecraft.block.Blocks;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.nbt.*;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
@@ -27,6 +29,7 @@ final class StructureProject {
     record Plan(List<ProjectQueue.Work> jobs, Map<Identifier, Integer> materials, ProjectGather.Area area) {}
     private record Cell(BlockPos pos, BlockState desired, BlockState observed, BlockPos stand) {}
     private record BuildPose(BlockPos stand, Direction face, BlockPos support) {}
+    private record TemporarySupport(BuildPose pillar, BlockPos stand) {}
 
     private StructureProject() {}
 
@@ -167,6 +170,8 @@ final class StructureProject {
         var excavation = new HashMap<BlockPos, String>();
         var materials = new TreeMap<Identifier, Integer>();
         var pending = new LinkedHashMap<Integer, Cell>();
+        var cleanup = new ArrayList<ProjectQueue.Work>();
+        var layout = new HashMap<>(desired);
         var origin = cells.get(0).pos;
         var area = new ProjectGather.Area(origin, origin);
         for (int i = 0; i < cells.size(); i++) {
@@ -181,7 +186,7 @@ final class StructureProject {
                 String id = "clear-" + i;
                 excavation.put(cell.pos, id);
                 changes.add(id);
-                jobs.add(work(id, ProjectQueue.Kind.EXCAVATE, cell, cell.observed, cell.stand, Direction.UP, List.of()));
+                jobs.add(work(id, ProjectQueue.Kind.EXCAVATE, cell.pos, cell.observed, cell.stand, Direction.UP, List.of()));
             }
             if (cell.desired.isAir()) continue;
             if (!cell.desired.isFullCube(client.world, cell.pos)) {
@@ -189,34 +194,62 @@ final class StructureProject {
             }
             pending.put(i, cell);
         }
+        boolean allowTemporarySupport = false;
         while (!pending.isEmpty()) {
             int before = pending.size();
             for (var iterator = pending.entrySet().iterator(); iterator.hasNext(); ) {
                 var entry = iterator.next();
                 var cell = entry.getValue();
-                var pose = buildPose(client, cell, desired, ready);
+                var pose = buildPose(client, cell, layout, ready);
+                var temporary = pose == null && allowTemporarySupport ? temporarySupport(client, cell, layout) : null;
+                if (temporary != null) pose = temporary.pillar;
                 if (pose == null) continue;
                 var needs = new ArrayList<String>();
                 if (excavation.containsKey(cell.pos)) needs.add(excavation.get(cell.pos));
                 if (placed.containsKey(pose.support)) needs.add(placed.get(pose.support));
                 String id = "place-" + entry.getKey();
+                if (temporary != null) {
+                    var support = pose.support;
+                    var state = Blocks.COBBLESTONE.getDefaultState();
+                    layout.put(support, state);
+                    String check = "check-support-" + entry.getKey();
+                    String place = "place-support-" + entry.getKey();
+                    String remove = "remove-support-" + entry.getKey();
+                    jobs.add(work(check, ProjectQueue.Kind.VERIFY, support, Blocks.AIR.getDefaultState(),
+                            temporary.stand, Direction.UP, List.of()));
+                    jobs.add(work(place, ProjectQueue.Kind.BUILD, support, state, temporary.stand, Direction.UP, List.of(check)));
+                    var removal = work(remove, ProjectQueue.Kind.EXCAVATE, support, state, temporary.stand,
+                            Direction.UP, List.of(place));
+                    cleanup.add(new ProjectQueue.Work(removal.id(), removal.kind(), removal.payload(), removal.needs(),
+                            removal.locks(), null, new ProjectQueue.Cleanup(ProjectBlock.key(support), id)));
+                    needs.add(place);
+                    materials.merge(Registries.ITEM.getId(state.getBlock().asItem()), 1, Integer::sum);
+                    area = StructureSupply.union(area, new ProjectBlock(support.down(), temporary.stand, AIR));
+                    allowTemporarySupport = false;
+                }
                 placed.put(cell.pos, id);
                 ready.put(cell.pos, cell.desired);
                 changes.add(id);
-                jobs.add(work(id, ProjectQueue.Kind.BUILD, cell, cell.desired, pose.stand, pose.face, needs));
+                jobs.add(work(id, ProjectQueue.Kind.BUILD, cell.pos, cell.desired, pose.stand, pose.face, needs));
                 materials.merge(Registries.ITEM.getId(cell.desired.getBlock().asItem()), 1, Integer::sum);
                 area = StructureSupply.union(area, new ProjectBlock(pose.support, pose.stand, AIR));
                 iterator.remove();
             }
             if (pending.size() == before) {
+                if (!allowTemporarySupport) {
+                    allowTemporarySupport = true;
+                    continue;
+                }
                 var cell = pending.values().iterator().next();
                 throw new IllegalArgumentException("No reachable support face for " + cell.desired + " at " + cell.pos.toShortString());
             }
         }
+        jobs.addAll(cleanup);
+        cleanup.forEach(job -> changes.add(job.id()));
         List<String> prerequisites = List.copyOf(changes);
         for (int i = 0; i < cells.size(); i++) {
             var cell = cells.get(i);
-            jobs.add(work("verify-" + i, ProjectQueue.Kind.VERIFY, cell, cell.desired, cell.stand, Direction.UP, prerequisites));
+            jobs.add(work("verify-" + i, ProjectQueue.Kind.VERIFY, cell.pos, cell.desired, cell.stand, Direction.UP, prerequisites));
         }
         if (jobs.size() > LIMIT) throw new IllegalArgumentException("Structure needs more than 256 jobs");
         return new Plan(List.copyOf(jobs), Map.copyOf(materials), area);
@@ -238,25 +271,61 @@ final class StructureProject {
         return null;
     }
 
+    private static TemporarySupport temporarySupport(MinecraftClient client, Cell cell, Map<BlockPos, BlockState> layout) {
+        if (ProjectPlacement.faces(cell.desired).contains(Direction.UP)) return null;
+        for (var face : ProjectPlacement.faces(cell.desired)) {
+            var support = cell.pos.offset(face.getOpposite());
+            var floorPos = support.down();
+            if (!loaded(client, support) || !loaded(client, floorPos)) continue;
+            var planned = layout.get(support);
+            if ((planned != null && !planned.isAir()) || !client.world.getBlockState(support).isAir()) continue;
+            var floor = client.world.getBlockState(floorPos);
+            if (floor.hasBlockEntity() || !floor.isFullCube(client.world, floorPos)
+                    || !layout.getOrDefault(floorPos, floor).equals(floor)) continue;
+            var simulated = new HashMap<>(layout);
+            simulated.put(support, Blocks.COBBLESTONE.getDefaultState());
+            var supportStand = chooseStand(client, support, simulated, Direction.UP,
+                    pos -> clearBuildFace(client, pos, support, floorPos, Direction.UP, simulated)
+                            && canRemoveSupport(client, pos, support, simulated));
+            if (supportStand == null) continue;
+            var pillarStand = chooseStand(client, cell.pos, simulated, face,
+                    pos -> clearBuildFace(client, pos, cell.pos, support, face, simulated));
+            if (pillarStand != null) return new TemporarySupport(new BuildPose(pillarStand, face, support), supportStand);
+        }
+        return null;
+    }
+
     private static boolean clearBuildFace(MinecraftClient client, BlockPos stand, BlockPos target,
                                           BlockPos support, Direction face, Map<BlockPos, BlockState> desired) {
         var eye = Vec3d.ofBottomCenter(stand).add(0, 1.62, 0);
         var point = ProjectPlacement.facePoint(support, face);
-        if (eye.squaredDistanceTo(point) > 4.4 * 4.4) return false;
-        var hit = BlockView.raycast(eye, point, client.world, (world, pos) -> {
-            if (pos.equals(target)) return null;
-            var state = desired.getOrDefault(pos, world.getBlockState(pos));
-            return state.getOutlineShape(world, pos).raycast(eye, point, pos);
-        }, ignored -> null);
+        var hit = plannedRay(client, eye, point, desired, target);
         return hit != null && hit.getBlockPos().equals(support) && hit.getSide() == face;
     }
 
-    private static ProjectQueue.Work work(String id, ProjectQueue.Kind kind, Cell cell, BlockState state,
+    private static boolean canRemoveSupport(MinecraftClient client, BlockPos stand, BlockPos support,
+                                            Map<BlockPos, BlockState> layout) {
+        var eye = Vec3d.ofBottomCenter(stand).add(0, 1.62, 0);
+        var hit = plannedRay(client, eye, Vec3d.ofCenter(support), layout, null);
+        return hit != null && hit.getBlockPos().equals(support);
+    }
+
+    private static BlockHitResult plannedRay(MinecraftClient client, Vec3d eye, Vec3d point,
+                                            Map<BlockPos, BlockState> layout, BlockPos ignoredBlock) {
+        if (eye.squaredDistanceTo(point) > 4.4 * 4.4) return null;
+        return BlockView.raycast(eye, point, client.world, (world, pos) -> {
+            if (pos.equals(ignoredBlock)) return null;
+            var state = layout.getOrDefault(pos, world.getBlockState(pos));
+            return state.getOutlineShape(world, pos).raycast(eye, point, pos);
+        }, ignored -> null);
+    }
+
+    private static ProjectQueue.Work work(String id, ProjectQueue.Kind kind, BlockPos target, BlockState state,
                                           BlockPos stand, Direction face, List<String> needs) {
         var blockId = Registries.BLOCK.getId(state.getBlock());
         var properties = ProjectBlock.properties(state);
-        var location = new ProjectBlock(cell.pos, stand, blockId, properties, face);
-        var payload = new ProjectBlock.Payload(position(cell.pos), position(stand), blockId.toString(),
+        var location = new ProjectBlock(target, stand, blockId, properties, face);
+        var payload = new ProjectBlock.Payload(position(target), position(stand), blockId.toString(),
                 properties.isEmpty() ? null : properties, face == Direction.UP ? null : face.getName());
         return location.reserve(new ProjectQueue.Work(id, kind, JSON.toJson(payload), needs, Set.of()));
     }

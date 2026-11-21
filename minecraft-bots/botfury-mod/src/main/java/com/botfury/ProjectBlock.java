@@ -94,7 +94,10 @@ record ProjectBlock(BlockPos target, BlockPos stand, Identifier block, Map<Strin
         locks.add(key(stand));
         locks.add(key(stand.down()));
         locks.add(key(stand.up()));
-        return new ProjectQueue.Work(work.id(), work.kind(), work.payload(), work.needs(), locks, work.sameWorkerAs());
+        if (work.cleanup() != null && !key(target).equals(work.cleanup().site())) {
+            throw new IllegalArgumentException("Cleanup site must match its target");
+        }
+        return new ProjectQueue.Work(work.id(), work.kind(), work.payload(), work.needs(), locks, work.sameWorkerAs(), work.cleanup());
     }
 
     static String key(BlockPos block) {

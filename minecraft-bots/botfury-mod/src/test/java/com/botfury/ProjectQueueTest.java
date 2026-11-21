@@ -17,6 +17,50 @@ class ProjectQueueTest {
         return new ProjectQueue.Work(id, kind, "", needs, Set.of(locks));
     }
 
+    @Test void failedPlacementStillReleasesItsTemporarySupportAfterRestart() throws Exception {
+        Path path = directory.resolve("board.json");
+        var board = new ProjectQueue(path);
+        String site = "block:3,64,0";
+        board.submit("pillar", WORLD, List.of(
+                job("support", BUILD, List.of(), site),
+                job("pillar", BUILD, List.of("support"), site),
+                new ProjectQueue.Work("remove", EXCAVATE, "", List.of("support"), Set.of(site), null,
+                        new ProjectQueue.Cleanup(site, "pillar"))));
+        board.submit("other", WORLD, List.of(job("replace", EXCAVATE, List.of(), site)));
+        var support = board.claim(WORLD, "Builder", Set.of(BUILD), 1).job();
+        assertTrue(board.finish("pillar", "support", support.lease(), true, "Observed cobblestone", 2));
+        assertNull(board.claim(WORLD, "Cleaner", Set.of(EXCAVATE), 3));
+
+        for (int i = 0; i < 3; i++) {
+            var pillar = board.claim(WORLD, "Builder", Set.of(BUILD), 4 + i * 2).job();
+            assertTrue(board.finish("pillar", "pillar", pillar.lease(), false, "No log in inventory", 5 + i * 2));
+        }
+        board = new ProjectQueue(path);
+        var cleanup = board.claim(WORLD, "Cleaner", Set.of(EXCAVATE), 11).job();
+        assertEquals("remove", cleanup.work().id());
+        assertNull(board.claim(WORLD, "Other", Set.of(EXCAVATE), 12));
+        assertTrue(board.finish("pillar", "remove", cleanup.lease(), true, "Observed air", 13));
+        assertEquals("other", board.claim(WORLD, "Other", Set.of(EXCAVATE), 14).project());
+    }
+
+    @Test void aSupportThatWasNeverPlacedDoesNotMakeCleanupEligible() throws Exception {
+        var board = new ProjectQueue(directory.resolve("board.json"));
+        String site = "block:3,64,0";
+        board.submit("pillar", WORLD, List.of(
+                job("check", VERIFY, List.of(), site),
+                job("support", BUILD, List.of("check"), site),
+                job("pillar", BUILD, List.of("support"), site),
+                new ProjectQueue.Work("remove", EXCAVATE, "", List.of("support"), Set.of(site), null,
+                        new ProjectQueue.Cleanup(site, "pillar"))));
+        board.submit("other", WORLD, List.of(job("replace", EXCAVATE, List.of(), site)));
+        for (int i = 0; i < 3; i++) {
+            var probe = board.claim(WORLD, "Checker", Set.of(VERIFY), 1 + i * 2).job();
+            assertTrue(board.finish("pillar", "check", probe.lease(), false, "Site occupied", 2 + i * 2));
+        }
+        assertNull(board.claim(WORLD, "Builder", Set.of(BUILD), 7));
+        assertEquals("other", board.claim(WORLD, "Other", Set.of(EXCAVATE), 7).project());
+    }
+
     @Test void separatesRolesAndPreventsTwoBotsFromUsingTheSameWorkArea() throws Exception {
         var board = new ProjectQueue(directory.resolve("board.json"));
         board.submit("house", WORLD, List.of(

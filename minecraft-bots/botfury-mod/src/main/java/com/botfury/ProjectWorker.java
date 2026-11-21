@@ -2,15 +2,19 @@ package com.botfury;
 
 import com.google.gson.Gson;
 import net.minecraft.client.MinecraftClient;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.*;
 import java.time.Duration;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
@@ -19,6 +23,8 @@ final class ProjectWorker {
     private static final Gson JSON = new Gson();
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(750)).build();
     private static final Set<ProjectQueue.Kind> KINDS = Set.of(ProjectQueue.Kind.EXCAVATE, ProjectQueue.Kind.VERIFY, ProjectQueue.Kind.TRANSFER, ProjectQueue.Kind.BUILD, ProjectQueue.Kind.CRAFT, ProjectQueue.Kind.SMELT, ProjectQueue.Kind.GATHER);
+    private static WorkerEnrollment enrollment;
+    private static boolean enrollmentLoaded;
     private static int port;
     private static int generation;
     private static boolean pending;
@@ -44,18 +50,80 @@ final class ProjectWorker {
     static boolean supports(ProjectQueue.Kind kind) { return KINDS.contains(kind); }
 
     static void start(MinecraftClient client, int coordinator) {
-        if (port == coordinator) return;
-        LocalFormation.pauseMovement();
-        BotInventory.hold();
-        port = coordinator;
-        status = "Waiting for project jobs";
+        var here = LocalFormation.snapshot(client);
+        if (here == null || coordinator == BotFuryMod.controlPort()) {
+            BotEvents.add("warn", "projects", "Join the project world before enabling the worker");
+            return;
+        }
+        WorkerEnrollment next;
+        try {
+            next = new WorkerEnrollment(here.name(), world(here), coordinator);
+            if (next.equals(enrollment) && enabled()) return;
+            WorkerEnrollment.save(enrollmentPath(), next);
+        } catch (IOException | IllegalArgumentException error) {
+            BotEvents.add("warn", "projects", "Could not save project worker enrollment");
+            return;
+        }
+        enrollment = next;
+        enrollmentLoaded = true;
+        attach(client, "Project worker enabled");
     }
 
-    static void stop(MinecraftClient client) {
+    static void restore(MinecraftClient client, LocalFormation.Peer here) {
+        if (enabled() || !Boolean.getBoolean("botfury.managedHttp")) return;
+        loadEnrollment();
+        if (enrollment == null || enrollment.port() == BotFuryMod.controlPort()) return;
+        if (enrollment.matches(here.name(), world(here))) {
+            if (BaritoneClient.available()) attach(client, "Restored project worker enrollment");
+        } else {
+            status = "Waiting for enrolled project world";
+        }
+    }
+
+    private static void attach(MinecraftClient client, String event) {
+        suspend(client);
+        LocalFormation.clearMovement();
+        BotInventory.hold();
+        port = enrollment.port();
+        status = "Waiting for project jobs";
+        BotEvents.add("info", "projects", event);
+    }
+
+    static void suspend(MinecraftClient client) {
         generation++;
         port = 0;
         reset(client);
         status = "";
+    }
+
+    static void stop(MinecraftClient client) {
+        suspend(client);
+        if (!Boolean.getBoolean("botfury.managedHttp")) return;
+        loadEnrollment();
+        enrollment = null;
+        try {
+            Files.deleteIfExists(enrollmentPath());
+        } catch (IOException error) {
+            try {
+                WorkerEnrollment.save(enrollmentPath(), null);
+            } catch (IOException writeError) {
+                BotEvents.add("warn", "projects", "Could not clear saved worker enrollment");
+            }
+        }
+    }
+
+    private static void loadEnrollment() {
+        if (enrollmentLoaded) return;
+        enrollmentLoaded = true;
+        try {
+            enrollment = WorkerEnrollment.read(enrollmentPath());
+        } catch (IOException error) {
+            BotEvents.add("warn", "projects", "Could not read saved worker enrollment");
+        }
+    }
+
+    private static Path enrollmentPath() {
+        return FabricLoader.getInstance().getConfigDir().resolve("botfury-worker.json");
     }
 
     static void interrupt(MinecraftClient client) {

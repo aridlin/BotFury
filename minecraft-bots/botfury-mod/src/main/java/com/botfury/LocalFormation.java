@@ -262,7 +262,7 @@ final class LocalFormation {
             connection = client.getNetworkHandler();
             connectionWorld = currentWorld;
             boolean wasActive = !mode.isEmpty() || incoming != null;
-            ProjectWorker.stop(client);
+            ProjectWorker.suspend(client);
             MiningTask.stop();
             BotCollisionPolicy.replace(java.util.List.of());
             pending.clear();
@@ -306,6 +306,7 @@ final class LocalFormation {
         BotTracker.tick();
         processOverrides();
         processFleetTasks();
+        ProjectWorker.restore(client, local);
         if (ProjectWorker.enabled()) {
             cancelPath();
             ProjectWorker.tick(client, local);
@@ -689,7 +690,7 @@ final class LocalFormation {
         savedBlocks = null;
     }
 
-    private static Peer snapshot(MinecraftClient client) {
+    static Peer snapshot(MinecraftClient client) {
         ServerInfo info = client.getCurrentServerEntry();
         if (info == null || client.world == null || client.player == null) return null;
         ServerAddress address = ServerAddress.parse(info.address);
@@ -764,7 +765,21 @@ final class LocalFormation {
         });
     }
 
-    static void pauseMovement() { ProjectWorker.stop(MinecraftClient.getInstance()); TaskDefense.cancelEvasion(); overrides.clear(); stop(); incoming = null; cancelPath(); BaritoneClient.execute("stop"); MiningTask.stop(); fleetTasks.clear(); }
+    static void pauseMovement() {
+        ProjectWorker.stop(MinecraftClient.getInstance());
+        clearMovement();
+    }
+
+    static void clearMovement() {
+        TaskDefense.cancelEvasion();
+        overrides.clear();
+        stop();
+        incoming = null;
+        cancelPath();
+        BaritoneClient.execute("stop");
+        MiningTask.stop();
+        fleetTasks.clear();
+    }
     static void cancelStrike(MinecraftClient client) { if (mode.equals("strike")) finishStrike(client); }
     static void fleetCommand(String command) {
         if (fleetTasks.size() >= 16) { BotEvents.add("warn", "fleet", "Too many queued tasks; wait for delivery"); return; }

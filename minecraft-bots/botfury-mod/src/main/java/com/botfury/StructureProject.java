@@ -314,17 +314,14 @@ final class StructureProject {
                 stand = findStand(client, cell.pos, face, true, pos ->
                         safeStand(client, pos, cleared) && safeStand(client, pos, desired) && visible.test(pos));
             }
-            // Ordinary blocks may have a face that is only exposed before neighboring placements.
             if (stand != null) return new BuildPose(stand, face, support, false);
             var current = new HashMap<>(cleared);
             current.putAll(ready);
-            if (face == Direction.UP) {
-                stand = findStand(client, cell.pos, face, true, pos ->
-                        safeStand(client, pos, cleared) && safeStand(client, pos, desired)
-                                && clearBuildFace(client, pos, cell.pos, support, face, current));
-                // Later placements are gated on this one so they cannot close off the exposed face.
-                if (stand != null) return new BuildPose(stand, face, support, true);
-            }
+            stand = findStand(client, cell.pos, face, true, pos ->
+                    safeStand(client, pos, cleared) && safeStand(client, pos, desired)
+                            && clearBuildFace(client, pos, cell.pos, support, face, current));
+            // Later placements wait until a face that will be covered has been used.
+            if (stand != null) return new BuildPose(stand, face, support, true);
             for (boolean exposed : new boolean[]{false, true}) {
                 var visibleLayout = exposed ? current : desired;
                 var accessRoutes = new HashMap<BlockPos, BuildAccess>();

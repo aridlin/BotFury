@@ -325,16 +325,20 @@ final class StructureProject {
                 // Later placements are gated on this one so they cannot close off the exposed face.
                 if (stand != null) return new BuildPose(stand, face, support, true);
             }
-            var accessRoutes = new HashMap<BlockPos, BuildAccess>();
-            stand = findStand(client, cell.pos, face, true, pos -> {
-                if (!placed.containsKey(pos.down()) || !safeStand(client, pos, current)
-                        || !safeStand(client, pos, desired) || !visible.test(pos)) return false;
-                var access = builtAccess(client, pos, cell.pos, cleared, current, desired, placed);
-                if (access == null) return false;
-                accessRoutes.put(pos, access);
-                return true;
-            });
-            if (stand != null) return new BuildPose(stand, face, support, false, accessRoutes.get(stand));
+            for (boolean exposed : new boolean[]{false, true}) {
+                var visibleLayout = exposed ? current : desired;
+                var accessRoutes = new HashMap<BlockPos, BuildAccess>();
+                stand = findStand(client, cell.pos, face, true, pos -> {
+                    if (!placed.containsKey(pos.down()) || !safeStand(client, pos, current)
+                            || !safeStand(client, pos, desired)
+                            || !clearBuildFace(client, pos, cell.pos, support, face, visibleLayout)) return false;
+                    var access = builtAccess(client, pos, cell.pos, cleared, current, desired, placed);
+                    if (access == null) return false;
+                    accessRoutes.put(pos, access);
+                    return true;
+                });
+                if (stand != null) return new BuildPose(stand, face, support, exposed, accessRoutes.get(stand));
+            }
         }
         return null;
     }

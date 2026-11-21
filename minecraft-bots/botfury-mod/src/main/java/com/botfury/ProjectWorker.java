@@ -7,7 +7,6 @@ import net.minecraft.registry.Registries;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
 import java.io.IOException;
@@ -290,7 +289,7 @@ final class ProjectWorker {
         }
         stableSince = 0;
         if (kind == ProjectQueue.Kind.BUILD) {
-            if (centerForPlacement(client, feet, target)) return;
+            if (centerForPlacement(client, feet)) return;
             if (now >= nextPlacement) {
                 var failure = ProjectPlacement.attempt(client, block);
                 nextPlacement = now + seconds(1);
@@ -333,12 +332,14 @@ final class ProjectWorker {
         breaking = true;
     }
 
-    private static boolean centerForPlacement(MinecraftClient client, Vec3d stand, BlockPos target) {
+    private static boolean centerForPlacement(MinecraftClient client, Vec3d stand) {
         var player = client.player;
-        var box = player.getBoundingBox().expand(.03, 0, .03);
-        if (!box.intersects(new Box(target))) {
+        double dx = stand.x - player.getX();
+        double dz = stand.z - player.getZ();
+        // The face was planned from the center of the stand, not from its edge.
+        if (dx * dx + dz * dz <= .075 * .075) {
             releaseCentering(client);
-            return false;
+            return player.isSneaking();
         }
         player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES,
                 new Vec3d(stand.x, player.getEyeY(), stand.z));

@@ -3,7 +3,10 @@
   "package": "com.botfury.mixin",
   "compatibilityLevel": "JAVA_17",
   "client": [
-    "WorldRendererMixin"
+    "WorldRendererMixin",
+    "ClientNetworkMixin",
+    "BotPushMixin",
+    "ProjectileGroundAccess"
   ],
   "injectors": {
     "defaultRequire": 1

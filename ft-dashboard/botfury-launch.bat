@@ -16,6 +16,8 @@ if not defined AUTO_JOIN set "AUTO_JOIN=true"
 set "BOTFURY_ROOT=%~dp0.."
 set "MOD_DIR=%BOTFURY_ROOT%\minecraft-bots\botfury-mod"
 set "RUNTIME=%MOD_DIR%\build\botfury-client"
+if exist "%BOTFURY_ROOT%\config\client-runtime.path" set /p "RUNTIME="<"%BOTFURY_ROOT%\config\client-runtime.path"
+if defined BOTFURY_RUNTIME_DIR set "RUNTIME=%BOTFURY_RUNTIME_DIR%"
 set "RUN_DIR=%MOD_DIR%\run\%BOT_USERNAME%"
 if not exist "%RUNTIME%\client.args" goto prepare
 if not exist "%RUNTIME%\java-path.txt" goto prepare

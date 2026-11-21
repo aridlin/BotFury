@@ -17,7 +17,7 @@ final class ProjectBroker {
 
     private record Request(String action, String project, String worker, Set<ProjectQueue.Kind> kinds,
                            List<ProjectQueue.Work> work, String job, UUID token, Boolean success,
-                           String evidence) {}
+                           String evidence, ProjectQueue.ChestReport chest) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
         if (queue == null) {
@@ -36,7 +36,14 @@ final class ProjectBroker {
         }
         try {
             if ("GET".equals(exchange.getRequestMethod())) {
-                reply(exchange, 200, queue().snapshot(System.currentTimeMillis()));
+                if ("stock".equals(exchange.getRequestURI().getQuery())) {
+                    var here = LocalFormation.here();
+                    if (here == null) {
+                        reply(exchange, 409, "Join the project world first");
+                        return;
+                    }
+                    reply(exchange, 200, queue().chestStock(here.server() + "|" + here.dimension()));
+                } else reply(exchange, 200, queue().snapshot(System.currentTimeMillis()));
                 return;
             }
             if (!"POST".equals(exchange.getRequestMethod())) {
@@ -66,6 +73,9 @@ final class ProjectBroker {
                     if (request.work == null) throw new IllegalArgumentException("Missing project jobs");
                     var work = request.work.stream().map(item -> {
                         if (item == null) throw new IllegalArgumentException("Missing project job");
+                        if (item.kind() == ProjectQueue.Kind.TRANSFER) {
+                            return ProjectChest.parse(item.payload()).location().reserve(item);
+                        }
                         return ProjectWorker.supports(item.kind()) ? ProjectBlock.parse(item.payload()).reserve(item) : item;
                     }).toList();
                     board.submit(request.project, world, work);
@@ -79,7 +89,7 @@ final class ProjectBroker {
                 case "finish" -> {
                     if (request.success == null) throw new IllegalArgumentException("Report a success or failure");
                     boolean accepted = board.finish(request.project, request.job, request.token,
-                            request.success, request.evidence, now);
+                            request.success, request.evidence, request.chest, now);
                     reply(exchange, accepted ? 200 : 409, accepted);
                 }
                 default -> reply(exchange, 400, "Unknown project action");

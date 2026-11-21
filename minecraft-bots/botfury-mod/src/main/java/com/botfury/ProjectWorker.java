@@ -18,12 +18,14 @@ import java.util.concurrent.TimeUnit;
 final class ProjectWorker {
     private static final Gson JSON = new Gson();
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(750)).build();
-    private static final Set<ProjectQueue.Kind> KINDS = Set.of(ProjectQueue.Kind.EXCAVATE, ProjectQueue.Kind.VERIFY);
+    private static final Set<ProjectQueue.Kind> KINDS = Set.of(ProjectQueue.Kind.EXCAVATE, ProjectQueue.Kind.VERIFY, ProjectQueue.Kind.TRANSFER);
     private static int port;
     private static int generation;
     private static boolean pending;
     private static ProjectQueue.Assignment assignment;
     private static ProjectBlock block;
+    private static ProjectChest chest;
+    private static ProjectQueue.ChestReport chestReport;
     private static BaritoneSettings approach;
     private static Vec3d approachProgress;
     private static long retryApproach;
@@ -62,6 +64,8 @@ final class ProjectWorker {
         halt(client);
         assignment = null;
         block = null;
+        chest = null;
+        chestReport = null;
         success = null;
         evidence = null;
         pending = false;
@@ -69,6 +73,7 @@ final class ProjectWorker {
     }
 
     private static void halt(MinecraftClient client) {
+        if (chest != null) chest.close(client);
         if (breaking && client.interactionManager != null) client.interactionManager.cancelBlockBreaking();
         breaking = false;
         if (approach != null) {
@@ -134,6 +139,14 @@ final class ProjectWorker {
         }
         if (approach != null) halt(client);
         if (!client.world.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)) return;
+        if (chest != null) {
+            var result = chest.tick(client, now);
+            if (result != null) {
+                if (result.stock() != null) chestReport = new ProjectQueue.ChestReport(ProjectBlock.key(target), result.stock());
+                finish(client, result.success(), result.detail());
+            }
+            return;
+        }
         var state = client.world.getBlockState(target);
         var actual = Registries.BLOCK.getId(state.getBlock());
         boolean excavate = assignment.job().work().kind() == ProjectQueue.Kind.EXCAVATE;
@@ -196,6 +209,7 @@ final class ProjectWorker {
             if (success != null && action.equals("finish")) {
                 args.put("success", success);
                 args.put("evidence", evidence);
+                if (chestReport != null) args.put("chest", chestReport);
             }
         }
         pending = true;
@@ -218,7 +232,12 @@ final class ProjectWorker {
                     if (assignment == null) return;
                     deadline = deadline(assignment.job(), now);
                     taskEnd = System.nanoTime() + seconds(45);
-                    block = ProjectBlock.parse(assignment.job().work().payload());
+                    var work = assignment.job().work();
+                    if (work.kind() == ProjectQueue.Kind.TRANSFER) {
+                        var spec = ProjectChest.parse(work.payload());
+                        block = spec.location();
+                        chest = new ProjectChest(spec);
+                    } else block = ProjectBlock.parse(work.payload());
                     status = assignment.project() + "/" + assignment.job().work().id();
                 } else {
                     var renewed = JSON.fromJson(reply.body(), ProjectQueue.Job.class);
@@ -227,7 +246,7 @@ final class ProjectWorker {
                 }
                 if (success == null) nextRequest = now + seconds(4);
             } catch (IllegalArgumentException | com.google.gson.JsonParseException invalid) {
-                if (assignment != null) finish(client, false, "Invalid project block payload");
+                if (assignment != null) finish(client, false, "Invalid project job payload");
             }
         }));
     }

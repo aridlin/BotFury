@@ -495,4 +495,15 @@ above and below the stand. Excavation leaves block entities alone and
 requires a suitable hotbar tool for blocks that require one.
 
 The coordinator still needs explicit project descriptions. Workers currently
-execute excavation and verification jobs.
+execute excavation, verification and shared chest jobs.
+
+For a `TRANSFER` job, set `block` to `minecraft:chest` and add a
+`direction` of `DEPOSIT`, `WITHDRAW` or `INSPECT` to the payload. Supply
+`item` as an item registry ID and `stock` as the desired count in the
+chest for deposits and withdrawals. A deposit tops the count up to at least
+the target. A withdrawal takes excess until at most that count remains.
+Inspect records the contents without moving items. Jobs share an exclusive
+lock on the chest and only operate on single chests. The controller's
+`GET /projects?stock` shows last observed counts and timestamps, including
+observed partial transfers. Counts describe the chest when the bot checked
+it and can change when players or hoppers use it.

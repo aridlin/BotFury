@@ -77,6 +77,21 @@ class ProjectQueueTest {
         }
     }
 
+    @Test void stockChangesOnlyWithTheCurrentTransferLeaseAndSurvivesRestart() throws Exception {
+        Path journal = directory.resolve("board.json");
+        var board = new ProjectQueue(journal);
+        board.submit("hub", WORLD, List.of(job("deliver", TRANSFER, List.of(), "block:5,64,0")));
+        var stale = board.claim(WORLD, "First", Set.of(TRANSFER), 0).job();
+        var current = board.claim(WORLD, "Replacement", Set.of(TRANSFER), stale.expiresAt()).job();
+        var stock = new ProjectQueue.ChestReport("block:5,64,0", java.util.Map.of("minecraft:iron_ingot", 17));
+        assertFalse(board.finish("hub", "deliver", stale.lease(), true, "stale", stock, stale.expiresAt()));
+        assertTrue(board.chestStock(WORLD).isEmpty());
+        assertTrue(board.finish("hub", "deliver", current.lease(), true, "observed", stock, stale.expiresAt()));
+        var recovered = new ProjectQueue(journal);
+        assertEquals(stock, recovered.chestStock(WORLD).get("block:5,64,0").report());
+        assertTrue(recovered.chestStock("test|nether").isEmpty());
+    }
+
     @Test void rejectsUnknownDependenciesBeforeWriting() throws Exception {
         var board = new ProjectQueue(directory.resolve("board.json"));
         assertThrows(IllegalArgumentException.class, () -> board.submit("broken", WORLD,

@@ -37,6 +37,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <future>
+#include <deque>
+#include <atomic>
+#include <map>
 
 namespace fs = std::filesystem;
 
@@ -63,6 +67,8 @@ struct DashboardConfig {
     bool use_containers = false;
     bool disable_rendering_on_start = true;
     std::string server_ip = "localhost";
+    std::string console_master_host = "127.0.0.1";
+    int console_master_port = 8779;
     std::string offline_username_prefix = "Bot";
     std::string launch_command;
     std::string launch_working_directory;
@@ -86,6 +92,10 @@ struct BotStatus {
     int uptime_millis = 0;
     std::string player = "None";
     std::string offline_username;
+    std::string inventory_task;
+    std::string mining_task;
+    std::string formation, movement, last_event, build;
+    int protocol = 0, corrections = 0;
     std::string error;
 };
 
@@ -112,6 +122,9 @@ struct ContainerTask {
     LaunchedProcess process;
 };
 
+struct ConsoleEntry { std::string time, level, message; };
+struct PendingCommand { std::shared_future<std::string> result; std::string bot, label; };
+
 struct AppState {
     DashboardConfig config;
     fs::path config_path;
@@ -128,6 +141,16 @@ struct AppState {
     int next_bot_id = 1;
     int tab = 0;
     std::string log = "[boot] FT dashboard initialized";
+    std::deque<ConsoleEntry> console_entries;
+    std::vector<PendingCommand> pending_commands;
+    std::map<std::string, std::shared_future<std::string>> command_tails;
+    std::deque<std::string> command_history;
+    char console_command[512]{};
+    char console_target[64] = "all";
+    char console_filter[128]{};
+    char master_host[128] = "127.0.0.1";
+    char master_port[16] = "8779";
+    bool console_errors_only = false;
     std::string launch_message;
     std::chrono::steady_clock::time_point last_refresh{};
     size_t next_refresh_index = 0;
@@ -140,6 +163,10 @@ struct AppState {
     char scan_start_port[16]{};
     char scan_end_port[16]{};
     char broadcast[256]{};
+    char inventory_item[128] = "minecraft:iron_pickaxe";
+    char inventory_count[16] = "1";
+    char inventory_recipient[32] = "FuryMaster";
+    char friend_names[256]{};
     char launch_count[16]{};
     char port_base[16]{};
     char username_prefix[64]{};
@@ -286,6 +313,12 @@ static void append_log(AppState& app, const std::string& line) {
     char prefix[32];
     std::snprintf(prefix, sizeof(prefix), "[%02d:%02d:%02d] ",
                   tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
+    std::string lower = line;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+    std::string level = (lower.find("error") != std::string::npos || lower.find("failed") != std::string::npos
+            || lower.find("rejected") != std::string::npos || lower.find("offline") != std::string::npos) ? "ERROR" : "INFO";
+    app.console_entries.push_back({prefix, level, line});
+    while (app.console_entries.size() > 500) app.console_entries.pop_front();
     app.log += "\n";
     app.log += prefix;
     app.log += line;
@@ -418,6 +451,8 @@ static DashboardConfig load_config(const fs::path& path) {
     cfg.offline_username_start = json_int_value(text, "offline_username_start", cfg.offline_username_start);
     cfg.startup_attach_scan_seconds = json_int_value(text, "startup_attach_scan_seconds", cfg.startup_attach_scan_seconds);
     cfg.server_port = json_int_value(text, "server_port", cfg.server_port);
+    cfg.console_master_host = json_string_value(text, "console_master_host", cfg.console_master_host);
+    cfg.console_master_port = json_int_value(text, "console_master_port", cfg.console_master_port);
     cfg.auto_attach_launched = json_bool_value(text, "auto_attach_launched", cfg.auto_attach_launched);
     cfg.auto_launch_on_start = json_bool_value(text, "auto_launch_on_start", cfg.auto_launch_on_start);
     cfg.auto_tile_windows = json_bool_value(text, "auto_tile_windows", cfg.auto_tile_windows);
@@ -448,6 +483,8 @@ static bool save_config(const fs::path& path, const DashboardConfig& cfg, std::s
     }
 
     out << "{\n";
+    out << "    \"console_master_host\": \"" << json_escape(cfg.console_master_host) << "\",\n";
+    out << "    \"console_master_port\": " << cfg.console_master_port << ",\n";
     out << "    \"max_bot_instances\": " << cfg.max_bot_instances << ",\n";
     out << "    \"dashboard_port\": " << cfg.dashboard_port << ",\n";
     out << "    \"server_ip\": \"" << json_escape(cfg.server_ip) << "\",\n";
@@ -520,6 +557,8 @@ static fs::path find_dashboard_dir(const char* argv0, const fs::path& config_pat
 }
 
 static void sync_config_to_inputs(AppState& app) {
+    copy_text(app.master_host, sizeof(app.master_host), app.config.console_master_host);
+    std::snprintf(app.master_port, sizeof(app.master_port), "%d", app.config.console_master_port);
     copy_text(app.server_ip, sizeof(app.server_ip), app.config.server_ip);
     std::snprintf(app.server_port, sizeof(app.server_port), "%d", app.config.server_port);
     copy_text(app.manual_host, sizeof(app.manual_host), "127.0.0.1");
@@ -549,6 +588,8 @@ static void sync_config_to_inputs(AppState& app) {
 }
 
 static void sync_inputs_to_config(AppState& app) {
+    app.config.console_master_host = trim(app.master_host);
+    app.config.console_master_port = parse_int(app.master_port, 8779, 1, 65535);
     app.config.server_ip = trim(app.server_ip);
     app.config.server_port = parse_int(app.server_port, 25565, 1, 65535);
     app.config.launch_count = parse_int(app.launch_count, 1, 1, 64);
@@ -826,6 +867,14 @@ static BotStatus fetch_bot_status(const Bot& bot, int timeout_ms = 700) {
     status.render_enabled = json_bool_value(res.body, "renderEnabled", true);
     status.player = json_string_value(res.body, "player", "None");
     status.offline_username = json_string_value(res.body, "offlineUsername", "");
+    status.inventory_task = json_string_value(res.body, "inventoryTask", "");
+    status.mining_task = json_string_value(res.body, "miningTask", "");
+    status.formation = json_string_value(res.body, "formation", "unknown");
+    status.movement = json_string_value(res.body, "movementState", "");
+    status.last_event = json_string_value(res.body, "lastEvent", "");
+    status.build = json_string_value(res.body, "build", "legacy");
+    status.protocol = json_int_value(res.body, "protocol", 0);
+    status.corrections = json_int_value(res.body, "corrections", 0);
     status.http_port = json_int_value(res.body, "httpPort", bot.port);
     status.uptime_millis = json_int_value(res.body, "uptimeMillis", 0);
     return status;
@@ -1022,7 +1071,9 @@ static int attach_bot(AppState& app, const std::string& host, int port, const st
     return bot.id;
 }
 
-static std::string send_bot_command(const Bot& bot, const std::string& command) {
+static const std::string command_session = "dashboard-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+static std::atomic<unsigned long long> command_sequence{0};
+static std::string send_bot_command(const Bot& bot, const std::string& command, unsigned long long sequence = 0) {
     if (command.empty()) return "empty command";
     std::string local_command = command;
     if (bot.in_container) {
@@ -1033,9 +1084,51 @@ static std::string send_bot_command(const Bot& bot, const std::string& command) 
             }
         }
     }
-    HttpResult res = http_get(bot.host, bot.port, "/command?cmd=" + url_encode(local_command), 1200);
-    if (!res.ok) return res.error.empty() ? "command failed" : res.error;
+    HttpResult res = http_get(bot.host, bot.port,
+            command == "@events" ? "/events?tail" : "/command?cmd=" + url_encode(local_command)
+                    + (sequence ? "&session=" + command_session + "&sequence=" + std::to_string(sequence) : ""), 1200);
+    if (!res.ok) return "error: " + (res.body.empty() ? (res.error.empty() ? "command failed" : res.error) : trim(res.body));
+    if (command == "status") return "mode=" + json_string_value(res.body, "formation", "legacy")
+            + " | " + json_string_value(res.body, "movementState", "")
+            + " | task=" + json_string_value(res.body, "inventoryTask", "none")
+            + " | build=" + json_string_value(res.body, "build", "legacy");
+    if (command == "@events") {
+        std::string messages;
+        size_t pos = 0;
+        while ((pos = res.body.find("\"message\"", pos)) != std::string::npos) {
+            messages += "\n" + json_string_value(res.body.substr(pos), "message", "");
+            pos += 9;
+        }
+        return messages.empty() ? "No recent events" : messages;
+    }
     return trim(res.body).empty() ? "ok" : trim(res.body);
+}
+
+static bool queue_command(AppState& app, const Bot& bot, const std::string& command, const std::string& label) {
+    if (app.pending_commands.size() >= 64) { ft::toast_warning("Command queue is full"); return false; }
+    Bot copy = bot;
+    auto sequence = ++command_sequence;
+    std::string endpoint = bot.host + ":" + std::to_string(bot.port);
+    auto previous = app.command_tails[endpoint];
+    bool urgent = command == "control:stop";
+    auto result = std::async(std::launch::async, [copy, command, sequence, previous, urgent]() {
+        if (previous.valid() && !urgent) previous.wait();
+        return send_bot_command(copy, command, sequence);
+    }).share();
+    app.command_tails[endpoint] = result;
+    app.pending_commands.push_back({result, bot.name, label});
+    return true;
+}
+
+static void poll_commands(AppState& app) {
+    for (auto it = app.pending_commands.begin(); it != app.pending_commands.end();) {
+        if (it->result.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) { ++it; continue; }
+        try {
+            std::string result = it->result.get();
+            append_log(app, it->bot + " · " + it->label + " -> " + result);
+        } catch (const std::exception& error) { append_log(app, it->bot + " error: " + error.what()); }
+        it = app.pending_commands.erase(it);
+    }
 }
 
 static void refresh_bots(AppState& app, bool force = false) {
@@ -1341,7 +1434,14 @@ static void sync_scan_range_to_launch_range(AppState& app) {
     std::snprintf(app.scan_end_port, sizeof(app.scan_end_port), "%d", std::min(65535, base + count - 1));
 }
 
+static void queue_master(AppState& app, const std::string& command, const std::string& label) {
+    Bot master; master.name = "Master"; master.host = trim(app.master_host);
+    master.port = parse_int(app.master_port, 8779, 1, 65535);
+    queue_command(app, master, command, label);
+}
+
 static void send_to_all(AppState& app, const std::string& command, const std::string& label) {
+    if (command == "control:stop") queue_master(app, "formation:stop", "stop fleet controller");
     int sent = 0;
     int skipped = 0;
     for (const Bot& bot : app.bots) {
@@ -1349,10 +1449,9 @@ static void send_to_all(AppState& app, const std::string& command, const std::st
             ++skipped;
             continue;
         }
-        append_log(app, bot.name + " " + label + " -> " + send_bot_command(bot, command));
-        ++sent;
+        if (queue_command(app, bot, command, label)) ++sent;
     }
-    append_log(app, label + " sent to " + std::to_string(sent) +
+    append_log(app, label + " queued for " + std::to_string(sent) +
                     " reachable bot(s), skipped " + std::to_string(skipped) + " offline bot(s)");
     if (sent == 0) {
         ft::toast_warning("No reachable bots");
@@ -1384,11 +1483,15 @@ static void render_bot_card(AppState& app, Bot& bot) {
     if (!bot.status.offline_username.empty()) line += " | username: " + bot.status.offline_username;
     if (!bot.status.reachable && !bot.status.error.empty()) line += " | " + bot.status.error;
     ft::text_wrapped(line.c_str());
+    std::string task = bot.status.formation + " · " + bot.status.movement;
+    if (!bot.status.inventory_task.empty()) task += " · " + bot.status.inventory_task;
+    if (!bot.status.mining_task.empty()) task += " · " + bot.status.mining_task;
+    if (bot.status.protocol != 3) task += " · update this client";
+    ft::text_wrapped(task.c_str());
 
     ft::row(6, [&]() {
         if (ft::button("Connect", ft::ColorRole::Accent)) {
-            std::string result = send_bot_command(bot, "connect:" + command_target(app));
-            append_log(app, bot.name + " connect -> " + result);
+            queue_command(app, bot, "connect:" + command_target(app), "connect");
         }
         if (ft::button("Refresh")) {
             bot.status = fetch_bot_status(bot, 700);
@@ -1396,12 +1499,11 @@ static void render_bot_card(AppState& app, Bot& bot) {
             append_log(app, bot.name + " refreshed");
         }
         if (ft::button("Toggle Render")) {
-            std::string result = send_bot_command(bot, "toggle_render");
-            append_log(app, bot.name + " toggle render -> " + result);
+            queue_command(app, bot, "toggle_render", "toggle render");
         }
         if (ft::button("Stop Baritone")) {
-            std::string result = send_bot_command(bot, "chat:#stop");
-            append_log(app, bot.name + " #stop -> " + result);
+            queue_master(app, "tracking:hold|" + std::to_string(bot.port), "hold bot");
+            queue_command(app, bot, "control:stop", "stop");
         }
         if (ft::button(("Kill##fleet-" + std::to_string(bot.id)).c_str(), ft::ColorRole::Warning)) {
             if (process && process_running(*process)) {
@@ -1487,7 +1589,7 @@ static void render_fleet_tab(AppState& app) {
             ft::toast_success(("Attached " + std::to_string(attached) + " bot(s)").c_str());
         }
         if (ft::button("Stop all")) {
-            send_to_all(app, "chat:#stop", "#stop");
+            send_to_all(app, "control:stop", "stop");
         }
         if (ft::button("Toggle render all")) {
             send_to_all(app, "toggle_render", "toggle render");
@@ -1539,6 +1641,43 @@ static void render_fleet_tab(AppState& app) {
     });
 
     ft::separator();
+    ft::row({2.0f, 1.0f, 1.0f}, [&]() {
+        ft::input("Friend names", app.friend_names, sizeof(app.friend_names));
+        if (ft::button("Add friends")) send_to_all(app, "friends:add:" + trim(app.friend_names), "add friends");
+        if (ft::button("Remove friends")) send_to_all(app, "friends:remove:" + trim(app.friend_names), "remove friends");
+    });
+    ft::row({1.5f, 0.5f, 1.0f}, [&]() {
+        ft::input("Item ID", app.inventory_item, sizeof(app.inventory_item));
+        ft::input("Quantity per bot", app.inventory_count, sizeof(app.inventory_count), ft::InputFlags::CharsDecimal);
+        ft::input("Recipient", app.inventory_recipient, sizeof(app.inventory_recipient));
+    });
+    auto inventory_action = [&](const char* action) {
+        std::string item = trim(app.inventory_item), recipient = trim(app.inventory_recipient);
+        if (std::string(action) == "stop") {
+            send_to_all(app, "inventory:stop|minecraft:air|1|FuryMaster", "stop inventory task"); return;
+        }
+        if (item.empty() || item.find('|') != std::string::npos || recipient.empty()
+                || recipient.find('|') != std::string::npos) {
+            ft::toast_error("Enter an item ID and Minecraft recipient name."); return;
+        }
+        int count = std::string(action) == "drop" ? 2304 : parse_int(app.inventory_count, 1, 1, 2304);
+        send_to_all(app, "inventory:" + std::string(action) + "|" + item + "|"
+                + std::to_string(count) + "|" + recipient, action);
+    };
+    ft::row(4, [&]() {
+        if (ft::button("Bring X items to recipient")) inventory_action("deliver");
+        if (ft::button("Collect X and spread out")) inventory_action("collect");
+        if (ft::button("Keep X, drop item extras")) inventory_action("keep");
+        if (ft::button("Keep only X, drop other items", ft::ColorRole::Warning)) inventory_action("only");
+    });
+    ft::row(4, [&]() {
+        if (ft::button("Drop all matching items")) inventory_action("drop");
+        if (ft::button("Gather at recipient")) inventory_action("gather");
+        if (ft::button("Spread out")) inventory_action("spread");
+        if (ft::button("Stop task / resume formations")) inventory_action("stop");
+    });
+
+    ft::separator();
     ft::row({2.0f, 0.8f, 0.9f, 0.9f, 0.9f}, [&]() {
         ft::input("Broadcast", app.broadcast, sizeof(app.broadcast));
         if (ft::button("Send chat")) {
@@ -1578,6 +1717,7 @@ static void render_fleet_tab(AppState& app) {
                          "  " + (bot.status.reachable ? "online" : "offline") +
                          "  " + (bot.status.connected ? "in-game" : "not-in-game");
             if (!bot.status.offline_username.empty()) endpoints += "  " + bot.status.offline_username;
+            if (!bot.status.inventory_task.empty()) endpoints += "  " + bot.status.inventory_task;
         }
     }
     ft::log_view("Fleet endpoints", endpoints.c_str(), app.bots.empty() ? 4 : std::min(10, (int)app.bots.size() + 2),
@@ -1776,7 +1916,7 @@ static void render_advanced_modules(AppState& app) {
             if (file) ft::close_modal();
             else ft::toast_error("Could not save permission");
         }
-        if (ft::button("Confirm with operator teleports")) {
+        if (ft::button("Confirm with packet movement")) {
             std::ofstream file(permission_file, std::ios::trunc);
             file << "teleport\n";
             if (file) ft::close_modal();
@@ -1790,6 +1930,141 @@ static void render_advanced_modules(AppState& app) {
         }
         if (ft::button("Cancel")) ft::close_modal();
     });
+}
+
+static bool console_selected(const AppState& app, const Bot& bot) {
+    std::string target = trim(app.console_target);
+    return target.empty() || equal_ascii_ci(target, "all") || equal_ascii_ci(target, bot.name)
+            || equal_ascii_ci(target, bot.status.offline_username) || target == std::to_string(bot.id);
+}
+
+static void console_send(AppState& app, std::string input) {
+    input = trim(input);
+    if (input.empty()) return;
+    if (!input.empty() && input[0] == '/') input.erase(0, 1);
+    if (app.command_history.empty() || app.command_history.back() != input) {
+        app.command_history.push_back(input);
+        while (app.command_history.size() > 30) app.command_history.pop_front();
+    }
+    append_log(app, "> " + input);
+    std::istringstream stream(input);
+    std::string verb, item, recipient, command;
+    int count = 1;
+    stream >> verb;
+    bool baritoneShort=!verb.empty()&&verb[0]=='#';
+    if(baritoneShort)verb.erase(0,1);
+    auto remainder = [&]() { std::string rest; std::getline(stream, rest); return trim(rest); };
+    if (verb == "help") {
+        append_log(app, "status | events | stop | resume | say <text> | baritone <command> | raw <command>");
+        append_log(app, "deliver <item> <count> <player> | collect/keep/only/drop <item> <count> | gather <player> | spread");
+        append_log(app, "friends add/remove <names> | saturn | lightning | scatter (uses Master below)");
+        append_log(app, "mine iron both | #goto x y z | #follow player Name | #pause | #resume | #stop");
+        return;
+    }
+    if (verb == "saturn" || verb == "lightning" || verb == "scatter") {
+        Bot master; master.name = "Master"; master.host = trim(app.master_host); master.port = parse_int(app.master_port, 8779, 1, 65535);
+        queue_command(app, master, "formation:" + verb, verb); return;
+    }
+    if(verb=="mine"){
+        std::string resource,variant;stream>>resource>>variant;
+        if(resource.empty()){append_log(app,"error: use mine <resource> [both|normal|deepslate]");return;}
+        if(variant.empty())variant="both";
+        if(resource.find(':')!=std::string::npos)resource="block:"+resource;
+        else if(resource.find("_ore")!=std::string::npos)resource="block:minecraft:"+resource;
+        command="mining:"+resource+"|"+variant+"|"+std::to_string(parse_int(app.master_port,8779,1,65535));
+    }
+    else if(baritoneShort&&verb!="stop")command="baritone:"+verb+" "+remainder();
+    else if (verb == "status") command = "status";
+    else if (verb == "events") command = "@events";
+    else if (verb == "stop" || verb == "resume") command = "control:" + verb;
+    else if (verb == "say") command = "chat:" + remainder();
+    else if (verb == "baritone") command = "baritone:" + remainder();
+    else if (verb == "raw") command = remainder();
+    else if (verb == "friends") {
+        std::string operation; stream >> operation;
+        if (operation != "add" && operation != "remove") { append_log(app, "error: use friends add/remove <names>"); return; }
+        command = "friends:" + operation + ":" + remainder();
+    } else if (verb == "gather" || verb == "spread") {
+        stream >> recipient;
+        if (recipient.empty()) recipient = trim(app.inventory_recipient);
+        command = "inventory:" + verb + "|minecraft:air|1|" + recipient;
+    } else if (verb == "deliver" || verb == "collect" || verb == "keep" || verb == "only" || verb == "drop") {
+        std::string countText;
+        stream >> item >> countText >> recipient;
+        char* end = nullptr;
+        bool all = verb == "drop" && (countText.empty() || equal_ascii_ci(countText,"all"));
+        long parsed = all ? 2304 : countText.empty() ? 0 : std::strtol(countText.c_str(), &end, 10);
+        if (item.empty() || (!all && (countText.empty() || !end || *end)) || parsed < 1 || parsed > 2304) {
+            append_log(app, "error: use " + verb + " <item> <quantity 1–2304> [recipient]"); return;
+        }
+        count = (int)parsed;
+        if (recipient.empty()) recipient = trim(app.inventory_recipient);
+        command = "inventory:" + verb + "|" + item + "|" + std::to_string(count) + "|" + recipient;
+    } else { append_log(app, "error: unknown command; use help"); return; }
+    int sent = 0;
+    bool stopAll = command == "control:stop" && (trim(app.console_target).empty() || equal_ascii_ci(trim(app.console_target), "all"));
+    if (stopAll) queue_master(app, "formation:stop", "stop fleet controller");
+    for (const Bot& bot : app.bots) if (console_selected(app, bot) && bot.status.reachable) {
+        if (command == "control:stop" && !stopAll) queue_master(app, "tracking:hold|" + std::to_string(bot.port), "hold bot");
+        queue_command(app, bot, command, verb); ++sent;
+    }
+    if (!sent) append_log(app, "error: no reachable bots match the target");
+}
+
+static void render_console_tab(AppState& app) {
+    bool submitted = false;
+    ft::row({1.0f, 3.0f, 0.6f}, [&]() {
+        ft::input("Target (all, name, ID)", app.console_target, sizeof(app.console_target));
+        ft::input("Command", app.console_command, sizeof(app.console_command), ft::InputFlags::Default, &submitted);
+        if (ft::button("Run", ft::ColorRole::Accent) || submitted) { console_send(app, app.console_command); app.console_command[0] = '\0'; }
+    });
+    ft::row(6, [&]() {
+        if (ft::button("Status")) console_send(app, "status");
+        if (ft::button("Recent events")) console_send(app, "events");
+        if (ft::button("Stop tasks", ft::ColorRole::Warning)) console_send(app, "stop");
+        if (ft::button("Resume")) console_send(app, "resume");
+        if (ft::button("Repeat last") && !app.command_history.empty()) console_send(app, app.command_history.back());
+        if (ft::button("Help")) console_send(app, "help");
+    });
+    ft::row({2.0f, 1.0f, 1.0f, 0.6f}, [&]() {
+        ft::input("Master host", app.master_host, sizeof(app.master_host));
+        ft::input("Master port", app.master_port, sizeof(app.master_port), ft::InputFlags::CharsDecimal);
+        ft::text((std::to_string(app.pending_commands.size()) + " requests pending").c_str());
+        if (ft::button("Save target")) save_from_ui(app);
+    });
+    ft::separator();
+    for (const Bot& bot : app.bots) if (console_selected(app, bot)) {
+        std::string state = bot.name + " · " + (bot.status.reachable ? bot.status.formation : "OFFLINE") + " · " + bot.status.movement;
+        if (!bot.status.inventory_task.empty()) state += " · " + bot.status.inventory_task;
+        if (!bot.status.mining_task.empty()) state += " · " + bot.status.mining_task;
+        if (bot.status.corrections) state += " · corrections " + std::to_string(bot.status.corrections);
+        if (bot.status.protocol != 3) state += " · update client";
+        ft::text_wrapped(state.c_str());
+    }
+    ft::separator();
+    ft::row({2.0f, 1.0f, 0.7f, 0.7f}, [&]() {
+        ft::input("Filter log", app.console_filter, sizeof(app.console_filter));
+        ft::checkbox("Errors only", &app.console_errors_only);
+        if (ft::button("Clear log")) app.console_entries.clear();
+        if (ft::button("Save log")) {
+            fs::path path = app.dashboard_dir / "build" / "console-export.log";
+            std::ofstream output(path);
+            for (const auto& entry : app.console_entries) output << entry.time << entry.level << " " << entry.message << "\n";
+            output.flush();
+            append_log(app, output.good() ? "Saved console-export.log" : "error: could not save console log");
+        }
+    });
+    std::string shown, filter = trim(app.console_filter);
+    std::transform(filter.begin(), filter.end(), filter.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+    for (const auto& entry : app.console_entries) {
+        if (app.console_errors_only && entry.level != "ERROR") continue;
+        std::string lower = entry.message;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+        if (!filter.empty() && lower.find(filter) == std::string::npos) continue;
+        shown += entry.time + entry.level + "  " + entry.message + "\n";
+    }
+    ft::log_view("Console", shown.empty() ? "No matching events" : shown.c_str(), 24,
+            ft::LogViewFlags::WordWrap | ft::LogViewFlags::AutoScrollBottom);
 }
 
 static void render_settings_tab(AppState& app) {
@@ -1905,10 +2180,11 @@ int main(int argc, char** argv) {
         launch_instances(app);
     }
 
-    static const char* tabs[] = {"Fleet", "Instances", "Settings"};
+    static const char* tabs[] = {"Fleet", "Instances", "Console", "Settings"};
     while (!shutdown_requested) {
         bool pumped = serving_web ? ftht::pump(100) : ft::pump();
         poll_instances(app);
+        poll_commands(app);
         if (!pumped) {
             if (!serving_web) break;
             continue;
@@ -1926,11 +2202,12 @@ int main(int argc, char** argv) {
         ft::begin();
         ft::text("BotFury");
         ft::separator();
-        ft::tabs(tabs, 3, &app.tab);
+        ft::tabs(tabs, 4, &app.tab);
         ft::separator();
 
         if (app.tab == 0) render_fleet_tab(app);
         else if (app.tab == 1) render_launch_tab(app);
+        else if (app.tab == 2) render_console_tab(app);
         else render_settings_tab(app);
 
         ft::end();

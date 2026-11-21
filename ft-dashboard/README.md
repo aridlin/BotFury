@@ -101,3 +101,73 @@ Custom commands support these placeholders.
 
 For third-party commands, pass `-Dbotfury.port={port}` to the game JVM.
 `-Dbotfury.strictPort=true` makes a bind failure visible on the assigned port.
+
+## Inventory controls
+
+Fleet inventory controls take a Minecraft item ID, a quantity per bot, and a
+recipient name (FuryMaster by default). Bring items drops the requested quantity
+from each bot's existing inventory near the recipient; it does not create items.
+Collect X picks up nearby dropped items, keeps the requested count, drops surplus
+copies, and moves five blocks away. Keep X drops only extra copies of the selected
+item. Keep only X also drops other main-inventory items. Armor and offhand are
+excluded. Drop X, Gather, Spread out, and Stop task / resume formations are also
+available. Task progress and actionable errors appear beside the bot endpoint.
+
+Tasks pause formations until Stop task / resume formations is used. They stop on
+disconnect or world change and time out after two minutes. Close any open bot
+container before inventory changes. Movement needs Baritone; nearby dropping and
+trimming work without it. Both the dashboard and client need the new build.
+
+## Console
+
+The Console tab targets all attached reachable bots, one bot name, or an attached
+bot ID. Run a command with Enter or Run. Requests are asynchronous; status rows
+and replies distinguish queued work, completed inventory tasks, errors and
+unreachable bots. Stop tasks is prioritized and older console requests cannot
+override it. Filter the timestamped log, show errors only, repeat a command, fetch
+recent bot events, or save console-export.log. Set the Master host/port for
+controller formation actions and use Save target to retain them.
+
+```text
+help
+status
+events
+stop
+resume
+say Hello
+baritone goto 0 64 0
+deliver minecraft:stone 16 FuryMaster
+collect minecraft:iron_pickaxe 1
+keep minecraft:iron_pickaxe 1
+only minecraft:iron_pickaxe 1
+drop minecraft:stone 16
+gather FuryMaster
+spread
+friends add Alice,Bob
+friends remove Bob
+saturn
+lightning
+scatter
+mine iron both
+#mine diamond deepslate
+#goto 100 64 100
+raw toggle_render
+```
+
+Quantities are per bot. Formation commands use the Master endpoint; other
+commands use the selected attached bot(s). The client status API reports the
+current build/protocol, movement mode, inventory and mining tasks, packet count and correction
+count. /events?tail returns the last forty bounded events; /events?after=ID pages
+older events without skipping unread entries.
+
+Build the mod with a JDK 21 or 25 running Gradle (the game itself uses Java 17).
+The current Fabric Loom/Gradle combination does not support running its build
+script under the system's newer Java 27 runtime. Example:
+
+```sh
+JAVA_HOME=/path/to/jdk21 ./gradlew test build prepareBotFuryClient
+```
+
+Drop defaults to all matching main-inventory items. The Drop button always uses
+all; console drop <item> accepts no quantity, all, or an explicit numeric count.
+Other inventory actions retain their numeric quantities.

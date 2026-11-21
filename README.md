@@ -29,18 +29,18 @@ This mod integrates seamlessly with a **Flask-powered web dashboard**, letting y
 ## 🛠️ Installation & Setup
 ### 📌 Prerequisites
 Ensure you have the following installed:
-- **Java 17 or higher** (for Fabric and Gradle)
+- **Java 17** for Minecraft, plus **JDK 21 or 25** to run the Gradle build
 - **Minecraft 1.20.1 + Fabric Loader**
 - **Fabric API**
 - **Baritone for Fabric**
-- **Python 3.8+** (for the web dashboard)
+- **C++17 compiler** for the FT dashboard; Python is only needed for the legacy Flask dashboard
 - **Git** (for version control)
 
 **Note**: Gradle is automatically downloaded via the build wrapper, so you don't need to install it separately.
 
 ### 📥 Clone the Repository
 ```bash
-git clone https://github.com/IgorkotYT/BotFury.git
+git clone https://github.com/aridlin/BotFury.git
 cd BotFury
 ```
 
@@ -67,15 +67,15 @@ cd BotFury
    - Runs all tests
    - Generates the mod JAR file
    
-   The compiled JAR will be at: `minecraft-bots/botfury-mod/build/libs/botfury-0.1.0.jar`
+   The compiled JAR will be at: `minecraft-bots/botfury-mod/build/libs/botfury-0.3.3.jar`
 
 3. **Install the Mod**  
    Copy the generated JAR into your Fabric Minecraft instance's `mods/` directory:
    ```bash
-   cp minecraft-bots/botfury-mod/build/libs/botfury-0.1.0.jar ~/.minecraft/mods/
+   cp minecraft-bots/botfury-mod/build/libs/botfury-0.3.3.jar ~/.minecraft/mods/
    ```
    
-   Or simply download the latest JAR from [GitHub Releases](https://github.com/IgorkotYT/BotFury/releases).
+   You can also install the versioned JAR from the release bundle. Keep the controller and every bot on the same build.
 
 ### Primary Dashboard: FT
 
@@ -85,35 +85,118 @@ one container checkpoint per bot at the Minecraft title screen and restore
 it on subsequent launches. The dashboard can also start Minecraft directly
 with Java and tile local game or viewer windows.
 
-### In-game formations (Fabric 1.20.1)
+### In-game controls (Fabric 1.20.1)
 
-Install BotFury and Fabric API on the controller and bots. Saturn orbit and
-Scatter work with local managed clients on Paper and vanilla multiplayer.
-Install Fabric Baritone on the bots for approach and movement. The bundled
-launchers can share a Fabric 1.20.1 Baritone JAR placed at
-`config/baritone-fabric.jar` before running `prepareBotFuryClient` or
-building the container image.
+Install the same BotFury 0.3.3 build and Fabric API on the controller and every bot.
+The current local formations work on Paper and vanilla multiplayer without a
+server mod. Install Fabric Baritone on bots for Saturn's longer approach and
+inventory movement; Lightning uses packet movement exclusively.
 
-Join the same server and dimension, then confirm authorization under
-**Settings → Advanced modules** in the dashboard. **Movement only** uses
-Baritone. **Operator teleports** uses vanilla `/tp` when the controller has
-operator permission and the destination is loaded. Distant bots approach
-via Baritone before entering the orbit. Local discovery defaults to
-ports 8765–8774. Custom launchers can configure the controller with
-`botfury.formationBasePort`, `botfury.formationPortCount`, and
-`botfury.advancedModulesFile` JVM properties.
+BotFury registers exactly two keybindings, both remappable in Minecraft Controls:
 
-| Default key | Action |
+| Default | Action |
 | --- | --- |
-| J | Start or stop Saturn orbit around the controller. |
-| H | Scatter bots outward. The client command is `/botfury-scatter`. |
-| `]` | Stop the active formation. |
-| K | Targeted Lightning strike with the optional Fabric server companion. |
+| Mouse Forward (Mouse 5) | Open or close the command wheel. Click a sector; right-click goes back. |
+| K | Strike the aimed target; during Lightning, return to the previous Saturn formation; with no target, stop. |
 
-For Lightning on a Fabric server, an operator enrolls online non-operator
-bot accounts with `/botfury enroll <bot>`. The server applies movement and
-enforces combat range, line of sight, teams, and player-versus-player rules.
-Enrollment lasts for the server session.
+The wheel contains Saturn, Lightning, Scatter, Gather, Inventory, Bots, Baritone,
+and Stop. Stop cancels Baritone, mining, inventory, recall and formations, including
+pending returns from Lightning. The Baritone page includes Mine, Goto, Follow,
+Pause, Resume and Stop. Baritone is required for mining and long-distance recall.
+
+Choose an inventory item with the searchable picker, or use Tools, Wood, Stone,
+Ores, Food and Blocks categories. The selected item is saved. Scroll the wheel to
+change quantity; Shift-scroll changes it by 16. Actions target all bots or the bot
+selected in the roster, with the controller as recipient. Delivery faces the
+recipient and then moves outward. **Only X** also drops other main-inventory
+items; equipped armor and offhand are excluded.
+
+The Bots roster shows health, task, distance, dimension and connection state, and
+provides Recall, Hold, Resume, rendering and inventory controls. Choose Track item
+in the roster, then pick an item to show its icon and carried quantity above each
+bot's ESP name. This selection is saved separately from inventory task items.
+Counts include main inventory, equipment and offhand, sum split stacks, and
+require this inventory-reporting build on the bots. A question mark means that
+client does not report inventory; a tilde marks a last-known count. Stop tracking
+clears the selection. Bot-only markers
+use each managed client's local HTTP position reports, including beyond the
+controller's render distance. They include edge indicators; disconnected positions
+are marked with their age and disappear after 30 seconds. Positions in another
+dimension stay in the roster. No server mod is required. All clients must run on
+the same machine or expose their managed ports through local forwarding.
+
+Mine → Ores → Iron → Both selects iron ore and deepslate iron ore together.
+Bots reserve individual ore blocks and spaced standing positions through the
+controller before approaching with Baritone and breaking blocks normally. Tools
+are selected from their inventories. With no nearby matching ore, each bot explores
+in a separate direction. This reduces duplicate targets and crowding; it cannot
+guarantee that separate caves always have independent routes. The coordinator
+must remain running. Mining stops if its reservation cannot be renewed.
+
+Bot clients suppress local pushing from known fleet bots. Ordinary server
+collision and position corrections still apply. Mining uses a block raycast and
+manual block interaction so another bot at the crosshair does not become an
+attack target. Scatter uses anchored destinations 32–56 blocks away.
+
+The HUD shows mode, fleet count, movement state, target, attack cooldown and key
+hints. HUD and marker preferences are saved. There are still exactly two bindings.
+
+Useful client commands:
+
+```text
+/bf
+/bf help
+/bf allow packets
+/bf allow movement
+/bf allow off
+/bf saturn
+/bf lightning
+/bf stop
+/bf scatter
+/bf gather
+/bf spread
+/bf inventory collect minecraft:iron_pickaxe 1
+/bf inventory deliver minecraft:stone 16
+/bf inventory keep minecraft:iron_pickaxe 1
+/bf inventory only minecraft:iron_pickaxe 1
+/bf friend add PlayerName
+/bf friend remove PlayerName
+/bf friend list
+/bf bots
+/bf esp
+/bf bot BotName recall
+/bf hud
+/bf status
+```
+
+Confirm authorized movement using `/bf allow packets` or the dashboard's
+Advanced modules setting. `movement` uses Baritone; `packets` enables supported
+block-top jumps up to four blocks, with at most three blocks of height change,
+every 0.2 seconds. Saturn uses Baritone outside packet range and restores its
+previous block-breaking/placing settings after approach. Landing checks account
+for slabs, stairs, fluids, entities, body clearance and world borders. A server
+can still reject movement; corrections trigger a cooldown rather than immediate
+repeated attempts. Teleport-only Lightning holds position if no valid landing is
+available, rather than silently invoking Baritone.
+
+Saturn excludes the master, known fleet bots, friends, teammates and
+creative/spectator players from normal melee attacks. Lightning also rejects
+protected targets. Friends are saved beside the advanced-modules file as
+`botfury-friends.txt`; edits are locked and written atomically. If an existing
+friend list cannot be read, automatic attacks pause instead of dropping the
+protection. Lightning follows a zigzag, continues through visibility breaks,
+waits ten seconds for an unloaded target to return, and restores a previously
+active Saturn formation when the strike ends. Manual Stop cancels that return.
+Managed bots automatically request respawn after death; server respawn rules
+still apply.
+
+Local discovery defaults to ports 8765–8774. Custom launchers can set
+`botfury.formationBasePort`, `botfury.formationPortCount`, and
+`botfury.advancedModulesFile`. Ordinary installations use the Fabric config
+folder when no advanced-modules path is supplied. Clients advertise a protocol
+version; mismatched clients appear as needing an update and receive no formation
+orders. Orders carry sequence numbers so delayed movement cannot override a newer
+Stop. Connection/world changes clear active movement and restore owned settings.
 
 ### Legacy Dashboard: Flask
 
@@ -357,3 +440,40 @@ For questions, bugs, or feature requests:
 - **Baritone** – Pathfinding and automation mod
 - **Fabric** – Lightweight mod loader
 - **Flask** – Web framework for the dashboard
+
+Saturn bots use normal melee attacks against nearby visible living entities,
+excluding the controller, discovered fleet bots, saved friends, teammates, and
+creative/spectator players. Use Add friends / Remove friends in the dashboard
+with comma-separated Minecraft usernames. The list is saved as
+`botfury-friends.txt` beside the advanced-modules settings file.
+
+Task defense can be toggled in the Bots roster. While enabled, managed bots punch
+nearby unprotected living targets during mining, inventory and Baritone tasks.
+Friends, the controller, known fleet bots, teammates and creative/spectator
+players are protected. Defense uses normal reach, visibility and attack cooldowns,
+and does not pursue enemies. Stop, task pause, or loss of the controller heartbeat
+pauses these attacks. A damaged or unreadable friend list also pauses attacks.
+Keep/Only inventory tasks seek nearby dropped copies if the requested item is
+missing. After dropping excess, bots move away from that drop.
+
+To update the runtime used by the direct launcher without moving game profiles,
+set BOTFURY_RUNTIME_DIR or place the prepared runtime directory on one line in
+config/client-runtime.path. Relaunch clients to load a new runtime. The mining
+menu keeps its screen open with an actionable error if selected bots are outdated
+or unavailable, instead of silently closing.
+
+Drop defaults to all matching main-inventory items. On the inventory wheel, scroll
+to choose a specific quantity; Keep/Collect/Bring retain their numeric defaults.
+/bf inventory drop minecraft:diamond drops all; add a number for a partial drop.
+The dashboard Drop button drops all matching items. Console drop <item> accepts
+an optional numeric count or all. Equipped armor and offhand remain excluded.
+
+With Defense enabled and packet movement allowed, active bots retreat from nearby
+creepers and dodge predicted incoming persistent projectiles. Prediction accounts
+for gravity, drag, movement and intervening blocks; grounded arrows are ignored.
+Powered creepers receive a wider retreat distance. Each teleport uses the existing
+four-block range, three-block vertical limit, block-top collision checks and
+server-correction cooldown. A short pause prevents task movement immediately
+undoing the dodge; Baritone resumes afterwards. No valid landing means no jump.
+Stop and task pause suppress evasion. These checks cannot guarantee every dodge
+under network latency or every anti-cheat configuration. No server mod is needed.

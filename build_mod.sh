@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+cd -- "$(dirname "$0")"
 
 echo "========================================="
 echo "Building BotFury Mod for Minecraft"
@@ -13,7 +14,7 @@ chmod +x gradlew
 echo "2/2 Build complete!"
 cd ../..
 
-ARTIFACT="minecraft-bots/botfury-mod/build/libs/botfury-0.1.0.jar"
+ARTIFACT="minecraft-bots/botfury-mod/build/libs/botfury-0.3.3.jar"
 if [ -f "$ARTIFACT" ]; then
     echo "========================================="
     echo "SUCCESS! The BotFury mod has been built."

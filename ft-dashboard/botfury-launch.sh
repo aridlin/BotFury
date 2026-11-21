@@ -16,6 +16,10 @@ DASHBOARD_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 BOTFURY_ROOT=$(CDPATH= cd "$DASHBOARD_DIR/.." && pwd)
 MOD_DIR="$BOTFURY_ROOT/minecraft-bots/botfury-mod"
 RUNTIME="$MOD_DIR/build/botfury-client"
+if [ -s "$BOTFURY_ROOT/config/client-runtime.path" ]; then
+    IFS= read -r RUNTIME < "$BOTFURY_ROOT/config/client-runtime.path"
+fi
+RUNTIME="${BOTFURY_RUNTIME_DIR:-$RUNTIME}"
 RUN_DIR="$MOD_DIR/run/$BOT_USERNAME"
 
 if [ ! -s "$RUNTIME/client.args" ] || [ ! -s "$RUNTIME/java-path.txt" ]; then

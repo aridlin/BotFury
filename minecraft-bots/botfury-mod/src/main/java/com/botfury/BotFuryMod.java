@@ -29,6 +29,9 @@ public class BotFuryMod implements ClientModInitializer {
     private static boolean started = false;
     private static int httpPort = -1;
     private static final String runtimeId = UUID.randomUUID().toString();
+    private static volatile String statusSnapshot = "{\"ready\":false,\"connected\":false,\"protocol\":3}";
+    private static int snapshotTicks;
+    private static final SequenceHistory COMMAND_SEQUENCES = new SequenceHistory();
     private static final long startedAtMillis = System.currentTimeMillis();
     private static boolean autoJoinRegistered = false;
     private static int autoJoinTicks = 0;
@@ -42,6 +45,7 @@ public class BotFuryMod implements ClientModInitializer {
         FormationClient.register();
         if (Boolean.parseBoolean(System.getProperty("botfury.httpEnabled", "true"))) startHttp();
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            if (++snapshotTicks % 5 == 0) updateStatus(client);
             if (client.getOverlay() != null) return;
             if (MANAGED_HTTP && client.currentScreen instanceof AccessibilityOnboardingScreen) {
                 client.options.onboardAccessibility = false;
@@ -69,6 +73,9 @@ public class BotFuryMod implements ClientModInitializer {
           server = HttpServer.create(new InetSocketAddress(System.getProperty("botfury.httpBindAddress", "0.0.0.0"), port), 0);
           server.createContext("/command", this::handleCommand);
           server.createContext("/status", this::handleStatus);
+          server.createContext("/events", this::handleEvents);
+          server.createContext("/mining-claim", MiningBroker::handle);
+          server.createContext("/bots", this::handleBots);
           if (MANAGED_HTTP) server.createContext("/local-formation", this::handleLocalFormation);
           server.setExecutor(Executors.newCachedThreadPool());
           server.start();
@@ -138,29 +145,67 @@ public class BotFuryMod implements ClientModInitializer {
         return server.trim() + ":" + port;
     }
 
+    static int controlPort() { return httpPort; }
+    public static boolean cancelFleetPush(net.minecraft.entity.Entity first, net.minecraft.entity.Entity second) {
+        var local=MinecraftClient.getInstance().player;
+        if(!(first instanceof net.minecraft.entity.player.PlayerEntity a)||!(second instanceof net.minecraft.entity.player.PlayerEntity b))return false;
+        return BotCollisionPolicy.cancel(first==local,second==local,a.getGameProfile().getName(),b.getGameProfile().getName());
+    }
+    public static void onPositionCorrection() { LocalFormation.corrected(); }
+
+    private static void updateStatus(MinecraftClient client) {
+        var status = new java.util.LinkedHashMap<String, Object>();
+        status.put("connected", client.getNetworkHandler() != null && client.world != null);
+        status.put("ready", ready);
+        status.put("renderEnabled", renderEnabled);
+        status.put("player", client.player == null ? "None" : client.player.getGameProfile().getName());
+        status.put("offlineUsername", firstNonBlank(System.getProperty("botfury.offlineUsername"), System.getProperty("botfury.username"), ""));
+        status.put("httpPort", httpPort);
+        status.put("runtimeId", runtimeId);
+        status.put("build", "0.3.3");
+        status.put("managed", MANAGED_HTTP);
+        status.put("miningTask", MiningTask.status());
+        if(LocalFormation.here()!=null){status.put("server",LocalFormation.here().server());status.put("dimension",LocalFormation.here().dimension());}
+        status.put("uptimeMillis", System.currentTimeMillis() - startedAtMillis);
+        status.put("inventoryTask", BotInventory.status());
+        status.put("friends", BotFriends.names());
+        status.put("lastEvent", BotEvents.last);
+        status.put("lastEventLevel", BotEvents.lastLevel);
+        status.put("coordinatedMining", true);
+        status.put("taskDefenseCapable", true);
+        status.put("taskDefenseEnabled", TaskDefense.enabled());
+        if (client.player != null) {
+            var items = new java.util.TreeMap<String, Integer>();
+            var inventory = client.player.getInventory();
+            for (int slot=0;slot<inventory.size();slot++) {
+                var stack=inventory.getStack(slot);
+                if(!stack.isEmpty())items.merge(net.minecraft.registry.Registries.ITEM.getId(stack.getItem()).toString(),stack.getCount(),Integer::sum);
+            }
+            status.put("items", items);
+            status.put("health", client.player.getHealth());
+            status.put("maxHealth", client.player.getMaxHealth());
+            status.put("x", client.player.getX()); status.put("y", client.player.getY()); status.put("z", client.player.getZ());
+            status.put("alive", client.player.isAlive());
+        }
+        status.putAll(LocalFormation.telemetry());
+        statusSnapshot = new com.google.gson.Gson().toJson(status);
+    }
     private void handleStatus(HttpExchange exchange) throws IOException {
         if (rejectHttpRequest(exchange)) return;
-
-        MinecraftClient client = MinecraftClient.getInstance();
-        boolean connected = client.getNetworkHandler() != null && client.world != null;
-        String playerName = client.player != null ? client.player.getName().getString() : "None";
-        String offlineUsername = firstNonBlank(
-                System.getProperty("botfury.offlineUsername"),
-                System.getProperty("botfury.username"),
-                "");
-        long uptimeMillis = System.currentTimeMillis() - startedAtMillis;
-        String status = String.format(
-                "{\"connected\":%b,\"ready\":%b,\"renderEnabled\":%b,\"player\":\"%s\",\"offlineUsername\":\"%s\",\"httpPort\":%d,\"uptimeMillis\":%d,\"runtimeId\":\"%s\"}",
-                connected,
-                ready,
-                renderEnabled,
-                jsonEscape(playerName),
-                jsonEscape(offlineUsername),
-                httpPort,
-                uptimeMillis,
-                runtimeId);
-
-        sendResponse(exchange, 200, "application/json", status);
+        sendResponse(exchange, 200, "application/json", statusSnapshot);
+    }
+    private void handleBots(HttpExchange exchange) throws IOException {
+        if(rejectHttpRequest(exchange))return;
+        sendResponse(exchange,200,"application/json",BotTracker.json());
+    }
+    private void handleEvents(HttpExchange exchange) throws IOException {
+        if (rejectHttpRequest(exchange)) return;
+        long after = 0;
+        String query = exchange.getRequestURI().getQuery();
+        if ("tail".equals(query)) { sendResponse(exchange, 200, "application/json", BotEvents.tailJson()); return; }
+        try { if (query != null && query.startsWith("after=")) after = Long.parseLong(query.substring(6)); }
+        catch (NumberFormatException error) { sendResponse(exchange, 400, "text/plain", "Invalid event cursor"); return; }
+        sendResponse(exchange, 200, "application/json", BotEvents.json(after));
     }
 
     private void handleLocalFormation(HttpExchange exchange) throws IOException {
@@ -173,30 +218,28 @@ public class BotFuryMod implements ClientModInitializer {
             sendResponse(exchange, 405, "text/plain", "Use GET or POST.");
             return;
         }
-        byte[] body = exchange.getRequestBody().readNBytes(1025);
-        boolean accepted = body.length <= 1024 && LocalFormation.receive(new String(body, StandardCharsets.UTF_8));
-        sendResponse(exchange, accepted ? 200 : 400, "text/plain", accepted ? "accepted" : "unknown local session");
+        byte[] body = exchange.getRequestBody().readNBytes(16385);
+        boolean accepted = body.length <= 16384 && LocalFormation.receive(new String(body, StandardCharsets.UTF_8));
+        sendResponse(exchange, accepted ? 200 : 400, "text/plain", accepted ? "accepted" : LocalFormation.rejection());
     }
 
     private void handleCommand(HttpExchange exchange) throws IOException {
         if (rejectHttpRequest(exchange)) return;
-
-        URI requestURI = exchange.getRequestURI();
-        String query = requestURI.getQuery();
-        String response = "no command";
-        int code = 400;
-        if (query != null) {
-            for (String param : query.split("&")) {
-                String[] kv = param.split("=", 2);
-                if (kv.length == 2 && kv[0].equals("cmd")) {
-                    String decodedCmd = URLDecoder.decode(kv[1], StandardCharsets.UTF_8.name());
-                    response = executeCommand(decodedCmd);
-                    code = response.startsWith("error:") ? 400 : 200;
-                    break;
+        String response;
+        int code;
+        try {
+            var fields = CommandQuery.parse(exchange.getRequestURI().getRawQuery());
+            if (!fields.containsKey("cmd")) throw new IllegalArgumentException("Missing cmd");
+            if (fields.containsKey("sequence") || fields.containsKey("session")) {
+                long sequence = Long.parseLong(fields.getOrDefault("sequence", "0"));
+                if (!COMMAND_SEQUENCES.accept(fields.get("session"), sequence)) {
+                    sendResponse(exchange, 409, "text/plain", "error: stale command was discarded"); return;
                 }
             }
-        }
-
+            response = executeCommand(fields.get("cmd"));
+            code = response.startsWith("error:") ? 400 : 200;
+        } catch (IllegalArgumentException error) { response = "error: " + error.getMessage(); code = 400; }
+        if (!response.startsWith("{")) BotEvents.add(code == 200 ? "info" : "error", "command", response);
         sendResponse(exchange, code, "text/plain; charset=utf-8", response);
     }
 
@@ -241,8 +284,69 @@ public class BotFuryMod implements ClientModInitializer {
             return "error: empty command";
         }
 
+        if (cmd.length() > 2048) return "error: command is too long";
         cmd = cmd.trim();
         MinecraftClient client = MinecraftClient.getInstance();
+        if (cmd.equals("status")) return statusSnapshot;
+        if (cmd.equals("control:stop") || cmd.equals("control:resume")) {
+            boolean stop = cmd.endsWith("stop");
+            client.execute(() -> {
+                if (stop) { LocalFormation.pauseMovement(); BotInventory.hold(); }
+                else { MiningTask.stop(); BotInventory.resume(); }
+                BotEvents.add("info", "control", stop ? "Paused bot tasks" : "Resumed formation orders");
+            });
+            return stop ? "Pause queued" : "Resume queued";
+        }
+        if(cmd.startsWith("tracking:")) {
+            String[] parts=cmd.substring(9).split("\\|",-1);
+            if(parts.length!=2||!java.util.Set.of("recall","hold","resume","render","select").contains(parts[0]))return "error: invalid tracking action";
+            int port;try{port=Integer.parseInt(parts[1]);}catch(NumberFormatException e){return "error: invalid bot port";}
+            if(BotTracker.get(port)==null)return "error: unknown tracked bot";
+            client.execute(()->{if(parts[0].equals("select"))BotTracker.select(port);else if(parts[0].equals("render"))BotTracker.command(port,"toggle_render");else LocalFormation.manage(port,parts[0]);});
+            return "Bot action queued";
+        }
+        if(cmd.startsWith("defense:")) {
+            try {var config=TaskDefense.parse(cmd.substring(8));client.execute(()->TaskDefense.configure(config));return "{\"ok\":true}";}
+            catch(IllegalArgumentException error){return "error: "+error.getMessage();}
+        }
+        if (cmd.startsWith("collision:")) {
+            String[] parts=cmd.substring(10).split("\\|",-1);var here=LocalFormation.here();
+            if(parts.length!=3||here==null||!parts[0].equals(here.server())||!parts[1].equals(here.dimension()))return "error: wrong collision roster world";
+            try{BotCollisionPolicy.replace(BotFriends.parse(parts[2]));return "{\"ok\":true}";}catch(IllegalArgumentException e){return "error: invalid collision roster";}
+        }
+        if (cmd.startsWith("mining:")) {
+            if(!BaritoneClient.available())return "error: install Baritone for coordinated mining";
+            if(client.player==null)return "error: bot is not in game";
+            try{var job=MiningTask.parse(cmd.substring(7));client.execute(()->MiningTask.start(client,job));return "Coordinated mining queued";}
+            catch(IllegalArgumentException error){return "error: "+error.getMessage();}
+        }
+        if (cmd.startsWith("formation:")) {
+            String action = cmd.substring(10);
+            if (!java.util.Set.of("saturn", "orbit", "lightning", "scatter", "stop", "gather", "spread", "status").contains(action))
+                return "error: unknown formation action";
+            client.execute(() -> ClientActions.action(client, action));
+            return "Formation action queued";
+        }
+        if (cmd.startsWith("friends:")) {
+            String[] parts = cmd.substring(8).split(":", 2);
+            if (parts.length != 2) return "error: expected friends:add:names or friends:remove:names";
+            try {
+                BotFriends.edit(parts[0], parts[1]);
+                return "Friend list saved";
+            } catch (IOException | IllegalArgumentException error) {
+                return "error: " + error.getMessage();
+            }
+        }
+        if (cmd.startsWith("inventory:")) {
+            try {
+                BotInventory.Request request = BotInventory.parse(cmd.substring(10));
+                if (client.player == null) return "error: client is not in game";
+                client.execute(() -> BotInventory.start(client, request));
+                return "Inventory task queued";
+            } catch (IllegalArgumentException error) {
+                return "error: " + error.getMessage();
+            }
+        }
         if (cmd.startsWith("chat:")) {
             String msg = cmd.substring(5);
             if (client.player != null) {
@@ -258,7 +362,11 @@ public class BotFuryMod implements ClientModInitializer {
             if (!BaritoneClient.available()) return "error: Baritone is not installed in this client";
             String command = cmd.substring(9);
             if (client.player == null) return "error: client is not in game";
-            client.execute(() -> BaritoneClient.execute(command));
+            client.execute(() -> {
+                if(command.equals("pause")){MiningTask.pause(true);BotInventory.pause(true);BaritoneClient.execute("pause");}
+                else if(command.equals("resume")){MiningTask.pause(false);BotInventory.pause(false);BaritoneClient.execute("resume");}
+                else {LocalFormation.pauseMovement();BotInventory.baritone(command);BaritoneClient.execute(command);}
+            });
             return "Baritone command queued";
         } else if (cmd.startsWith("connect:")) {
             String ip = cmd.substring(8).trim();

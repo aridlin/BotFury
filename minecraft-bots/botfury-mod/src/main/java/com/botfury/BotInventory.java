@@ -21,10 +21,14 @@ final class BotInventory {
     private static Vec3d excessDropCenter;
     private static Vec3d lastRecipient;
     private static String completion = "Done";
-    static void pause(boolean value) { manualPause=value; }
+    static void pause(boolean value) {
+        if (value) routeRecovery.reset();
+        manualPause = value;
+    }
     private static int age, delivered, waitTicks;
     private static Vec3d spreadGoal;
     private static final DroppedItemSearch pickup = new DroppedItemSearch();
+    private static final StallRecovery routeRecovery = new StallRecovery();
     private static String world;
     private static Object session;
     private static volatile String status = "";
@@ -88,7 +92,7 @@ final class BotInventory {
             if (client.player.getPos().squaredDistanceTo(spreadGoal) < 2) {
                 finish(completion); return;
             }
-            if (++waitTicks > 160) { finish("Could not finish spreading out"); return; }
+            if (++waitTicks > 400) { finish("Could not finish spreading out"); return; }
             path(client, spreadGoal); return;
         }
         PlayerEntity recipient = client.world.getPlayers().stream()
@@ -107,6 +111,7 @@ final class BotInventory {
                 if (client.player.squaredDistanceTo(recipient) > 6.25 || !client.player.canSee(recipient)) {
                     path(client, recipient.getPos()); return;
                 }
+                routeRecovery.reset();
                 BaritoneClient.execute("stop");
                 if (task.action.equals("gather")) { finish("Arrived"); return; }
                 if (delivered >= task.count || held == 0) {
@@ -191,12 +196,20 @@ final class BotInventory {
     }
     private static void path(MinecraftClient client, Vec3d goal) {
         if (!BaritoneClient.available()) { finish("Cannot move: Baritone unavailable"); return; }
-        if (age % 20 != 0 && age != 1 && spreadGoal == null) return;
-        if (spreadGoal != null && waitTicks % 20 != 0) return;
         var pos = net.minecraft.util.math.BlockPos.ofFloored(goal);
+        var recovery = routeRecovery.tick(client, pos, candidate -> true);
+        if (recovery == StallRecovery.State.DETOUR) {
+            status = "Clearing a stalled inventory route";
+            return;
+        }
+        if (recovery != StallRecovery.State.REPLAN) {
+            if (age % 20 != 0 && age != 1 && spreadGoal == null) return;
+            if (spreadGoal != null && waitTicks % 20 != 0) return;
+        }
         BaritoneClient.execute("goto " + pos.getX() + " " + pos.getY() + " " + pos.getZ());
     }
     private static void finish(String message) {
+        routeRecovery.reset();
         if (task != null || baritoneTask) BaritoneClient.execute("stop");
         pickup.reset();
         task = null;

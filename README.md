@@ -479,6 +479,12 @@ undoing the dodge; Baritone resumes afterwards. No valid landing means no jump.
 Stop and task pause suppress evasion. These checks cannot guarantee every dodge
 under network latency or every anti-cheat configuration. No server mod is needed.
 
+Project approaches, mining travel, and inventory delivery routes try a
+short detour after about one minute without progress. For overlapping
+fleet bots, the check can trigger after six seconds. The bot looks for
+clear nearby ground, moves without breaking or placing blocks during
+the detour, and returns to its assigned route. Stop cancels the detour.
+
 ### Project workers and structure builds
 
 Use `/bf project workers` on the controller to enable project work on the

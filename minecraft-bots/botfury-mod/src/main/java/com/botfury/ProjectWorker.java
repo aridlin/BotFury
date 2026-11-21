@@ -30,6 +30,7 @@ final class ProjectWorker {
     private static DroppedItemSearch pickup;
     private static ProjectQueue.ChestReport chestReport;
     private static BaritoneSettings approach;
+    private static final StallRecovery approachRecovery = new StallRecovery();
     private static Vec3d approachProgress;
     private static long retryApproach;
     private static long nextRequest, deadline, taskEnd, stableSince, nextPlacement;
@@ -80,6 +81,7 @@ final class ProjectWorker {
     }
 
     private static void halt(MinecraftClient client) {
+        approachRecovery.reset();
         if (chest != null) chest.close(client);
         if (production != null) production.close(client);
         if (pickup != null) pickup.stop();
@@ -144,6 +146,16 @@ final class ProjectWorker {
         Vec3d feet = Vec3d.ofBottomCenter(block.stand());
         if (player.getPos().squaredDistanceTo(feet) > 1.21) {
             stableSince = 0;
+            var recovery = approachRecovery.tick(client, block.stand(),
+                    pos -> !pos.equals(target) && !pos.up().equals(target));
+            if (recovery == StallRecovery.State.DETOUR) {
+                status = assignment.project() + "/" + assignment.job().work().id() + ": Clearing a stalled route";
+                return;
+            }
+            if (recovery == StallRecovery.State.REPLAN) {
+                retryApproach = 0;
+                status = assignment.project() + "/" + assignment.job().work().id() + ": Retrying approach";
+            }
             Vec3d current = player.getPos();
             if (approachProgress != null && current.squaredDistanceTo(approachProgress) >= 1) {
                 approachProgress = current;
@@ -280,7 +292,7 @@ final class ProjectWorker {
                         case GATHER -> 1800;
                         case SMELT -> 300;
                         case CRAFT, TRANSFER -> 180;
-                        default -> 45;
+                        default -> 90;
                     });
                     if (work.kind() == ProjectQueue.Kind.GATHER) {
                         gather = ProjectGather.parse(work.payload());

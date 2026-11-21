@@ -44,6 +44,7 @@ final class MiningTask {
     private static Vec3d stand,origin,pickup;
     private static int pickupUntil;
     private static BaritoneSettings settings;
+    private static final StallRecovery routeRecovery = new StallRecovery();
     private static final Map<BlockPos,Integer> rejected=new HashMap<>();
     private static volatile String status="";
     static boolean active(){return job!=null;}
@@ -114,10 +115,17 @@ final class MiningTask {
                 String blockName=Registries.BLOCK.getId(client.world.getBlockState(target).getBlock()).getPath();
                 client.interactionManager.updateBlockBreakingProgress(target,((BlockHitResult)ray).getSide());client.player.swingHand(Hand.MAIN_HAND);
                 status="Mining "+blockName;
-            }else if(age>=nextPath){
-                nextPath=age+20;var p=BlockPos.ofFloored(stand);
-                if(!path("goto "+p.getX()+" "+p.getY()+" "+p.getZ())){status="Baritone could not approach reserved ore";rejected.put(target,age+200);clearReservation();}
-                else status="Approaching reserved "+job.resource;
+            } else {
+                var p = BlockPos.ofFloored(stand);
+                if (recoverRoute(client, p)) return;
+                if (age >= nextPath) {
+                    nextPath = age + 20;
+                    if (!path("goto " + p.getX() + " " + p.getY() + " " + p.getZ())) {
+                        status = "Baritone could not approach reserved ore";
+                        rejected.put(target, age + 200);
+                        clearReservation();
+                    } else status = "Approaching reserved " + job.resource;
+                }
             }
             return;
         }
@@ -127,6 +135,7 @@ final class MiningTask {
             }else if(age%20==0)pickupPath();
             status="Gathering mined drops";return;
         }
+        if (pathActive && recoverRoute(client, null)) return;
         if(requesting||age<nextSearch)return;
         nextSearch=age+20;
         var position=client.player.getBlockPos();
@@ -157,7 +166,24 @@ final class MiningTask {
             } else path("explore " + x + " " + z);
         }
     }
-    private static void stopPath(){if(pathActive){BaritoneClient.execute("stop");pathActive=false;}}
+    private static boolean recoverRoute(MinecraftClient client, BlockPos goal) {
+        var recovery = routeRecovery.tick(client, goal, pos -> excluded == null
+                || (!excluded.contains(pos) && !excluded.contains(pos.up())));
+        if (recovery == StallRecovery.State.DETOUR) {
+            status = "Clearing a stalled mining route";
+            return true;
+        }
+        if (recovery == StallRecovery.State.REPLAN) nextPath = age;
+        return false;
+    }
+
+    private static void stopPath() {
+        routeRecovery.reset();
+        if (pathActive) {
+            BaritoneClient.execute("stop");
+            pathActive = false;
+        }
+    }
     private static boolean path(String command){boolean accepted=BaritoneClient.execute(command);pathActive|=accepted;return accepted;}
     private static void pickupPath(){
         if(pickup==null)return;

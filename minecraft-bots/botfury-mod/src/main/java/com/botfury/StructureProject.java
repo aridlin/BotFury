@@ -14,7 +14,7 @@ import java.nio.file.Files;
 import java.util.*;
 import java.util.zip.GZIPInputStream;
 
-/** Compiles a small vanilla structure into leased excavation, placement and verification jobs. */
+/** Compiles a small structure into leased excavation, placement and verification jobs. */
 final class StructureProject {
     private static final Gson JSON = new Gson();
     private static final int LIMIT = 256;
@@ -34,7 +34,7 @@ final class StructureProject {
         }
         try {
             Plan plan = plan(client, file, origin);
-            String id = file.substring(0, Math.min(file.length() - 4, 48)) + "-" + UUID.randomUUID().toString().substring(0, 8);
+            String id = file.substring(0, Math.min(file.lastIndexOf('.'), 48)) + "-" + UUID.randomUUID().toString().substring(0, 8);
             var supply = supplied && !plan.materials().isEmpty() ? StructureSupply.compile(client, plan) : null;
             ProjectBroker.submitStructure(id, here, plan, supply);
             int jobCount = supply == null ? plan.jobs().size() : supply.jobs().size();
@@ -49,8 +49,8 @@ final class StructureProject {
     }
 
     static Plan plan(MinecraftClient client, String file, BlockPos origin) throws IOException {
-        if (!file.matches("[A-Za-z0-9_-]{1,64}\\.nbt")) {
-            throw new IllegalArgumentException("Use a structure filename ending in .nbt");
+        if (!file.matches("[A-Za-z0-9_-]{1,64}\\.(nbt|schem)")) {
+            throw new IllegalArgumentException("Use a structure filename ending in .nbt or .schem");
         }
         var folder = FabricLoader.getInstance().getConfigDir().resolve("botfury-structures");
         Files.createDirectories(folder);
@@ -63,7 +63,7 @@ final class StructureProject {
         try (var input = new DataInputStream(new GZIPInputStream(Files.newInputStream(path)))) {
             structure = NbtIo.read(input, new NbtTagSizeTracker(2 * 1024 * 1024));
         }
-        var desired = cells(structure, origin);
+        var desired = file.endsWith(".schem") ? schematicCells(structure, origin) : cells(structure, origin);
         var cells = new ArrayList<Cell>();
         for (var entry : desired.entrySet()) {
             var pos = entry.getKey();
@@ -106,19 +106,34 @@ final class StructureProject {
                 }
             }
             var state = palette.getCompound(index);
-            var id = Identifier.tryParse(state.getString("Name"));
-            if (id == null || !Registries.BLOCK.containsId(id)
-                    || !state.getCompound("Properties").isEmpty()
-                    || !id.equals(AIR) && !ProjectPlacement.supported(Registries.BLOCK.get(id).getDefaultState())) {
-                throw new IllegalArgumentException("Unsupported structure block " + state.getString("Name"));
-            }
-            int x = Math.addExact(origin.getX(), position.getInt(0));
-            int y = Math.addExact(origin.getY(), position.getInt(1));
-            int z = Math.addExact(origin.getZ(), position.getInt(2));
-            var pos = new ProjectBlock.Position(x, y, z).checked();
+            var id = supportedBlock(state.getString("Name"), !state.getCompound("Properties").isEmpty());
+            var pos = absolute(origin, position.getInt(0), position.getInt(1), position.getInt(2));
             if (result.put(pos, id) != null) throw new IllegalArgumentException("Duplicate structure position");
         }
         return result;
+    }
+
+    private static Map<BlockPos, Identifier> schematicCells(NbtCompound schematic, BlockPos origin) {
+        var result = new HashMap<BlockPos, Identifier>();
+        SpongeSchematic.blocks(schematic, LIMIT).forEach((pos, state) -> {
+            var id = supportedBlock(state, state.contains("["));
+            result.put(absolute(origin, pos.getX(), pos.getY(), pos.getZ()), id);
+        });
+        return result;
+    }
+
+    private static Identifier supportedBlock(String state, boolean hasProperties) {
+        var id = Identifier.tryParse(state);
+        if (id == null || !Registries.BLOCK.containsId(id) || hasProperties
+                || !id.equals(AIR) && !ProjectPlacement.supported(Registries.BLOCK.get(id).getDefaultState())) {
+            throw new IllegalArgumentException("Unsupported structure block " + state);
+        }
+        return id;
+    }
+
+    private static BlockPos absolute(BlockPos origin, int x, int y, int z) {
+        return new ProjectBlock.Position(Math.addExact(origin.getX(), x), Math.addExact(origin.getY(), y),
+                Math.addExact(origin.getZ(), z)).checked();
     }
 
     private static Plan compile(MinecraftClient client, List<Cell> cells, Map<BlockPos, Identifier> desired) {

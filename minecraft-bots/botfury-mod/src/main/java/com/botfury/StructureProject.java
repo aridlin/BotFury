@@ -473,6 +473,9 @@ final class StructureProject {
                 .max(Comparator.comparingInt(cell -> cell.pos.getY())).orElseThrow().pos;
         int high = highTarget.getY();
         String suffix = index == 0 ? "" : index + "-";
+        var anchor = scaffoldAnchor(client, first, nearby, layout, cleared, ready, placed,
+                prerequisites, suffix, room);
+        if (anchor != null) return anchor;
         Scaffold best = null;
         int fewestRemaining = nearby.size();
         for (int rise = 1; rise <= 5 && 3 * rise * (rise + 1) / 2 <= room; rise++) {
@@ -503,6 +506,46 @@ final class StructureProject {
             }
         }
         return best;
+    }
+
+    private static Scaffold scaffoldAnchor(MinecraftClient client, Cell first, Collection<Cell> nearby,
+                                           Map<BlockPos, BlockState> layout, Map<BlockPos, BlockState> cleared,
+                                           Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed,
+                                           List<String> prerequisites, String suffix, int room) {
+        var current = new HashMap<>(cleared);
+        current.putAll(ready);
+        var tried = new HashSet<BlockPos>();
+        for (var cell : nearby) {
+            if (horizontalDistance(first.pos, cell.pos) > 9 || Math.abs(cell.pos.getY() - first.pos.getY()) > 4
+                    || cell.desired.getBlock() instanceof FallingBlock
+                    || !cell.desired.isFullCube(client.world, cell.pos)) continue;
+            for (var face : ProjectPlacement.faces(cell.desired)) {
+                var top = cell.pos.offset(face.getOpposite());
+                if (!tried.add(top)) continue;
+                var base = top;
+                int maxHeight = Math.min(4, room / 3);
+                while (top.getY() - base.getY() < maxHeight && loaded(client, base)
+                        && airAt(client, base, layout) && airAt(client, base, current)
+                        && !BuildProtection.blocked(base)) {
+                    base = base.down();
+                }
+                if (!loaded(client, base) || !current.getOrDefault(base, client.world.getBlockState(base))
+                        .isFullCube(client.world, base)) continue;
+                var blocks = new LinkedHashMap<BlockPos, BlockState>();
+                for (var pos = base.up(); pos.getY() <= top.getY(); pos = pos.up()) blocks.put(pos, SCAFFOLD);
+                if (blocks.isEmpty()) continue;
+                var trial = planScaffoldBlocks(client, blocks, layout, cleared, ready, placed, prerequisites, suffix);
+                if (trial == null) continue;
+                var expanded = new HashMap<>(layout);
+                expanded.putAll(trial.layout);
+                var expandedReady = new HashMap<>(ready);
+                expandedReady.putAll(trial.layout);
+                var expandedPlaced = new HashMap<>(placed);
+                expandedPlaced.putAll(trial.placed);
+                if (buildPose(client, cell, expanded, expandedReady, cleared, expandedPlaced, true) != null) return trial;
+            }
+        }
+        return null;
     }
 
     private static long horizontalDistance(BlockPos first, BlockPos other) {
@@ -545,10 +588,18 @@ final class StructureProject {
                 scaffold.put(pos, SCAFFOLD);
             }
         }
+        return planScaffoldBlocks(client, scaffold, layout, cleared, Map.of(), Map.of(), prerequisites, suffix);
+    }
+
+    private static Scaffold planScaffoldBlocks(MinecraftClient client, Map<BlockPos, BlockState> scaffold,
+                                               Map<BlockPos, BlockState> layout, Map<BlockPos, BlockState> cleared,
+                                               Map<BlockPos, BlockState> ready, Map<BlockPos, String> placedBefore,
+                                               List<String> prerequisites, String suffix) {
         var finalLayout = new HashMap<>(layout);
         finalLayout.putAll(scaffold);
-        var built = new HashMap<BlockPos, BlockState>();
-        var placed = new LinkedHashMap<BlockPos, String>();
+        var built = new HashMap<>(ready);
+        var placed = new LinkedHashMap<>(placedBefore);
+        var anchors = new LinkedHashMap<BlockPos, String>();
         var jobs = new ArrayList<ProjectQueue.Work>();
         var placements = new ArrayList<ProjectQueue.Work>();
         List<String> next = prerequisites;
@@ -564,6 +615,7 @@ final class StructureProject {
             jobs.add(placement);
             built.put(pos, SCAFFOLD);
             placed.put(pos, id);
+            anchors.put(pos, id);
             next = List.of(id);
         }
 
@@ -575,7 +627,7 @@ final class StructureProject {
             existing.putAll(built);
             var simulated = new HashMap<>(layout);
             simulated.putAll(built);
-            var stand = findStand(client, pos, null, true, feet ->
+            var stand = findPlacementStand(client, pos, null, feet ->
                     safeStand(client, feet, existing) && safeStand(client, feet, simulated)
                             && canRemoveBlock(client, feet, pos, existing)
                             && canRemoveBlock(client, feet, pos, simulated)
@@ -586,7 +638,7 @@ final class StructureProject {
             steps.add(new ScaffoldStep(pos, placements.get(placements.size() - 1 - steps.size()), stand));
         }
         Collections.reverse(steps);
-        return new Scaffold(jobs, steps, scaffold, placed);
+        return new Scaffold(jobs, steps, scaffold, anchors);
     }
 
     private static String appendScaffoldCleanup(List<ProjectQueue.Work> jobs, Scaffold scaffold,
@@ -625,15 +677,17 @@ final class StructureProject {
             var state = desired.containsKey(support) ? ready.get(support) : client.world.getBlockState(support);
             if (state == null || !ProjectPlacement.support(state, placement, face, client.world, support)) continue;
             Predicate<BlockPos> visible = pos -> clearBuildFace(client, pos, cell.pos, support, face, desired, placement, avoidCorners);
-            var stand = chooseStand(client, cell.pos, desired, face, visible);
+            var stand = findPlacementStand(client, cell.pos, face, pos ->
+                    !desired.containsKey(pos) && !desired.containsKey(pos.up()) && !desired.containsKey(pos.down())
+                            && safeStand(client, pos, Map.of()) && visible.test(pos));
             if (stand == null) {
-                stand = findStand(client, cell.pos, face, true, pos ->
+                stand = findPlacementStand(client, cell.pos, face, pos ->
                         safeStand(client, pos, cleared) && safeStand(client, pos, desired) && visible.test(pos));
             }
             if (stand != null) return new BuildPose(stand, face, support, false);
             var current = new HashMap<>(cleared);
             current.putAll(ready);
-            stand = findStand(client, cell.pos, face, true, pos ->
+            stand = findPlacementStand(client, cell.pos, face, pos ->
                     safeStand(client, pos, cleared) && safeStand(client, pos, desired)
                             && clearBuildFace(client, pos, cell.pos, support, face, current, placement, avoidCorners));
             // Later placements wait until a face that will be covered has been used.
@@ -641,7 +695,7 @@ final class StructureProject {
             for (boolean exposed : new boolean[]{false, true}) {
                 var visibleLayout = exposed ? current : desired;
                 var accessRoutes = new HashMap<BlockPos, BuildAccess>();
-                stand = findStand(client, cell.pos, face, true, pos -> {
+                stand = findPlacementStand(client, cell.pos, face, pos -> {
                     if (!placed.containsKey(pos.down()) || !safeStand(client, pos, current)
                             || !safeStand(client, pos, visibleLayout)
                             || !clearBuildFace(client, pos, cell.pos, support, face, visibleLayout, placement, avoidCorners)) return false;
@@ -654,6 +708,12 @@ final class StructureProject {
             }
         }
         return null;
+    }
+
+    private static BlockPos findPlacementStand(MinecraftClient client, BlockPos target, Direction face,
+                                                Predicate<BlockPos> suitable) {
+        // Minecraft measures placement reach from the eyes, which can reach upward from lower floors.
+        return findStand(client, target, face, true, new int[]{0, 1, -1, -2, -3}, suitable);
     }
 
     private static BuildAccess builtAccess(MinecraftClient client, BlockPos stand, BlockPos target,

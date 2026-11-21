@@ -21,6 +21,14 @@ final class FormationClient {
     static KeyBinding wheel, quick;
     private static boolean pendingWheel;
     private FormationClient() {}
+    private static int submitStructure(
+            com.mojang.brigadier.context.CommandContext<net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource> context,
+            boolean supplied) {
+        return StructureProject.submit(context.getSource().getClient(), StringArgumentType.getString(context, "file"),
+                new net.minecraft.util.math.BlockPos(IntegerArgumentType.getInteger(context, "x"),
+                        IntegerArgumentType.getInteger(context, "y"), IntegerArgumentType.getInteger(context, "z")), supplied);
+    }
+
     static void register() {
         BotUiConfig.load();
         wheel = KeyBindingHelper.registerKeyBinding(new KeyBinding("key.botfury.wheel", InputUtil.Type.MOUSE, GLFW.GLFW_MOUSE_BUTTON_5, "category.botfury"));
@@ -52,12 +60,8 @@ final class FormationClient {
             }
             root.then(inventory);
             var projectCoordinates = ClientCommandManager.argument("z", IntegerArgumentType.integer())
-                    .executes(context -> StructureProject.submit(context.getSource().getClient(),
-                            StringArgumentType.getString(context, "file"),
-                            new net.minecraft.util.math.BlockPos(
-                                    IntegerArgumentType.getInteger(context, "x"),
-                                    IntegerArgumentType.getInteger(context, "y"),
-                                    IntegerArgumentType.getInteger(context, "z"))));
+                    .executes(context -> submitStructure(context, false))
+                    .then(ClientCommandManager.literal("supplied").executes(context -> submitStructure(context, true)));
             var projectBuild = ClientCommandManager.literal("build")
                     .then(ClientCommandManager.argument("file", StringArgumentType.string())
                             .then(ClientCommandManager.argument("x", IntegerArgumentType.integer())

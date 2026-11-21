@@ -5,9 +5,29 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.Item;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.math.BlockPos;
 
-record ProjectGather(String resource, String variant, Identifier item, int count) {
-    private record Payload(String resource, String variant, String item, Integer count) {}
+record ProjectGather(String resource, String variant, Identifier item, int count, Area exclude) {
+    private record Payload(String resource, String variant, String item, Integer count, Bounds exclude) {}
+
+    record Bounds(ProjectBlock.Position min, ProjectBlock.Position max) {
+        Area checked() {
+            if (min == null || max == null) throw new IllegalArgumentException("Invalid protected area");
+            var a = min.checked();
+            var b = max.checked();
+            if (a.getX() > b.getX() || a.getY() > b.getY() || a.getZ() > b.getZ()) {
+                throw new IllegalArgumentException("Invalid protected area");
+            }
+            return new Area(a, b);
+        }
+    }
+    record Area(BlockPos min, BlockPos max) {
+        boolean contains(BlockPos pos) {
+            return pos.getX() >= min.getX() && pos.getX() <= max.getX()
+                    && pos.getY() >= min.getY() && pos.getY() <= max.getY()
+                    && pos.getZ() >= min.getZ() && pos.getZ() <= max.getZ();
+        }
+    }
 
     static ProjectGather parse(String json) {
         var payload = new Gson().fromJson(json, Payload.class);
@@ -20,7 +40,7 @@ record ProjectGather(String resource, String variant, Identifier item, int count
         if (item == null || !Registries.ITEM.containsId(item) || item.equals(Identifier.of("minecraft", "air"))) {
             throw new IllegalArgumentException("Unknown gathering item");
         }
-        return new ProjectGather(payload.resource, payload.variant, item, payload.count);
+        return new ProjectGather(payload.resource, payload.variant, item, payload.count, payload.exclude == null ? null : payload.exclude.checked());
     }
 
     int inventoryCount(MinecraftClient client) {

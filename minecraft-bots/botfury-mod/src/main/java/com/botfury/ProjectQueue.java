@@ -47,7 +47,7 @@ final class ProjectQueue {
     }
     record ChestObservation(ChestReport report, long observedAt) {}
     record Repeat(int batch, String item, String chest, int completed, ChestObservation lastStock, boolean cancelled) {}
-    record Project(String id, String world, List<Job> jobs, Repeat repeat) {
+    record Project(String id, String world, List<Job> jobs, Repeat repeat, String supplyChest) {
         Project { jobs = List.copyOf(jobs); }
     }
     record Assignment(String project, String world, Job job) {}
@@ -81,15 +81,36 @@ final class ProjectQueue {
     }
 
     synchronized void submit(String id, String world, List<Work> work) throws IOException {
-        submit(id, world, work, null);
+        submit(id, world, work, null, null);
     }
 
     synchronized void submitOutput(String id, String world, List<Work> work, Repeat repeat) throws IOException {
-        if (projects.values().stream().anyMatch(project -> project.world.equals(world) && project.repeat != null
-                && !project.repeat.cancelled && project.repeat.chest.equals(repeat.chest))) {
-            throw new IllegalArgumentException("An output order already reserves this chest");
+        checkStorage(world, repeat.chest);
+        submit(id, world, work, repeat, null);
+    }
+
+    synchronized void submitSupplied(String id, String world, List<Work> work, String chest) throws IOException {
+        checkStorage(world, chest);
+        submit(id, world, work, null, chest);
+    }
+
+    private void checkStorage(String world, String chest) {
+        if (projects.values().stream().anyMatch(project -> project.world.equals(world)
+                && chest.equals(reservedStorage(project)))) {
+            throw new IllegalArgumentException("An active project already reserves this chest");
         }
-        submit(id, world, work, repeat);
+    }
+
+    private static String reservedStorage(Project project) {
+        if (project.repeat != null && !project.repeat.cancelled) return project.repeat.chest;
+        if (project.supplyChest == null) return null;
+        Set<String> blocked = new HashSet<>();
+        for (Job job : project.jobs) {
+            if (job.state == State.FAILED || job.work.needs.stream().anyMatch(blocked::contains)) {
+                blocked.add(job.work.id);
+            } else if (job.state == State.WAITING || job.state == State.LEASED) return project.supplyChest;
+        }
+        return null;
     }
 
     synchronized boolean cancelOutput(String world, String chest) throws IOException {
@@ -97,13 +118,13 @@ final class ProjectQueue {
             var repeat = project.repeat;
             if (!project.world.equals(world) || repeat == null || repeat.cancelled || !repeat.chest.equals(chest)) continue;
             var cancelled = new Repeat(repeat.batch, repeat.item, repeat.chest, repeat.completed, repeat.lastStock, true);
-            commit(new Project(project.id, project.world, project.jobs, cancelled));
+            commit(new Project(project.id, project.world, project.jobs, cancelled, project.supplyChest));
             return true;
         }
         return false;
     }
 
-    private void submit(String id, String world, List<Work> work, Repeat repeat) throws IOException {
+    private void submit(String id, String world, List<Work> work, Repeat repeat, String supplyChest) throws IOException {
         if (!validId(id) || world == null || world.isBlank() || world.length() > 240
                 || work == null || work.isEmpty() || work.size() > 256) {
             throw new IllegalArgumentException("Invalid project");
@@ -120,7 +141,7 @@ final class ProjectQueue {
             }
             jobs.add(new Job(item, State.WAITING, 0, null, null, 0, null, null));
         }
-        commit(new Project(id, world, jobs, repeat));
+        commit(new Project(id, world, jobs, repeat, supplyChest));
     }
 
     synchronized Assignment claim(String world, String worker, Set<Kind> kinds, long now) throws IOException {
@@ -131,9 +152,8 @@ final class ProjectQueue {
         Set<String> reserved = new HashSet<>();
         Map<String, String> outputChests = new HashMap<>();
         for (Project project : projects.values()) {
-            if (world.equals(project.world) && project.repeat != null && !project.repeat.cancelled) {
-                outputChests.put(project.repeat.chest, project.id);
-            }
+            var storage = reservedStorage(project);
+            if (world.equals(project.world) && storage != null) outputChests.put(storage, project.id);
         }
         for (Project project : projects.values()) {
             for (Job job : project.jobs) {
@@ -213,7 +233,7 @@ final class ProjectQueue {
                     ? project.jobs.stream().map(entry -> entry == job ? result : entry).toList()
                     : project.jobs.stream().map(entry -> new Job(entry.work, State.WAITING, 0,
                             null, null, 0, null, null)).toList();
-            commit(new Project(project.id, project.world, reset, next));
+            commit(new Project(project.id, project.world, reset, next, project.supplyChest));
         } else replace(project, result);
         return true;
     }
@@ -236,7 +256,7 @@ final class ProjectQueue {
                 jobs.add(new Job(next, State.WAITING, 0, null, null, 0, null, null));
             } else jobs.add(entry);
         }
-        commit(new Project(project.id, project.world, jobs, repeat));
+        commit(new Project(project.id, project.world, jobs, repeat, project.supplyChest));
     }
 
     synchronized Map<String, ChestObservation> chestStock(String world) {
@@ -268,7 +288,7 @@ final class ProjectQueue {
                 }
             }
             if (jobs != null) {
-                next.put(project.id, new Project(project.id, project.world, jobs, project.repeat));
+                next.put(project.id, new Project(project.id, project.world, jobs, project.repeat, project.supplyChest));
                 changed = true;
             }
         }
@@ -296,7 +316,7 @@ final class ProjectQueue {
 
     private void replace(Project project, Job changed) throws IOException {
         var jobs = project.jobs.stream().map(job -> job.work.id.equals(changed.work.id) ? changed : job).toList();
-        commit(new Project(project.id, project.world, jobs, project.repeat));
+        commit(new Project(project.id, project.world, jobs, project.repeat, project.supplyChest));
     }
 
     private void commit(Project project) throws IOException {

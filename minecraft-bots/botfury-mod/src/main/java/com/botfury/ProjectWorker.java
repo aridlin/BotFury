@@ -116,7 +116,7 @@ final class ProjectWorker {
             if (held >= gather.count()) {
                 finish(client, true, "Observed " + held + " " + gather.item() + " in worker inventory");
             } else if (!MiningTask.active()) {
-                MiningTask.startProject(client, gather.mining(port));
+                MiningTask.startProject(client, gather.mining(port), gather.exclude());
                 if (!MiningTask.active()) finish(client, false, MiningTask.lastStatus());
             } else {
                 status = assignment.project() + "/" + assignment.job().work().id() + " (" + held + "/" + gather.count()
@@ -270,7 +270,7 @@ final class ProjectWorker {
                     taskEnd = System.nanoTime() + seconds(switch (work.kind()) {
                         case GATHER -> 1800;
                         case SMELT -> 300;
-                        case CRAFT -> 180;
+                        case CRAFT, TRANSFER -> 180;
                         default -> 45;
                     });
                     if (work.kind() == ProjectQueue.Kind.GATHER) {

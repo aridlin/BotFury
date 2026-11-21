@@ -106,6 +106,27 @@ class ProjectQueueTest {
         assertEquals("smelt", followup.job().work().id());
     }
 
+    @Test void suppliedProjectReservesItsChestUntilCompletionAcrossRestarts() throws Exception {
+        Path journal = directory.resolve("board.json");
+        String chest = "block:5,64,0";
+        var board = new ProjectQueue(journal);
+        board.submitSupplied("house", WORLD, List.of(
+                job("materials", GATHER, List.of()),
+                job("store", TRANSFER, List.of("materials"), chest)), chest);
+        board.submit("other", WORLD, List.of(job("take", TRANSFER, List.of(), chest)));
+
+        var recovered = new ProjectQueue(journal);
+        assertNull(recovered.claim(WORLD, "Other", Set.of(TRANSFER), 0));
+        assertThrows(IllegalArgumentException.class, () -> recovered.submitSupplied("road", WORLD,
+                List.of(job("store", TRANSFER, List.of(), chest)), chest));
+
+        var material = recovered.claim(WORLD, "Miner", Set.of(GATHER), 1).job();
+        assertTrue(recovered.finish("house", "materials", material.lease(), true, "Gathered", 2));
+        var store = recovered.claim(WORLD, "Miner", Set.of(TRANSFER), 3).job();
+        assertTrue(recovered.finish("house", "store", store.lease(), true, "Deposited", 4));
+        assertEquals("other", recovered.claim(WORLD, "Other", Set.of(TRANSFER), 5).project());
+    }
+
     @Test void outputCyclesAddToObservedStockAndRespectCancellationAfterRestart() throws Exception {
         Path journal = directory.resolve("board.json");
         var board = new ProjectQueue(journal);

@@ -20,12 +20,12 @@ final class StructureProject {
     private static final int LIMIT = 256;
     private static final Identifier AIR = Identifier.of("minecraft", "air");
 
-    record Plan(List<ProjectQueue.Work> jobs, Map<Identifier, Integer> materials) {}
+    record Plan(List<ProjectQueue.Work> jobs, Map<Identifier, Integer> materials, ProjectGather.Area area) {}
     private record Cell(BlockPos pos, Identifier desired, BlockState observed, BlockPos stand) {}
 
     private StructureProject() {}
 
-    static int submit(MinecraftClient client, String file, BlockPos origin) {
+    static int submit(MinecraftClient client, String file, BlockPos origin, boolean supplied) {
         var here = LocalFormation.here();
         int port = BotFuryMod.controlPort();
         if (here == null || client.world == null || port < 1024 || Boolean.getBoolean("botfury.managedHttp")) {
@@ -35,9 +35,11 @@ final class StructureProject {
         try {
             Plan plan = plan(client, file, origin);
             String id = file.substring(0, Math.min(file.length() - 4, 48)) + "-" + UUID.randomUUID().toString().substring(0, 8);
-            ProjectBroker.submitStructure(id, here, plan);
+            var supply = supplied && !plan.materials().isEmpty() ? StructureSupply.compile(client, plan) : null;
+            ProjectBroker.submitStructure(id, here, plan, supply);
+            int jobCount = supply == null ? plan.jobs().size() : supply.jobs().size();
             int workers = BotTracker.sendSelected("project:worker " + port);
-            ClientActions.message(client, "Queued " + id + " (" + plan.jobs().size() + " jobs, " + workers + " bots requested)");
+            ClientActions.message(client, "Queued " + id + " (" + jobCount + " jobs, " + workers + " bots requested)");
             if (!plan.materials().isEmpty()) ClientActions.message(client, "Building materials: " + plan.materials());
             return 1;
         } catch (IOException | RuntimeException error) {
@@ -166,7 +168,13 @@ final class StructureProject {
             jobs.add(work("verify-" + i, ProjectQueue.Kind.VERIFY, cell, cell.desired, prerequisites));
         }
         if (jobs.size() > LIMIT) throw new IllegalArgumentException("Structure needs more than 256 jobs");
-        return new Plan(List.copyOf(jobs), Map.copyOf(materials));
+        var origin = cells.get(0).pos;
+        var area = new ProjectGather.Area(origin, origin);
+        for (var cell : cells) {
+            area = StructureSupply.union(area, new ProjectBlock(cell.pos.down(), cell.stand, cell.desired),
+                    new ProjectBlock(cell.pos, cell.stand, cell.desired));
+        }
+        return new Plan(List.copyOf(jobs), Map.copyOf(materials), area);
     }
 
     private static ProjectQueue.Work work(String id, ProjectQueue.Kind kind, Cell cell,

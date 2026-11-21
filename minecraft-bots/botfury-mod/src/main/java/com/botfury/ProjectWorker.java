@@ -218,8 +218,10 @@ final class ProjectWorker {
             return;
         }
         Vec3d feet = Vec3d.ofBottomCenter(block.stand());
-        if (player.getPos().squaredDistanceTo(feet) > 1.21
-                || assignment.job().work().kind() == ProjectQueue.Kind.EXCAVATE && !player.getBlockPos().equals(block.stand())) {
+        var kind = assignment.job().work().kind();
+        boolean exactFooting = kind == ProjectQueue.Kind.EXCAVATE || kind == ProjectQueue.Kind.BUILD;
+        if (!player.isOnGround() || player.getPos().squaredDistanceTo(feet) > 1.21
+                || exactFooting && !player.getBlockPos().equals(block.stand())) {
             stableSince = 0;
             var recovery = approachRecovery.tick(client, block.stand(),
                     pos -> !pos.equals(target) && !pos.up().equals(target));
@@ -269,7 +271,6 @@ final class ProjectWorker {
         }
         var state = client.world.getBlockState(target);
         var actual = Registries.BLOCK.getId(state.getBlock());
-        var kind = assignment.job().work().kind();
         boolean excavate = kind == ProjectQueue.Kind.EXCAVATE;
         boolean matches = excavate ? state.isAir() : block.matches(state);
         if (matches) {

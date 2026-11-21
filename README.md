@@ -535,9 +535,9 @@ overhang. Material affected by gravity still needs support underneath.
 Bots can use permanent full-block steps already placed by the fleet to reach
 higher placements. The planner waits for the route's floor blocks and reserves
 the route during the placement. Full-block steps need clear headroom.
-When permanent steps are unavailable, the planner can add one temporary
-cobblestone staircase beside the structure. It verifies the build before
-taking the staircase down from top to bottom. Supplied builds include the
+When permanent steps are unavailable, the planner can add temporary
+cobblestone staircases beside separated parts of the structure. It verifies
+the build before taking the staircases down in reverse construction order. Supplied builds include the
 scaffold material, and workers need a pickaxe for teardown.
 The planner rejects entities, block entities, and plans over 256 jobs.
 Vanilla chest jobs and explicit project jobs

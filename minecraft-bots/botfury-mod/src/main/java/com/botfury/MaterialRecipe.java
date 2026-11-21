@@ -1,5 +1,7 @@
 package com.botfury;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.BlockItem;
 import net.minecraft.recipe.CraftingRecipe;
@@ -10,11 +12,66 @@ import net.minecraft.util.Identifier;
 
 import java.util.*;
 
-final class OutputRecipe {
-    record Step(ProjectQueue.Kind kind, String resource, Identifier recipe, int yield,
+final class MaterialRecipe {
+    private static final Gson JSON = new Gson();
+    private record Step(ProjectQueue.Kind kind, String resource, Identifier recipe, int yield,
                 Map<Identifier, Integer> ingredients, int cookTime) {}
 
-    static final Identifier COAL = mc("coal");
+    private record Quantity(Identifier item, Step step, int count) {}
+
+    static final class Plan {
+        private final List<Quantity> quantities;
+        private Plan(List<Quantity> quantities) { this.quantities = List.copyOf(quantities); }
+
+        int size() { return quantities.size(); }
+        boolean usesDroppedItems() { return "dropped".equals(quantities.get(0).step.resource); }
+
+        List<ProjectQueue.Work> jobs(String prefix, ProjectGather.Area protectedArea,
+                                     ProjectBlock table, ProjectBlock furnace) {
+            var jobs = new ArrayList<ProjectQueue.Work>();
+            String previous = null;
+            for (var quantity : quantities) {
+                var step = quantity.step;
+                ProjectBlock station = null;
+                JsonObject payload;
+                if (step.kind == ProjectQueue.Kind.GATHER) {
+                    payload = new JsonObject();
+                    payload.addProperty("resource", step.resource);
+                    payload.addProperty("variant", "both");
+                    payload.addProperty("item", quantity.item.toString());
+                    payload.add("exclude", JSON.toJsonTree(Map.of("min", StructureSupply.position(protectedArea.min()),
+                            "max", StructureSupply.position(protectedArea.max()))));
+                } else {
+                    boolean smelting = step.kind == ProjectQueue.Kind.SMELT;
+                    station = smelting ? furnace : table;
+                    if (station == null) {
+                        throw new IllegalArgumentException("Place a reachable " + (smelting ? "furnace" : "crafting table")
+                                + " near the chest for " + quantity.item);
+                    }
+                    payload = stationPayload(station);
+                    payload.addProperty("recipe", step.recipe.toString());
+                    if (smelting) {
+                        payload.addProperty("input", step.ingredients.keySet().iterator().next().toString());
+                        payload.addProperty("fuel", COAL.toString());
+                    }
+                }
+                payload.addProperty("count", quantity.count);
+                String id = prefix + jobs.size();
+                var job = new ProjectQueue.Work(id, step.kind, JSON.toJson(payload),
+                        previous == null ? List.of() : List.of(previous), Set.of(), previous);
+                jobs.add(station == null ? job : station.reserve(job));
+                previous = id;
+            }
+            return List.copyOf(jobs);
+        }
+    }
+
+    static JsonObject stationPayload(ProjectBlock station) {
+        return JSON.toJsonTree(new ProjectBlock.Payload(StructureSupply.position(station.target()),
+                StructureSupply.position(station.stand()), station.block().toString())).getAsJsonObject();
+    }
+
+    private static final Identifier COAL = mc("coal");
     private static final Map<String, String> ORES = Map.ofEntries(
             Map.entry("coal", "coal"), Map.entry("raw_iron", "iron"), Map.entry("raw_copper", "copper"),
             Map.entry("raw_gold", "gold"), Map.entry("redstone", "redstone"), Map.entry("lapis_lazuli", "lapis"),
@@ -27,7 +84,7 @@ final class OutputRecipe {
 
     private int remaining = 512;
 
-    OutputRecipe(MinecraftClient client, boolean canCraft, boolean canSmelt) {
+    MaterialRecipe(MinecraftClient client, boolean canCraft, boolean canSmelt) {
         this.client = client;
         client.world.getRecipeManager().values().stream()
                 .filter(recipe -> canCraft && recipe instanceof CraftingRecipe || canSmelt && recipe instanceof SmeltingRecipe)
@@ -39,10 +96,33 @@ final class OutputRecipe {
                 });
     }
 
-    Map<Identifier, Step> plan(Identifier item) {
+    Plan plan(Identifier item, int count, boolean allowDrops) {
+        remaining = 512;
         var steps = new LinkedHashMap<Identifier, Step>();
-        if (!resolve(item, steps, new HashSet<>())) steps.put(item, gather("dropped"));
-        return steps;
+        if (!resolve(item, steps, new HashSet<>())) {
+            if (!allowDrops) throw new IllegalArgumentException("No automatic source for " + item);
+            steps.put(item, gather("dropped"));
+        }
+        var demand = new HashMap<Identifier, Integer>();
+        demand.put(item, count);
+        var ordered = new ArrayList<>(steps.entrySet());
+        var quantities = new ArrayList<Quantity>();
+        for (int i = ordered.size() - 1; i >= 0; i--) {
+            var entry = ordered.get(i);
+            int needed = demand.getOrDefault(entry.getKey(), 0);
+            if (needed == 0) continue;
+            var step = entry.getValue();
+            int batches = (needed + step.yield - 1) / step.yield;
+            long cookTicks = (long) step.cookTime * batches;
+            if (needed > (step.kind == ProjectQueue.Kind.GATHER ? 576 : 256) || (!allowDrops && cookTicks > 4800)) {
+                throw new IllegalArgumentException("Split the material batch for " + entry.getKey());
+            }
+            step.ingredients.forEach((ingredient, amount) -> demand.merge(ingredient, Math.multiplyExact(amount, batches), Math::addExact));
+            if (cookTicks > 0) demand.merge(COAL, (int) ((cookTicks + 1599) / 1600), Math::addExact);
+            quantities.add(new Quantity(entry.getKey(), step, needed));
+        }
+        Collections.reverse(quantities);
+        return new Plan(quantities);
     }
 
     private boolean resolve(Identifier item, LinkedHashMap<Identifier, Step> steps, Set<Identifier> ancestors) {

@@ -1,7 +1,6 @@
 package com.botfury;
 
 import com.google.gson.Gson;
-import com.google.gson.JsonObject;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.ChestBlock;
 import net.minecraft.block.enums.ChestType;
@@ -15,18 +14,6 @@ import java.util.*;
 /** Generates material jobs before the build jobs that consume them. */
 final class StructureSupply {
     private static final Gson JSON = new Gson();
-    private record Source(String resource, String variant, String raw, String smelted, String smeltRecipe,
-                          String craftRecipe, int inputPerCraft, int outputPerCraft) {}
-    private static final Map<String, Source> SOURCES = Map.ofEntries(
-            Map.entry("cobblestone", new Source("stone", "normal", "cobblestone", null, null, null, 1, 1)),
-            Map.entry("stone", new Source("stone", "normal", "cobblestone", "stone", "stone", null, 1, 1)),
-            Map.entry("stone_bricks", new Source("stone", "normal", "cobblestone", "stone", "stone", "stone_bricks", 4, 4)),
-            Map.entry("diamond_block", new Source("diamond", "both", "diamond", null, null, "diamond_block", 9, 1)),
-            Map.entry("iron_block", new Source("iron", "both", "raw_iron", "iron_ingot", "iron_ingot_from_smelting_raw_iron", "iron_block", 9, 1)),
-            Map.entry("copper_block", new Source("copper", "both", "raw_copper", "copper_ingot", "copper_ingot_from_smelting_raw_copper", "copper_block", 9, 1)),
-            Map.entry("oak_planks", new Source("block:minecraft:oak_log", "normal", "oak_log", null, null, "oak_planks", 1, 4)),
-            Map.entry("spruce_planks", new Source("block:minecraft:spruce_log", "normal", "spruce_log", null, null, "spruce_planks", 1, 4)));
-
     record Supplied(List<ProjectQueue.Work> jobs, String chest) {}
 
     private StructureSupply() {}
@@ -51,40 +38,15 @@ final class StructureSupply {
         var protectedArea = union(plan.area(), storage, furnace, table);
         var jobs = new ArrayList<ProjectQueue.Work>();
         var take = new HashMap<Identifier, String>();
+        var recipes = new MaterialRecipe(client, true, true);
         int material = 0;
         for (var entry : new TreeMap<>(plan.materials()).entrySet()) {
             Identifier item = entry.getKey();
-            Source source = item.getNamespace().equals("minecraft") ? SOURCES.get(item.getPath()) : null;
-            if (source == null) throw new IllegalArgumentException("No automatic source for " + item);
             String prefix = "supply-" + material++ + "-";
             int count = entry.getValue();
-            int batches = (count + source.outputPerCraft - 1) / source.outputPerCraft;
-            int required = batches * source.inputPerCraft;
-            if (required > 576 || source.smelted != null && required > 24) {
-                throw new IllegalArgumentException("Split this build into smaller material batches for " + item);
-            }
-            String previous = prefix + "gather";
-            jobs.add(gather(previous, source.resource, source.variant, source.raw, required, protectedArea, null));
-            if (source.smelted != null) {
-                if (furnace == null) throw new IllegalArgumentException("Place a reachable furnace near the supply chest");
-                jobs.add(gather(prefix + "fuel", "coal", "both", "coal", (required + 7) / 8, protectedArea, previous));
-                previous = prefix + "fuel";
-                var spec = stationPayload(furnace);
-                spec.addProperty("recipe", mc(source.smeltRecipe).toString());
-                spec.addProperty("input", mc(source.raw).toString());
-                spec.addProperty("fuel", "minecraft:coal");
-                spec.addProperty("count", required);
-                jobs.add(station(prefix + "smelt", ProjectQueue.Kind.SMELT, furnace, spec, previous, true));
-                previous = prefix + "smelt";
-            }
-            if (source.craftRecipe != null) {
-                if (table == null) throw new IllegalArgumentException("Place a reachable crafting table near the supply chest");
-                var spec = stationPayload(table);
-                spec.addProperty("recipe", mc(source.craftRecipe).toString());
-                spec.addProperty("count", count);
-                jobs.add(station(prefix + "craft", ProjectQueue.Kind.CRAFT, table, spec, previous, true));
-                previous = prefix + "craft";
-            }
+            var production = recipes.plan(item, count, false).jobs(prefix + "produce-", protectedArea, table, furnace);
+            jobs.addAll(production);
+            String previous = production.get(production.size() - 1).id();
             jobs.add(transfer(prefix + "store", storage, item, count, "DEPOSIT", previous, true));
             jobs.add(transfer(prefix + "take", storage, item, count, "TAKE", prefix + "store", false));
             take.put(item, prefix + "take");
@@ -106,36 +68,14 @@ final class StructureSupply {
         return new Supplied(List.copyOf(jobs), ProjectBlock.key(chest));
     }
 
-    private static ProjectQueue.Work gather(String id, String resource, String variant, String raw, int count,
-                                            ProjectGather.Area exclude, String after) {
-        var spec = new JsonObject();
-        spec.addProperty("resource", resource);
-        spec.addProperty("variant", variant);
-        spec.addProperty("item", mc(raw).toString());
-        spec.addProperty("count", count);
-        spec.add("exclude", JSON.toJsonTree(Map.of("min", position(exclude.min()), "max", position(exclude.max()))));
-        return new ProjectQueue.Work(id, ProjectQueue.Kind.GATHER, JSON.toJson(spec),
-                after == null ? List.of() : List.of(after), Set.of(), after);
-    }
-
     private static ProjectQueue.Work transfer(String id, ProjectBlock chest, Identifier item, int count,
                                               String direction, String after, boolean sameWorker) {
-        var spec = stationPayload(chest);
+        var spec = MaterialRecipe.stationPayload(chest);
         spec.addProperty("direction", direction);
         spec.addProperty("item", item.toString());
         spec.addProperty("stock", count);
-        return station(id, ProjectQueue.Kind.TRANSFER, chest, spec, after, sameWorker);
-    }
-
-    private static ProjectQueue.Work station(String id, ProjectQueue.Kind kind, ProjectBlock location,
-                                             JsonObject payload, String after, boolean sameWorker) {
-        return location.reserve(new ProjectQueue.Work(id, kind, JSON.toJson(payload), List.of(after),
-                Set.of(), sameWorker ? after : null));
-    }
-
-    private static JsonObject stationPayload(ProjectBlock block) {
-        return JSON.toJsonTree(new ProjectBlock.Payload(position(block.target()), position(block.stand()),
-                block.block().toString())).getAsJsonObject();
+        return chest.reserve(new ProjectQueue.Work(id, ProjectQueue.Kind.TRANSFER, JSON.toJson(spec),
+                List.of(after), Set.of(), sameWorker ? after : null));
     }
 
     static ProjectBlock.Position position(BlockPos pos) {

@@ -338,7 +338,7 @@ final class StructureProject {
         return chooseStand(client, target, cells, null, ignored -> true);
     }
 
-    private static BlockPos chooseStand(MinecraftClient client, BlockPos target, Map<BlockPos, ?> cells, Direction face, Predicate<BlockPos> suitable) {
+    static BlockPos chooseStand(MinecraftClient client, BlockPos target, Map<BlockPos, ?> cells, Direction face, Predicate<BlockPos> suitable) {
         // A horizontal placement stand must be on the clickable side of the support.
         for (int dy : new int[]{0, 1, -1}) for (int distance : new int[]{2, 1, 3}) {
             for (var direction : Direction.Type.HORIZONTAL) {

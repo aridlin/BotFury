@@ -2,13 +2,9 @@ package com.botfury;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
-import net.minecraft.block.Blocks;
-import net.minecraft.block.ChestBlock;
-import net.minecraft.block.enums.ChestType;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
-import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 
@@ -17,12 +13,8 @@ import java.util.*;
 
 final class OutputOrder {
     private static final Gson JSON = new Gson();
-    private static final Identifier CHEST = Identifier.of("minecraft", "chest");
     private static final int JOB_LIMIT = 256;
     record Plan(List<ProjectQueue.Work> jobs, ProjectQueue.Repeat repeat) {}
-    private record Storage(BlockPos key, BlockPos other) {
-        int slots() { return other == null ? 27 : 54; }
-    }
 
     private OutputOrder() {}
 
@@ -35,7 +27,7 @@ final class OutputOrder {
         int port = BotFuryMod.controlPort();
         if (here == null || client.world == null || port < 1024 || Boolean.getBoolean("botfury.managedHttp")) return 0;
         try {
-            var storage = aimedStorage(client, aim);
+            var storage = ProjectChest.aimedStorage(client, aim);
             if (!Registries.ITEM.containsId(item) || item.equals(Identifier.of("minecraft", "air"))) {
                 throw new IllegalArgumentException("Choose an item from the inventory picker or give a valid item ID");
             }
@@ -43,11 +35,10 @@ final class OutputOrder {
             if (batch < 1 || batch > 64 || batch > Math.min(storage.slots(), 36) * stackSize) {
                 throw new IllegalArgumentException("Choose a smaller batch that fits in one worker's inventory and the chest");
             }
-            var chestStand = StructureProject.chooseStand(client, storage.key, Map.of());
-            if (chestStand == null) throw new IllegalArgumentException("No clear stand next to the chest");
-            var chest = new ProjectBlock(storage.key, chestStand, CHEST);
-            var table = findStation(client, storage.key, Identifier.of("minecraft", "crafting_table"));
-            var furnace = findStation(client, storage.key, Identifier.of("minecraft", "furnace"));
+            var chest = storage.approach(client, ignored -> true);
+            if (chest == null) throw new IllegalArgumentException("No clear stand next to the chest");
+            var table = findStation(client, storage.key(), Identifier.of("minecraft", "crafting_table"));
+            var furnace = findStation(client, storage.key(), Identifier.of("minecraft", "furnace"));
             var steps = new MaterialRecipe(client, table != null, furnace != null).plan(item, batch, true);
             int selected = (int) BotTracker.targets().stream()
                     .filter(bot -> bot.fresh() && bot.connected() && bot.alive()).count();
@@ -71,32 +62,14 @@ final class OutputOrder {
         var here = LocalFormation.here();
         if (here == null || client.world == null || Boolean.getBoolean("botfury.managedHttp")) return 0;
         try {
-            var storage = aimedStorage(client, aim);
-            boolean cancelled = ProjectBroker.cancelOutput(here, ProjectBlock.key(storage.key));
+            var storage = ProjectChest.aimedStorage(client, aim);
+            boolean cancelled = ProjectBroker.cancelOutput(here, ProjectBlock.key(storage.key()));
             ClientActions.message(client, cancelled ? "Output order cancelled" : "No output order at this chest");
             return cancelled ? 1 : 0;
         } catch (IOException | IllegalArgumentException error) {
             ClientActions.message(client, "Could not cancel output order: " + error.getMessage());
             return 0;
         }
-    }
-
-    private static Storage aimedStorage(MinecraftClient client, HitResult aim) {
-        if (!(aim instanceof BlockHitResult hit) || hit.getType() != HitResult.Type.BLOCK) {
-            throw new IllegalArgumentException("Look at a chest");
-        }
-        var pos = hit.getBlockPos();
-        var state = client.world.getBlockState(pos);
-        if (!state.isOf(Blocks.CHEST)) throw new IllegalArgumentException("Look at a chest");
-        var type = state.get(ChestBlock.CHEST_TYPE);
-        if (type == ChestType.SINGLE) return new Storage(pos, null);
-        var next = pos.offset(ChestBlock.getFacing(state));
-        var other = client.world.getBlockState(next);
-        if (!other.isOf(Blocks.CHEST) || other.get(ChestBlock.CHEST_TYPE) == ChestType.SINGLE
-                || !next.offset(ChestBlock.getFacing(other)).equals(pos)) {
-            throw new IllegalArgumentException("Load both halves of the double chest");
-        }
-        return type == ChestType.LEFT ? new Storage(pos, next) : new Storage(next, pos);
     }
 
     private static ProjectBlock findStation(MinecraftClient client, BlockPos chest, Identifier id) {
@@ -110,13 +83,13 @@ final class OutputOrder {
         return null;
     }
 
-    private static Plan plan(Storage storage, ProjectBlock chest, ProjectBlock table, ProjectBlock furnace,
+    private static Plan plan(ProjectChest.Storage storage, ProjectBlock chest, ProjectBlock table, ProjectBlock furnace,
                              Identifier item, int batch, int stackSize, int workers, MaterialRecipe.Plan steps) {
         int capacity = stackSize * storage.slots();
         int lanes = Math.min(workers, Math.min(Math.max(1, capacity / batch), JOB_LIMIT / (steps.size() + 2)));
         if (lanes == 0) throw new IllegalArgumentException("This recipe requires too many jobs");
         var jobs = new ArrayList<ProjectQueue.Work>();
-        var protectedArea = StructureSupply.union(new ProjectGather.Area(chest.target(), chest.target()), chest, table, furnace);
+        var protectedArea = StructureSupply.union(storage.include(new ProjectGather.Area(chest.target(), chest.target())), chest, table, furnace);
         for (int lane = 0; lane < lanes; lane++) {
             String prefix = "lane-" + lane + "-";
             var production = steps.jobs(prefix + "produce-", protectedArea, table, furnace);
@@ -129,15 +102,13 @@ final class OutputOrder {
             deposit.addProperty("direction", "DEPOSIT");
             deposit.addProperty("item", item.toString());
             deposit.addProperty("stock", 0);
-            if (storage.other != null) {
-                inspect.add("partner", JSON.toJsonTree(StructureSupply.position(storage.other)));
-                deposit.add("partner", JSON.toJsonTree(StructureSupply.position(storage.other)));
-            }
+            storage.addPartner(inspect);
+            storage.addPartner(deposit);
             jobs.add(transfer(prefix + "inspect", inspect, previous));
             jobs.add(transfer(prefix + "deposit", deposit, prefix + "inspect"));
         }
         return new Plan(List.copyOf(jobs), new ProjectQueue.Repeat(batch, item.toString(),
-                ProjectBlock.key(storage.key), 0, null, false, capacity));
+                ProjectBlock.key(storage.key()), 0, null, false, capacity));
     }
 
     private static ProjectQueue.Work transfer(String id, JsonObject payload, String after) {

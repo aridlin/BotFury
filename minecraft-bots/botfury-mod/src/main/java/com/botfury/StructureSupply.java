@@ -1,13 +1,8 @@
 package com.botfury;
 
 import com.google.gson.Gson;
-import net.minecraft.block.Blocks;
-import net.minecraft.block.ChestBlock;
-import net.minecraft.block.enums.ChestType;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.util.Identifier;
-import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import java.util.*;
 
@@ -19,23 +14,18 @@ final class StructureSupply {
     private StructureSupply() {}
 
     static Supplied compile(MinecraftClient client, StructureProject.Plan plan) {
-        if (!(client.crosshairTarget instanceof BlockHitResult hit) || hit.getType() != HitResult.Type.BLOCK) {
-            throw new IllegalArgumentException("Look at a dedicated single supply chest");
+        var selected = ProjectChest.aimedStorage(client, client.crosshairTarget);
+        var chest = selected.key();
+        var area = plan.area();
+        if (area.contains(chest) || selected.other() != null && area.contains(selected.other())) {
+            throw new IllegalArgumentException("Supply chest must be outside the work area");
         }
-        BlockPos chest = hit.getBlockPos();
-        var state = client.world.getBlockState(chest);
-        if (!state.isOf(Blocks.CHEST) || state.get(ChestBlock.CHEST_TYPE) != ChestType.SINGLE) {
-            throw new IllegalArgumentException("Look at a dedicated single supply chest");
-        }
-        if (plan.area().contains(chest)) throw new IllegalArgumentException("Supply chest must be outside the work area");
-        var chestStand = StructureProject.chooseStand(client, chest, Map.of());
-        if (chestStand == null || plan.area().contains(chestStand)) {
-            throw new IllegalArgumentException("Supply chest needs a standing position outside the work area");
-        }
-        var storage = new ProjectBlock(chest, chestStand, mc("chest"));
-        var furnace = findStation(client, chest, mc("furnace"), plan.area());
-        var table = findStation(client, chest, mc("crafting_table"), plan.area());
-        var protectedArea = union(plan.area(), storage, furnace, table);
+        var storage = selected.approach(client, stand -> !area.contains(stand) && !area.contains(stand.down())
+                && !area.contains(stand.up()));
+        if (storage == null) throw new IllegalArgumentException("Supply chest needs a reachable stand outside the work area");
+        var furnace = findStation(client, chest, mc("furnace"), area);
+        var table = findStation(client, chest, mc("crafting_table"), area);
+        var protectedArea = union(selected.include(area), storage, furnace, table);
         var jobs = new ArrayList<ProjectQueue.Work>();
         var take = new HashMap<Identifier, String>();
         var recipes = new MaterialRecipe(client, true, true);
@@ -47,8 +37,8 @@ final class StructureSupply {
             var production = recipes.plan(item, count, false).jobs(prefix + "produce-", protectedArea, table, furnace);
             jobs.addAll(production);
             String previous = production.get(production.size() - 1).id();
-            jobs.add(transfer(prefix + "store", storage, item, count, "DEPOSIT", previous, true));
-            jobs.add(transfer(prefix + "take", storage, item, count, "TAKE", prefix + "store", false));
+            jobs.add(transfer(prefix + "store", selected, storage, item, count, "DEPOSIT", previous, true));
+            jobs.add(transfer(prefix + "take", selected, storage, item, count, "TAKE", prefix + "store", false));
             take.put(item, prefix + "take");
         }
         for (var job : plan.jobs()) {
@@ -68,13 +58,15 @@ final class StructureSupply {
         return new Supplied(List.copyOf(jobs), ProjectBlock.key(chest));
     }
 
-    private static ProjectQueue.Work transfer(String id, ProjectBlock chest, Identifier item, int count,
+    private static ProjectQueue.Work transfer(String id, ProjectChest.Storage storage, ProjectBlock chest, Identifier item, int count,
                                               String direction, String after, boolean sameWorker) {
         var spec = MaterialRecipe.stationPayload(chest);
         spec.addProperty("direction", direction);
         spec.addProperty("item", item.toString());
         spec.addProperty("stock", count);
-        return chest.reserve(new ProjectQueue.Work(id, ProjectQueue.Kind.TRANSFER, JSON.toJson(spec),
+        storage.addPartner(spec);
+        var payload = JSON.toJson(spec);
+        return ProjectChest.parse(payload).reserve(new ProjectQueue.Work(id, ProjectQueue.Kind.TRANSFER, payload,
                 List.of(after), Set.of(), sameWorker ? after : null));
     }
 
@@ -95,16 +87,21 @@ final class StructureSupply {
     }
 
     static ProjectGather.Area union(ProjectGather.Area area, ProjectBlock... stations) {
-        var min = area.min();
-        var max = area.max();
         for (var station : stations) {
             if (station == null) continue;
-            for (var pos : List.of(station.target(), station.stand().down(), station.stand().up())) {
-                min = new BlockPos(Math.min(min.getX(), pos.getX()), Math.min(min.getY(), pos.getY()), Math.min(min.getZ(), pos.getZ()));
-                max = new BlockPos(Math.max(max.getX(), pos.getX()), Math.max(max.getY(), pos.getY()), Math.max(max.getZ(), pos.getZ()));
-            }
+            area = include(area, station.target());
+            area = include(area, station.stand().down());
+            area = include(area, station.stand().up());
         }
-        return new ProjectGather.Area(min, max);
+        return area;
+    }
+
+    static ProjectGather.Area include(ProjectGather.Area area, BlockPos pos) {
+        var min = area.min();
+        var max = area.max();
+        return new ProjectGather.Area(
+                new BlockPos(Math.min(min.getX(), pos.getX()), Math.min(min.getY(), pos.getY()), Math.min(min.getZ(), pos.getZ())),
+                new BlockPos(Math.max(max.getX(), pos.getX()), Math.max(max.getY(), pos.getY()), Math.max(max.getZ(), pos.getZ())));
     }
 
     private static Identifier mc(String path) { return Identifier.of("minecraft", path); }

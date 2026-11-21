@@ -535,3 +535,19 @@ reserved while in use. A pinned continuation waits for the original bot
 if it goes offline. Its inventory does not automatically move to another
 bot. Structure builds still need an explicit production plan or stocked
 workers.
+
+
+Look at a dedicated single chest and run `/bf output diamond_block 10`
+to order repeat batches. Place a crafting table within 12 blocks and select
+a worker with a diamond-capable pickaxe and the diamond-block recipe
+unlocked. For each batch the same worker gathers diamonds, crafts the
+blocks, checks the chest's current stock and deposits the batch. The
+controller records the latest observed stock and completed batches.
+Multiple chests can have independent orders. Avoid changing chest stock
+while a batch is being deposited.
+
+Gathering widens its search after exhausting nearby ore. In an Overworld
+with modern depth, diamond jobs search at Y -54 when they run out of
+local candidates. Completion depends on reachable ore and tool condition.
+Regular Stop disables worker mode. Look at the marked chest and run
+`/bf output cancel` to cancel its persistent order.

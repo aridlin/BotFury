@@ -28,7 +28,7 @@ final class MiningTask {
     private static int claimSerial;
     private static int generation,age,nextSearch,nextPath,nextRenew,exploration;
     private static long leaseUntil;
-    private static boolean requesting,dead,paused,pathActive;
+    private static boolean requesting,dead,paused,pathActive,projectMining;
     static void pause(boolean value) {
         if (job == null || paused == value) return;
         paused = value;
@@ -48,6 +48,7 @@ final class MiningTask {
     static boolean active(){return job!=null;}
     static boolean working(){return job!=null&&!paused&&!dead;}
     static String status(){return job==null?"":status;}
+    static String lastStatus(){return status;}
     static Job parse(String value){
         String[] parts=value.split("\\|",-1);
         if(parts.length!=3)throw new IllegalArgumentException("Expected resource, variant, coordinator port");
@@ -58,12 +59,22 @@ final class MiningTask {
     }
     static void start(MinecraftClient client,Job next){
         LocalFormation.pauseMovement();BotInventory.hold();
+        startMining(client, next, false);
+    }
+
+    static void startProject(MinecraftClient client, Job next) {
+        stop();
+        startMining(client, next, true);
+    }
+
+    private static void startMining(MinecraftClient client, Job next, boolean project) {
         if(client.player==null||client.world==null||LocalFormation.here()==null){fail("Not in game");return;}
         if(!BaritoneClient.available()){fail("Install Baritone for mining");return;}
         var ids=ResourceCatalog.blocks(next.resource,next.variant);
         for(String id:ids)if(!Registries.BLOCK.containsId(new Identifier(id))){fail("Unknown mining block: "+id);return;}
         for(String id:ids){var state=Registries.BLOCK.get(new Identifier(id)).getDefaultState();if(state.isAir()||state.getHardness(client.world,client.player.getBlockPos())<0){fail("Choose a breakable mining block");return;}}
         try{settings=new BaritoneSettings();}catch(ReflectiveOperationException|LinkageError e){fail("Could not configure mining approach");return;}
+        projectMining=project;
         job=next;blocks=Set.copyOf(ids);generation++;owner=UUID.randomUUID()+"-"+client.player.getGameProfile().getName();
         var here=LocalFormation.here();world=here.server()+"|"+here.dimension();
         paused=false;
@@ -128,9 +139,19 @@ final class MiningTask {
         if(needsTool){status="Need a suitable tool for "+job.resource;stopPath();return;}
         status=candidates.isEmpty()?"Exploring for "+job.resource:"Nearby mining positions are occupied";
         if(age>=nextPath){
-            nextPath=age+200;double angle=(client.player.getUuid().hashCode()&1023)*Math.PI/512+exploration++*.8;
-            double radius=24+16*(exploration%3);
-            path("explore "+(int)(origin.x+Math.cos(angle)*radius)+" "+(int)(origin.z+Math.sin(angle)*radius));
+            nextPath = age + (projectMining ? 400 : 200);
+            double angle = (client.player.getUuid().hashCode() & 1023) * Math.PI / 512
+                    + exploration * (projectMining ? .32 : .8);
+            exploration++;
+            double radius = projectMining ? Math.min(1024, 32 + 24.0 * exploration) : 24 + 16 * (exploration % 3);
+            int x = (int)(origin.x + Math.cos(angle) * radius);
+            int z = (int)(origin.z + Math.sin(angle) * radius);
+            if (projectMining && job.resource.equals("diamond")
+                    && client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)
+                    && client.world.getBottomY() <= -54) {
+                status = "Searching for diamonds around " + x + ", -54, " + z;
+                path("goto " + x + " -54 " + z);
+            } else path("explore " + x + " " + z);
         }
     }
     private static void stopPath(){if(pathActive){BaritoneClient.execute("stop");pathActive=false;}}

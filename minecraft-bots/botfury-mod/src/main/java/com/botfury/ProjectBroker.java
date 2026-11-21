@@ -30,6 +30,14 @@ final class ProjectBroker {
         queue().submit(id, here.server() + "|" + here.dimension(), plan.jobs());
     }
 
+    static void submitOutput(String id, LocalFormation.Peer here, OutputOrder.Plan plan) throws IOException {
+        queue().submitOutput(id, here.server() + "|" + here.dimension(), plan.jobs(), plan.repeat());
+    }
+
+    static boolean cancelOutput(LocalFormation.Peer here, String chest) throws IOException {
+        return queue().cancelOutput(here.server() + "|" + here.dimension(), chest);
+    }
+
     static void handle(HttpExchange exchange) throws IOException {
         String host = exchange.getRequestHeaders().getFirst("Host");
         if (!exchange.getRemoteAddress().getAddress().isLoopbackAddress()
@@ -77,6 +85,10 @@ final class ProjectBroker {
                     if (request.work == null) throw new IllegalArgumentException("Missing project jobs");
                     var work = request.work.stream().map(item -> {
                         if (item == null) throw new IllegalArgumentException("Missing project job");
+                        if (item.kind() == ProjectQueue.Kind.GATHER) {
+                            ProjectGather.parse(item.payload());
+                            return item;
+                        }
                         if (item.kind() == ProjectQueue.Kind.TRANSFER) {
                             return ProjectChest.parse(item.payload()).location().reserve(item);
                         }

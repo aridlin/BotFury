@@ -526,8 +526,11 @@ solid floor. They verify the cell is empty first and remove the cobblestone
 after the pillar finishes or exhausts its retries. Supplied builds acquire
 the extra cobblestone automatically. Verification checks the requested
 axis, and the fleet replaces a log facing the wrong way.
-The planner rejects entities, block entities, and plans over 256 jobs. Use an already prepared site with room for the
-bots to walk to the stands. Vanilla chest jobs and explicit project jobs
+The planner clears exposed obstructions first, then uses newly opened
+standing positions to reach deeper blocks. Excavation must stay inside the
+schematic volume and starts from an accessible approach with a stable floor.
+The planner rejects entities, block entities, and plans over 256 jobs.
+Vanilla chest jobs and explicit project jobs
 remain available through the local API.
 
 To gather and produce materials automatically, look at a dedicated single or

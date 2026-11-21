@@ -27,8 +27,8 @@ final class StructureProject {
     private static final Identifier AIR = Identifier.of("minecraft", "air");
 
     record Plan(List<ProjectQueue.Work> jobs, Map<Identifier, Integer> materials, ProjectGather.Area area) {}
-    private record Cell(BlockPos pos, BlockState desired, BlockState observed, BlockPos stand) {}
-    private record BuildPose(BlockPos stand, Direction face, BlockPos support) {}
+    private record Cell(BlockPos pos, BlockState desired, BlockState observed) {}
+    private record BuildPose(BlockPos stand, Direction face, BlockPos support, boolean exposedBeforeBuild) {}
     private record TemporarySupport(BuildPose pillar, BlockPos stand) {}
 
     private StructureProject() {}
@@ -81,9 +81,7 @@ final class StructureProject {
                     && (state.hasBlockEntity() || !state.getFluidState().isEmpty() || state.getHardness(client.world, pos) < 0)) {
                 throw new IllegalArgumentException("Protected block or fluid at " + pos.toShortString());
             }
-            var stand = chooseStand(client, pos, desired);
-            if (stand == null) throw new IllegalArgumentException("No safe working position near " + pos.toShortString());
-            cells.add(new Cell(pos, entry.getValue(), state, stand));
+            cells.add(new Cell(pos, entry.getValue(), state));
         }
         cells.sort(Comparator.comparingInt((Cell cell) -> cell.pos.getY())
                 .thenComparingInt(cell -> cell.pos.getX()).thenComparingInt(cell -> cell.pos.getZ()));
@@ -167,7 +165,8 @@ final class StructureProject {
         var changes = new ArrayList<String>();
         var placed = new HashMap<BlockPos, String>();
         var ready = new HashMap<BlockPos, BlockState>();
-        var excavation = new HashMap<BlockPos, String>();
+        var obstructing = new LinkedHashMap<Integer, Cell>();
+        var removed = new HashSet<BlockPos>();
         var materials = new TreeMap<Identifier, Integer>();
         var pending = new LinkedHashMap<Integer, Cell>();
         var cleanup = new ArrayList<ProjectQueue.Work>();
@@ -176,17 +175,14 @@ final class StructureProject {
         var area = new ProjectGather.Area(origin, origin);
         for (int i = 0; i < cells.size(); i++) {
             var cell = cells.get(i);
-            area = StructureSupply.union(area, new ProjectBlock(cell.pos.down(), cell.stand, AIR),
-                    new ProjectBlock(cell.pos, cell.stand, AIR));
+            area = StructureSupply.include(StructureSupply.include(area, cell.pos), cell.pos.down());
             if (sameState(cell.desired, cell.observed)) {
                 ready.put(cell.pos, cell.desired);
                 continue;
             }
             if (!cell.observed.isAir()) {
-                String id = "clear-" + i;
-                excavation.put(cell.pos, id);
-                changes.add(id);
-                jobs.add(work(id, ProjectQueue.Kind.EXCAVATE, cell.pos, cell.observed, cell.stand, Direction.UP, List.of()));
+                obstructing.put(i, cell);
+                removed.add(cell.pos);
             }
             if (cell.desired.isAir()) continue;
             if (!cell.desired.isFullCube(client.world, cell.pos)) {
@@ -194,18 +190,48 @@ final class StructureProject {
             }
             pending.put(i, cell);
         }
+        var cleared = new HashMap<BlockPos, BlockState>();
+        List<String> excavationFrontier = List.of();
+        while (!obstructing.isEmpty()) {
+            var wave = new ArrayList<String>();
+            var clearedThisWave = new ArrayList<BlockPos>();
+            for (var iterator = obstructing.entrySet().iterator(); iterator.hasNext(); ) {
+                var entry = iterator.next();
+                var cell = entry.getValue();
+                var stand = findStand(client, cell.pos, null, true, pos ->
+                        !removed.contains(pos.down()) && safeStand(client, pos, cleared)
+                                && canRemoveBlock(client, pos, cell.pos, cleared));
+                if (stand == null) continue;
+                String id = "clear-" + entry.getKey();
+                jobs.add(work(id, ProjectQueue.Kind.EXCAVATE, cell.pos, cell.observed, stand, Direction.UP, excavationFrontier));
+                wave.add(id);
+                clearedThisWave.add(cell.pos);
+                area = StructureSupply.union(area, new ProjectBlock(cell.pos, stand, AIR));
+                iterator.remove();
+            }
+            if (wave.isEmpty()) {
+                var blocked = obstructing.values().iterator().next();
+                throw new IllegalArgumentException("No reachable excavation face at " + blocked.pos.toShortString());
+            }
+            for (var pos : clearedThisWave) cleared.put(pos, Blocks.AIR.getDefaultState());
+            changes.addAll(wave);
+            excavationFrontier = List.copyOf(wave);
+        }
+
+        var exposedPlacements = new ArrayList<String>();
         boolean allowTemporarySupport = false;
         while (!pending.isEmpty()) {
             int before = pending.size();
             for (var iterator = pending.entrySet().iterator(); iterator.hasNext(); ) {
                 var entry = iterator.next();
                 var cell = entry.getValue();
-                var pose = buildPose(client, cell, layout, ready);
-                var temporary = pose == null && allowTemporarySupport ? temporarySupport(client, cell, layout) : null;
+                var pose = buildPose(client, cell, layout, ready, cleared);
+                var temporary = pose == null && allowTemporarySupport ? temporarySupport(client, cell, layout, cleared) : null;
                 if (temporary != null) pose = temporary.pillar;
                 if (pose == null) continue;
-                var needs = new ArrayList<String>();
-                if (excavation.containsKey(cell.pos)) needs.add(excavation.get(cell.pos));
+                var approachNeeds = new ArrayList<>(excavationFrontier);
+                approachNeeds.addAll(exposedPlacements);
+                var needs = new LinkedHashSet<>(approachNeeds);
                 if (placed.containsKey(pose.support)) needs.add(placed.get(pose.support));
                 String id = "place-" + entry.getKey();
                 if (temporary != null) {
@@ -216,7 +242,7 @@ final class StructureProject {
                     String place = "place-support-" + entry.getKey();
                     String remove = "remove-support-" + entry.getKey();
                     jobs.add(work(check, ProjectQueue.Kind.VERIFY, support, Blocks.AIR.getDefaultState(),
-                            temporary.stand, Direction.UP, List.of()));
+                            temporary.stand, Direction.UP, approachNeeds));
                     jobs.add(work(place, ProjectQueue.Kind.BUILD, support, state, temporary.stand, Direction.UP, List.of(check)));
                     var removal = work(remove, ProjectQueue.Kind.EXCAVATE, support, state, temporary.stand,
                             Direction.UP, List.of(place));
@@ -230,7 +256,8 @@ final class StructureProject {
                 placed.put(cell.pos, id);
                 ready.put(cell.pos, cell.desired);
                 changes.add(id);
-                jobs.add(work(id, ProjectQueue.Kind.BUILD, cell.pos, cell.desired, pose.stand, pose.face, needs));
+                jobs.add(work(id, ProjectQueue.Kind.BUILD, cell.pos, cell.desired, pose.stand, pose.face, List.copyOf(needs)));
+                if (pose.exposedBeforeBuild) exposedPlacements.add(id);
                 materials.merge(Registries.ITEM.getId(cell.desired.getBlock().asItem()), 1, Integer::sum);
                 area = StructureSupply.union(area, new ProjectBlock(pose.support, pose.stand, AIR));
                 iterator.remove();
@@ -249,48 +276,66 @@ final class StructureProject {
         List<String> prerequisites = List.copyOf(changes);
         for (int i = 0; i < cells.size(); i++) {
             var cell = cells.get(i);
-            jobs.add(work("verify-" + i, ProjectQueue.Kind.VERIFY, cell.pos, cell.desired, cell.stand, Direction.UP, prerequisites));
+            var stand = chooseStand(client, cell.pos, desired);
+            if (stand == null) stand = findStand(client, cell.pos, null, true, pos -> safeStand(client, pos, desired));
+            if (stand == null) throw new IllegalArgumentException("No safe verification position near " + cell.pos.toShortString());
+            jobs.add(work("verify-" + i, ProjectQueue.Kind.VERIFY, cell.pos, cell.desired, stand, Direction.UP, prerequisites));
+            area = StructureSupply.union(area, new ProjectBlock(cell.pos, stand, AIR));
         }
         if (jobs.size() > LIMIT) throw new IllegalArgumentException("Structure needs more than 256 jobs");
         return new Plan(List.copyOf(jobs), Map.copyOf(materials), area);
     }
 
     private static BuildPose buildPose(MinecraftClient client, Cell cell, Map<BlockPos, BlockState> desired,
-                                       Map<BlockPos, BlockState> ready) {
+                                       Map<BlockPos, BlockState> ready, Map<BlockPos, BlockState> cleared) {
         for (Direction face : ProjectPlacement.faces(cell.desired)) {
             var support = cell.pos.offset(face.getOpposite());
             if (!loaded(client, support)) continue;
             var state = desired.containsKey(support) ? ready.get(support) : client.world.getBlockState(support);
             if (state == null || state.hasBlockEntity() || !state.isFullCube(client.world, support)) continue;
-            var stand = chooseStand(client, cell.pos, desired, face,
-                    pos -> clearBuildFace(client, pos, cell.pos, support, face, desired));
-            // Retain the established approach for ordinary blocks when the final volume obstructs a ray.
-            if (stand == null && face == Direction.UP) stand = cell.stand;
-            if (stand != null) return new BuildPose(stand, face, support);
+            Predicate<BlockPos> visible = pos -> clearBuildFace(client, pos, cell.pos, support, face, desired);
+            var stand = chooseStand(client, cell.pos, desired, face, visible);
+            if (stand == null) {
+                stand = findStand(client, cell.pos, face, true, pos ->
+                        safeStand(client, pos, cleared) && safeStand(client, pos, desired) && visible.test(pos));
+            }
+            // Ordinary blocks may have a face that is only exposed before neighboring placements.
+            if (stand != null) return new BuildPose(stand, face, support, false);
+            if (face == Direction.UP) {
+                var current = new HashMap<>(cleared);
+                current.putAll(ready);
+                stand = findStand(client, cell.pos, face, true, pos ->
+                        safeStand(client, pos, cleared) && safeStand(client, pos, desired)
+                                && clearBuildFace(client, pos, cell.pos, support, face, current));
+                // Later placements are gated on this one so they cannot close off the exposed face.
+                if (stand != null) return new BuildPose(stand, face, support, true);
+            }
         }
         return null;
     }
 
-    private static TemporarySupport temporarySupport(MinecraftClient client, Cell cell, Map<BlockPos, BlockState> layout) {
+    private static TemporarySupport temporarySupport(MinecraftClient client, Cell cell, Map<BlockPos, BlockState> layout,
+                                                       Map<BlockPos, BlockState> cleared) {
         if (ProjectPlacement.faces(cell.desired).contains(Direction.UP)) return null;
         for (var face : ProjectPlacement.faces(cell.desired)) {
             var support = cell.pos.offset(face.getOpposite());
             var floorPos = support.down();
             if (!loaded(client, support) || !loaded(client, floorPos)) continue;
             var planned = layout.get(support);
-            if ((planned != null && !planned.isAir()) || !client.world.getBlockState(support).isAir()) continue;
+            if ((planned != null && !planned.isAir()) || !cleared.getOrDefault(support, client.world.getBlockState(support)).isAir()) continue;
             var floor = client.world.getBlockState(floorPos);
             if (floor.hasBlockEntity() || !floor.isFullCube(client.world, floorPos)
+                    || !cleared.getOrDefault(floorPos, floor).equals(floor)
                     || !layout.getOrDefault(floorPos, floor).equals(floor)) continue;
             var simulated = new HashMap<>(layout);
             simulated.put(support, Blocks.COBBLESTONE.getDefaultState());
             var supportStand = chooseStand(client, support, simulated, Direction.UP,
                     pos -> clearBuildFace(client, pos, support, floorPos, Direction.UP, simulated)
-                            && canRemoveSupport(client, pos, support, simulated));
+                            && canRemoveBlock(client, pos, support, simulated));
             if (supportStand == null) continue;
             var pillarStand = chooseStand(client, cell.pos, simulated, face,
                     pos -> clearBuildFace(client, pos, cell.pos, support, face, simulated));
-            if (pillarStand != null) return new TemporarySupport(new BuildPose(pillarStand, face, support), supportStand);
+            if (pillarStand != null) return new TemporarySupport(new BuildPose(pillarStand, face, support, false), supportStand);
         }
         return null;
     }
@@ -303,7 +348,7 @@ final class StructureProject {
         return hit != null && hit.getBlockPos().equals(support) && hit.getSide() == face;
     }
 
-    private static boolean canRemoveSupport(MinecraftClient client, BlockPos stand, BlockPos support,
+    private static boolean canRemoveBlock(MinecraftClient client, BlockPos stand, BlockPos support,
                                             Map<BlockPos, BlockState> layout) {
         var eye = Vec3d.ofBottomCenter(stand).add(0, 1.62, 0);
         var hit = plannedRay(client, eye, Vec3d.ofCenter(support), layout, null);
@@ -339,24 +384,35 @@ final class StructureProject {
     }
 
     static BlockPos chooseStand(MinecraftClient client, BlockPos target, Map<BlockPos, ?> cells, Direction face, Predicate<BlockPos> suitable) {
-        // A horizontal placement stand must be on the clickable side of the support.
+        return findStand(client, target, face, face != null, pos ->
+                !cells.containsKey(pos) && !cells.containsKey(pos.up()) && !cells.containsKey(pos.down())
+                        && safeStand(client, pos, Map.of()) && suitable.test(pos));
+    }
+
+    private static BlockPos findStand(MinecraftClient client, BlockPos target, Direction face,
+                                      boolean allowDiagonal, Predicate<BlockPos> suitable) {
         for (int dy : new int[]{0, 1, -1}) for (int distance : new int[]{2, 1, 3}) {
             for (var direction : Direction.Type.HORIZONTAL) {
                 if (face != null && face != Direction.UP && direction != face) continue;
-                for (int lateral : face == null ? new int[]{0} : new int[]{0, 1, -1, 2, -2}) {
+                for (int lateral : allowDiagonal ? new int[]{0, 1, -1, 2, -2} : new int[]{0}) {
                     var stand = target.offset(direction, distance).offset(direction.rotateYClockwise(), lateral).up(dy);
-                    if (stand.getSquaredDistance(target) > 16 || !loaded(client, stand) || cells.containsKey(stand)
-                            || cells.containsKey(stand.up()) || cells.containsKey(stand.down())) continue;
-                    var floor = client.world.getBlockState(stand.down());
-                    if (floor.isFullCube(client.world, stand.down()) && floor.getFluidState().isEmpty()
-                            && client.world.getBlockState(stand).isAir() && client.world.getBlockState(stand.up()).isAir()
-                            && suitable.test(stand)) {
-                        return stand;
-                    }
+                    if (stand.getSquaredDistance(target) <= 16 && !stand.up().equals(target)
+                            && loaded(client, stand) && loaded(client, stand.up()) && loaded(client, stand.down())
+                            && suitable.test(stand)) return stand;
                 }
             }
         }
         return null;
+    }
+
+    private static boolean safeStand(MinecraftClient client, BlockPos stand, Map<BlockPos, BlockState> layout) {
+        var world = client.world;
+        var below = stand.down();
+        var above = stand.up();
+        var floor = layout.getOrDefault(below, world.getBlockState(below));
+        return floor.isFullCube(world, below) && floor.getFluidState().isEmpty()
+                && layout.getOrDefault(stand, world.getBlockState(stand)).isAir()
+                && layout.getOrDefault(above, world.getBlockState(above)).isAir();
     }
 
     private static boolean loaded(MinecraftClient client, BlockPos pos) {

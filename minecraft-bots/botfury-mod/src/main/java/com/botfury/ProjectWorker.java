@@ -218,7 +218,8 @@ final class ProjectWorker {
             return;
         }
         Vec3d feet = Vec3d.ofBottomCenter(block.stand());
-        if (player.getPos().squaredDistanceTo(feet) > 1.21) {
+        if (player.getPos().squaredDistanceTo(feet) > 1.21
+                || assignment.job().work().kind() == ProjectQueue.Kind.EXCAVATE && !player.getBlockPos().equals(block.stand())) {
             stableSince = 0;
             var recovery = approachRecovery.tick(client, block.stand(),
                     pos -> !pos.equals(target) && !pos.up().equals(target));

@@ -106,6 +106,7 @@ final class FormationClient {
                 ClientActions.message(context.getSource().getClient(), "Friends: " + String.join(", ", BotFriends.names())); return 1;
             }));
             root.then(friends);
+            root.then(BuildProtection.command());
             root.then(ClientCommandManager.literal("bot").then(ClientCommandManager.argument("name", StringArgumentType.word())
                 .suggests((context,builder)->net.minecraft.command.CommandSource.suggestMatching(BotTracker.all().stream().map(BotTracker.Bot::name),builder))
                 .then(ClientCommandManager.argument("action", StringArgumentType.word()).suggests((context,builder)->net.minecraft.command.CommandSource.suggestMatching(java.util.List.of("recall","hold","resume","render","select"),builder))

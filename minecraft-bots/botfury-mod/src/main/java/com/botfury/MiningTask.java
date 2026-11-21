@@ -113,6 +113,13 @@ final class MiningTask {
         if(client.player==null||client.world==null||here==null||!world.equals(here.server()+"|"+here.dimension())){stop();return;}
         age++;dead=false;
         if(target!=null){
+            if (BuildProtection.blocked(target)) {
+                stopPath();
+                clearReservation();
+                client.interactionManager.cancelBlockBreaking();
+                nextSearch=age+1;
+                return;
+            }
             if(!matches(client,target)){
                 pickup=Vec3d.ofBottomCenter(target);pickupUntil=age+60;
                 clearReservation();nextSearch=age+12;
@@ -164,7 +171,7 @@ final class MiningTask {
         for(int x=-12;x<=12;x++)for(int z=-12;z<=12;z++)for(int y=-10;y<=10;y++){
             BlockPos p=position.add(x,y,z);
             if (excluded != null && excluded.contains(p)) continue;
-            if(rejected.getOrDefault(p,0)>age||!client.world.isChunkLoaded(p.getX()>>4,p.getZ()>>4)||!matches(client,p))continue;
+            if(rejected.getOrDefault(p,0)>age||!client.world.isChunkLoaded(p.getX()>>4,p.getZ()>>4)||!matches(client,p)||BuildProtection.blocked(p))continue;
             if(!hasTool(client,p)){needsTool=true;continue;}candidates.add(p);
         }
         candidates.sort(Comparator.comparingDouble(p->p.getSquaredDistance(position)));

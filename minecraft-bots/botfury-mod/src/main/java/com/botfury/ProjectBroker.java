@@ -29,8 +29,19 @@ final class ProjectBroker {
     static void submitStructure(String id, LocalFormation.Peer here, StructureProject.Plan plan,
                                 StructureSupply.Supplied supply) throws IOException {
         String world = here.server() + "|" + here.dimension();
-        if (supply == null) queue().submit(id, world, plan.jobs());
-        else queue().submitSupplied(id, world, supply.jobs(), supply.chest());
+        boolean mutatesWorld = plan.jobs().stream().anyMatch(job ->
+                job.kind() == ProjectQueue.Kind.BUILD || job.kind() == ProjectQueue.Kind.EXCAVATE);
+        if (mutatesWorld) BuildProtection.reserve(world, id, plan.footprint());
+        try {
+            if (supply == null) queue().submit(id, world, plan.jobs());
+            else queue().submitSupplied(id, world, supply.jobs(), supply.chest());
+        } catch (IOException | RuntimeException failure) {
+            if (mutatesWorld) {
+                try { BuildProtection.remove(world, id); }
+                catch (IOException | RuntimeException rollback) { failure.addSuppressed(rollback); }
+            }
+            throw failure;
+        }
     }
 
     static void submitOutput(String id, LocalFormation.Peer here, OutputOrder.Plan plan) throws IOException {

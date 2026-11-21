@@ -75,6 +75,7 @@ public class BotFuryMod implements ClientModInitializer {
           server.createContext("/status", this::handleStatus);
           server.createContext("/events", this::handleEvents);
           server.createContext("/mining-claim", MiningBroker::handle);
+          if (!MANAGED_HTTP) server.createContext("/projects", ProjectBroker::handle);
           server.createContext("/bots", this::handleBots);
           if (MANAGED_HTTP) server.createContext("/local-formation", this::handleLocalFormation);
           server.setExecutor(Executors.newCachedThreadPool());

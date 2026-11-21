@@ -13,17 +13,29 @@ import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.util.math.BlockPos;
+import java.util.HashSet;
 import net.minecraft.world.RaycastContext;
 import java.time.Duration;
 import java.util.Map;
 import java.util.TreeMap;
 
-/** Reconciles a single chest to a stock target, so repeating a job does not replay a delta. */
+/** Reconciles a chest to a stock target, so repeating a job does not replay a delta. */
 final class ProjectChest {
     enum Direction { DEPOSIT, WITHDRAW, TAKE, INSPECT }
-    record Spec(ProjectBlock location, Direction direction, Identifier item, int stock) {}
-    record Result(boolean success, String detail, Map<String, Integer> stock) {}
-    private record Payload(Direction direction, String item, Integer stock) {}
+    record Spec(ProjectBlock location, Direction direction, Identifier item, int stock, BlockPos partner) {
+        ProjectQueue.Work reserve(ProjectQueue.Work work) {
+            var reserved = location.reserve(work);
+            if (partner == null) return reserved;
+            var locks = new HashSet<>(reserved.locks());
+            locks.add(ProjectBlock.key(partner));
+            return new ProjectQueue.Work(work.id(), work.kind(), work.payload(), work.needs(), locks, work.sameWorkerAs());
+        }
+    }
+    record Result(boolean success, String detail, Map<String, Integer> stock, Integer free) {
+        Result(boolean success, String detail, Map<String, Integer> stock) { this(success, detail, stock, null); }
+    }
+    private record Payload(Direction direction, String item, Integer stock, ProjectBlock.Position partner) {}
     private static final Gson JSON = new Gson();
     private static final long SETTLE = Duration.ofMillis(750).toNanos();
     private final Spec spec;
@@ -37,15 +49,23 @@ final class ProjectChest {
         ProjectBlock location = ProjectBlock.parse(json);
         Payload payload = JSON.fromJson(json, Payload.class);
         if (payload.direction == null || !location.block().equals(Identifier.of("minecraft", "chest"))) {
-            throw new IllegalArgumentException("Transfer requires a single chest and direction");
+            throw new IllegalArgumentException("Transfer requires a chest and direction");
         }
-        if (payload.direction == Direction.INSPECT) return new Spec(location, payload.direction, null, 0);
+        var partner = payload.partner == null ? null : payload.partner.checked();
+        if (partner != null && (partner.getY() != location.target().getY()
+                || partner.getManhattanDistance(location.target()) != 1)) {
+            throw new IllegalArgumentException("Invalid double chest position");
+        }
         Identifier id = payload.item == null ? null : Identifier.tryParse(payload.item);
+        if (payload.direction == Direction.INSPECT && payload.item == null) {
+            return new Spec(location, payload.direction, null, 0, partner);
+        }
         if (id == null || !Registries.ITEM.containsId(id) || id.equals(Identifier.of("minecraft", "air"))
-                || payload.stock == null || payload.stock < 0 || payload.stock > 1728) {
+                || payload.direction != Direction.INSPECT
+                && (payload.stock == null || payload.stock < 0 || payload.stock > (partner == null ? 1728 : 3456))) {
             throw new IllegalArgumentException("Invalid chest item or stock target");
         }
-        return new Spec(location, payload.direction, id, payload.stock);
+        return new Spec(location, payload.direction, id, payload.stock == null ? 0 : payload.stock, partner);
     }
 
     void close(MinecraftClient client) {
@@ -61,12 +81,13 @@ final class ProjectChest {
         if (now < nextAction) return null;
         var target = spec.location.target();
         var block = client.world.getBlockState(target);
-        if (!block.isOf(Blocks.CHEST) || block.get(ChestBlock.CHEST_TYPE) != ChestType.SINGLE) {
-            return failure("Storage location must contain a single chest");
+        if (!block.isOf(Blocks.CHEST) || (spec.partner == null) != (block.get(ChestBlock.CHEST_TYPE) == ChestType.SINGLE)
+                || spec.partner != null && !spec.partner.equals(target.offset(ChestBlock.getFacing(block)))) {
+            return failure("Storage chest changed size or location");
         }
         var player = client.player;
         if (screen == null && player.currentScreenHandler instanceof GenericContainerScreenHandler container
-                && opening && container.getRows() == 3) {
+                && opening && container.getRows() == (spec.partner == null ? 3 : 6)) {
             screen = container;
             opening = false;
         } else if (screen == null) {
@@ -89,7 +110,7 @@ final class ProjectChest {
         }
 
         Map<String, Integer> stock = stock();
-        if (spec.direction == Direction.INSPECT) return new Result(true, "Observed chest stock", stock);
+        if (spec.direction == Direction.INSPECT) return new Result(true, "Observed chest stock", stock, freeSlots());
         int held = stock.getOrDefault(spec.item.toString(), 0);
         boolean deposit = spec.direction == Direction.DEPOSIT;
         int containerSize = screen.getRows() * 9;
@@ -140,6 +161,20 @@ final class ProjectChest {
 
     private void click(MinecraftClient client, int slot, int button) {
         client.interactionManager.clickSlot(screen.syncId, slot, button, SlotActionType.PICKUP, client.player);
+    }
+
+    private Integer freeSlots() {
+        if (spec.item == null) return null;
+        var sample = Registries.ITEM.get(spec.item).getDefaultStack();
+        int remaining = 0;
+        for (int i = 0; i < screen.getRows() * 9; i++) {
+            var slot = screen.getSlot(i);
+            var stack = slot.getStack();
+            if (slot.canInsert(sample) && (stack.isEmpty() || ItemStack.canCombine(stack, sample))) {
+                remaining += Math.max(0, slot.getMaxItemCount(sample) - stack.getCount());
+            }
+        }
+        return remaining;
     }
 
     private Map<String, Integer> stock() {

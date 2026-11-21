@@ -4,30 +4,59 @@ import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.registry.Registries;
-import net.minecraft.item.Items;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 
 final class ItemTrackingScreen extends Screen {
     private final Screen parent;
-    ItemTrackingScreen(Screen parent){super(Text.literal("Track item"));this.parent=parent;}
-    @Override public boolean shouldPause(){return false;}
-    @Override protected void init(){
-        int x=width/2-100;
-        addDrawableChild(ButtonWidget.builder(Text.literal("Choose item…"),b->client.setScreen(new ItemPickerScreen(this,false,id->{BotUiConfig.trackedItem=id;BotUiConfig.save();client.setScreen(this);}))).dimensions(x,110,200,22).build());
-        var clear=addDrawableChild(ButtonWidget.builder(Text.literal("Stop tracking"),b->{BotUiConfig.trackedItem="";BotUiConfig.save();clearAndInit();}).dimensions(x,140,200,22).build());
-        clear.active=!BotUiConfig.trackedItem.isEmpty();
-        addDrawableChild(ButtonWidget.builder(Text.literal("Back"),b->close()).dimensions(x,height-35,200,22).build());
+    private static final int FIRST_ROW = 44;
+    private static final int ROW_HEIGHT = 21;
+
+    ItemTrackingScreen(Screen parent) { super(Text.literal("Track items")); this.parent = parent; }
+    @Override public boolean shouldPause() { return false; }
+
+    @Override protected void init() {
+        int x = width / 2 - 120;
+        for (int index = 0; index < BotUiConfig.trackedItems.size(); index++) {
+            String id = BotUiConfig.trackedItems.get(index);
+            var remove = ButtonWidget.builder(Text.literal("Remove"), button -> {
+                BotUiConfig.trackedItems.remove(id);
+                BotUiConfig.save();
+                clearAndInit();
+            }).dimensions(x + 181, FIRST_ROW + index * ROW_HEIGHT, 59, 19).build();
+            addDrawableChild(remove);
+        }
+        int row = FIRST_ROW + Math.max(1, BotUiConfig.trackedItems.size()) * ROW_HEIGHT + 8;
+        var add = ButtonWidget.builder(Text.literal("Add item…"), button ->
+                client.setScreen(new ItemPickerScreen(this, false, id -> {
+                    if (BotUiConfig.addTracked(id)) BotUiConfig.save();
+                    client.setScreen(this);
+                }))).dimensions(x, row, 116, 20).build();
+        add.active = BotUiConfig.trackedItems.size() < BotUiConfig.TRACK_LIMIT;
+        addDrawableChild(add);
+        addDrawableChild(ButtonWidget.builder(Text.literal("Back"), button -> close())
+                .dimensions(x + 124, row, 116, 20).build());
     }
-    @Override public void render(DrawContext draw,int x,int y,float delta){
-        draw.fill(0,0,width,height,0xED101927);
-        draw.drawCenteredTextWithShadow(textRenderer,title,width/2,18,0xFF5DE4D2);
-        var id=Identifier.tryParse(BotUiConfig.trackedItem);
-        var item=id!=null&&Registries.ITEM.containsId(id)?Registries.ITEM.get(id):Items.AIR;
-        if(item!=Items.AIR){draw.drawItem(item.getDefaultStack(),width/2-8,55);draw.drawCenteredTextWithShadow(textRenderer,item.getName(),width/2,80,0xFFE7F0FA);}
-        else draw.drawCenteredTextWithShadow(textRenderer,"Off",width/2,70,0xFF9DB1C7);
-        super.render(draw,x,y,delta);
+
+    @Override public void render(DrawContext draw, int x, int y, float delta) {
+        draw.fill(0, 0, width, height, 0xED101927);
+        draw.drawCenteredTextWithShadow(textRenderer, title, width / 2, 19, 0xFF5DE4D2);
+        if (BotUiConfig.trackedItems.isEmpty()) {
+            draw.drawCenteredTextWithShadow(textRenderer, "No items tracked", width / 2, FIRST_ROW + 5, 0xFF9DB1C7);
+        }
+        for (int index = 0; index < BotUiConfig.trackedItems.size(); index++) {
+            var item = Registries.ITEM.get(new Identifier(BotUiConfig.trackedItems.get(index)));
+            int row = FIRST_ROW + index * ROW_HEIGHT;
+            draw.drawItem(item.getDefaultStack(), width / 2 - 120, row + 1);
+            draw.drawTextWithShadow(textRenderer, textRenderer.trimToWidth(item.getName().getString(), 154),
+                    width / 2 - 99, row + 5, 0xFFE7F0FA);
+        }
+        super.render(draw, x, y, delta);
     }
-    @Override public boolean mouseClicked(double x,double y,int button){if(FormationClient.wheel.matchesMouse(button)){close();return true;}return super.mouseClicked(x,y,button);}
-    @Override public void close(){client.setScreen(parent);}
+
+    @Override public boolean mouseClicked(double x, double y, int button) {
+        if (FormationClient.wheel.matchesMouse(button)) { close(); return true; }
+        return super.mouseClicked(x, y, button);
+    }
+    @Override public void close() { client.setScreen(parent); }
 }

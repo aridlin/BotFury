@@ -1,7 +1,6 @@
 package com.botfury;
 
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.entity.ItemEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
@@ -11,7 +10,6 @@ import net.minecraft.util.Identifier;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.command.argument.EntityAnchorArgumentType;
 import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
-import java.util.Comparator;
 import java.util.Set;
 
 /** Explicit inventory tasks; only the 36 main inventory slots are modified. */
@@ -26,6 +24,7 @@ final class BotInventory {
     static void pause(boolean value) { manualPause=value; }
     private static int age, delivered, waitTicks;
     private static Vec3d spreadGoal;
+    private static final DroppedItemSearch pickup = new DroppedItemSearch();
     private static String world;
     private static Object session;
     private static volatile String status = "";
@@ -53,7 +52,10 @@ final class BotInventory {
     static void disconnected() { finish("Cancelled: disconnected"); paused = false; }
     static boolean active() { return paused; }
     static boolean working() { return !manualPause&&(task!=null||baritoneTask); }
-    static void evaded() { if(spreadGoal!=null){spreadGoal=null;waitTicks=0;} }
+    static void evaded() {
+        if (spreadGoal != null) { spreadGoal = null; waitTicks = 0; }
+        pickup.repath();
+    }
     static String recipient() { return task==null?"":task.recipient; }
     static void start(MinecraftClient client, Request request) {
         ProjectWorker.stop(client);
@@ -119,18 +121,15 @@ final class BotInventory {
                 if (delivered >= task.count || held == 0) { completion="Dropped "+delivered;spread(client);return; }
                 delivered += drop(client, task.item, task.count - delivered, false);
             }
-            case "collect" -> {
-                if (held >= task.count) {
-                    if (held > task.count) { BaritoneClient.execute("stop"); drop(client, task.item, held - task.count, false); return; }
-                    spread(client); return;
-                }
-                collectDropped(client);
-
-            }
-            case "keep", "only" -> {
+            case "collect", "keep", "only" -> {
                 if (task.action.equals("only") && drop(client, task.item, Integer.MAX_VALUE, true) > 0) return;
-                if (held < task.count) { collectDropped(client); return; }
-                if (held > task.count) { BaritoneClient.execute("stop"); drop(client, task.item, held - task.count, false); return; }
+                if (held < task.count) { collectDropped(client, held); return; }
+                pickup.stop();
+                if (held > task.count) {
+                    drop(client, task.item, held - task.count, false);
+                    return;
+                }
+                completion = "Kept " + held + " " + task.item.getName().getString();
                 spread(client);
             }
             case "spread" -> spread(client);
@@ -138,14 +137,15 @@ final class BotInventory {
         }
     }
 
-    private static void collectDropped(MinecraftClient client) {
-        ItemEntity nearest=client.world.getEntitiesByClass(ItemEntity.class,
-                client.player.getBoundingBox().expand(32),e->e.isAlive()&&e.getStack().isOf(task.item)).stream()
-                .min(Comparator.comparingDouble(client.player::squaredDistanceTo)).orElse(null);
-        if(nearest==null){status="Waiting for dropped "+task.item.getName().getString();return;}
-        status="Collecting "+task.item.getName().getString();
-        path(client,nearest.getPos());
+    private static void collectDropped(MinecraftClient client, int held) {
+        status = switch (pickup.tick(client, task.item)) {
+            case SEARCHING -> "Looking for dropped ";
+            case APPROACHING -> "Collecting ";
+            case UNAVAILABLE -> "Cannot collect: ";
+        } + task.item.getName().getString() + " (" + held + "/" + task.count + ")";
+        if (status.startsWith("Cannot")) finish(status + " — Baritone unavailable");
     }
+
     private static int count(MinecraftClient client, Item item) {
         int total = 0;
         for (int i = 0; i < 36; ++i) if (client.player.getInventory().getStack(i).isOf(item))
@@ -198,6 +198,7 @@ final class BotInventory {
     }
     private static void finish(String message) {
         if (task != null || baritoneTask) BaritoneClient.execute("stop");
+        pickup.reset();
         task = null;
         baritoneTask=false;
         spreadGoal = null;

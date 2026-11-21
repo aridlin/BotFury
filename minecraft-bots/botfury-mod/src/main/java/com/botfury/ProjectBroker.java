@@ -104,7 +104,7 @@ final class ProjectBroker {
                             return item;
                         }
                         if (item.kind() == ProjectQueue.Kind.TRANSFER) {
-                            return ProjectChest.parse(item.payload()).location().reserve(item);
+                            return ProjectChest.parse(item.payload()).reserve(item);
                         }
                         if (item.kind() == ProjectQueue.Kind.CRAFT || item.kind() == ProjectQueue.Kind.SMELT) {
                             return ProjectProduction.parse(item.payload(), item.kind()).station().reserve(item);

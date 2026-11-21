@@ -76,12 +76,16 @@ final class FormationClient {
                                 sent > 0 ? "Project worker requested for " + sent + " bot(s)" : "No connected bots selected");
                         return sent > 0 ? 1 : 0;
                     })));
-            var outputCount = ClientCommandManager.argument("batch", IntegerArgumentType.integer(1, 64))
+            var outputItem = ClientCommandManager.argument("item", net.minecraft.command.argument.IdentifierArgumentType.identifier())
+                    .suggests((context, builder) -> net.minecraft.command.CommandSource.suggestIdentifiers(
+                            net.minecraft.registry.Registries.ITEM.getIds(), builder))
                     .executes(context -> OutputOrder.submit(context.getSource().getClient(),
-                            IntegerArgumentType.getInteger(context, "batch")));
-            root.then(ClientCommandManager.literal("output").then(ClientCommandManager.literal("diamond_block")
-                    .executes(context -> OutputOrder.submit(context.getSource().getClient(), 10))
-                    .then(outputCount))
+                            context.getArgument("item", net.minecraft.util.Identifier.class), 10))
+                    .then(ClientCommandManager.argument("batch", IntegerArgumentType.integer(1, 64))
+                            .executes(context -> OutputOrder.submit(context.getSource().getClient(),
+                                    context.getArgument("item", net.minecraft.util.Identifier.class),
+                                    IntegerArgumentType.getInteger(context, "batch"))));
+            root.then(ClientCommandManager.literal("output").then(outputItem)
                     .then(ClientCommandManager.literal("cancel").executes(context -> OutputOrder.cancel(context.getSource().getClient()))));
             var allow = ClientCommandManager.literal("allow");
             for (String choice : new String[]{"packets", "movement", "off"}) allow.then(ClientCommandManager.literal(choice).executes(context -> {
@@ -140,10 +144,14 @@ final class FormationClient {
     static void open(MinecraftClient client) { if (client.player != null) pendingWheel = true; }
     static void quick(MinecraftClient client) {
         if (LocalFormation.mode().equals("strike")) LocalFormation.cancelStrike(client);
-        else if (visibleTarget(client) != null) ClientActions.action(client, "lightning");
+        else if (lightningTarget(client) != null) ClientActions.action(client, "lightning");
         else ClientActions.action(client, "stop");
     }
-    static LivingEntity visibleTarget(MinecraftClient client) {
+    static LivingEntity visibleTarget(MinecraftClient client) { return visibleTarget(client, false); }
+
+    static LivingEntity lightningTarget(MinecraftClient client) { return visibleTarget(client, true); }
+
+    private static LivingEntity visibleTarget(MinecraftClient client, boolean skipBots) {
         if (client.player == null || client.world == null) return null;
         Vec3d start = client.player.getEyePos();
         Vec3d end = start.add(client.player.getRotationVec(1.0f).multiply(1024));
@@ -153,7 +161,8 @@ final class FormationClient {
         LivingEntity selected = null;
         for (Entity entity : client.world.getOtherEntities(client.player,
                 client.player.getBoundingBox().stretch(end.subtract(start)).expand(1))) {
-            if (!(entity instanceof LivingEntity living) || !living.isAlive() || living.isSpectator()) continue;
+            if (!(entity instanceof LivingEntity living) || !living.isAlive()
+                    || living.isSpectator() || (skipBots && BotVisuals.isBot(entity))) continue;
             var hit = entity.getBoundingBox().expand(entity.getTargetingMargin()).raycast(start, end);
             if (hit.isPresent() && start.squaredDistanceTo(hit.get()) < best) {
                 best = start.squaredDistanceTo(hit.get()); selected = living;

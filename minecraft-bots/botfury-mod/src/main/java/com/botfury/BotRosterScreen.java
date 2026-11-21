@@ -15,7 +15,7 @@ final class BotRosterScreen extends Screen {
     private void buttons(){
         clearChildren();
         addDrawableChild(ButtonWidget.builder(Text.literal("Defense: "+(BotUiConfig.defense?"on":"off")),b->{BotUiConfig.defense=!BotUiConfig.defense;BotUiConfig.save();BotTracker.sendDefenses();buttons();}).dimensions(18,14,110,20).build());
-        addDrawableChild(ButtonWidget.builder(Text.literal("Track item…"),b->client.setScreen(new ItemTrackingScreen(this))).dimensions(width-128,14,110,20).build());
+        addDrawableChild(ButtonWidget.builder(Text.literal("Track items…"),b->client.setScreen(new ItemTrackingScreen(this))).dimensions(width-128,14,110,20).build());
         int x=width/2+8,w=Math.max(60,(width/2-44)/2);
         addDrawableChild(ButtonWidget.builder(Text.literal("All bots"),b->{BotTracker.select(-1);buttons();}).dimensions(18,42,100,20).build());
         addDrawableChild(ButtonWidget.builder(Text.literal("Refresh"),b->BotTracker.refresh()).dimensions(124,42,85,20).build());

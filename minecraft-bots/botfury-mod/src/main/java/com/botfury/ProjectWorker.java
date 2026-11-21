@@ -27,6 +27,7 @@ final class ProjectWorker {
     private static ProjectChest chest;
     private static ProjectProduction production;
     private static ProjectGather gather;
+    private static DroppedItemSearch pickup;
     private static ProjectQueue.ChestReport chestReport;
     private static BaritoneSettings approach;
     private static Vec3d approachProgress;
@@ -70,6 +71,7 @@ final class ProjectWorker {
         chest = null;
         production = null;
         gather = null;
+        pickup = null;
         chestReport = null;
         success = null;
         evidence = null;
@@ -80,6 +82,7 @@ final class ProjectWorker {
     private static void halt(MinecraftClient client) {
         if (chest != null) chest.close(client);
         if (production != null) production.close(client);
+        if (pickup != null) pickup.stop();
         if (gather != null && MiningTask.active()) MiningTask.stop();
         if (breaking && client.interactionManager != null) client.interactionManager.cancelBlockBreaking();
         breaking = false;
@@ -115,6 +118,11 @@ final class ProjectWorker {
             int held = gather.inventoryCount(client);
             if (held >= gather.count()) {
                 finish(client, true, "Observed " + held + " " + gather.item() + " in worker inventory");
+            } else if (pickup != null) {
+                var result = pickup.tick(client, Registries.ITEM.get(gather.item()));
+                if (result == DroppedItemSearch.State.UNAVAILABLE) finish(client, false, "Baritone unavailable for pickup");
+                else status = (result == DroppedItemSearch.State.SEARCHING ? "Looking for dropped " : "Collecting ")
+                        + gather.item() + " (" + held + "/" + gather.count() + ")";
             } else if (!MiningTask.active()) {
                 MiningTask.startProject(client, gather.mining(port), gather.exclude());
                 if (!MiningTask.active()) finish(client, false, MiningTask.lastStatus());
@@ -161,7 +169,7 @@ final class ProjectWorker {
         if (chest != null) {
             var result = chest.tick(client, now);
             if (result != null) {
-                if (result.stock() != null) chestReport = new ProjectQueue.ChestReport(ProjectBlock.key(target), result.stock());
+                if (result.stock() != null) chestReport = new ProjectQueue.ChestReport(ProjectBlock.key(target), result.stock(), result.free());
                 finish(client, result.success(), result.detail());
             }
             return;
@@ -275,6 +283,7 @@ final class ProjectWorker {
                     });
                     if (work.kind() == ProjectQueue.Kind.GATHER) {
                         gather = ProjectGather.parse(work.payload());
+                        if (gather.fromDrops()) pickup = new DroppedItemSearch();
                     } else if (work.kind() == ProjectQueue.Kind.TRANSFER) {
                         var spec = ProjectChest.parse(work.payload());
                         block = spec.location();

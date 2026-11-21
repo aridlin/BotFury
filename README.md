@@ -453,8 +453,9 @@ Friends, the controller, known fleet bots, teammates and creative/spectator
 players are protected. Defense uses normal reach, visibility and attack cooldowns,
 and does not pursue enemies. Stop, task pause, or loss of the controller heartbeat
 pauses these attacks. A damaged or unreadable friend list also pauses attacks.
-Keep/Only inventory tasks seek nearby dropped copies if the requested item is
-missing. After dropping excess, bots move away from that drop.
+Keep, Collect and Only seek matching drops within 32 blocks when a bot has
+fewer than requested. If the closest drop is unreachable, the bot tries other
+drops without breaking or placing blocks. After dropping excess, bots move away.
 
 To update the runtime used by the direct launcher without moving game profiles,
 set BOTFURY_RUNTIME_DIR or place the prepared runtime directory on one line in

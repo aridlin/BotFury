@@ -19,7 +19,7 @@ final class ClientActions {
                 LocalFormation.fleetCommand("control:stop");
             }
             case "lightning" -> {
-                LivingEntity target = FormationClient.visibleTarget(client);
+                LivingEntity target = FormationClient.lightningTarget(client);
                 if (target == null) message(client, "Aim at a visible living target.");
                 else LocalFormation.strike(client, target);
             }

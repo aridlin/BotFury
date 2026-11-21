@@ -12,7 +12,7 @@ import java.util.*;
 /** The coordinator persists each transition before acknowledging it to a worker. */
 final class ProjectQueue {
     static final int MAX_JOBS = 4096;
-    enum Kind { EXCAVATE, GATHER, CRAFT, SMELT, TRANSFER, BUILD, VERIFY, INSPECT, BARRIER }
+    enum Kind { EXCAVATE, GATHER, CRAFT, SMELT, TRANSFER, BUILD, VERIFY, INSPECT, BARRIER, FILL_BUCKETS }
     enum State { WAITING, LEASED, DONE, FAILED }
 
     record Cleanup(String site, String afterSettled, List<String> alsoSettled) {

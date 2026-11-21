@@ -24,7 +24,7 @@ import java.util.concurrent.TimeUnit;
 final class ProjectWorker {
     private static final Gson JSON = new Gson();
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(750)).build();
-    private static final Set<ProjectQueue.Kind> KINDS = Set.of(ProjectQueue.Kind.EXCAVATE, ProjectQueue.Kind.VERIFY, ProjectQueue.Kind.INSPECT, ProjectQueue.Kind.TRANSFER, ProjectQueue.Kind.BUILD, ProjectQueue.Kind.CRAFT, ProjectQueue.Kind.SMELT, ProjectQueue.Kind.GATHER);
+    private static final Set<ProjectQueue.Kind> KINDS = Set.of(ProjectQueue.Kind.EXCAVATE, ProjectQueue.Kind.VERIFY, ProjectQueue.Kind.INSPECT, ProjectQueue.Kind.FILL_BUCKETS, ProjectQueue.Kind.TRANSFER, ProjectQueue.Kind.BUILD, ProjectQueue.Kind.CRAFT, ProjectQueue.Kind.SMELT, ProjectQueue.Kind.GATHER);
     private static WorkerEnrollment enrollment;
     private static boolean enrollmentLoaded;
     private static int port;
@@ -33,6 +33,7 @@ final class ProjectWorker {
     private static ProjectQueue.Assignment assignment;
     private static ProjectBlock block;
     private static ProjectInspection inspection;
+    private static ProjectWater.Fill fill;
     private static ProjectChest chest;
     private static ProjectProduction production;
     private static ProjectGather gather;
@@ -44,7 +45,7 @@ final class ProjectWorker {
     private static final StallRecovery approachRecovery = new StallRecovery();
     private static Vec3d approachProgress;
     private static long retryApproach;
-    private static long nextRequest, deadline, taskEnd, stableSince, nextPlacement;
+    private static long nextRequest, deadline, taskEnd, stableSince, nextPlacement, inspectionStarted;
     private static Boolean success;
     private static String evidence;
     private static boolean breaking;
@@ -144,6 +145,7 @@ final class ProjectWorker {
         assignment = null;
         block = null;
         inspection = null;
+        fill = null;
         chest = null;
         production = null;
         gather = null;
@@ -154,7 +156,7 @@ final class ProjectWorker {
         success = null;
         evidence = null;
         pending = false;
-        nextRequest = deadline = taskEnd = stableSince = nextPlacement = 0;
+        nextRequest = deadline = taskEnd = stableSince = nextPlacement = inspectionStarted = 0;
     }
 
     private static void halt(MinecraftClient client) {
@@ -272,7 +274,23 @@ final class ProjectWorker {
             stableSince = 0;
             return;
         }
+        if (fill != null) {
+            int held = 0;
+            for (int slot = 0; slot < 36; slot++) {
+                var stack = player.getInventory().getStack(slot);
+                if (stack.isOf(net.minecraft.item.Items.WATER_BUCKET)) held += stack.getCount();
+            }
+            if (held >= fill.count()) {
+                finish(client, true, "Observed " + held + " water buckets in worker inventory");
+            } else if (now >= nextPlacement) {
+                nextPlacement = now + seconds(1);
+                String failure = fill.attempt(client);
+                if (failure != null) finish(client, false, failure);
+            }
+            return;
+        }
         if (inspection != null) {
+            if (inspectionStarted == 0) inspectionStarted = now;
             for (var pos : inspection.expected().keySet()) {
                 if (!client.world.isInBuildLimit(pos) || !client.world.getWorldBorder().contains(pos)) {
                     finish(client, false, "Inspection cell outside world bounds at " + pos.toShortString());
@@ -281,10 +299,11 @@ final class ProjectWorker {
             }
             String mismatch = inspection.mismatch(client.world);
             if (mismatch != null) {
-                finish(client, false, mismatch);
+                stableSince = 0;
+                if (!inspection.settleFlow() || now - inspectionStarted >= seconds(12)) finish(client, false, mismatch);
             } else {
                 if (stableSince == 0) stableSince = now;
-                if (now - stableSince >= seconds(1)) {
+                if (now - stableSince >= seconds(inspection.settleFlow() ? 3 : 1)) {
                     finish(client, true, "Verified " + inspection.expected().size() + " block states");
                 }
             }
@@ -442,7 +461,7 @@ final class ProjectWorker {
                     taskEnd = System.nanoTime() + seconds(switch (work.kind()) {
                         case GATHER -> 1800;
                         case SMELT -> 300;
-                        case CRAFT, TRANSFER -> 180;
+                        case CRAFT, TRANSFER, FILL_BUCKETS -> 180;
                         default -> 90;
                     });
                     if (work.kind() == ProjectQueue.Kind.GATHER) {
@@ -457,6 +476,9 @@ final class ProjectWorker {
                         var spec = ProjectProduction.parse(work.payload(), work.kind());
                         block = spec.station();
                         production = new ProjectProduction(spec);
+                    } else if (work.kind() == ProjectQueue.Kind.FILL_BUCKETS) {
+                        fill = ProjectWater.Fill.parse(work.payload());
+                        block = fill.location();
                     } else if (work.kind() == ProjectQueue.Kind.INSPECT) {
                         inspection = ProjectInspection.parse(work.payload());
                         BlockPos target = inspection.expected().keySet().iterator().next();

@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.Set;
 
 /** Verifies exact block states across a bounded set of cells in one loaded column of chunks. */
-record ProjectInspection(BlockPos stand, Map<BlockPos, BlockState> expected) {
+record ProjectInspection(BlockPos stand, Map<BlockPos, BlockState> expected, boolean settleFlow) {
     static final int MAX_CELLS = 32;
     private static final Gson JSON = new Gson();
 
@@ -27,10 +27,10 @@ record ProjectInspection(BlockPos stand, Map<BlockPos, BlockState> expected) {
         }
     }
 
-    private record Payload(ProjectBlock.Position stand, List<Check> checks) {}
+    private record Payload(ProjectBlock.Position stand, List<Check> checks, boolean settleFlow) {}
 
-    static String payload(BlockPos stand, List<Check> checks) {
-        return JSON.toJson(new Payload(StructureSupply.position(stand), checks));
+    static String payload(BlockPos stand, List<Check> checks, boolean settleFlow) {
+        return JSON.toJson(new Payload(StructureSupply.position(stand), checks, settleFlow));
     }
 
     static ProjectInspection parse(String json) {
@@ -52,7 +52,7 @@ record ProjectInspection(BlockPos stand, Map<BlockPos, BlockState> expected) {
             var state = ProjectBlock.state(Identifier.tryParse(check.block), check.properties);
             if (expected.put(pos, state) != null) throw new IllegalArgumentException("Duplicate inspection cell");
         }
-        return new ProjectInspection(stand, Collections.unmodifiableMap(expected));
+        return new ProjectInspection(stand, Collections.unmodifiableMap(expected), payload.settleFlow);
     }
 
     private static long chunk(Check check) {

@@ -12,6 +12,8 @@ import net.minecraft.block.enums.ChestType;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.BlockItem;
 import net.minecraft.item.ItemPlacementContext;
+import net.minecraft.item.Item;
+import net.minecraft.item.Items;
 import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import net.minecraft.registry.Registries;
@@ -54,7 +56,12 @@ final class ProjectPlacement {
         return state.with(ChestBlock.CHEST_TYPE, ChestType.SINGLE);
     }
 
+    static Item material(BlockState state) {
+        return ProjectWater.source(state) ? Items.WATER_BUCKET : state.getBlock().asItem();
+    }
+
     static boolean placeable(BlockState state, BlockView world, BlockPos pos) {
+        if (ProjectWater.source(state)) return true;
         return supported(state) && (container(state) || ProjectShapedBlock.recognized(state) || state.isFullCube(world, pos));
     }
 
@@ -103,7 +110,7 @@ final class ProjectPlacement {
         var player = client.player;
         var target = block.target();
         var desired = block.desired();
-        var item = desired.getBlock().asItem();
+        var item = material(desired);
         if (!placeable(desired, client.world, target) || !faces(desired).contains(block.face())) {
             return "This block needs placement behavior the project worker does not support";
         }
@@ -111,7 +118,7 @@ final class ProjectPlacement {
                 || !player.currentScreenHandler.getCursorStack().isEmpty()) return "Close the open container or clear the cursor";
         var observed = client.world.getBlockState(target);
         if (ProjectShapedBlock.canOpen(observed, desired)) return open(client, target, desired);
-        if (!observed.isAir()) return "Build target is occupied";
+        if (!observed.isAir() && !(ProjectWater.source(desired) && ProjectWater.water(observed))) return "Build target is occupied";
         var support = block.support();
         Vec3d eye = player.getEyePos();
         var supportState = client.world.getBlockState(support);
@@ -138,6 +145,9 @@ final class ProjectPlacement {
             return null;
         }
         player.getInventory().selectedSlot = slot;
+        if (ProjectWater.source(desired)) {
+            return ProjectWater.useBucket(client, point, support, block.face());
+        }
         player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, hit.getPos());
         boolean sneak = desired.isOf(Blocks.CHEST) || container(supportState);
         Direction facing = desired.isOf(Blocks.CHEST) ? desired.get(ChestBlock.FACING).getOpposite()

@@ -17,6 +17,47 @@ class ProjectQueueTest {
         return new ProjectQueue.Work(id, kind, "", needs, Set.of(locks));
     }
 
+    @Test void pickupShortfallRestartsOnlyItsSupplyChainAndKeepsCompletedHandoffs() throws Exception {
+        var journal = directory.resolve("board.json");
+        var board = new ProjectQueue(journal);
+        String chest = "block:5,64,0";
+        String material = "minecraft:stone";
+        String payload = "{\"direction\":\"TAKE\",\"item\":\"minecraft:stone\",\"stock\":16}";
+        board.submitSupplied("house", WORLD, List.of(
+                job("gather", GATHER, List.of()),
+                new ProjectQueue.Work("store", TRANSFER, "", List.of("gather"), Set.of(chest), "gather"),
+                new ProjectQueue.Work("first", TRANSFER, payload, List.of("store"), Set.of(chest), null, null, material),
+                new ProjectQueue.Work("second", TRANSFER, payload, List.of("store"), Set.of(chest), null, null, material),
+                new ProjectQueue.Work("west", BUILD, "", List.of("first"), Set.of("west"), "first"),
+                new ProjectQueue.Work("east", BUILD, "", List.of("second"), Set.of("east"), "second")
+        ), chest);
+        var gather = board.claim(WORLD, "Miner", Set.of(GATHER), 1).job();
+        assertTrue(board.finish("house", "gather", gather.lease(), true, "Gathered 32", 2));
+        var store = board.claim(WORLD, "Miner", Set.of(TRANSFER), 3).job();
+        assertTrue(board.finish("house", "store", store.lease(), true, "Stored 32",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(material, 32)), 4));
+        var abandoned = board.claim(WORLD, "Disconnected", Set.of(TRANSFER), 5).job();
+        var first = board.claim(WORLD, "West", Set.of(TRANSFER), abandoned.expiresAt()).job();
+        assertEquals("first", first.work().id());
+        assertTrue(board.finish("house", "first", first.lease(), true, "Collected 16",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(material, 8)), 15_006));
+        var west = board.claim(WORLD, "West", Set.of(BUILD), 15_007).job();
+        var second = board.claim(WORLD, "East", Set.of(TRANSFER), 15_008).job();
+        assertEquals("second", second.work().id());
+        var observed = new ProjectQueue.ChestReport(chest, java.util.Map.of());
+        assertFalse(board.finish("house", "first", abandoned.lease(), false, "Short", observed, null, true, 15_009));
+        assertTrue(board.finish("house", "second", second.lease(), false, "Short eight", observed, null, true, 15_009));
+
+        board = new ProjectQueue(journal);
+        var project = board.snapshot(15_010).get(0);
+        assertEquals(java.util.Map.of("gather", 1), project.supplyRecoveries());
+        assertEquals(ProjectQueue.State.WAITING, project.jobs().get(3).state());
+        assertEquals(observed, project.jobs().get(3).chest().report());
+        assertEquals(first.lease(), project.jobs().get(2).lease());
+        assertEquals(west.lease(), project.jobs().get(4).lease());
+        assertEquals("gather", board.claim(WORLD, "East", Set.of(GATHER), 15_011).job().work().id());
+    }
+
     @Test void constructionBatchesCreditDifferentWorkersAndSurviveRestart() throws Exception {
         Path journal = directory.resolve("board.json");
         var board = new ProjectQueue(journal);

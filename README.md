@@ -548,7 +548,9 @@ other workers can reacquire the materials after a 60-second grace period.
 Each material chain can be reacquired twice. The coordinator remembers a
 nearby stand where a worker found each mining resource. A replacement that
 finds nothing nearby searches the recorded site before exploring farther.
-Completed placements and unrelated material chains keep their progress.
+If a chest pickup reports that the batch is short, the coordinator uses the
+same recovery budget to restock it. Completed pickups, placements, and
+unrelated material chains keep their progress.
 
 Automatic supply uses the server's crafting and furnace recipes, including
 intermediate ingredients, when it can trace them to supported raw resources.

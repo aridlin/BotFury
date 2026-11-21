@@ -17,7 +17,7 @@ final class ProjectBroker {
 
     private record Request(String action, String project, String worker, Set<ProjectQueue.Kind> kinds,
                            List<ProjectQueue.Work> work, String job, UUID token, Boolean success,
-                           String evidence, ProjectQueue.ChestReport chest, ProjectQueue.ResourceSite resourceSite) {}
+                           String evidence, ProjectQueue.ChestReport chest, ProjectQueue.ResourceSite resourceSite, boolean pickupShortfall) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
         if (queue == null) {
@@ -135,7 +135,7 @@ final class ProjectBroker {
                 case "finish" -> {
                     if (request.success == null) throw new IllegalArgumentException("Report a success or failure");
                     boolean accepted = board.finish(request.project, request.job, request.token,
-                            request.success, request.evidence, request.chest, request.resourceSite, now);
+                            request.success, request.evidence, request.chest, request.resourceSite, request.pickupShortfall, now);
                     reply(exchange, accepted ? 200 : 409, accepted);
                 }
                 default -> reply(exchange, 400, "Unknown project action");

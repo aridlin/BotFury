@@ -36,6 +36,7 @@ final class ProjectWorker {
     private static ProjectQueue.ResourceSite gatherSite;
     private static DroppedItemSearch pickup;
     private static ProjectQueue.ChestReport chestReport;
+    private static boolean pickupShortfall;
     private static BaritoneSettings approach;
     private static final StallRecovery approachRecovery = new StallRecovery();
     private static Vec3d approachProgress;
@@ -144,6 +145,7 @@ final class ProjectWorker {
         gatherSite = null;
         pickup = null;
         chestReport = null;
+        pickupShortfall = false;
         success = null;
         evidence = null;
         pending = false;
@@ -253,6 +255,7 @@ final class ProjectWorker {
         if (chest != null) {
             var result = chest.tick(client, now);
             if (result != null) {
+                pickupShortfall = result.pickupShortfall();
                 if (result.stock() != null) chestReport = new ProjectQueue.ChestReport(ProjectBlock.key(target), result.stock(), result.free());
                 finish(client, result.success(), result.detail());
             }
@@ -337,6 +340,7 @@ final class ProjectWorker {
                 args.put("success", success);
                 args.put("evidence", evidence);
                 if (chestReport != null) args.put("chest", chestReport);
+                if (pickupShortfall) args.put("pickupShortfall", true);
             }
         }
         pending = true;

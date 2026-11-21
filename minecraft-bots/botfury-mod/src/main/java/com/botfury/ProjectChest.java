@@ -82,8 +82,8 @@ final class ProjectChest {
                     work.cleanup(), work.constructionMaterial());
         }
     }
-    record Result(boolean success, String detail, Map<String, Integer> stock, Integer free) {
-        Result(boolean success, String detail, Map<String, Integer> stock) { this(success, detail, stock, null); }
+    record Result(boolean success, String detail, Map<String, Integer> stock, Integer free, boolean pickupShortfall) {
+        Result(boolean success, String detail, Map<String, Integer> stock) { this(success, detail, stock, null, false); }
     }
     private record Payload(Direction direction, String item, Integer stock, ProjectBlock.Position partner) {}
     private static final Gson JSON = new Gson();
@@ -160,7 +160,7 @@ final class ProjectChest {
         }
 
         Map<String, Integer> stock = stock();
-        if (spec.direction == Direction.INSPECT) return new Result(true, "Observed chest stock", stock, freeSlots());
+        if (spec.direction == Direction.INSPECT) return new Result(true, "Observed chest stock", stock, freeSlots(), false);
         int held = stock.getOrDefault(spec.item.toString(), 0);
         boolean deposit = spec.direction == Direction.DEPOSIT;
         int containerSize = screen.getRows() * 9;
@@ -205,6 +205,10 @@ final class ProjectChest {
                 nextAction = now + SETTLE;
                 return null;
             }
+        }
+        if (spec.direction == Direction.TAKE && held < remaining) {
+            return new Result(false, "Chest has " + held + " " + spec.item + ", worker needs " + remaining,
+                    stock, null, true);
         }
         return new Result(false, "Missing " + spec.item + " or destination is full", stock);
     }

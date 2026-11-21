@@ -102,6 +102,7 @@ final class ProjectQueue {
     }
     record Assignment(String project, String world, Job job) {}
     private record Board(int schema, Map<String, Project> projects) {}
+    private record PickupTarget(String direction, String item, int stock) {}
 
     private static final Gson JSON = new Gson();
     private static final long LEASE_MS = 15_000;
@@ -382,6 +383,12 @@ final class ProjectQueue {
 
     synchronized boolean finish(String projectId, String jobId, UUID token, boolean success,
                                 String evidence, ChestReport chest, ResourceSite site, long now) throws IOException {
+        return finish(projectId, jobId, token, success, evidence, chest, site, false, now);
+    }
+
+    synchronized boolean finish(String projectId, String jobId, UUID token, boolean success,
+                                String evidence, ChestReport chest, ResourceSite site, boolean pickupShortfall,
+                                long now) throws IOException {
         if (evidence == null || evidence.isBlank() || evidence.length() > 2048) {
             throw new IllegalArgumentException("Report an observed outcome or failure reason");
         }
@@ -403,6 +410,15 @@ final class ProjectQueue {
         }
         var observation = chest == null ? job.chest : new ChestObservation(chest, now);
         var location = gatheringSite(job, site);
+        if (pickupShortfall) {
+            if (success || chest == null || job.work.kind != Kind.TRANSFER) {
+                throw new IllegalArgumentException("Pickup shortfall requires a failed transfer and chest observation");
+            }
+            if (recoverShortPickup(project, job, evidence, observation)) {
+                markSeen(project.world, job.worker, now);
+                return true;
+            }
+        }
         Job result = success
                 ? new Job(job.work, State.DONE, job.attempts, job.worker, job.lease, 0, evidence, observation, location)
                 : retry(job, evidence, observation, location);
@@ -490,6 +506,20 @@ final class ProjectQueue {
         workerSeen.put(workerKey(world, worker), now);
     }
 
+    private boolean recoverShortPickup(Project project, Job pickup, String evidence, ChestObservation observation)
+            throws IOException {
+        var chest = observation.report;
+        if (!chest.location.equals(project.supplyChest) || pickup.work.needs.size() != 1) return false;
+        var target = JSON.fromJson(pickup.work.payload, PickupTarget.class);
+        if (target == null || !"TAKE".equals(target.direction) || target.item == null
+                || chest.items.getOrDefault(target.item, 0) >= target.stock) return false;
+
+        var jobs = new HashMap<String, Job>();
+        project.jobs.forEach(job -> jobs.put(job.work.id, job));
+        var deposit = jobs.get(pickup.work.needs.get(0));
+        return rewindSupply(project, pickup, deposit, jobs, evidence, observation);
+    }
+
     private void recoverMissingSuppliers(String world, long now) throws IOException {
         for (Project project : List.copyOf(projects.values())) {
             if (project.supplyChest == null || !world.equals(project.world)) continue;
@@ -503,38 +533,43 @@ final class ProjectQueue {
                 // After a coordinator restart, give workers the full window to reconnect.
                 long seen = workerSeen.computeIfAbsent(key, ignored -> now);
                 if (now - seen < SUPPLIER_OFFLINE_MS) continue;
-                rewindSupply(project, job, supplier, jobs);
-                break;
+                if (rewindSupply(project, job, supplier, jobs, "Supplier " + supplier.worker + " went offline",
+                        job.chest)) break;
             }
         }
     }
 
-    private void rewindSupply(Project project, Job waiting, Job supplier, Map<String, Job> jobs) throws IOException {
+    private boolean rewindSupply(Project project, Job waiting, Job supplier, Map<String, Job> jobs,
+                                 String evidence, ChestObservation observation) throws IOException {
         Set<String> rewind = new HashSet<>();
         Job stage = supplier;
         // A supplied material follows a single dependency chain from gathering to chest collection.
         while (!stage.work.needs.isEmpty()) {
-            if (stage.work.needs.size() != 1) return;
+            if (stage.work.needs.size() != 1) return false;
             rewind.add(stage.work.id);
             stage = jobs.get(stage.work.needs.get(0));
         }
-        if (stage.work.kind != Kind.GATHER) return;
+        if (stage.work.kind != Kind.GATHER) return false;
         String root = stage.work.id;
         rewind.add(root);
+        // A second pickup may still be drawing from the same deposit.
+        if (jobs.values().stream().anyMatch(job -> job != waiting && job.state == State.LEASED
+                && (rewind.contains(job.work.id) || job.work.kind == Kind.TRANSFER
+                && job.work.needs.stream().anyMatch(rewind::contains)))) return false;
         var recoveries = new HashMap<>(project.supplyRecoveries);
         int attempts = recoveries.getOrDefault(root, 0);
-        String evidence = "Supplier " + supplier.worker + " went offline";
         if (attempts >= MAX_SUPPLY_RECOVERIES) {
             replace(project, new Job(waiting.work, State.FAILED, waiting.attempts, null, null, 0,
-                    evidence + " after " + attempts + " supply recoveries", waiting.chest));
-            return;
+                    evidence + " after " + attempts + " supply recoveries", observation));
+            return true;
         }
         recoveries.put(root, attempts + 1);
         rewind.add(waiting.work.id);
         var updated = project.jobs.stream().map(job -> rewind.contains(job.work.id)
-                ? new Job(job.work, State.WAITING, 0, null, null, 0, evidence + "; reacquiring materials", job.chest, job.resourceSite)
+                ? new Job(job.work, State.WAITING, 0, null, null, 0, evidence + "; reacquiring materials", job == waiting ? observation : job.chest, job.resourceSite)
                 : job).toList();
         commit(new Project(project.id, project.world, updated, project.repeat, project.supplyChest, recoveries));
+        return true;
     }
 
     private void expire(long now) throws IOException {

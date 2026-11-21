@@ -237,7 +237,7 @@ final class StructureProject {
             for (var iterator = pending.entrySet().iterator(); iterator.hasNext(); ) {
                 var entry = iterator.next();
                 var cell = entry.getValue();
-                var pose = buildPose(client, cell, layout, ready, cleared, placed);
+                var pose = buildPose(client, cell, layout, ready, cleared, placed, scaffold != null);
                 var temporary = pose == null && allowTemporarySupport ? temporarySupport(client, cell, layout, cleared) : null;
                 if (temporary != null) pose = temporary.pillar;
                 if (pose == null) continue;
@@ -344,21 +344,43 @@ final class StructureProject {
             for (int feetY : new int[]{high - 1, high}) {
                 for (var side : Direction.Type.HORIZONTAL) for (var ascent : List.of(side.getOpposite(),
                         side.rotateYClockwise(), side.rotateYCounterclockwise())) {
-                    var top = new BlockPos(highTarget.getX(), feetY - 1, highTarget.getZ()).offset(side);
-                    var trial = planScaffold(client, top, ascent, rise, layout, cleared, prerequisites);
-                    if (trial == null) continue;
-                    var expanded = new HashMap<>(layout);
-                    expanded.putAll(trial.layout);
-                    var expandedReady = new HashMap<>(ready);
-                    expandedReady.putAll(trial.layout);
-                    var expandedPlaced = new HashMap<>(placed);
-                    expandedPlaced.putAll(trial.placed);
-                    if (buildPose(client, first, expanded, expandedReady, cleared, expandedPlaced) != null
-                            && verificationStand(client, highTarget, expanded) != null) return trial;
+                    for (int gap : new int[]{1, 2}) for (int lateral : new int[]{0, 1, -1}) {
+                        var top = new BlockPos(highTarget.getX(), feetY - 1, highTarget.getZ())
+                                .offset(side, gap).offset(side.rotateYClockwise(), lateral);
+                        var trial = planScaffold(client, top, ascent, rise, layout, cleared, prerequisites);
+                        if (trial == null) continue;
+                        var expanded = new HashMap<>(layout);
+                        expanded.putAll(trial.layout);
+                        var expandedReady = new HashMap<>(ready);
+                        expandedReady.putAll(trial.layout);
+                        var expandedPlaced = new HashMap<>(placed);
+                        expandedPlaced.putAll(trial.placed);
+                        if (buildPose(client, first, expanded, expandedReady, cleared, expandedPlaced, true) != null
+                                && verificationStand(client, highTarget, expanded) != null
+                                && canBuildWithScaffold(client, pending, expanded, cleared, expandedReady, expandedPlaced)) return trial;
+                    }
                 }
             }
         }
         return null;
+    }
+
+    private static boolean canBuildWithScaffold(MinecraftClient client, Collection<Cell> pending,
+                                                Map<BlockPos, BlockState> layout, Map<BlockPos, BlockState> cleared,
+                                                Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed) {
+        var remaining = new ArrayList<>(pending);
+        while (!remaining.isEmpty()) {
+            int before = remaining.size();
+            for (var it = remaining.iterator(); it.hasNext(); ) {
+                var cell = it.next();
+                if (buildPose(client, cell, layout, ready, cleared, placed, true) == null) continue;
+                ready.put(cell.pos, cell.desired);
+                placed.put(cell.pos, "simulated-placement");
+                it.remove();
+            }
+            if (remaining.size() == before) return false;
+        }
+        return true;
     }
 
     private static Scaffold planScaffold(MinecraftClient client, BlockPos top, Direction ascent, int rise,
@@ -384,7 +406,7 @@ final class StructureProject {
         var placements = new ArrayList<ProjectQueue.Work>();
         List<String> next = prerequisites;
         for (var pos : scaffold.keySet()) {
-            var pose = buildPose(client, new Cell(pos, SCAFFOLD, Blocks.AIR.getDefaultState()), finalLayout, built, cleared, placed);
+            var pose = buildPose(client, new Cell(pos, SCAFFOLD, Blocks.AIR.getDefaultState()), finalLayout, built, cleared, placed, false);
             if (pose == null) return null;
             int index = placements.size();
             String check = "check-access-" + index;
@@ -436,13 +458,13 @@ final class StructureProject {
 
     private static BuildPose buildPose(MinecraftClient client, Cell cell, Map<BlockPos, BlockState> desired,
                                        Map<BlockPos, BlockState> ready, Map<BlockPos, BlockState> cleared,
-                                       Map<BlockPos, String> placed) {
+                                       Map<BlockPos, String> placed, boolean avoidCorners) {
         for (Direction face : ProjectPlacement.faces(cell.desired)) {
             var support = cell.pos.offset(face.getOpposite());
             if (!loaded(client, support)) continue;
             var state = desired.containsKey(support) ? ready.get(support) : client.world.getBlockState(support);
             if (state == null || state.hasBlockEntity() || !state.isFullCube(client.world, support)) continue;
-            Predicate<BlockPos> visible = pos -> clearBuildFace(client, pos, cell.pos, support, face, desired);
+            Predicate<BlockPos> visible = pos -> clearBuildFace(client, pos, cell.pos, support, face, desired, avoidCorners);
             var stand = chooseStand(client, cell.pos, desired, face, visible);
             if (stand == null) {
                 stand = findStand(client, cell.pos, face, true, pos ->
@@ -453,7 +475,7 @@ final class StructureProject {
             current.putAll(ready);
             stand = findStand(client, cell.pos, face, true, pos ->
                     safeStand(client, pos, cleared) && safeStand(client, pos, desired)
-                            && clearBuildFace(client, pos, cell.pos, support, face, current));
+                            && clearBuildFace(client, pos, cell.pos, support, face, current, avoidCorners));
             // Later placements wait until a face that will be covered has been used.
             if (stand != null) return new BuildPose(stand, face, support, true);
             for (boolean exposed : new boolean[]{false, true}) {
@@ -462,7 +484,7 @@ final class StructureProject {
                 stand = findStand(client, cell.pos, face, true, pos -> {
                     if (!placed.containsKey(pos.down()) || !safeStand(client, pos, current)
                             || !safeStand(client, pos, visibleLayout)
-                            || !clearBuildFace(client, pos, cell.pos, support, face, visibleLayout)) return false;
+                            || !clearBuildFace(client, pos, cell.pos, support, face, visibleLayout, avoidCorners)) return false;
                     var access = builtAccess(client, pos, cell.pos, cleared, current, visibleLayout, placed);
                     if (access == null) return false;
                     accessRoutes.put(pos, access);
@@ -546,9 +568,16 @@ final class StructureProject {
 
     private static boolean clearBuildFace(MinecraftClient client, BlockPos stand, BlockPos target,
                                           BlockPos support, Direction face, Map<BlockPos, BlockState> desired) {
+        return clearBuildFace(client, stand, target, support, face, desired, false);
+    }
+
+    private static boolean clearBuildFace(MinecraftClient client, BlockPos stand, BlockPos target,
+                                          BlockPos support, Direction face, Map<BlockPos, BlockState> desired,
+                                          boolean avoidCorners) {
         var eye = Vec3d.ofBottomCenter(stand).add(0, 1.62, 0);
         var point = ProjectPlacement.facePoint(support, face);
         if (!hitsFace(client, eye, point, target, support, face, desired)) return false;
+        if (!avoidCorners) return true;
         // A ray that only slips past the exact corner of a block is too fragile in game.
         for (double dx : new double[]{-.08, .08}) for (double dz : new double[]{-.08, .08}) {
             if (!hitsFace(client, eye.add(dx, 0, dz), point, target, support, face, desired)) return false;

@@ -68,7 +68,7 @@ struct DashboardConfig {
     bool disable_rendering_on_start = true;
     std::string server_ip = "localhost";
     std::string console_master_host = "127.0.0.1";
-    int console_master_port = 8779;
+    int console_master_port = 8840;
     std::string offline_username_prefix = "Bot";
     std::string launch_command;
     std::string launch_working_directory;
@@ -149,7 +149,7 @@ struct AppState {
     char console_target[64] = "all";
     char console_filter[128]{};
     char master_host[128] = "127.0.0.1";
-    char master_port[16] = "8779";
+    char master_port[16] = "8840";
     bool console_errors_only = false;
     std::string launch_message;
     std::chrono::steady_clock::time_point last_refresh{};
@@ -589,7 +589,7 @@ static void sync_config_to_inputs(AppState& app) {
 
 static void sync_inputs_to_config(AppState& app) {
     app.config.console_master_host = trim(app.master_host);
-    app.config.console_master_port = parse_int(app.master_port, 8779, 1, 65535);
+    app.config.console_master_port = parse_int(app.master_port, 8840, 1, 65535);
     app.config.server_ip = trim(app.server_ip);
     app.config.server_port = parse_int(app.server_port, 25565, 1, 65535);
     app.config.launch_count = parse_int(app.launch_count, 1, 1, 64);
@@ -1084,9 +1084,13 @@ static std::string send_bot_command(const Bot& bot, const std::string& command, 
             }
         }
     }
-    HttpResult res = http_get(bot.host, bot.port,
-            command == "@events" ? "/events?tail" : "/command?cmd=" + url_encode(local_command)
-                    + (sequence ? "&session=" + command_session + "&sequence=" + std::to_string(sequence) : ""), 1200);
+    std::string path;
+    if (command == "@events") path = "/events?tail";
+    else if (command == "@projects") path = "/projects?summary";
+    else if (command == "@stock") path = "/projects?stock-summary";
+    else path = "/command?cmd=" + url_encode(local_command)
+            + (sequence ? "&session=" + command_session + "&sequence=" + std::to_string(sequence) : "");
+    HttpResult res = http_get(bot.host, bot.port, path, 1200);
     if (!res.ok) return "error: " + (res.body.empty() ? (res.error.empty() ? "command failed" : res.error) : trim(res.body));
     if (command == "status") return "mode=" + json_string_value(res.body, "formation", "legacy")
             + " | " + json_string_value(res.body, "movementState", "")
@@ -1227,8 +1231,21 @@ static bool start_managed_instance(AppState& app, LaunchedProcess& instance) {
     return false;
 }
 
+static bool launch_range_includes_master(AppState& app, int first, int count) {
+    const auto& host = app.config.console_master_host;
+    int port = app.config.console_master_port;
+    if ((!equal_ascii_ci(host, "localhost") && host != "127.0.0.1" && host != "::1")
+            || port < first || port >= first + count) return false;
+    app.launch_message = "Fleet ports include the master port " + std::to_string(port)
+            + ". Change Base port to keep them separate.";
+    append_log(app, app.launch_message);
+    ft::toast_error(app.launch_message.c_str());
+    return true;
+}
+
 static bool launch_slot(AppState& app, int slot) {
     int port = app.config.bot_port_base + slot;
+    if (launch_range_includes_master(app, port, 1)) return false;
     if (port > 65535) {
         app.launch_message = "Instance port exceeds 65535.";
         return false;
@@ -1284,6 +1301,7 @@ static bool launch_slot(AppState& app, int slot) {
 static int launch_instances(AppState& app) {
     sync_inputs_to_config(app);
     app.launch_message.clear();
+    if (launch_range_includes_master(app, app.config.bot_port_base, app.config.launch_count)) return 0;
     int count = 0;
     for (int slot = 0; slot < app.config.launch_count; ++slot) {
         if (launch_slot(app, slot)) ++count;
@@ -1436,7 +1454,7 @@ static void sync_scan_range_to_launch_range(AppState& app) {
 
 static void queue_master(AppState& app, const std::string& command, const std::string& label) {
     Bot master; master.name = "Master"; master.host = trim(app.master_host);
-    master.port = parse_int(app.master_port, 8779, 1, 65535);
+    master.port = parse_int(app.master_port, 8840, 1, 65535);
     queue_command(app, master, command, label);
 }
 
@@ -1959,19 +1977,25 @@ static void console_send(AppState& app, std::string input) {
         append_log(app, "deliver <item> <count> <player> | collect/keep/only/drop <item> <count> | gather <player> | spread");
         append_log(app, "friends add/remove <names> | saturn | lightning | scatter (uses Master below)");
         append_log(app, "mine iron both | #goto x y z | #follow player Name | #pause | #resume | #stop");
+        append_log(app, "projects | stock | workers");
+        return;
+    }
+    if (verb == "projects" || verb == "stock") {
+        queue_master(app, "@" + verb, verb);
         return;
     }
     if (verb == "saturn" || verb == "lightning" || verb == "scatter") {
-        Bot master; master.name = "Master"; master.host = trim(app.master_host); master.port = parse_int(app.master_port, 8779, 1, 65535);
+        Bot master; master.name = "Master"; master.host = trim(app.master_host); master.port = parse_int(app.master_port, 8840, 1, 65535);
         queue_command(app, master, "formation:" + verb, verb); return;
     }
-    if(verb=="mine"){
+    if (verb == "workers") command = "project:worker " + std::to_string(parse_int(app.master_port, 8840, 1, 65535));
+    else if(verb=="mine"){
         std::string resource,variant;stream>>resource>>variant;
         if(resource.empty()){append_log(app,"error: use mine <resource> [both|normal|deepslate]");return;}
         if(variant.empty())variant="both";
         if(resource.find(':')!=std::string::npos)resource="block:"+resource;
         else if(resource.find("_ore")!=std::string::npos)resource="block:minecraft:"+resource;
-        command="mining:"+resource+"|"+variant+"|"+std::to_string(parse_int(app.master_port,8779,1,65535));
+        command="mining:"+resource+"|"+variant+"|"+std::to_string(parse_int(app.master_port,8840,1,65535));
     }
     else if(baritoneShort&&verb!="stop")command="baritone:"+verb+" "+remainder();
     else if (verb == "status") command = "status";
@@ -2025,6 +2049,11 @@ static void render_console_tab(AppState& app) {
         if (ft::button("Resume")) console_send(app, "resume");
         if (ft::button("Repeat last") && !app.command_history.empty()) console_send(app, app.command_history.back());
         if (ft::button("Help")) console_send(app, "help");
+    });
+    ft::row(3, [&]() {
+        if (ft::button("Projects")) console_send(app, "projects");
+        if (ft::button("Chest stock")) console_send(app, "stock");
+        if (ft::button("Enable project workers")) console_send(app, "workers");
     });
     ft::row({2.0f, 1.0f, 1.0f, 0.6f}, [&]() {
         ft::input("Master host", app.master_host, sizeof(app.master_host));

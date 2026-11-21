@@ -509,6 +509,20 @@ requiring over 256 jobs. Use an already prepared site with room for the
 bots to walk to the stands. Vanilla chest jobs and explicit project jobs
 remain available through the local API.
 
+To gather and produce materials automatically, look at a dedicated single
+chest outside the work area and run
+`/bf project build example.nbt 100 64 100 supplied`. Place a reachable
+crafting table or furnace near the chest for materials that need one. Give
+workers suitable tools and unlock the crafting recipes. Workers gather,
+produce, and deposit the required blocks, then builders collect them from
+the chest. The console's **Projects** and **Chest stock** controls show job
+progress and the most recent stock observations.
+
+Automatic supply supports cobblestone, stone, stone bricks, diamond blocks,
+iron blocks, copper blocks, oak planks, and spruce planks. Each smelting
+job handles up to 24 input items, and the 256-job limit includes production
+jobs. Keep reachable raw materials outside the construction and chest area.
+
 For a `TRANSFER` job, set `block` to `minecraft:chest` and add a
 `direction` of `DEPOSIT`, `WITHDRAW` or `INSPECT` to the payload. Supply
 `item` as an item registry ID and `stock` as the desired count in the

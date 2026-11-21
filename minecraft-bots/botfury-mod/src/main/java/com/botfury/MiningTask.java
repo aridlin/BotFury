@@ -23,6 +23,7 @@ final class MiningTask {
     private static final ExecutorService IO=Executors.newFixedThreadPool(2,r->{var t=new Thread(r,"BotFury-mining");t.setDaemon(true);return t;});
     private static final HttpClient HTTP=HttpClient.newBuilder().executor(IO).connectTimeout(Duration.ofMillis(300)).build();
     private static Job job;
+    private static ProjectGather.Area excluded;
     private static Set<String> blocks=Set.of();
     private static String owner,world,leaseToken;
     private static int claimSerial;
@@ -59,22 +60,23 @@ final class MiningTask {
     }
     static void start(MinecraftClient client,Job next){
         LocalFormation.pauseMovement();BotInventory.hold();
-        startMining(client, next, false);
+        startMining(client, next, false, null);
     }
 
-    static void startProject(MinecraftClient client, Job next) {
+    static void startProject(MinecraftClient client, Job next, ProjectGather.Area exclude) {
         stop();
-        startMining(client, next, true);
+        startMining(client, next, true, exclude);
     }
 
-    private static void startMining(MinecraftClient client, Job next, boolean project) {
+    private static void startMining(MinecraftClient client, Job next, boolean project, ProjectGather.Area exclude) {
         if(client.player==null||client.world==null||LocalFormation.here()==null){fail("Not in game");return;}
         if(!BaritoneClient.available()){fail("Install Baritone for mining");return;}
         var ids=ResourceCatalog.blocks(next.resource,next.variant);
         for(String id:ids)if(!Registries.BLOCK.containsId(new Identifier(id))){fail("Unknown mining block: "+id);return;}
         for(String id:ids){var state=Registries.BLOCK.get(new Identifier(id)).getDefaultState();if(state.isAir()||state.getHardness(client.world,client.player.getBlockPos())<0){fail("Choose a breakable mining block");return;}}
-        try{settings=new BaritoneSettings();}catch(ReflectiveOperationException|LinkageError e){fail("Could not configure mining approach");return;}
+        try{settings=new BaritoneSettings(exclude == null);}catch(ReflectiveOperationException|LinkageError e){fail("Could not configure mining approach");return;}
         projectMining=project;
+        excluded=exclude;
         job=next;blocks=Set.copyOf(ids);generation++;owner=UUID.randomUUID()+"-"+client.player.getGameProfile().getName();
         var here=LocalFormation.here();world=here.server()+"|"+here.dimension();
         paused=false;
@@ -131,6 +133,7 @@ final class MiningTask {
         var candidates=new ArrayList<BlockPos>();boolean needsTool=false;
         for(int x=-12;x<=12;x++)for(int z=-12;z<=12;z++)for(int y=-10;y<=10;y++){
             BlockPos p=position.add(x,y,z);
+            if (excluded != null && excluded.contains(p)) continue;
             if(rejected.getOrDefault(p,0)>age||!client.world.isChunkLoaded(p.getX()>>4,p.getZ()>>4)||!matches(client,p))continue;
             if(!hasTool(client,p)){needsTool=true;continue;}candidates.add(p);
         }

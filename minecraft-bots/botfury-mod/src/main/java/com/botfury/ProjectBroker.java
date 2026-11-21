@@ -26,8 +26,11 @@ final class ProjectBroker {
         return queue;
     }
 
-    static void submitStructure(String id, LocalFormation.Peer here, StructureProject.Plan plan) throws IOException {
-        queue().submit(id, here.server() + "|" + here.dimension(), plan.jobs());
+    static void submitStructure(String id, LocalFormation.Peer here, StructureProject.Plan plan,
+                                StructureSupply.Supplied supply) throws IOException {
+        String world = here.server() + "|" + here.dimension();
+        if (supply == null) queue().submit(id, world, plan.jobs());
+        else queue().submitSupplied(id, world, supply.jobs(), supply.chest());
     }
 
     static void submitOutput(String id, LocalFormation.Peer here, OutputOrder.Plan plan) throws IOException {
@@ -48,13 +51,24 @@ final class ProjectBroker {
         }
         try {
             if ("GET".equals(exchange.getRequestMethod())) {
-                if ("stock".equals(exchange.getRequestURI().getQuery())) {
+                String query = exchange.getRequestURI().getQuery();
+                if ("summary".equals(query)) {
+                    text(exchange, summarize(queue().snapshot(System.currentTimeMillis())));
+                    return;
+                }
+                if ("stock".equals(query) || "stock-summary".equals(query)) {
                     var here = LocalFormation.here();
                     if (here == null) {
                         reply(exchange, 409, "Join the project world first");
                         return;
                     }
-                    reply(exchange, 200, queue().chestStock(here.server() + "|" + here.dimension()));
+                    var stock = queue().chestStock(here.server() + "|" + here.dimension());
+                    if ("stock-summary".equals(query)) {
+                        var lines = new java.util.ArrayList<String>();
+                        stock.forEach((chest, observation) -> lines.add(chest + " " + observation.report().items()
+                                + " (observed " + java.time.Instant.ofEpochMilli(observation.observedAt()) + ")"));
+                        text(exchange, lines.isEmpty() ? "No observed chest stock" : String.join("\n", lines));
+                    } else reply(exchange, 200, stock);
                 } else reply(exchange, 200, queue().snapshot(System.currentTimeMillis()));
                 return;
             }
@@ -121,9 +135,33 @@ final class ProjectBroker {
         }
     }
 
+    private static String summarize(List<ProjectQueue.Project> projects) {
+        var lines = new java.util.ArrayList<String>();
+        for (var project : projects) {
+            long done = project.jobs().stream().filter(job -> job.state() == ProjectQueue.State.DONE).count();
+            var repeat = project.repeat();
+            String label = project.id() + " " + done + "/" + project.jobs().size() + " done";
+            if (repeat != null) label += ", " + repeat.completed() + " batches" + (repeat.cancelled() ? " (cancelled)" : "");
+            lines.add(label);
+            for (var job : project.jobs()) {
+                if (job.state() == ProjectQueue.State.LEASED) lines.add("  " + job.worker() + ": " + job.work().id());
+                if (job.state() == ProjectQueue.State.FAILED) lines.add("  Failed " + job.work().id() + ": " + job.evidence());
+            }
+        }
+        return lines.isEmpty() ? "No queued projects" : String.join("\n", lines);
+    }
+
+    private static void text(HttpExchange exchange, String body) throws IOException {
+        send(exchange, 200, "text/plain; charset=utf-8", body);
+    }
+
     private static void reply(HttpExchange exchange, int status, Object body) throws IOException {
-        byte[] bytes = JSON.toJson(body).getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().set("Content-Type", "application/json");
+        send(exchange, status, "application/json", JSON.toJson(body));
+    }
+
+    private static void send(HttpExchange exchange, int status, String type, String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", type);
         exchange.sendResponseHeaders(status, bytes.length);
         try (var stream = exchange.getResponseBody()) { stream.write(bytes); }
     }

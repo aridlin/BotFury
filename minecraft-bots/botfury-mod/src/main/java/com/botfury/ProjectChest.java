@@ -20,7 +20,7 @@ import java.util.TreeMap;
 
 /** Reconciles a single chest to a stock target, so repeating a job does not replay a delta. */
 final class ProjectChest {
-    enum Direction { DEPOSIT, WITHDRAW, INSPECT }
+    enum Direction { DEPOSIT, WITHDRAW, TAKE, INSPECT }
     record Spec(ProjectBlock location, Direction direction, Identifier item, int stock) {}
     record Result(boolean success, String detail, Map<String, Integer> stock) {}
     private record Payload(Direction direction, String item, Integer stock) {}
@@ -92,10 +92,25 @@ final class ProjectChest {
         if (spec.direction == Direction.INSPECT) return new Result(true, "Observed chest stock", stock);
         int held = stock.getOrDefault(spec.item.toString(), 0);
         boolean deposit = spec.direction == Direction.DEPOSIT;
-        int remaining = deposit ? spec.stock - held : held - spec.stock;
-        if (remaining <= 0) return new Result(true, "Observed " + held + " " + spec.item + " in chest", stock);
-
         int containerSize = screen.getRows() * 9;
+        int carried = 0;
+        if (spec.direction == Direction.TAKE) {
+            for (int i = containerSize; i < screen.slots.size(); i++) {
+                var stack = screen.getSlot(i).getStack();
+                if (!stack.isEmpty() && Registries.ITEM.getId(stack.getItem()).equals(spec.item)) carried += stack.getCount();
+            }
+        }
+        int remaining = switch (spec.direction) {
+            case DEPOSIT -> spec.stock - held;
+            case TAKE -> spec.stock - carried;
+            default -> held - spec.stock;
+        };
+        if (remaining <= 0) {
+            String observation = spec.direction == Direction.TAKE
+                    ? "Observed " + carried + " " + spec.item + " in worker inventory"
+                    : "Observed " + held + " " + spec.item + " in chest";
+            return new Result(true, observation, stock);
+        }
         int fromStart = deposit ? containerSize : 0;
         int fromEnd = deposit ? screen.slots.size() : containerSize;
         for (int from = fromStart; from < fromEnd; from++) {

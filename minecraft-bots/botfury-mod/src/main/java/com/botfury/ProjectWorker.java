@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import net.minecraft.client.MinecraftClient;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.registry.Registries;
+import net.minecraft.util.Identifier;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
@@ -23,7 +24,7 @@ import java.util.concurrent.TimeUnit;
 final class ProjectWorker {
     private static final Gson JSON = new Gson();
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(750)).build();
-    private static final Set<ProjectQueue.Kind> KINDS = Set.of(ProjectQueue.Kind.EXCAVATE, ProjectQueue.Kind.VERIFY, ProjectQueue.Kind.TRANSFER, ProjectQueue.Kind.BUILD, ProjectQueue.Kind.CRAFT, ProjectQueue.Kind.SMELT, ProjectQueue.Kind.GATHER);
+    private static final Set<ProjectQueue.Kind> KINDS = Set.of(ProjectQueue.Kind.EXCAVATE, ProjectQueue.Kind.VERIFY, ProjectQueue.Kind.INSPECT, ProjectQueue.Kind.TRANSFER, ProjectQueue.Kind.BUILD, ProjectQueue.Kind.CRAFT, ProjectQueue.Kind.SMELT, ProjectQueue.Kind.GATHER);
     private static WorkerEnrollment enrollment;
     private static boolean enrollmentLoaded;
     private static int port;
@@ -31,6 +32,7 @@ final class ProjectWorker {
     private static boolean pending;
     private static ProjectQueue.Assignment assignment;
     private static ProjectBlock block;
+    private static ProjectInspection inspection;
     private static ProjectChest chest;
     private static ProjectProduction production;
     private static ProjectGather gather;
@@ -141,6 +143,7 @@ final class ProjectWorker {
         halt(client);
         assignment = null;
         block = null;
+        inspection = null;
         chest = null;
         production = null;
         gather = null;
@@ -265,7 +268,28 @@ final class ProjectWorker {
             return;
         }
         if (approach != null) halt(client);
-        if (!targetLoaded) return;
+        if (!targetLoaded) {
+            stableSince = 0;
+            return;
+        }
+        if (inspection != null) {
+            for (var pos : inspection.expected().keySet()) {
+                if (!client.world.isInBuildLimit(pos) || !client.world.getWorldBorder().contains(pos)) {
+                    finish(client, false, "Inspection cell outside world bounds at " + pos.toShortString());
+                    return;
+                }
+            }
+            String mismatch = inspection.mismatch(client.world);
+            if (mismatch != null) {
+                finish(client, false, mismatch);
+            } else {
+                if (stableSince == 0) stableSince = now;
+                if (now - stableSince >= seconds(1)) {
+                    finish(client, true, "Verified " + inspection.expected().size() + " block states");
+                }
+            }
+            return;
+        }
         if (chest != null) {
             var result = chest.tick(client, now);
             if (result != null) {
@@ -433,6 +457,10 @@ final class ProjectWorker {
                         var spec = ProjectProduction.parse(work.payload(), work.kind());
                         block = spec.station();
                         production = new ProjectProduction(spec);
+                    } else if (work.kind() == ProjectQueue.Kind.INSPECT) {
+                        inspection = ProjectInspection.parse(work.payload());
+                        BlockPos target = inspection.expected().keySet().iterator().next();
+                        block = new ProjectBlock(target, inspection.stand(), Identifier.of("minecraft", "air"));
                     } else block = ProjectBlock.parse(work.payload());
                     status = assignment.project() + "/" + assignment.job().work().id();
                 } else {

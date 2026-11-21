@@ -9,7 +9,6 @@ import java.util.*;
 /** Generates material jobs before the build jobs that consume them. */
 final class StructureSupply {
     private static final Gson JSON = new Gson();
-    private static final int MAX_JOBS = 256;
     record Supplied(List<ProjectQueue.Work> jobs, String chest) {}
 
     private StructureSupply() {}
@@ -42,8 +41,8 @@ final class StructureSupply {
             materialPrefixes.put(item, prefix);
         }
 
-        int available = MAX_JOBS - jobs.size() - plan.jobs().size();
-        if (available < materialPrefixes.size()) throw new IllegalArgumentException("Supplied build needs more than 256 jobs");
+        int available = ProjectQueue.MAX_JOBS - jobs.size() - plan.jobs().size();
+        if (available < materialPrefixes.size()) throw new IllegalArgumentException("Supplied build needs more than " + ProjectQueue.MAX_JOBS + " jobs");
         int workers = (int) BotTracker.targets().stream()
                 .filter(bot -> bot.fresh() && bot.connected() && bot.alive()).count();
         var pickups = new HashMap<Identifier, Deque<String>>();

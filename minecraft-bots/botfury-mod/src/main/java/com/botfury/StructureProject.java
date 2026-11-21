@@ -10,6 +10,7 @@ import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.BlockView;
@@ -20,10 +21,11 @@ import java.util.*;
 import java.util.function.Predicate;
 import java.util.zip.GZIPInputStream;
 
-/** Compiles a small structure into leased excavation, placement and verification jobs. */
+/** Compiles a structure into leased excavation, placement and verification jobs. */
 final class StructureProject {
     private static final Gson JSON = new Gson();
-    private static final int LIMIT = 256;
+    private static final int CELL_LIMIT = 32_768;
+    private static final int INDIVIDUAL_INSPECTION_LIMIT = 128;
     private static final Identifier AIR = Identifier.of("minecraft", "air");
 
     record Plan(List<ProjectQueue.Work> jobs, Map<Identifier, Integer> materials, ProjectGather.Area area) {}
@@ -105,9 +107,9 @@ final class StructureProject {
         NbtList size = structure.getList("size", NbtElement.INT_TYPE);
         NbtList palette = structure.getList("palette", NbtElement.COMPOUND_TYPE);
         NbtList blocks = structure.getList("blocks", NbtElement.COMPOUND_TYPE);
-        if (size.size() != 3 || palette.isEmpty() || blocks.isEmpty() || blocks.size() > LIMIT
+        if (size.size() != 3 || palette.isEmpty() || blocks.isEmpty() || blocks.size() > CELL_LIMIT
                 || !structure.getList("entities", NbtElement.COMPOUND_TYPE).isEmpty()) {
-            throw new IllegalArgumentException("Expected a single-palette structure with at most 256 blocks and no entities");
+            throw new IllegalArgumentException("Expected a single-palette structure with at most " + CELL_LIMIT + " blocks and no entities");
         }
         Map<BlockPos, BlockState> result = new HashMap<>();
         for (int i = 0; i < blocks.size(); i++) {
@@ -139,7 +141,7 @@ final class StructureProject {
 
     private static Map<BlockPos, BlockState> schematicCells(NbtCompound schematic, BlockPos origin) {
         var result = new HashMap<BlockPos, BlockState>();
-        SpongeSchematic.blocks(schematic, LIMIT).forEach((pos, text) -> {
+        SpongeSchematic.blocks(schematic, CELL_LIMIT).forEach((pos, text) -> {
             var properties = new HashMap<String, String>();
             int open = text.indexOf('[');
             String name = open < 0 ? text : text.substring(0, open);
@@ -203,6 +205,16 @@ final class StructureProject {
             }
             pending.put(i, cell);
         }
+        var inspectionChunks = new LinkedHashMap<Long, List<Cell>>();
+        if (cells.size() > INDIVIDUAL_INSPECTION_LIMIT) {
+            for (Cell cell : cells) inspectionChunks.computeIfAbsent(ChunkPos.toLong(cell.pos),
+                    ignored -> new ArrayList<>()).add(cell);
+        }
+        int verificationJobs = inspectionChunks.isEmpty() ? cells.size() : inspectionChunks.values().stream()
+                .mapToInt(chunk -> (chunk.size() + ProjectInspection.MAX_CELLS - 1) / ProjectInspection.MAX_CELLS).sum();
+        boolean groupedMutations = !inspectionChunks.isEmpty() && (!obstructing.isEmpty() || !pending.isEmpty());
+        if (groupedMutations) verificationJobs++;
+        requireJobBudget(obstructing.size() + pending.size() + verificationJobs);
         var cleared = new HashMap<BlockPos, BlockState>();
         List<String> excavationFrontier = List.of();
         while (!obstructing.isEmpty()) {
@@ -291,7 +303,7 @@ final class StructureProject {
                 }
                 var cell = pending.values().iterator().next();
                 int cleanupJobs = scaffolds.stream().mapToInt(entry -> entry.blocks.size()).sum() + cleanup.size();
-                int room = LIMIT - jobs.size() - cleanupJobs - cells.size() - pending.size();
+                int room = ProjectQueue.MAX_JOBS - jobs.size() - cleanupJobs - pending.size() - verificationJobs;
                 var scaffold = scaffold(client, cell, pending.values(), layout, cleared, ready, placed,
                         List.copyOf(changes), scaffolds.size(), room);
                 if (scaffold != null) {
@@ -316,17 +328,38 @@ final class StructureProject {
         jobs.addAll(cleanup);
         cleanup.forEach(job -> changes.add(job.id()));
         List<String> prerequisites = List.copyOf(changes);
+        if (groupedMutations) {
+            jobs.add(new ProjectQueue.Work("before-inspection", ProjectQueue.Kind.BARRIER, "", prerequisites, Set.of()));
+            prerequisites = List.of("before-inspection");
+        }
         var verificationLayout = new HashMap<>(desired);
         for (var scaffold : scaffolds) verificationLayout.putAll(scaffold.layout);
         var inspections = new ArrayList<String>();
-        for (int i = 0; i < cells.size(); i++) {
-            var cell = cells.get(i);
-            var stand = verificationStand(client, cell.pos, verificationLayout);
-            if (stand == null) throw new IllegalArgumentException("No safe verification position near " + cell.pos.toShortString());
-            String id = "verify-" + i;
-            jobs.add(work(id, ProjectQueue.Kind.VERIFY, cell.pos, cell.desired, stand, Direction.UP, prerequisites));
-            inspections.add(id);
-            area = StructureSupply.union(area, new ProjectBlock(cell.pos, stand, AIR));
+        if (!inspectionChunks.isEmpty()) {
+            for (var chunk : inspectionChunks.values()) {
+                var stand = inspectionStand(client, chunk, verificationLayout);
+                if (stand == null) throw new IllegalArgumentException("No safe inspection position in or near the chunk at " + chunk.get(0).pos.toShortString());
+                area = StructureSupply.include(StructureSupply.include(area, stand), stand.down());
+                for (int i = 0; i < chunk.size(); i += ProjectInspection.MAX_CELLS) {
+                    var checks = chunk.subList(i, Math.min(i + ProjectInspection.MAX_CELLS, chunk.size())).stream()
+                            .map(cell -> ProjectInspection.Check.of(cell.pos, cell.desired)).toList();
+                    String id = "inspect-" + inspections.size();
+                    String payload = ProjectInspection.payload(stand, checks);
+                    var work = new ProjectQueue.Work(id, ProjectQueue.Kind.INSPECT, payload, prerequisites, Set.of());
+                    jobs.add(ProjectInspection.parse(payload).reserve(work));
+                    inspections.add(id);
+                }
+            }
+        } else {
+            for (int i = 0; i < cells.size(); i++) {
+                var cell = cells.get(i);
+                var stand = verificationStand(client, cell.pos, verificationLayout);
+                if (stand == null) throw new IllegalArgumentException("No safe verification position near " + cell.pos.toShortString());
+                String id = "verify-" + i;
+                jobs.add(work(id, ProjectQueue.Kind.VERIFY, cell.pos, cell.desired, stand, Direction.UP, prerequisites));
+                inspections.add(id);
+                area = StructureSupply.union(area, new ProjectBlock(cell.pos, stand, AIR));
+            }
         }
         var settledWork = new ArrayList<>(changes);
         settledWork.addAll(inspections);
@@ -334,8 +367,14 @@ final class StructureProject {
         for (int i = scaffolds.size() - 1; i >= 0; i--) {
             previousCleanup = appendScaffoldCleanup(jobs, scaffolds.get(i), settledWork, previousCleanup);
         }
-        if (jobs.size() > LIMIT) throw new IllegalArgumentException("Structure needs more than 256 jobs");
+        requireJobBudget(jobs.size());
         return new Plan(List.copyOf(jobs), Map.copyOf(materials), area);
+    }
+
+    private static void requireJobBudget(int jobs) {
+        if (jobs > ProjectQueue.MAX_JOBS) {
+            throw new IllegalArgumentException("Structure needs more than " + ProjectQueue.MAX_JOBS + " jobs");
+        }
     }
 
     private static Scaffold scaffold(MinecraftClient client, Cell first, Collection<Cell> pending,
@@ -654,6 +693,20 @@ final class StructureProject {
         return findStand(client, target, face, face != null, pos ->
                 !cells.containsKey(pos) && !cells.containsKey(pos.up()) && !cells.containsKey(pos.down())
                         && safeStand(client, pos, Map.of()) && suitable.test(pos));
+    }
+
+    private static BlockPos inspectionStand(MinecraftClient client, List<Cell> chunk, Map<BlockPos, BlockState> desired) {
+        for (Cell cell : chunk) {
+            var stand = verificationStand(client, cell.pos, desired);
+            if (stand != null) return stand;
+        }
+        // A chunk of empty space high above the ground can be inspected from its surface.
+        var anchor = chunk.get(0).pos;
+        for (int y = anchor.getY() - 4; y > client.world.getBottomY(); y--) {
+            var stand = verificationStand(client, anchor.withY(y), desired);
+            if (stand != null) return stand;
+        }
+        return null;
     }
 
     private static BlockPos verificationStand(MinecraftClient client, BlockPos target, Map<BlockPos, BlockState> desired) {

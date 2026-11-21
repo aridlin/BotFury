@@ -17,6 +17,38 @@ class ProjectQueueTest {
         return new ProjectQueue.Work(id, kind, "", needs, Set.of(locks));
     }
 
+    @Test void largeInspectionWaitsForAllPlacementsAcrossReopen() throws Exception {
+        var journal = directory.resolve("large-board.json");
+        var placements = java.util.stream.IntStream.range(0, 300)
+                .mapToObj(i -> job("place-" + i, BUILD, List.of())).toList();
+        var jobs = new java.util.ArrayList<>(placements);
+        jobs.add(job("inspect", INSPECT, placements.stream().map(ProjectQueue.Work::id).toList()));
+        var board = new ProjectQueue(journal);
+        board.submit("large", WORLD, jobs);
+        var lease = board.claim(WORLD, "Builder", Set.of(BUILD), 1);
+        board = new ProjectQueue(journal);
+        assertEquals(lease, board.claim(WORLD, "Builder", Set.of(BUILD), 2));
+        assertNull(board.claim(WORLD, "Inspector", Set.of(INSPECT), 2));
+        assertEquals(301, board.snapshot(2).get(0).jobs().size());
+    }
+
+    @Test void coordinatorCompletesBarrierAtomicallyWithLastPrerequisite() throws Exception {
+        var journal = directory.resolve("barrier.json");
+        var board = new ProjectQueue(journal);
+        board.submit("barrier", WORLD, List.of(
+                job("build", BUILD, List.of()),
+                job("before-inspection", BARRIER, List.of("build")),
+                job("inspect", INSPECT, List.of("before-inspection"))));
+        assertNull(board.claim(WORLD, "Verifier", Set.of(BARRIER, INSPECT), 1));
+        var build = board.claim(WORLD, "Builder", Set.of(BUILD), 2).job();
+        assertTrue(board.finish("barrier", "build", build.lease(), true, "Observed expected block", 3));
+        board = new ProjectQueue(journal);
+        assertEquals("inspect", board.claim(WORLD, "Verifier", Set.of(BARRIER, INSPECT), 4).job().work().id());
+        var gate = board.snapshot(4).get(0).jobs().get(1);
+        assertEquals(ProjectQueue.State.DONE, gate.state());
+        assertNull(gate.worker());
+    }
+
     @Test void orderedTemporaryAccessCleanupWaitsForAllChecksEvenWhenOneFails() throws Exception {
         var journal = directory.resolve("board.json");
         var board = new ProjectQueue(journal);

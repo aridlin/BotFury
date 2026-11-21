@@ -116,6 +116,9 @@ final class ProjectBroker {
                             ProjectGather.parse(item.payload());
                             return item;
                         }
+                        if (item.kind() == ProjectQueue.Kind.INSPECT) {
+                            return ProjectInspection.parse(item.payload()).reserve(item);
+                        }
                         if (item.kind() == ProjectQueue.Kind.TRANSFER) {
                             return ProjectChest.parse(item.payload()).reserve(item);
                         }

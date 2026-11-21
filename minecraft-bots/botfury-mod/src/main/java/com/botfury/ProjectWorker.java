@@ -264,6 +264,7 @@ final class ProjectWorker {
             if (error != null || reply.statusCode() >= 500) return;
             if (reply.statusCode() == 409 || action.equals("finish") && reply.statusCode() == 200) {
                 reset(client);
+                status = "Waiting for project jobs";
                 nextRequest = System.nanoTime() + seconds(1);
                 return;
             }

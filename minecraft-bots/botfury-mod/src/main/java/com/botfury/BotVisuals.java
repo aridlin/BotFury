@@ -16,6 +16,10 @@ public final class BotVisuals {
                 && BotTracker.isTrackedPlayer(player.getGameProfile().getName());
     }
 
+    public static boolean hideVanillaLabel(Entity entity) {
+        return BotUiConfig.esp && isBot(entity);
+    }
+
     public static VertexConsumer buffer(VertexConsumerProvider provider, RenderLayer layer) {
         if (layer.getVertexFormat() == VertexFormats.POSITION_COLOR_TEXTURE_OVERLAY_LIGHT_NORMAL
                 && layer instanceof RenderLayer.MultiPhase layered) {

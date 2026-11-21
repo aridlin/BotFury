@@ -518,6 +518,11 @@ produce, and deposit the required blocks, then builders collect them from
 the chest. The console's **Projects** and **Chest stock** controls show job
 progress and the most recent stock observations.
 
+If a supplied project's next step needs materials from an offline worker,
+other workers can reacquire the materials after a 60-second grace period.
+Each material chain can be reacquired twice. Completed placements and
+unrelated material chains keep their progress.
+
 Automatic supply supports cobblestone, stone, stone bricks, diamond blocks,
 iron blocks, copper blocks, oak planks, and spruce planks. Each smelting
 job handles up to 24 input items, and the 256-job limit includes production

@@ -128,6 +128,32 @@ class ProjectQueueTest {
         assertEquals("other", recovered.claim(WORLD, "Other", Set.of(TRANSFER), 5).project());
     }
 
+    @Test void suppliedProjectReassignsAStalledProductionChainAfterCoordinatorRestart() throws Exception {
+        Path journal = directory.resolve("board.json");
+        var board = new ProjectQueue(journal);
+        var raw = job("raw", GATHER, List.of());
+        var fuel = new ProjectQueue.Work("fuel", GATHER, "", List.of("raw"), Set.of(), "raw");
+        var smelt = new ProjectQueue.Work("smelt", SMELT, "", List.of("fuel"), Set.of(), "fuel");
+        board.submitSupplied("house", WORLD, List.of(raw, fuel, smelt), "block:5,64,0");
+        var original = board.claim(WORLD, "Original", Set.of(GATHER), 0).job();
+        assertTrue(board.finish("house", "raw", original.lease(), true, "Observed ore", 1));
+        var coal = board.claim(WORLD, "Original", Set.of(GATHER), 2).job();
+        assertTrue(board.finish("house", "fuel", coal.lease(), true, "Observed coal", 3));
+        var abandoned = board.claim(WORLD, "Original", Set.of(SMELT), 4).job();
+
+        var recovered = new ProjectQueue(journal);
+        assertNull(recovered.claim(WORLD, "Replacement", Set.of(GATHER, SMELT), 20_000));
+        assertNull(recovered.claim(WORLD, "Replacement", Set.of(GATHER, SMELT), 79_999));
+        var reassigned = recovered.claim(WORLD, "Replacement", Set.of(GATHER, SMELT), 80_000).job();
+        assertEquals("raw", reassigned.work().id());
+        assertFalse(recovered.finish("house", "smelt", abandoned.lease(), true, "Late report", 80_001));
+        assertTrue(recovered.finish("house", "raw", reassigned.lease(), true, "Observed replacement ore", 80_002));
+        var newFuel = recovered.claim(WORLD, "Replacement", Set.of(GATHER), 80_003).job();
+        assertTrue(recovered.finish("house", "fuel", newFuel.lease(), true, "Observed replacement coal", 80_004));
+        assertEquals("smelt", recovered.claim(WORLD, "Replacement", Set.of(SMELT), 80_005).job().work().id());
+        assertEquals(java.util.Map.of("raw", 1), new ProjectQueue(journal).snapshot(80_006).get(0).supplyRecoveries());
+    }
+
     @Test void outputCyclesAddToObservedStockAndRespectCancellationAfterRestart() throws Exception {
         Path journal = directory.resolve("board.json");
         var board = new ProjectQueue(journal);

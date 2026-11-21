@@ -26,6 +26,10 @@ final class ProjectBroker {
         return queue;
     }
 
+    static void submitStructure(String id, LocalFormation.Peer here, StructureProject.Plan plan) throws IOException {
+        queue().submit(id, here.server() + "|" + here.dimension(), plan.jobs());
+    }
+
     static void handle(HttpExchange exchange) throws IOException {
         String host = exchange.getRequestHeaders().getFirst("Host");
         if (!exchange.getRemoteAddress().getAddress().isLoopbackAddress()

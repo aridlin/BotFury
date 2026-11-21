@@ -51,7 +51,19 @@ final class FormationClient {
                 inventory.then(ClientCommandManager.literal(action).then(itemArgument));
             }
             root.then(inventory);
-            root.then(ClientCommandManager.literal("project")
+            var projectCoordinates = ClientCommandManager.argument("z", IntegerArgumentType.integer())
+                    .executes(context -> StructureProject.submit(context.getSource().getClient(),
+                            StringArgumentType.getString(context, "file"),
+                            new net.minecraft.util.math.BlockPos(
+                                    IntegerArgumentType.getInteger(context, "x"),
+                                    IntegerArgumentType.getInteger(context, "y"),
+                                    IntegerArgumentType.getInteger(context, "z"))));
+            var projectBuild = ClientCommandManager.literal("build")
+                    .then(ClientCommandManager.argument("file", StringArgumentType.string())
+                            .then(ClientCommandManager.argument("x", IntegerArgumentType.integer())
+                                    .then(ClientCommandManager.argument("y", IntegerArgumentType.integer())
+                                            .then(projectCoordinates))));
+            root.then(ClientCommandManager.literal("project").then(projectBuild)
                     .then(ClientCommandManager.literal("workers").executes(context -> {
                         int port = BotFuryMod.controlPort();
                         if (port < 1024 || Boolean.getBoolean("botfury.managedHttp")) return 0;

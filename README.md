@@ -519,3 +519,19 @@ lock on the chest and only operate on single chests. The controller's
 `GET /projects?stock` shows last observed counts and timestamps, including
 observed partial transfers. Counts describe the chest when the bot checked
 it and can change when players or hoppers use it.
+
+
+Production jobs use ordinary crafting tables and furnaces. A `CRAFT` or
+`SMELT` payload uses the same target and stand coordinates as other jobs,
+with `block` set to the workstation, `recipe` set to its server recipe ID,
+and `count` set to the minimum output in the worker's inventory. Smelting
+also takes `input` and `fuel` item IDs. A crafting recipe must be unlocked
+on the bot. Use project workstations dedicated to the fleet.
+
+Set a job's optional `sameWorkerAs` to one of its direct prerequisites when
+the same bot must carry materials into the next step. For example, link a
+chest withdrawal to smelting, crafting and a deposit. Workstations are
+reserved while in use. A pinned continuation waits for the original bot
+if it goes offline. Its inventory does not automatically move to another
+bot. Structure builds still need an explicit production plan or stocked
+workers.

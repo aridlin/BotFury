@@ -228,6 +228,11 @@ final class ProjectWorker {
         Vec3d feet = Vec3d.ofBottomCenter(block.stand());
         var work = assignment.job().work();
         var kind = work.kind();
+        if ((kind == ProjectQueue.Kind.EXCAVATE || kind == ProjectQueue.Kind.BUILD || kind == ProjectQueue.Kind.FILL_BUCKETS)
+                && BuildProtection.blocked(assignment.world(), target, assignment.project())) {
+            finish(client, false, "Block is in an exclusion zone at " + target.toShortString());
+            return;
+        }
         boolean targetLoaded = client.world.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4);
         boolean inspectNearby = kind == ProjectQueue.Kind.VERIFY && targetLoaded
                 && player.getPos().squaredDistanceTo(Vec3d.ofBottomCenter(target)) <= 16;
@@ -338,7 +343,7 @@ final class ProjectWorker {
         if (kind == ProjectQueue.Kind.BUILD) {
             if (centerForPlacement(client, feet)) return;
             if (now >= nextPlacement) {
-                var failure = ProjectPlacement.attempt(client, block);
+                var failure = BuildProtection.projectAction(assignment.project(), () -> ProjectPlacement.attempt(client, block));
                 nextPlacement = now + seconds(1);
                 if (failure != null) finish(client, false, failure);
             }
@@ -370,7 +375,8 @@ final class ProjectWorker {
             player.getInventory().selectedSlot = slot;
         }
         player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, Vec3d.ofCenter(target));
-        if (client.interactionManager.updateBlockBreakingProgress(target, ray.getSide())) player.swingHand(Hand.MAIN_HAND);
+        if (BuildProtection.projectAction(assignment.project(),
+                () -> client.interactionManager.updateBlockBreakingProgress(target, ray.getSide()))) player.swingHand(Hand.MAIN_HAND);
         breaking = true;
     }
 

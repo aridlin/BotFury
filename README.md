@@ -518,6 +518,16 @@ For `.schem` files, the coordinates specify the minimum corner. The planner
 uses the block volume, including air, and leaves biomes untouched. Its
 coordinates take precedence over the stored paste offset.
 
+Schematic projects reserve their footprint in the current dimension. The
+exclusion stays after the build, and its own scheduled placements and
+excavation are allowed during the project. Fleet clients share the zone
+file beside the advanced-modules settings file.
+
+Use `/bf zone add storage 100 64 100 110 70 110` to protect an inclusive
+cuboid from automated block changes and mining. Workers can walk through
+it. Use `/bf zone list` for the current dimension and `/bf zone remove storage`
+to remove a named exclusion from the controller.
+
 The vanilla importer uses a single palette. Both formats accept explicit
 air, full single-state blocks, and full blocks with an axis, such as logs.
 They also accept dry ladders, floor torches, top and bottom slabs, and

@@ -31,7 +31,7 @@ final class StructureProject {
     private static final int INDIVIDUAL_INSPECTION_LIMIT = 128;
     private static final Identifier AIR = Identifier.of("minecraft", "air");
 
-    record Plan(List<ProjectQueue.Work> jobs, Map<Identifier, Integer> materials, ProjectGather.Area area) {}
+    record Plan(List<ProjectQueue.Work> jobs, Map<Identifier, Integer> materials, ProjectGather.Area area, ProjectGather.Area footprint) {}
     private record Cell(BlockPos pos, BlockState desired, BlockState observed) {}
     private record BuildPose(BlockPos stand, Direction face, BlockPos support, boolean exposedBeforeBuild,
                              BuildAccess access) {
@@ -95,6 +95,9 @@ final class StructureProject {
             var pos = entry.getKey();
             if (!loaded(client, pos)) throw new IllegalArgumentException("Load the entire build site first");
             var state = client.world.getBlockState(pos);
+            if (!sameState(entry.getValue(), state) && BuildProtection.blocked(pos)) {
+                throw new IllegalArgumentException("Schematic overlaps an exclusion zone at " + pos.toShortString());
+            }
             var partner = ProjectPlacement.chestPartner(pos, entry.getValue());
             boolean reusable = partner != null && state.equals(ProjectPlacement.singleChest(entry.getValue()));
             boolean sameWater = ProjectWater.water(entry.getValue()) && ProjectWater.water(state)
@@ -207,9 +210,11 @@ final class StructureProject {
         var layout = new HashMap<>(desired);
         var origin = cells.get(0).pos;
         var area = new ProjectGather.Area(origin, origin);
+        var footprint = area;
         for (int i = 0; i < cells.size(); i++) {
             var cell = cells.get(i);
             area = StructureSupply.include(StructureSupply.include(area, cell.pos), cell.pos.down());
+            footprint = StructureSupply.include(footprint, cell.pos);
             var partner = ProjectPlacement.chestPartner(cell.pos, cell.desired);
             if (partner != null) {
                 var other = desired.get(partner);
@@ -447,7 +452,7 @@ final class StructureProject {
             previousCleanup = appendScaffoldCleanup(jobs, scaffolds.get(i), settledWork, previousCleanup);
         }
         requireJobBudget(jobs.size());
-        return new Plan(List.copyOf(jobs), Map.copyOf(materials), area);
+        return new Plan(List.copyOf(jobs), Map.copyOf(materials), area, footprint);
     }
 
     private static void requireJobBudget(int jobs) {
@@ -535,7 +540,8 @@ final class StructureProject {
                     || !safeStand(client, column, layout)) return null;
             for (int layer = 0; layer < height; layer++) {
                 var pos = column.up(layer);
-                if (!loaded(client, pos) || !airAt(client, pos, layout) || !airAt(client, pos, cleared)) return null;
+                if (!loaded(client, pos) || BuildProtection.blocked(pos)
+                        || !airAt(client, pos, layout) || !airAt(client, pos, cleared)) return null;
                 scaffold.put(pos, SCAFFOLD);
             }
         }
@@ -701,7 +707,7 @@ final class StructureProject {
         for (var face : ProjectPlacement.faces(cell.desired)) {
             var support = cell.pos.offset(face.getOpposite());
             var floorPos = support.down();
-            if (!loaded(client, support) || !loaded(client, floorPos)) continue;
+            if (!loaded(client, support) || !loaded(client, floorPos) || BuildProtection.blocked(support)) continue;
             var planned = layout.get(support);
             if ((planned != null && !planned.isAir()) || !cleared.getOrDefault(support, client.world.getBlockState(support)).isAir()) continue;
             var floor = client.world.getBlockState(floorPos);

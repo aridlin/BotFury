@@ -243,6 +243,7 @@ final class StructureProject {
                 if (pose == null) continue;
                 var approachNeeds = new ArrayList<>(excavationFrontier);
                 approachNeeds.addAll(exposedPlacements);
+                if (scaffold != null) approachNeeds.add(scaffold.blocks.get(scaffold.blocks.size() - 1).placement.id());
                 var needs = new LinkedHashSet<>(approachNeeds);
                 if (placed.containsKey(pose.support)) needs.add(placed.get(pose.support));
                 String id = "place-" + entry.getKey();
@@ -324,7 +325,11 @@ final class StructureProject {
             inspections.add(id);
             area = StructureSupply.union(area, new ProjectBlock(cell.pos, stand, AIR));
         }
-        if (scaffold != null) appendScaffoldCleanup(jobs, scaffold, inspections);
+        if (scaffold != null) {
+            var settledWork = new ArrayList<>(changes);
+            settledWork.addAll(inspections);
+            appendScaffoldCleanup(jobs, scaffold, settledWork);
+        }
         if (jobs.size() > LIMIT) throw new IllegalArgumentException("Structure needs more than 256 jobs");
         return new Plan(List.copyOf(jobs), Map.copyOf(materials), area);
     }
@@ -415,8 +420,8 @@ final class StructureProject {
         return new Scaffold(jobs, steps, scaffold, placed);
     }
 
-    private static void appendScaffoldCleanup(List<ProjectQueue.Work> jobs, Scaffold scaffold, List<String> inspections) {
-        var other = new ArrayList<>(inspections);
+    private static void appendScaffoldCleanup(List<ProjectQueue.Work> jobs, Scaffold scaffold, List<String> settledWork) {
+        var other = List.copyOf(settledWork);
         String settled = scaffold.blocks.get(scaffold.blocks.size() - 1).placement.id();
         for (int i = scaffold.blocks.size() - 1; i >= 0; i--) {
             var step = scaffold.blocks.get(i);

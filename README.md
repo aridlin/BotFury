@@ -524,6 +524,11 @@ They also accept dry ladders, floor torches, top and bottom slabs, and
 unpowered wooden trapdoors and fence gates. Workers use the required
 face and orientation and open trapdoors or gates when the schematic
 calls for it. The final check includes facing, half and open state.
+For water channels, include the source and the expected flowing-water
+cells. Workers finish dry construction first, place the sources with
+water buckets, then inspect the settled flow levels and other specified
+cells. A supplied build can craft and fill buckets from reachable
+renewable water outside the work area and near the supply chest.
 A horizontal log needs a reachable face on a solid neighboring block
 along the requested axis. If the schematic provides no reachable support,
 the bots can place temporary cobblestone in a reachable air cell over a

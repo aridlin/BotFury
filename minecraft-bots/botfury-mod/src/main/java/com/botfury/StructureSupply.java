@@ -4,6 +4,9 @@ import com.google.gson.Gson;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.RaycastContext;
 import java.util.*;
 
 /** Generates material jobs before the build jobs that consume them. */
@@ -26,6 +29,15 @@ final class StructureSupply {
         var furnace = findStation(client, chest, mc("furnace"), area);
         var table = findStation(client, chest, mc("crafting_table"), area);
         var protectedArea = union(selected.include(area), storage, furnace, table);
+        boolean needsWater = plan.materials().containsKey(mc("water_bucket"));
+        var water = needsWater ? findWater(client, chest, protectedArea) : null;
+        if (needsWater && water == null) throw new IllegalArgumentException("A supplied water build needs reachable renewable water near the supply chest");
+        if (water != null) {
+            protectedArea = union(protectedArea, water);
+            for (var direction : Direction.Type.HORIZONTAL) {
+                protectedArea = include(protectedArea, water.target().offset(direction));
+            }
+        }
         var jobs = new ArrayList<ProjectQueue.Work>();
         var materialPrefixes = new TreeMap<Identifier, String>();
         var recipes = new MaterialRecipe(client, true, true);
@@ -34,9 +46,20 @@ final class StructureSupply {
             Identifier item = entry.getKey();
             String prefix = "supply-" + material++ + "-";
             int count = entry.getValue();
-            var production = recipes.plan(item, count, false).jobs(prefix + "produce-", protectedArea, table, furnace);
+            boolean fillWater = item.equals(mc("water_bucket"));
+            var production = recipes.plan(fillWater ? mc("bucket") : item, count, false)
+                    .jobs(prefix + "produce-", protectedArea, table, furnace);
             jobs.addAll(production);
             String previous = production.get(production.size() - 1).id();
+            if (fillWater) {
+                var spec = MaterialRecipe.stationPayload(water);
+                spec.addProperty("count", count);
+                String payload = JSON.toJson(spec);
+                String id = prefix + "fill";
+                jobs.add(ProjectWater.Fill.parse(payload).reserve(new ProjectQueue.Work(
+                        id, ProjectQueue.Kind.FILL_BUCKETS, payload, List.of(previous), Set.of(), previous)));
+                previous = id;
+            }
             jobs.add(transfer(prefix + "store", selected, storage, item, count, ProjectChest.Direction.DEPOSIT, previous));
             materialPrefixes.put(item, prefix);
         }
@@ -69,7 +92,7 @@ final class StructureSupply {
             }
             var block = ProjectBlock.parse(job.payload());
             var item = net.minecraft.registry.Registries.ITEM.getId(
-                    net.minecraft.registry.Registries.BLOCK.get(block.block()).asItem());
+                    ProjectPlacement.material(block.desired()));
             String supplier = pickups.get(item).removeFirst();
             var needs = new ArrayList<>(job.needs());
             needs.add(supplier);
@@ -93,6 +116,20 @@ final class StructureSupply {
 
     static ProjectBlock.Position position(BlockPos pos) {
         return new ProjectBlock.Position(pos.getX(), pos.getY(), pos.getZ());
+    }
+
+    private static ProjectBlock findWater(MinecraftClient client, BlockPos center, ProjectGather.Area area) {
+        for (var pos : BlockPos.iterateOutwards(center, 12, 3, 12)) {
+            if (area.contains(pos) || !client.world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)
+                    || !ProjectWater.renewable(client.world, pos)) continue;
+            var stand = StructureProject.chooseStand(client, pos, Map.of(), null, candidate ->
+                    !area.contains(candidate) && client.world.raycast(new RaycastContext(
+                            Vec3d.ofBottomCenter(candidate).add(0, 1.62, 0),
+                            Vec3d.ofCenter(pos), RaycastContext.ShapeType.OUTLINE,
+                            RaycastContext.FluidHandling.SOURCE_ONLY, client.player)).getBlockPos().equals(pos));
+            if (stand != null) return new ProjectBlock(pos.toImmutable(), stand, mc("water"));
+        }
+        return null;
     }
 
     private static ProjectBlock findStation(MinecraftClient client, BlockPos center, Identifier block,

@@ -96,7 +96,9 @@ final class StructureProject {
             var state = client.world.getBlockState(pos);
             var partner = ProjectPlacement.chestPartner(pos, entry.getValue());
             boolean reusable = partner != null && state.equals(ProjectPlacement.singleChest(entry.getValue()));
-            if (!sameState(entry.getValue(), state) && !reusable && !state.isAir()
+            boolean sameWater = ProjectWater.water(entry.getValue()) && ProjectWater.water(state)
+                    && (!ProjectWater.source(state) || ProjectWater.source(entry.getValue()));
+            if (!sameState(entry.getValue(), state) && !sameWater && !reusable && !state.isAir()
                     && (state.hasBlockEntity() || !state.getFluidState().isEmpty() || state.getHardness(client.world, pos) < 0)) {
                 throw new IllegalArgumentException("Protected block or fluid at " + pos.toShortString());
             }
@@ -171,7 +173,9 @@ final class StructureProject {
     private static BlockState supportedBlock(String name, Map<String, String> properties) {
         var state = ProjectBlock.state(Identifier.tryParse(name), properties);
         if (state.isAir()) return Registries.BLOCK.get(AIR).getDefaultState();
-        if (!ProjectPlacement.supported(state)) throw new IllegalArgumentException("Unsupported structure block " + state);
+        if (!ProjectWater.water(state) && !ProjectPlacement.supported(state)) {
+            throw new IllegalArgumentException("Unsupported structure block " + state);
+        }
         return state;
     }
 
@@ -193,6 +197,11 @@ final class StructureProject {
         var removed = new HashSet<BlockPos>();
         var materials = new TreeMap<Identifier, Integer>();
         var pending = new LinkedHashMap<Integer, Cell>();
+        var waterSources = new LinkedHashMap<Integer, Cell>();
+        boolean hasWater = cells.stream().anyMatch(cell -> ProjectWater.water(cell.desired));
+        if (hasWater && cells.stream().noneMatch(cell -> ProjectWater.source(cell.desired))) {
+            throw new IllegalArgumentException("Flowing water requires a source in the structure");
+        }
         var cleanup = new ArrayList<ProjectQueue.Work>();
         var layout = new HashMap<>(desired);
         var origin = cells.get(0).pos;
@@ -217,26 +226,31 @@ final class StructureProject {
                 ready.put(cell.pos, cell.observed);
                 continue;
             }
-            if (!cell.observed.isAir()) {
+            if (!cell.observed.isAir() && !ProjectWater.water(cell.observed)) {
                 obstructing.put(i, cell);
                 removed.add(cell.pos);
             }
             if (cell.desired.isAir()) continue;
+            if (ProjectWater.water(cell.desired)) {
+                if (ProjectWater.source(cell.desired)) waterSources.put(i, cell);
+                continue;
+            }
             if (!ProjectPlacement.placeable(cell.desired, client.world, cell.pos)) {
                 throw new IllegalArgumentException("Unsupported placement geometry: " + cell.desired);
             }
             pending.put(i, cell);
         }
         var inspectionChunks = new LinkedHashMap<Long, List<Cell>>();
-        if (cells.size() > INDIVIDUAL_INSPECTION_LIMIT) {
+        if (hasWater || cells.size() > INDIVIDUAL_INSPECTION_LIMIT) {
             for (Cell cell : cells) inspectionChunks.computeIfAbsent(ChunkPos.toLong(cell.pos),
                     ignored -> new ArrayList<>()).add(cell);
         }
         int verificationJobs = inspectionChunks.isEmpty() ? cells.size() : inspectionChunks.values().stream()
                 .mapToInt(chunk -> (chunk.size() + ProjectInspection.MAX_CELLS - 1) / ProjectInspection.MAX_CELLS).sum();
-        boolean groupedMutations = !inspectionChunks.isEmpty() && (!obstructing.isEmpty() || !pending.isEmpty());
+        boolean groupedMutations = !inspectionChunks.isEmpty() && (!obstructing.isEmpty() || !pending.isEmpty() || !waterSources.isEmpty());
         if (groupedMutations) verificationJobs++;
-        requireJobBudget(obstructing.size() + pending.size() + verificationJobs);
+        int wetJobs = waterSources.size() + (waterSources.isEmpty() ? 0 : 1);
+        requireJobBudget(obstructing.size() + pending.size() + verificationJobs + wetJobs);
         var cleared = new HashMap<BlockPos, BlockState>();
         List<String> excavationFrontier = List.of();
         while (!obstructing.isEmpty()) {
@@ -334,7 +348,7 @@ final class StructureProject {
                 }
                 var cell = pending.values().iterator().next();
                 int cleanupJobs = scaffolds.stream().mapToInt(entry -> entry.blocks.size()).sum() + cleanup.size();
-                int room = ProjectQueue.MAX_JOBS - jobs.size() - cleanupJobs - pending.size() - verificationJobs;
+                int room = ProjectQueue.MAX_JOBS - jobs.size() - cleanupJobs - pending.size() - verificationJobs - wetJobs;
                 var scaffold = scaffold(client, cell, pending.values(), layout, cleared, ready, placed,
                         List.copyOf(changes), scaffolds.size(), room);
                 if (scaffold != null) {
@@ -358,6 +372,26 @@ final class StructureProject {
         }
         jobs.addAll(cleanup);
         cleanup.forEach(job -> changes.add(job.id()));
+        if (!waterSources.isEmpty()) {
+            String dryBarrier = "before-water";
+            jobs.add(new ProjectQueue.Work(dryBarrier, ProjectQueue.Kind.BARRIER, "", List.copyOf(changes), Set.of()));
+            for (var entry : waterSources.entrySet()) {
+                var cell = entry.getValue();
+                var pose = buildPose(client, cell, layout, ready, cleared, placed, !scaffolds.isEmpty());
+                if (pose == null) throw new IllegalArgumentException("No reachable water placement face at " + cell.pos.toShortString());
+                String id = "fill-source-" + entry.getKey();
+                var job = work(id, ProjectQueue.Kind.BUILD, cell.pos, cell.desired, pose.stand, pose.face, List.of(dryBarrier));
+                if (pose.access != null) {
+                    var locks = new LinkedHashSet<>(job.locks());
+                    locks.addAll(pose.access.locks);
+                    job = new ProjectQueue.Work(id, job.kind(), job.payload(), job.needs(), locks);
+                }
+                jobs.add(job);
+                changes.add(id);
+                materials.merge(Registries.ITEM.getId(ProjectPlacement.material(cell.desired)), 1, Integer::sum);
+                area = StructureSupply.union(area, new ProjectBlock(pose.support, pose.stand, AIR));
+            }
+        }
         List<String> prerequisites = List.copyOf(changes);
         if (groupedMutations) {
             jobs.add(new ProjectQueue.Work("before-inspection", ProjectQueue.Kind.BARRIER, "", prerequisites, Set.of()));
@@ -375,7 +409,7 @@ final class StructureProject {
                     var checks = chunk.subList(i, Math.min(i + ProjectInspection.MAX_CELLS, chunk.size())).stream()
                             .map(cell -> ProjectInspection.Check.of(cell.pos, cell.desired)).toList();
                     String id = "inspect-" + inspections.size();
-                    String payload = ProjectInspection.payload(stand, checks);
+                    String payload = ProjectInspection.payload(stand, checks, hasWater);
                     var work = new ProjectQueue.Work(id, ProjectQueue.Kind.INSPECT, payload, prerequisites, Set.of());
                     jobs.add(ProjectInspection.parse(payload).reserve(work));
                     inspections.add(id);

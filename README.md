@@ -477,3 +477,22 @@ server-correction cooldown. A short pause prevents task movement immediately
 undoing the dodge; Baritone resumes afterwards. No valid landing means no jump.
 Stop and task pause suppress evasion. These checks cannot guarantee every dodge
 under network latency or every anti-cheat configuration. No server mod is needed.
+
+### Project excavation workers
+
+Use `/bf project workers` on the controller to enable project work on the
+selected bots. Regular Stop cancels worker mode. Workers claim jobs from the
+controller's local `/projects` endpoint and use Baritone only for approach,
+with incidental block breaking and placement disabled while pathing.
+
+Submit ordered jobs with a local HTTP POST to `/projects`. For `EXCAVATE` and
+`VERIFY`, the job's `payload` is a JSON string containing `target` and `stand`
+objects with integer `x`, `y`, `z` fields, and a `block` registry ID.
+Excavation only removes the specified block type at the target, and an
+already-clear target counts as finished. Verification checks a block ID
+without changing it. Both jobs reserve the target, stand, and the blocks
+above and below the stand. Excavation leaves block entities alone and
+requires a suitable hotbar tool for blocks that require one.
+
+The coordinator still needs explicit project descriptions. Workers currently
+execute excavation and verification jobs.

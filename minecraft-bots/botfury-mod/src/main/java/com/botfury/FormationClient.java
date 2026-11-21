@@ -51,6 +51,15 @@ final class FormationClient {
                 inventory.then(ClientCommandManager.literal(action).then(itemArgument));
             }
             root.then(inventory);
+            root.then(ClientCommandManager.literal("project")
+                    .then(ClientCommandManager.literal("workers").executes(context -> {
+                        int port = BotFuryMod.controlPort();
+                        if (port < 1024 || Boolean.getBoolean("botfury.managedHttp")) return 0;
+                        int sent = BotTracker.sendSelected("project:worker " + port);
+                        ClientActions.message(context.getSource().getClient(),
+                                sent > 0 ? "Project worker requested for " + sent + " bot(s)" : "No connected bots selected");
+                        return sent > 0 ? 1 : 0;
+                    })));
             var allow = ClientCommandManager.literal("allow");
             for (String choice : new String[]{"packets", "movement", "off"}) allow.then(ClientCommandManager.literal(choice).executes(context -> {
                 try {

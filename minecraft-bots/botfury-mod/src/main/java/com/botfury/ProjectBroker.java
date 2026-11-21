@@ -63,7 +63,12 @@ final class ProjectBroker {
             long now = System.currentTimeMillis();
             switch (request.action) {
                 case "submit" -> {
-                    board.submit(request.project, world, request.work);
+                    if (request.work == null) throw new IllegalArgumentException("Missing project jobs");
+                    var work = request.work.stream().map(item -> {
+                        if (item == null) throw new IllegalArgumentException("Missing project job");
+                        return ProjectWorker.supports(item.kind()) ? ProjectBlock.parse(item.payload()).reserve(item) : item;
+                    }).toList();
+                    board.submit(request.project, world, work);
                     reply(exchange, 201, request.project);
                 }
                 case "claim" -> reply(exchange, 200, board.claim(world, request.worker, request.kinds, now));

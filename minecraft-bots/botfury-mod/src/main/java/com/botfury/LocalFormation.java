@@ -262,6 +262,7 @@ final class LocalFormation {
             connection = client.getNetworkHandler();
             connectionWorld = currentWorld;
             boolean wasActive = !mode.isEmpty() || incoming != null;
+            ProjectWorker.stop(client);
             MiningTask.stop();
             BotCollisionPolicy.replace(java.util.List.of());
             pending.clear();
@@ -282,6 +283,7 @@ final class LocalFormation {
         }
         if (client.player != null && client.player.isDead()) {
             stage = "Waiting to respawn";
+            if (ProjectWorker.enabled()) ProjectWorker.interrupt(client);
             MiningTask.onDeath();
             cancelPath();
             if (Boolean.getBoolean("botfury.managedHttp") && client.player.deathTime >= 20 && tick % 20 == 0) {
@@ -304,6 +306,12 @@ final class LocalFormation {
         BotTracker.tick();
         processOverrides();
         processFleetTasks();
+        if (ProjectWorker.enabled()) {
+            cancelPath();
+            ProjectWorker.tick(client, local);
+            stage = ProjectWorker.status();
+            return;
+        }
         boolean incomingWork=incoming!=null&&!incoming.action.equals("stop")&&System.nanoTime()-receivedAt<4_000_000_000L;
         if(TaskDefense.evade(client,MiningTask.working()||BotInventory.working()||incomingWork))return;
         if (MiningTask.active()) { cancelPath(); stage=MiningTask.status(); if(!TaskDefense.tick(client,MiningTask.working()))MiningTask.tick(client); return; }
@@ -756,7 +764,7 @@ final class LocalFormation {
         });
     }
 
-    static void pauseMovement() { TaskDefense.cancelEvasion(); overrides.clear(); stop(); incoming = null; cancelPath(); BaritoneClient.execute("stop"); MiningTask.stop(); fleetTasks.clear(); }
+    static void pauseMovement() { ProjectWorker.stop(MinecraftClient.getInstance()); TaskDefense.cancelEvasion(); overrides.clear(); stop(); incoming = null; cancelPath(); BaritoneClient.execute("stop"); MiningTask.stop(); fleetTasks.clear(); }
     static void cancelStrike(MinecraftClient client) { if (mode.equals("strike")) finishStrike(client); }
     static void fleetCommand(String command) {
         if (fleetTasks.size() >= 16) { BotEvents.add("warn", "fleet", "Too many queued tasks; wait for delivery"); return; }

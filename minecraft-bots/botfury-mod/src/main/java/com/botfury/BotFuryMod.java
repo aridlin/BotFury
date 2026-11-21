@@ -159,6 +159,7 @@ public class BotFuryMod implements ClientModInitializer {
         status.put("connected", client.getNetworkHandler() != null && client.world != null);
         status.put("ready", ready);
         status.put("renderEnabled", renderEnabled);
+        status.put("projectTask", ProjectWorker.status());
         status.put("player", client.player == null ? "None" : client.player.getGameProfile().getName());
         status.put("offlineUsername", firstNonBlank(System.getProperty("botfury.offlineUsername"), System.getProperty("botfury.username"), ""));
         status.put("httpPort", httpPort);
@@ -289,11 +290,24 @@ public class BotFuryMod implements ClientModInitializer {
         cmd = cmd.trim();
         MinecraftClient client = MinecraftClient.getInstance();
         if (cmd.equals("status")) return statusSnapshot;
+        if (cmd.startsWith("project:worker ")) {
+            if (!MANAGED_HTTP || client.player == null || !BaritoneClient.available()) {
+                return "error: project workers must be connected managed bots with Baritone";
+            }
+            try {
+                int coordinator = Integer.parseInt(cmd.substring(15).strip());
+                if (coordinator < 1024 || coordinator > 65535) return "error: invalid coordinator port";
+                client.execute(() -> ProjectWorker.start(client, coordinator));
+                return "Project worker enabled";
+            } catch (NumberFormatException error) {
+                return "error: invalid coordinator port";
+            }
+        }
         if (cmd.equals("control:stop") || cmd.equals("control:resume")) {
             boolean stop = cmd.endsWith("stop");
             client.execute(() -> {
                 if (stop) { LocalFormation.pauseMovement(); BotInventory.hold(); }
-                else { MiningTask.stop(); BotInventory.resume(); }
+                else { ProjectWorker.stop(client); MiningTask.stop(); BotInventory.resume(); }
                 BotEvents.add("info", "control", stop ? "Paused bot tasks" : "Resumed formation orders");
             });
             return stop ? "Pause queued" : "Resume queued";
@@ -364,7 +378,7 @@ public class BotFuryMod implements ClientModInitializer {
             String command = cmd.substring(9);
             if (client.player == null) return "error: client is not in game";
             client.execute(() -> {
-                if(command.equals("pause")){MiningTask.pause(true);BotInventory.pause(true);BaritoneClient.execute("pause");}
+                if(command.equals("pause")){ProjectWorker.stop(client);MiningTask.pause(true);BotInventory.pause(true);BaritoneClient.execute("pause");}
                 else if(command.equals("resume")){MiningTask.pause(false);BotInventory.pause(false);BaritoneClient.execute("resume");}
                 else {LocalFormation.pauseMovement();BotInventory.baritone(command);BaritoneClient.execute(command);}
             });

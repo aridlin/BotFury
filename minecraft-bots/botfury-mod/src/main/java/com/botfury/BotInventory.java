@@ -56,6 +56,7 @@ final class BotInventory {
     static void evaded() { if(spreadGoal!=null){spreadGoal=null;waitTicks=0;} }
     static String recipient() { return task==null?"":task.recipient; }
     static void start(MinecraftClient client, Request request) {
+        ProjectWorker.stop(client);
         MiningTask.stop();
         finish("");
         manualPause=false;lastRecipient=null;excessDropCenter=null;completion="Done";

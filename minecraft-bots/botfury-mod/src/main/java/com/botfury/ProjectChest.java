@@ -1,6 +1,7 @@
 package com.botfury;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonObject;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.ChestBlock;
 import net.minecraft.block.enums.ChestType;
@@ -12,6 +13,7 @@ import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.util.math.BlockPos;
 import java.util.HashSet;
@@ -19,9 +21,56 @@ import net.minecraft.world.RaycastContext;
 import java.time.Duration;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.function.Predicate;
 
 /** Reconciles a chest to a stock target, so repeating a job does not replay a delta. */
 final class ProjectChest {
+    record Storage(BlockPos key, BlockPos other) {
+        int slots() { return other == null ? 27 : 54; }
+
+        ProjectBlock approach(MinecraftClient client, Predicate<BlockPos> allowed) {
+            var center = Vec3d.ofCenter(key);
+            var stand = StructureProject.chooseStand(client, key, Map.of(), null, pos -> {
+                if (!allowed.test(pos)) return false;
+                var eye = Vec3d.ofBottomCenter(pos).add(0, 1.62, 0);
+                double reach = client.interactionManager.getReachDistance() - .1;
+                var hit = client.world.raycast(new RaycastContext(eye, center, RaycastContext.ShapeType.OUTLINE,
+                        RaycastContext.FluidHandling.NONE, client.player));
+                return eye.squaredDistanceTo(center) <= reach * reach && hit.getType() == HitResult.Type.BLOCK
+                        && key.equals(hit.getBlockPos());
+            });
+            return stand == null ? null : new ProjectBlock(key, stand, Identifier.of("minecraft", "chest"));
+        }
+
+        ProjectGather.Area include(ProjectGather.Area area) {
+            var expanded = StructureSupply.include(area, key);
+            return other == null ? expanded : StructureSupply.include(expanded, other);
+        }
+
+        void addPartner(JsonObject payload) {
+            if (other != null) payload.add("partner", JSON.toJsonTree(StructureSupply.position(other)));
+        }
+    }
+
+    static Storage aimedStorage(MinecraftClient client, HitResult aim) {
+        if (!(aim instanceof BlockHitResult hit) || hit.getType() != HitResult.Type.BLOCK) {
+            throw new IllegalArgumentException("Look at a chest");
+        }
+        var pos = hit.getBlockPos();
+        var state = client.world.getBlockState(pos);
+        if (!state.isOf(Blocks.CHEST)) throw new IllegalArgumentException("Look at a chest");
+        var type = state.get(ChestBlock.CHEST_TYPE);
+        if (type == ChestType.SINGLE) return new Storage(pos, null);
+        var next = pos.offset(ChestBlock.getFacing(state));
+        var other = client.world.getBlockState(next);
+        if (!other.isOf(Blocks.CHEST) || other.get(ChestBlock.CHEST_TYPE) != (type == ChestType.LEFT ? ChestType.RIGHT : ChestType.LEFT)
+                || !other.get(ChestBlock.FACING).equals(state.get(ChestBlock.FACING))
+                || !next.offset(ChestBlock.getFacing(other)).equals(pos)) {
+            throw new IllegalArgumentException("Load both halves of the double chest");
+        }
+        return type == ChestType.LEFT ? new Storage(pos, next) : new Storage(next, pos);
+    }
+
     enum Direction { DEPOSIT, WITHDRAW, TAKE, INSPECT }
     record Spec(ProjectBlock location, Direction direction, Identifier item, int stock, BlockPos partner) {
         ProjectQueue.Work reserve(ProjectQueue.Work work) {

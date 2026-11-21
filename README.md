@@ -530,8 +530,8 @@ The planner rejects entities, block entities, and plans over 256 jobs. Use an al
 bots to walk to the stands. Vanilla chest jobs and explicit project jobs
 remain available through the local API.
 
-To gather and produce materials automatically, look at a dedicated single
-chest outside the work area and run
+To gather and produce materials automatically, look at a dedicated single or
+double chest outside the work area and run
 `/bf project build example.nbt 100 64 100 supplied`. Place a reachable
 crafting table or furnace near the chest for materials that need one. Give
 workers suitable tools and unlock the crafting recipes. Workers gather,
@@ -563,7 +563,8 @@ For a `TRANSFER` job, set `block` to `minecraft:chest` and add a
 chest for deposits and withdrawals. A deposit tops the count up to at least
 the target. A withdrawal takes excess until at most that count remains.
 Inspect records the contents without moving items. Jobs share an exclusive
-lock on the chest and only operate on single chests. The controller's
+lock on the chest. For a double chest, use the left half as the target and
+include the right half as the `partner` position. The controller's
 `GET /projects?stock` shows last observed counts and timestamps, including
 observed partial transfers. Counts describe the chest when the bot checked
 it and can change when players or hoppers use it.

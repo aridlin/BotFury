@@ -32,7 +32,7 @@ final class ProjectQueue {
     record Project(String id, String world, List<Job> jobs) {
         Project { jobs = List.copyOf(jobs); }
     }
-    record Assignment(String project, Job job) {}
+    record Assignment(String project, String world, Job job) {}
     private record Board(int schema, Map<String, Project> projects) {}
 
     private static final Gson JSON = new Gson();
@@ -94,7 +94,7 @@ final class ProjectQueue {
                 if (worker.equalsIgnoreCase(job.worker)) {
                     // A claim response can be lost. Repeating a claim returns the original assignment.
                     return world.equals(project.world) && kinds.contains(job.work.kind)
-                            ? new Assignment(project.id, job) : null;
+                            ? new Assignment(project.id, project.world, job) : null;
                 }
                 if (world.equals(project.world)) reserved.addAll(job.work.locks);
             }
@@ -109,7 +109,7 @@ final class ProjectQueue {
                 Job assigned = new Job(job.work, State.LEASED, job.attempts + 1, worker,
                         UUID.randomUUID(), now + LEASE_MS, null);
                 replace(project, assigned);
-                return new Assignment(project.id, assigned);
+                return new Assignment(project.id, project.world, assigned);
             }
         }
         return null;

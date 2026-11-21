@@ -330,9 +330,9 @@ final class StructureProject {
                 var accessRoutes = new HashMap<BlockPos, BuildAccess>();
                 stand = findStand(client, cell.pos, face, true, pos -> {
                     if (!placed.containsKey(pos.down()) || !safeStand(client, pos, current)
-                            || !safeStand(client, pos, desired)
+                            || !safeStand(client, pos, visibleLayout)
                             || !clearBuildFace(client, pos, cell.pos, support, face, visibleLayout)) return false;
-                    var access = builtAccess(client, pos, cell.pos, cleared, current, desired, placed);
+                    var access = builtAccess(client, pos, cell.pos, cleared, current, visibleLayout, placed);
                     if (access == null) return false;
                     accessRoutes.put(pos, access);
                     return true;

@@ -520,6 +520,10 @@ coordinates take precedence over the stored paste offset.
 
 The vanilla importer uses a single palette. Both formats accept explicit
 air, full single-state blocks, and full blocks with an axis, such as logs.
+They also accept dry ladders, floor torches, top and bottom slabs, and
+unpowered wooden trapdoors and fence gates. Workers use the required
+face and orientation and open trapdoors or gates when the schematic
+calls for it. The final check includes facing, half and open state.
 A horizontal log needs a reachable face on a solid neighboring block
 along the requested axis. If the schematic provides no reachable support,
 the bots can place temporary cobblestone in a reachable air cell over a

@@ -254,7 +254,7 @@ final class ProjectWorker {
             }
             if (approach == null || now >= retryApproach) {
                 try {
-                    if (approach == null) approach = new BaritoneSettings(false);
+                    if (approach == null) approach = new BaritoneSettings(false, true);
                     approachProgress = current;
                     retryApproach = now + seconds(5);
                     BlockPos pos = block.stand();

@@ -83,7 +83,7 @@ record ProjectBlock(BlockPos target, BlockPos stand, Identifier block, Map<Strin
         var properties = data.properties == null ? Map.<String, String>of() : data.properties;
         state(block, properties);
         var face = data.face == null ? Direction.UP : Direction.byName(data.face);
-        if (face == null || face == Direction.DOWN) throw new IllegalArgumentException("Invalid placement face");
+        if (face == null) throw new IllegalArgumentException("Invalid placement face");
         return new ProjectBlock(target, stand, block, Map.copyOf(properties), face);
     }
 

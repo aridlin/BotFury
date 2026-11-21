@@ -180,7 +180,7 @@ final class StructureProject {
         return new ProjectBlock.Position(pos.getX(), pos.getY(), pos.getZ());
     }
 
-    private static BlockPos chooseStand(MinecraftClient client, BlockPos target, Map<BlockPos, Identifier> cells) {
+    static BlockPos chooseStand(MinecraftClient client, BlockPos target, Map<BlockPos, Identifier> cells) {
         // Keep stands and their supports outside the planned footprint at every height.
         for (int dy : new int[]{0, 1, -1}) for (int distance : new int[]{2, 1, 3}) {
             for (var direction : net.minecraft.util.math.Direction.Type.HORIZONTAL) {

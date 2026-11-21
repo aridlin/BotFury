@@ -72,6 +72,13 @@ final class FormationClient {
                                 sent > 0 ? "Project worker requested for " + sent + " bot(s)" : "No connected bots selected");
                         return sent > 0 ? 1 : 0;
                     })));
+            var outputCount = ClientCommandManager.argument("batch", IntegerArgumentType.integer(1, 64))
+                    .executes(context -> OutputOrder.submit(context.getSource().getClient(),
+                            IntegerArgumentType.getInteger(context, "batch")));
+            root.then(ClientCommandManager.literal("output").then(ClientCommandManager.literal("diamond_block")
+                    .executes(context -> OutputOrder.submit(context.getSource().getClient(), 10))
+                    .then(outputCount))
+                    .then(ClientCommandManager.literal("cancel").executes(context -> OutputOrder.cancel(context.getSource().getClient()))));
             var allow = ClientCommandManager.literal("allow");
             for (String choice : new String[]{"packets", "movement", "off"}) allow.then(ClientCommandManager.literal(choice).executes(context -> {
                 try {

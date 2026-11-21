@@ -106,6 +106,35 @@ class ProjectQueueTest {
         assertEquals("smelt", followup.job().work().id());
     }
 
+    @Test void outputCyclesAddToObservedStockAndRespectCancellationAfterRestart() throws Exception {
+        Path journal = directory.resolve("board.json");
+        var board = new ProjectQueue(journal);
+        String key = "block:5,64,0";
+        String item = "minecraft:diamond_block";
+        var inspect = job("inspect", TRANSFER, List.of(), key);
+        var deposit = new ProjectQueue.Work("deposit", TRANSFER, "{\"stock\":0}", List.of("inspect"), Set.of(key), "inspect");
+        board.submitOutput("output", WORLD, List.of(inspect, deposit),
+                new ProjectQueue.Repeat(10, item, key, 0, null, false));
+        board.submit("other", WORLD, List.of(job("take", TRANSFER, List.of(), key)));
+        var first = board.claim(WORLD, "Miner", Set.of(TRANSFER), 0).job();
+        assertTrue(board.finish("output", "inspect", first.lease(), true, "Counted stock",
+                new ProjectQueue.ChestReport(key, java.util.Map.of(item, 30)), 1));
+        board = new ProjectQueue(journal);
+        assertNull(board.claim(WORLD, "Unrelated", Set.of(TRANSFER), 2));
+        var move = board.claim(WORLD, "Miner", Set.of(TRANSFER), 2).job();
+        assertEquals("{\"stock\":40}", move.work().payload());
+        var stock = new ProjectQueue.ChestReport(key, java.util.Map.of(item, 40));
+        assertTrue(board.finish("output", "deposit", move.lease(), true, "Deposited", stock, 3));
+        assertEquals(stock, board.chestStock(WORLD).get(key).report());
+        assertEquals(1, board.snapshot(4).get(0).repeat().completed());
+        assertEquals("inspect", board.claim(WORLD, "Miner", Set.of(TRANSFER), 4).job().work().id());
+        assertTrue(board.cancelOutput(WORLD, key));
+        board = new ProjectQueue(journal);
+        assertNull(board.claim(WORLD, "Other", Set.of(TRANSFER), 5));
+        assertEquals("other", board.claim(WORLD, "Other", Set.of(TRANSFER), 15_005).project());
+        assertTrue(board.snapshot(15_005).get(0).repeat().cancelled());
+    }
+
     @Test void rejectsUnknownDependenciesBeforeWriting() throws Exception {
         var board = new ProjectQueue(directory.resolve("board.json"));
         assertThrows(IllegalArgumentException.class, () -> board.submit("broken", WORLD,

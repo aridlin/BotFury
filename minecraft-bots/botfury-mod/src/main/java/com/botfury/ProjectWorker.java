@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit;
 final class ProjectWorker {
     private static final Gson JSON = new Gson();
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(750)).build();
-    private static final Set<ProjectQueue.Kind> KINDS = Set.of(ProjectQueue.Kind.EXCAVATE, ProjectQueue.Kind.VERIFY, ProjectQueue.Kind.TRANSFER, ProjectQueue.Kind.BUILD, ProjectQueue.Kind.CRAFT, ProjectQueue.Kind.SMELT);
+    private static final Set<ProjectQueue.Kind> KINDS = Set.of(ProjectQueue.Kind.EXCAVATE, ProjectQueue.Kind.VERIFY, ProjectQueue.Kind.TRANSFER, ProjectQueue.Kind.BUILD, ProjectQueue.Kind.CRAFT, ProjectQueue.Kind.SMELT, ProjectQueue.Kind.GATHER);
     private static int port;
     private static int generation;
     private static boolean pending;
@@ -26,6 +26,7 @@ final class ProjectWorker {
     private static ProjectBlock block;
     private static ProjectChest chest;
     private static ProjectProduction production;
+    private static ProjectGather gather;
     private static ProjectQueue.ChestReport chestReport;
     private static BaritoneSettings approach;
     private static Vec3d approachProgress;
@@ -68,6 +69,7 @@ final class ProjectWorker {
         block = null;
         chest = null;
         production = null;
+        gather = null;
         chestReport = null;
         success = null;
         evidence = null;
@@ -78,6 +80,7 @@ final class ProjectWorker {
     private static void halt(MinecraftClient client) {
         if (chest != null) chest.close(client);
         if (production != null) production.close(client);
+        if (gather != null && MiningTask.active()) MiningTask.stop();
         if (breaking && client.interactionManager != null) client.interactionManager.cancelBlockBreaking();
         breaking = false;
         if (approach != null) {
@@ -108,7 +111,19 @@ final class ProjectWorker {
             finish(client, false, "Timed out approaching or changing the target");
             return;
         }
-        execute(client, now);
+        if (gather != null) {
+            int held = gather.inventoryCount(client);
+            if (held >= gather.count()) {
+                finish(client, true, "Observed " + held + " " + gather.item() + " in worker inventory");
+            } else if (!MiningTask.active()) {
+                MiningTask.startProject(client, gather.mining(port));
+                if (!MiningTask.active()) finish(client, false, MiningTask.lastStatus());
+            } else {
+                status = assignment.project() + "/" + assignment.job().work().id() + " (" + held + "/" + gather.count()
+                        + "): " + MiningTask.status();
+                MiningTask.tick(client);
+            }
+        } else execute(client, now);
     }
 
     private static void execute(MinecraftClient client, long now) {
@@ -252,8 +267,15 @@ final class ProjectWorker {
                     deadline = deadline(assignment.job(), now);
 
                     var work = assignment.job().work();
-                    taskEnd = System.nanoTime() + seconds(work.kind() == ProjectQueue.Kind.SMELT ? 300 : 45);
-                    if (work.kind() == ProjectQueue.Kind.TRANSFER) {
+                    taskEnd = System.nanoTime() + seconds(switch (work.kind()) {
+                        case GATHER -> 1800;
+                        case SMELT -> 300;
+                        case CRAFT -> 180;
+                        default -> 45;
+                    });
+                    if (work.kind() == ProjectQueue.Kind.GATHER) {
+                        gather = ProjectGather.parse(work.payload());
+                    } else if (work.kind() == ProjectQueue.Kind.TRANSFER) {
                         var spec = ProjectChest.parse(work.payload());
                         block = spec.location();
                         chest = new ProjectChest(spec);

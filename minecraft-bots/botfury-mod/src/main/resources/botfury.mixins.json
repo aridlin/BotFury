@@ -7,9 +7,6 @@
     "ClientNetworkMixin",
     "BotPushMixin",
     "BotTransparencyMixin",
-    "RenderLayerAccess",
-    "RenderParametersAccess",
-    "RenderTextureAccess",
     "ProjectileGroundAccess"
   ],
   "injectors": {

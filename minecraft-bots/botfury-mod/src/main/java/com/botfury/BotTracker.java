@@ -50,7 +50,7 @@ final class BotTracker {
     static String targetLabel() { Bot bot=bots.get(selected);return bot==null?"All bots":bot.name; }
     static Bot get(int port) { return bots.get(port); }
     static boolean isTrackedPlayer(String name) {
-        return bots.values().stream().anyMatch(bot -> bot.sameWorld && bot.name.equalsIgnoreCase(name));
+        return bots.values().stream().anyMatch(bot -> bot.sameWorld() && bot.name.equalsIgnoreCase(name));
     }
     static List<Bot> all() { return bots.values().stream().sorted(Comparator.comparingInt(Bot::port)).toList(); }
     static List<Bot> targets() { return all().stream().filter(b -> selected < 0 || b.port == selected).toList(); }

@@ -1,8 +1,5 @@
 package com.botfury;
 
-import com.botfury.mixin.RenderLayerAccess;
-import com.botfury.mixin.RenderParametersAccess;
-import com.botfury.mixin.RenderTextureAccess;
 import net.minecraft.client.render.RenderLayer;
 import net.minecraft.client.render.VertexConsumer;
 import net.minecraft.client.render.VertexConsumerProvider;
@@ -21,9 +18,8 @@ public final class BotVisuals {
 
     public static VertexConsumer buffer(VertexConsumerProvider provider, RenderLayer layer) {
         if (layer.getVertexFormat() == VertexFormats.POSITION_COLOR_TEXTURE_OVERLAY_LIGHT_NORMAL
-                && layer instanceof RenderLayerAccess access) {
-            var parameters = (RenderParametersAccess) (Object) access.botfury$phases();
-            var texture = ((RenderTextureAccess) parameters.botfury$texture()).botfury$id();
+                && layer instanceof RenderLayer.MultiPhase layered) {
+            var texture = layered.phases.texture.getId();
             if (texture.isPresent()) return new FadedVertex(provider.getBuffer(RenderLayer.getEntityTranslucent(texture.get())));
         }
         return provider.getBuffer(layer);

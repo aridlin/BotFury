@@ -6,6 +6,7 @@ import net.minecraft.nbt.NbtList;
 import net.minecraft.util.math.BlockPos;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -26,8 +27,10 @@ final class SpongeSchematic {
         long volume = (long) width * height * length;
         if (volume > cellLimit) throw new IllegalArgumentException("Schematic volume exceeds " + cellLimit + " blocks");
         var blocks = wrapped ? schematic.getCompound("Blocks") : schematic;
-        if (!emptyList(schematic, "Entities") || !emptyList(blocks, "BlockEntities")) {
-            throw new IllegalArgumentException("Schematic contains entities or block entities");
+        if (!emptyList(schematic, "Entities")) throw new IllegalArgumentException("Schematic contains entities");
+        if (blocks.contains("BlockEntities") && !(blocks.get("BlockEntities") instanceof NbtList list
+                && (list.isEmpty() || list.getHeldType() == NbtElement.COMPOUND_TYPE))) {
+            throw new IllegalArgumentException("Invalid schematic block entities");
         }
 
         var paletteTag = blocks.getCompound("Palette");
@@ -55,7 +58,27 @@ final class SpongeSchematic {
             decoded.put(new BlockPos(i % width, i / (width * length), (i / width) % length), state);
         }
         if (cursor != data.length) throw new IllegalArgumentException("Unexpected trailing schematic block data");
+        // Survival placement makes new containers. Saved loot, names and other NBT are never applied.
+        var entities = blocks.getList("BlockEntities", NbtElement.COMPOUND_TYPE);
+        var seen = new HashSet<BlockPos>();
+        for (int i = 0; i < entities.size(); i++) {
+            var entity = entities.getCompound(i);
+            int[] pos = entity.getIntArray("Pos");
+            String id = entity.getString("Id");
+            if (pos.length != 3 || !survivalContainer(id)) {
+                throw new IllegalArgumentException("Unsupported schematic block entity " + id);
+            }
+            var blockPos = new BlockPos(pos[0], pos[1], pos[2]);
+            String state = decoded.get(blockPos);
+            if (state == null || !(state.equals(id) || state.startsWith(id + "[")) || !seen.add(blockPos)) {
+                throw new IllegalArgumentException("Block entity does not match a unique schematic cell at " + blockPos.toShortString());
+            }
+        }
         return decoded;
+    }
+
+    static boolean survivalContainer(String id) {
+        return id.equals("minecraft:chest") || id.equals("minecraft:hopper");
     }
 
     private static int dimension(NbtCompound schematic, String key) {

@@ -543,8 +543,11 @@ The planner accepts up to 32,768 cells and 4,096 jobs, with a separate
 limit on dependency count. For volumes above 128 cells, workers check up
 to 32 exact block states in one loaded chunk per inspection job. This
 includes explicit air and lets workers inspect high or enclosed cells
-from a safe stand near the chunk. The planner rejects entities and block
-entities.
+from a safe stand near the chunk. The planner accepts ordinary chests (single and double) and enabled
+hoppers with their requested facing. Workers place new containers empty,
+and saved container data in the schematic is ignored. A matching single
+chest can be reused as one half of a double chest, preserving its contents.
+Other block entities and entities are rejected.
 Vanilla chest jobs and explicit project jobs
 remain available through the local API.
 

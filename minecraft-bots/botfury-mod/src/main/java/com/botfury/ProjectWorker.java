@@ -5,6 +5,7 @@ import net.minecraft.client.MinecraftClient;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Hand;
+import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
@@ -220,13 +221,16 @@ final class ProjectWorker {
             return;
         }
         Vec3d feet = Vec3d.ofBottomCenter(block.stand());
-        var kind = assignment.job().work().kind();
+        var work = assignment.job().work();
+        var kind = work.kind();
         boolean targetLoaded = client.world.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4);
         boolean inspectNearby = kind == ProjectQueue.Kind.VERIFY && targetLoaded
                 && player.getPos().squaredDistanceTo(Vec3d.ofBottomCenter(target)) <= 16;
         boolean exactFooting = kind == ProjectQueue.Kind.EXCAVATE || kind == ProjectQueue.Kind.BUILD;
-        boolean atStand = player.getPos().squaredDistanceTo(feet) <= 1.21
-                && (!exactFooting || player.getBlockPos().equals(block.stand()));
+        boolean nearStand = player.getPos().squaredDistanceTo(feet) <= 1.21;
+        boolean canCleanFromHere = nearStand && work.cleanup() != null && targetLoaded
+                && (client.world.getBlockState(target).isAir() || excavationHit(client, target) != null);
+        boolean atStand = nearStand && (!exactFooting || player.getBlockPos().equals(block.stand()) || canCleanFromHere);
         if (!player.isOnGround() || !atStand && !inspectNearby) {
             releaseCentering(client);
             stableSince = 0;
@@ -308,13 +312,8 @@ final class ProjectWorker {
             finish(client, false, "Unexpected or protected block " + actual + " at " + target.toShortString());
             return;
         }
-        Vec3d eye = player.getEyePos();
-        Vec3d center = Vec3d.ofCenter(target);
-        var ray = client.world.raycast(new RaycastContext(eye, center, RaycastContext.ShapeType.OUTLINE,
-                RaycastContext.FluidHandling.NONE, player));
-        double reach = client.interactionManager.getReachDistance() - .1;
-        if (eye.squaredDistanceTo(center) > reach * reach || ray.getType() != HitResult.Type.BLOCK
-                || !ray.getBlockPos().equals(target)) {
+        var ray = excavationHit(client, target);
+        if (ray == null) {
             finish(client, false, "Target obstructed or out of reach from the approved stand");
             return;
         }
@@ -327,9 +326,19 @@ final class ProjectWorker {
             }
             player.getInventory().selectedSlot = slot;
         }
-        player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, center);
+        player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, Vec3d.ofCenter(target));
         if (client.interactionManager.updateBlockBreakingProgress(target, ray.getSide())) player.swingHand(Hand.MAIN_HAND);
         breaking = true;
+    }
+
+    private static BlockHitResult excavationHit(MinecraftClient client, BlockPos target) {
+        var eye = client.player.getEyePos();
+        var center = Vec3d.ofCenter(target);
+        double reach = client.interactionManager.getReachDistance() - .1;
+        if (eye.squaredDistanceTo(center) > reach * reach) return null;
+        var hit = client.world.raycast(new RaycastContext(eye, center, RaycastContext.ShapeType.OUTLINE,
+                RaycastContext.FluidHandling.NONE, client.player));
+        return hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(target) ? hit : null;
     }
 
     private static boolean centerForPlacement(MinecraftClient client, Vec3d stand) {

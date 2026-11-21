@@ -519,6 +519,11 @@ produce, and deposit the required blocks, then builders collect them from
 the chest. The console's **Projects** and **Chest stock** controls show job
 progress and the most recent stock observations.
 
+If a supplied project's next step needs materials from an offline worker,
+other workers can reacquire the materials after a 60-second grace period.
+Each material chain can be reacquired twice. Completed placements and
+unrelated material chains keep their progress.
+
 Automatic supply supports cobblestone, stone, stone bricks, diamond blocks,
 iron blocks, copper blocks, oak planks, and spruce planks. Each smelting
 job handles up to 24 input items, and the 256-job limit includes production
@@ -552,14 +557,20 @@ bot. Structure builds still need an explicit production plan or stocked
 workers.
 
 
-Look at a dedicated single chest and run `/bf output diamond_block 10`
-to order repeat batches. Place a crafting table within 12 blocks and select
-a worker with a diamond-capable pickaxe and the diamond-block recipe
-unlocked. For each batch the same worker gathers diamonds, crafts the
-blocks, checks the chest's current stock and deposits the batch. The
-controller records the latest observed stock and completed batches.
-Multiple chests can have independent orders. Avoid changing chest stock
-while a batch is being deposited.
+Look at either half of a double chest or a single chest and run
+`/bf output <item> [batch]`. For example, `/bf output iron_ingot 8` uses
+a nearby furnace, and `/bf output oak_planks 16` uses a crafting table.
+The default batch is 10. In the pie menu, open **Inventory → Output…**,
+choose the item, scroll to set the batch size, and choose **Set output**.
+Bots use familiar resource drops and compatible server crafting and furnace
+recipes when the required workstation is nearby. For other items, bots use
+what they carry or look for matching dropped items. Give workers suitable
+tools and unlock their crafting recipes.
+
+Selected bots produce batches in parallel and take turns depositing. A full
+chest is checked again after space is freed. Use **Console → Chest stock**
+to see the last observed counts, or look at either half of a marked chest and
+run `/bf output cancel` to cancel the order.
 
 Gathering widens its search after exhausting nearby ore. In an Overworld
 with modern depth, diamond jobs search at Y -54 when they run out of

@@ -7,6 +7,7 @@ import net.minecraft.registry.Registries;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
 import java.io.IOException;
@@ -45,6 +46,7 @@ final class ProjectWorker {
     private static Boolean success;
     private static String evidence;
     private static boolean breaking;
+    private static boolean centering;
     private static String status = "";
 
     static boolean enabled() { return port != 0; }
@@ -154,6 +156,7 @@ final class ProjectWorker {
 
     private static void halt(MinecraftClient client) {
         approachRecovery.reset();
+        releaseCentering(client);
         if (chest != null) chest.close(client);
         if (production != null) production.close(client);
         if (pickup != null) pickup.stop();
@@ -218,8 +221,11 @@ final class ProjectWorker {
             return;
         }
         Vec3d feet = Vec3d.ofBottomCenter(block.stand());
-        if (player.getPos().squaredDistanceTo(feet) > 1.21
-                || assignment.job().work().kind() == ProjectQueue.Kind.EXCAVATE && !player.getBlockPos().equals(block.stand())) {
+        var kind = assignment.job().work().kind();
+        boolean exactFooting = kind == ProjectQueue.Kind.EXCAVATE || kind == ProjectQueue.Kind.BUILD;
+        if (!player.isOnGround() || player.getPos().squaredDistanceTo(feet) > 1.21
+                || exactFooting && !player.getBlockPos().equals(block.stand())) {
+            releaseCentering(client);
             stableSince = 0;
             var recovery = approachRecovery.tick(client, block.stand(),
                     pos -> !pos.equals(target) && !pos.up().equals(target));
@@ -269,7 +275,6 @@ final class ProjectWorker {
         }
         var state = client.world.getBlockState(target);
         var actual = Registries.BLOCK.getId(state.getBlock());
-        var kind = assignment.job().work().kind();
         boolean excavate = kind == ProjectQueue.Kind.EXCAVATE;
         boolean matches = excavate ? state.isAir() : block.matches(state);
         if (matches) {
@@ -281,6 +286,7 @@ final class ProjectWorker {
         }
         stableSince = 0;
         if (kind == ProjectQueue.Kind.BUILD) {
+            if (centerForPlacement(client, feet, target)) return;
             if (now >= nextPlacement) {
                 var failure = ProjectPlacement.attempt(client, block);
                 nextPlacement = now + seconds(1);
@@ -315,6 +321,29 @@ final class ProjectWorker {
         player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, center);
         if (client.interactionManager.updateBlockBreakingProgress(target, ray.getSide())) player.swingHand(Hand.MAIN_HAND);
         breaking = true;
+    }
+
+    private static boolean centerForPlacement(MinecraftClient client, Vec3d stand, BlockPos target) {
+        var player = client.player;
+        var box = player.getBoundingBox().expand(.03, 0, .03);
+        if (!box.intersects(new Box(target))) {
+            releaseCentering(client);
+            return false;
+        }
+        player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES,
+                new Vec3d(stand.x, player.getEyeY(), stand.z));
+        player.setSprinting(false);
+        client.options.sneakKey.setPressed(true);
+        client.options.forwardKey.setPressed(true);
+        centering = true;
+        return true;
+    }
+
+    private static void releaseCentering(MinecraftClient client) {
+        if (!centering) return;
+        client.options.forwardKey.setPressed(false);
+        client.options.sneakKey.setPressed(false);
+        centering = false;
     }
 
     private static void finish(MinecraftClient client, boolean result, String observation) {

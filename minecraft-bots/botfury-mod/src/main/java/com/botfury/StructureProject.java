@@ -28,7 +28,14 @@ final class StructureProject {
 
     record Plan(List<ProjectQueue.Work> jobs, Map<Identifier, Integer> materials, ProjectGather.Area area) {}
     private record Cell(BlockPos pos, BlockState desired, BlockState observed) {}
-    private record BuildPose(BlockPos stand, Direction face, BlockPos support, boolean exposedBeforeBuild) {}
+    private record BuildPose(BlockPos stand, Direction face, BlockPos support, boolean exposedBeforeBuild,
+                             BuildAccess access) {
+        BuildPose(BlockPos stand, Direction face, BlockPos support, boolean exposedBeforeBuild) {
+            this(stand, face, support, exposedBeforeBuild, null);
+        }
+    }
+    private record BuildAccess(Set<String> needs, Set<String> locks) {}
+    private record AccessStep(BlockPos pos, AccessStep previous, int distance) {}
     private record TemporarySupport(BuildPose pillar, BlockPos stand) {}
 
     private StructureProject() {}
@@ -225,7 +232,7 @@ final class StructureProject {
             for (var iterator = pending.entrySet().iterator(); iterator.hasNext(); ) {
                 var entry = iterator.next();
                 var cell = entry.getValue();
-                var pose = buildPose(client, cell, layout, ready, cleared);
+                var pose = buildPose(client, cell, layout, ready, cleared, placed);
                 var temporary = pose == null && allowTemporarySupport ? temporarySupport(client, cell, layout, cleared) : null;
                 if (temporary != null) pose = temporary.pillar;
                 if (pose == null) continue;
@@ -256,7 +263,14 @@ final class StructureProject {
                 placed.put(cell.pos, id);
                 ready.put(cell.pos, cell.desired);
                 changes.add(id);
-                jobs.add(work(id, ProjectQueue.Kind.BUILD, cell.pos, cell.desired, pose.stand, pose.face, List.copyOf(needs)));
+                if (pose.access != null) needs.addAll(pose.access.needs);
+                var placement = work(id, ProjectQueue.Kind.BUILD, cell.pos, cell.desired, pose.stand, pose.face, List.copyOf(needs));
+                if (pose.access != null) {
+                    var locks = new LinkedHashSet<>(placement.locks());
+                    locks.addAll(pose.access.locks);
+                    placement = new ProjectQueue.Work(id, placement.kind(), placement.payload(), placement.needs(), locks);
+                }
+                jobs.add(placement);
                 if (pose.exposedBeforeBuild) exposedPlacements.add(id);
                 materials.merge(Registries.ITEM.getId(cell.desired.getBlock().asItem()), 1, Integer::sum);
                 area = StructureSupply.union(area, new ProjectBlock(pose.support, pose.stand, AIR));
@@ -287,7 +301,8 @@ final class StructureProject {
     }
 
     private static BuildPose buildPose(MinecraftClient client, Cell cell, Map<BlockPos, BlockState> desired,
-                                       Map<BlockPos, BlockState> ready, Map<BlockPos, BlockState> cleared) {
+                                       Map<BlockPos, BlockState> ready, Map<BlockPos, BlockState> cleared,
+                                       Map<BlockPos, String> placed) {
         for (Direction face : ProjectPlacement.faces(cell.desired)) {
             var support = cell.pos.offset(face.getOpposite());
             if (!loaded(client, support)) continue;
@@ -301,17 +316,75 @@ final class StructureProject {
             }
             // Ordinary blocks may have a face that is only exposed before neighboring placements.
             if (stand != null) return new BuildPose(stand, face, support, false);
+            var current = new HashMap<>(cleared);
+            current.putAll(ready);
             if (face == Direction.UP) {
-                var current = new HashMap<>(cleared);
-                current.putAll(ready);
                 stand = findStand(client, cell.pos, face, true, pos ->
                         safeStand(client, pos, cleared) && safeStand(client, pos, desired)
                                 && clearBuildFace(client, pos, cell.pos, support, face, current));
                 // Later placements are gated on this one so they cannot close off the exposed face.
                 if (stand != null) return new BuildPose(stand, face, support, true);
             }
+            for (boolean exposed : new boolean[]{false, true}) {
+                var visibleLayout = exposed ? current : desired;
+                var accessRoutes = new HashMap<BlockPos, BuildAccess>();
+                stand = findStand(client, cell.pos, face, true, pos -> {
+                    if (!placed.containsKey(pos.down()) || !safeStand(client, pos, current)
+                            || !safeStand(client, pos, visibleLayout)
+                            || !clearBuildFace(client, pos, cell.pos, support, face, visibleLayout)) return false;
+                    var access = builtAccess(client, pos, cell.pos, cleared, current, visibleLayout, placed);
+                    if (access == null) return false;
+                    accessRoutes.put(pos, access);
+                    return true;
+                });
+                if (stand != null) return new BuildPose(stand, face, support, exposed, accessRoutes.get(stand));
+            }
         }
         return null;
+    }
+
+    private static BuildAccess builtAccess(MinecraftClient client, BlockPos stand, BlockPos target,
+                                           Map<BlockPos, BlockState> cleared, Map<BlockPos, BlockState> current,
+                                           Map<BlockPos, BlockState> desired, Map<BlockPos, String> placed) {
+        var visited = new HashSet<BlockPos>();
+        var candidates = new ArrayDeque<AccessStep>();
+        candidates.add(new AccessStep(stand, null, 0));
+        visited.add(stand);
+        while (!candidates.isEmpty()) {
+            var candidate = candidates.removeFirst();
+            var step = candidate.pos;
+            if (safeStand(client, step, cleared)) {
+                var needs = new LinkedHashSet<String>();
+                var locks = new LinkedHashSet<String>();
+                for (var node = candidate; node != null; node = node.previous) {
+                    var route = node.pos;
+                    var dependency = placed.get(route.down());
+                    if (dependency != null) needs.add(dependency);
+                    locks.add(ProjectBlock.key(route));
+                    locks.add(ProjectBlock.key(route.up()));
+                    locks.add(ProjectBlock.key(route.down()));
+                }
+                return new BuildAccess(needs, locks);
+            }
+            if (candidate.distance >= 16) continue;
+            for (var direction : Direction.Type.HORIZONTAL) for (int dy : new int[]{0, -1, 1}) {
+                var next = step.offset(direction).up(dy);
+                if (visited.contains(next) || next.equals(target) || next.up().equals(target)
+                        || !loaded(client, next) || !loaded(client, next.up()) || !loaded(client, next.down())
+                        || !safeStand(client, next, current) || !safeStand(client, next, desired)) continue;
+                if (dy != 0) {
+                    var clearance = (dy < 0 ? next : step).up(2);
+                    if (!airAt(client, clearance, current) || !airAt(client, clearance, desired)) continue;
+                }
+                visited.add(next);
+                candidates.addLast(new AccessStep(next, candidate, candidate.distance + 1));
+            }
+        }
+        return null;
+    }
+
+    private static boolean airAt(MinecraftClient client, BlockPos pos, Map<BlockPos, BlockState> layout) {
+        return layout.getOrDefault(pos, client.world.getBlockState(pos)).isAir();
     }
 
     private static TemporarySupport temporarySupport(MinecraftClient client, Cell cell, Map<BlockPos, BlockState> layout,
@@ -411,8 +484,7 @@ final class StructureProject {
         var above = stand.up();
         var floor = layout.getOrDefault(below, world.getBlockState(below));
         return floor.isFullCube(world, below) && floor.getFluidState().isEmpty()
-                && layout.getOrDefault(stand, world.getBlockState(stand)).isAir()
-                && layout.getOrDefault(above, world.getBlockState(above)).isAir();
+                && airAt(client, stand, layout) && airAt(client, above, layout);
     }
 
     private static boolean loaded(MinecraftClient client, BlockPos pos) {

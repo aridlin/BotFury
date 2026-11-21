@@ -548,7 +548,17 @@ final class StructureProject {
                                           BlockPos support, Direction face, Map<BlockPos, BlockState> desired) {
         var eye = Vec3d.ofBottomCenter(stand).add(0, 1.62, 0);
         var point = ProjectPlacement.facePoint(support, face);
-        var hit = plannedRay(client, eye, point, desired, target);
+        if (!hitsFace(client, eye, point, target, support, face, desired)) return false;
+        // A ray that only slips past the exact corner of a block is too fragile in game.
+        for (double dx : new double[]{-.08, .08}) for (double dz : new double[]{-.08, .08}) {
+            if (!hitsFace(client, eye.add(dx, 0, dz), point, target, support, face, desired)) return false;
+        }
+        return true;
+    }
+
+    private static boolean hitsFace(MinecraftClient client, Vec3d eye, Vec3d point, BlockPos target,
+                                    BlockPos support, Direction face, Map<BlockPos, BlockState> layout) {
+        var hit = plannedRay(client, eye, point, layout, target);
         return hit != null && hit.getBlockPos().equals(support) && hit.getSide() == face;
     }
 

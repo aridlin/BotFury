@@ -17,6 +17,36 @@ class ProjectQueueTest {
         return new ProjectQueue.Work(id, kind, "", needs, Set.of(locks));
     }
 
+    @Test void fullJournalArchivesCompletedWorkAndKeepsItsReceiptsAfterRestart() throws Exception {
+        Path journal = directory.resolve("board.json");
+        var board = new ProjectQueue(journal);
+        String chest = "block:5,64,0";
+        board.submit("receipt", WORLD, List.of(job("deliver", TRANSFER, List.of(), chest)));
+        var assignment = board.claim(WORLD, "Supplier", Set.of(TRANSFER), 1).job();
+        var stock = new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:iron_ingot", 17));
+        assertTrue(board.finish("receipt", "deliver", assignment.lease(), true, "Observed stock", stock, 2));
+
+        for (int i = 0; i < 31; i++) {
+            board.submit("waiting-" + i, WORLD, List.of(job("build", BUILD, List.of())));
+        }
+        assertTrue(board.history().isEmpty());
+        assertEquals(32, board.snapshot(3).size());
+        board.submit("overflow", WORLD, List.of(job("build", BUILD, List.of())));
+
+        var recovered = new ProjectQueue(journal);
+        assertEquals(32, recovered.snapshot(4).size());
+        assertEquals(List.of("receipt"), recovered.history());
+        assertEquals("Observed stock", recovered.archived("receipt").jobs().get(0).evidence());
+        assertEquals(stock, recovered.chestStock(WORLD).get(chest).report());
+        assertTrue(recovered.finish("receipt", "deliver", assignment.lease(), true, "Observed stock", stock, 4));
+        assertFalse(recovered.finish("receipt", "deliver", assignment.lease(), true, "Different stock", stock, 4));
+        assertThrows(IllegalArgumentException.class,
+                () -> recovered.submit("receipt", WORLD, List.of(job("build", BUILD, List.of()))));
+        assertThrows(IllegalArgumentException.class,
+                () -> recovered.submit("too-many", WORLD, List.of(job("build", BUILD, List.of()))));
+        assertEquals(List.of("receipt"), recovered.history());
+    }
+
     @Test void failedPlacementStillReleasesItsTemporarySupportAfterRestart() throws Exception {
         Path path = directory.resolve("board.json");
         var board = new ProjectQueue(path);

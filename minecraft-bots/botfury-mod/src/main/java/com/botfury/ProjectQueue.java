@@ -92,11 +92,13 @@ final class ProjectQueue {
     private static final int MAX_SUPPLY_RECOVERIES = 2;
     private static final int MAX_PROJECTS = 32;
     private final Path journal;
+    private final Path archive;
     private final Map<String, Long> workerSeen = new HashMap<>();
     private Map<String, Project> projects;
 
     ProjectQueue(Path journal) throws IOException {
         this.journal = journal.toAbsolutePath();
+        archive = this.journal.resolveSibling(this.journal.getFileName() + ".history");
         try {
             Board board = JSON.fromJson(Files.readString(this.journal), Board.class);
             if (board == null || board.schema != 1 || board.projects == null) {
@@ -174,8 +176,8 @@ final class ProjectQueue {
                 || work == null || work.isEmpty() || work.size() > 256) {
             throw new IllegalArgumentException("Invalid project");
         }
-        if (projects.containsKey(id) || projects.size() >= MAX_PROJECTS) {
-            throw new IllegalArgumentException("Project already exists or the journal is full");
+        if (projects.containsKey(id) || readArchived(id) != null) {
+            throw new IllegalArgumentException("Project already exists");
         }
         // Submit in topological order. This rejects both missing predecessors and cycles.
         Set<String> defined = new HashSet<>();
@@ -188,7 +190,56 @@ final class ProjectQueue {
             }
             jobs.add(new Job(item, State.WAITING, 0, null, null, 0, null, null));
         }
-        commit(new Project(id, world, jobs, repeat, supplyChest, Map.of()));
+        var project = new Project(id, world, jobs, repeat, supplyChest, Map.of());
+        var next = new LinkedHashMap<>(projects);
+        if (next.size() >= MAX_PROJECTS) {
+            var finished = next.values().stream().filter(ProjectQueue::terminal).findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("All " + MAX_PROJECTS + " project slots are active"));
+            // The old active copy remains authoritative until the new journal replaces it.
+            writeAtomically(archive.resolve(finished.id + ".json"), finished);
+            next.remove(finished.id);
+        }
+        next.put(id, project);
+        persist(next);
+    }
+
+    private static boolean terminal(Project project) {
+        if (project.jobs.stream().anyMatch(job -> job.state == State.LEASED)) return false;
+        if (project.repeat != null) return project.repeat.cancelled;
+        var blocked = blockedJobs(project);
+        return project.jobs.stream().noneMatch(job -> job.state == State.WAITING && !blocked.contains(job.work.id));
+    }
+
+    synchronized List<String> history() throws IOException {
+        try (var paths = Files.list(archive)) {
+            return paths.map(path -> path.getFileName().toString())
+                    .filter(name -> name.endsWith(".json"))
+                    .map(name -> name.substring(0, name.length() - 5))
+                    .filter(ProjectQueue::validId)
+                    .filter(id -> !projects.containsKey(id))
+                    .sorted().toList();
+        } catch (NoSuchFileException ignored) {
+            return List.of();
+        }
+    }
+
+    synchronized Project archived(String id) throws IOException {
+        if (!validId(id)) throw new IllegalArgumentException("Invalid project ID");
+        return projects.containsKey(id) ? null : readArchived(id);
+    }
+
+    private Project readArchived(String id) throws IOException {
+        try {
+            var restored = JSON.fromJson(Files.readString(archive.resolve(id + ".json")), Project.class);
+            if (restored == null || !id.equals(restored.id) || !terminal(restored)) {
+                throw new IOException("Invalid archived project " + id);
+            }
+            return restored;
+        } catch (NoSuchFileException ignored) {
+            return null;
+        } catch (RuntimeException invalid) {
+            throw new IOException("Invalid archived project " + id, invalid);
+        }
     }
 
     synchronized Assignment claim(String world, String worker, Set<Kind> kinds, long now) throws IOException {
@@ -281,7 +332,8 @@ final class ProjectQueue {
         if (evidence == null || evidence.isBlank() || evidence.length() > 2048) {
             throw new IllegalArgumentException("Report an observed outcome or failure reason");
         }
-        Project project = projects.get(projectId);
+        Project active = projects.get(projectId);
+        Project project = active == null && validId(projectId) ? readArchived(projectId) : active;
         Job job = find(project, jobId);
         if (job != null && job.state == State.DONE) {
             return success && Objects.equals(job.lease, token) && job.evidence.equals(evidence)
@@ -353,20 +405,26 @@ final class ProjectQueue {
         commit(project.withJobs(jobs));
     }
 
-    synchronized Map<String, ChestObservation> chestStock(String world) {
+    synchronized Map<String, ChestObservation> chestStock(String world) throws IOException {
         Map<String, ChestObservation> latest = new TreeMap<>();
-        for (Project project : projects.values()) {
-            if (!project.world.equals(world)) continue;
-            if (project.repeat != null && project.repeat.lastStock != null) {
-                var last = project.repeat.lastStock;
-                latest.merge(last.report.location, last, (a, b) -> a.observedAt > b.observedAt ? a : b);
-            }
-            for (Job job : project.jobs) {
-                if (job.chest != null) latest.merge(job.chest.report.location, job.chest,
-                        (a, b) -> a.observedAt > b.observedAt ? a : b);
-            }
+        for (String id : history()) {
+            var project = readArchived(id);
+            if (project != null) collectChestStock(world, project, latest);
         }
+        for (Project project : projects.values()) collectChestStock(world, project, latest);
         return latest;
+    }
+
+    private static void collectChestStock(String world, Project project, Map<String, ChestObservation> latest) {
+        if (!project.world.equals(world)) return;
+        if (project.repeat != null && project.repeat.lastStock != null) mergeStock(latest, project.repeat.lastStock);
+        for (Job job : project.jobs) {
+            if (job.chest != null) mergeStock(latest, job.chest);
+        }
+    }
+
+    private static void mergeStock(Map<String, ChestObservation> latest, ChestObservation observation) {
+        latest.merge(observation.report.location, observation, (a, b) -> a.observedAt > b.observedAt ? a : b);
     }
 
     private static String workerKey(String world, String worker) {
@@ -475,18 +533,22 @@ final class ProjectQueue {
     }
 
     private void persist(Map<String, Project> next) throws IOException {
-        Path parent = journal.getParent();
+        writeAtomically(journal, new Board(1, next));
+        projects = next;
+    }
+
+    private static void writeAtomically(Path destination, Object contents) throws IOException {
+        Path parent = destination.getParent();
         Files.createDirectories(parent);
         Path temp = Files.createTempFile(parent, "botfury-projects-", ".tmp");
         try {
-            byte[] bytes = JSON.toJson(new Board(1, next)).getBytes(StandardCharsets.UTF_8);
+            byte[] bytes = JSON.toJson(contents).getBytes(StandardCharsets.UTF_8);
             try (var output = FileChannel.open(temp, StandardOpenOption.WRITE)) {
                 ByteBuffer buffer = ByteBuffer.wrap(bytes);
                 while (buffer.hasRemaining()) output.write(buffer);
                 output.force(true);
             }
-            Files.move(temp, journal, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            projects = next;
+            Files.move(temp, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } finally {
             Files.deleteIfExists(temp);
         }

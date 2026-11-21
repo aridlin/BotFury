@@ -8,10 +8,14 @@ import net.minecraft.nbt.*;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.BlockView;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.util.*;
+import java.util.function.Predicate;
 import java.util.zip.GZIPInputStream;
 
 /** Compiles a small structure into leased excavation, placement and verification jobs. */
@@ -21,7 +25,8 @@ final class StructureProject {
     private static final Identifier AIR = Identifier.of("minecraft", "air");
 
     record Plan(List<ProjectQueue.Work> jobs, Map<Identifier, Integer> materials, ProjectGather.Area area) {}
-    private record Cell(BlockPos pos, Identifier desired, BlockState observed, BlockPos stand) {}
+    private record Cell(BlockPos pos, BlockState desired, BlockState observed, BlockPos stand) {}
+    private record BuildPose(BlockPos stand, Direction face, BlockPos support) {}
 
     private StructureProject() {}
 
@@ -69,8 +74,7 @@ final class StructureProject {
             var pos = entry.getKey();
             if (!loaded(client, pos)) throw new IllegalArgumentException("Load the entire build site first");
             var state = client.world.getBlockState(pos);
-            var id = Registries.BLOCK.getId(state.getBlock());
-            if (!entry.getValue().equals(id) && !state.isAir()
+            if (!sameState(entry.getValue(), state) && !state.isAir()
                     && (state.hasBlockEntity() || !state.getFluidState().isEmpty() || state.getHardness(client.world, pos) < 0)) {
                 throw new IllegalArgumentException("Protected block or fluid at " + pos.toShortString());
             }
@@ -83,7 +87,7 @@ final class StructureProject {
         return compile(client, cells, desired);
     }
 
-    private static Map<BlockPos, Identifier> cells(NbtCompound structure, BlockPos origin) {
+    private static Map<BlockPos, BlockState> cells(NbtCompound structure, BlockPos origin) {
         NbtList size = structure.getList("size", NbtElement.INT_TYPE);
         NbtList palette = structure.getList("palette", NbtElement.COMPOUND_TYPE);
         NbtList blocks = structure.getList("blocks", NbtElement.COMPOUND_TYPE);
@@ -91,7 +95,7 @@ final class StructureProject {
                 || !structure.getList("entities", NbtElement.COMPOUND_TYPE).isEmpty()) {
             throw new IllegalArgumentException("Expected a single-palette structure with at most 256 blocks and no entities");
         }
-        Map<BlockPos, Identifier> result = new HashMap<>();
+        Map<BlockPos, BlockState> result = new HashMap<>();
         for (int i = 0; i < blocks.size(); i++) {
             var block = blocks.getCompound(i);
             var position = block.getList("pos", NbtElement.INT_TYPE);
@@ -106,29 +110,48 @@ final class StructureProject {
                 }
             }
             var state = palette.getCompound(index);
-            var id = supportedBlock(state.getString("Name"), !state.getCompound("Properties").isEmpty());
+            var properties = new HashMap<String, String>();
+            var tag = state.getCompound("Properties");
+            for (String key : tag.getKeys()) {
+                if (!tag.contains(key, NbtElement.STRING_TYPE)) throw new IllegalArgumentException("Invalid block property " + key);
+                properties.put(key, tag.getString(key));
+            }
+            var blockState = supportedBlock(state.getString("Name"), properties);
             var pos = absolute(origin, position.getInt(0), position.getInt(1), position.getInt(2));
-            if (result.put(pos, id) != null) throw new IllegalArgumentException("Duplicate structure position");
+            if (result.put(pos, blockState) != null) throw new IllegalArgumentException("Duplicate structure position");
         }
         return result;
     }
 
-    private static Map<BlockPos, Identifier> schematicCells(NbtCompound schematic, BlockPos origin) {
-        var result = new HashMap<BlockPos, Identifier>();
-        SpongeSchematic.blocks(schematic, LIMIT).forEach((pos, state) -> {
-            var id = supportedBlock(state, state.contains("["));
-            result.put(absolute(origin, pos.getX(), pos.getY(), pos.getZ()), id);
+    private static Map<BlockPos, BlockState> schematicCells(NbtCompound schematic, BlockPos origin) {
+        var result = new HashMap<BlockPos, BlockState>();
+        SpongeSchematic.blocks(schematic, LIMIT).forEach((pos, text) -> {
+            var properties = new HashMap<String, String>();
+            int open = text.indexOf('[');
+            String name = open < 0 ? text : text.substring(0, open);
+            if (open >= 0) {
+                if (!text.endsWith("]")) throw new IllegalArgumentException("Invalid schematic block state " + text);
+                for (String pair : text.substring(open + 1, text.length() - 1).split(",", -1)) {
+                    var parts = pair.split("=", -1);
+                    if (parts.length != 2 || properties.put(parts[0], parts[1]) != null) {
+                        throw new IllegalArgumentException("Invalid schematic block state " + text);
+                    }
+                }
+            }
+            result.put(absolute(origin, pos.getX(), pos.getY(), pos.getZ()), supportedBlock(name, properties));
         });
         return result;
     }
 
-    private static Identifier supportedBlock(String state, boolean hasProperties) {
-        var id = Identifier.tryParse(state);
-        if (id == null || !Registries.BLOCK.containsId(id) || hasProperties
-                || !id.equals(AIR) && !ProjectPlacement.supported(Registries.BLOCK.get(id).getDefaultState())) {
-            throw new IllegalArgumentException("Unsupported structure block " + state);
-        }
-        return id;
+    private static BlockState supportedBlock(String name, Map<String, String> properties) {
+        var state = ProjectBlock.state(Identifier.tryParse(name), properties);
+        if (state.isAir()) return Registries.BLOCK.get(AIR).getDefaultState();
+        if (!ProjectPlacement.supported(state)) throw new IllegalArgumentException("Unsupported structure block " + state);
+        return state;
+    }
+
+    private static boolean sameState(BlockState wanted, BlockState actual) {
+        return wanted.isAir() ? actual.isAir() : wanted.equals(actual);
     }
 
     private static BlockPos absolute(BlockPos origin, int x, int y, int z) {
@@ -136,66 +159,105 @@ final class StructureProject {
                 Math.addExact(origin.getZ(), z)).checked();
     }
 
-    private static Plan compile(MinecraftClient client, List<Cell> cells, Map<BlockPos, Identifier> desired) {
+    private static Plan compile(MinecraftClient client, List<Cell> cells, Map<BlockPos, BlockState> desired) {
         var jobs = new ArrayList<ProjectQueue.Work>();
         var changes = new ArrayList<String>();
         var placed = new HashMap<BlockPos, String>();
+        var ready = new HashMap<BlockPos, BlockState>();
         var excavation = new HashMap<BlockPos, String>();
         var materials = new TreeMap<Identifier, Integer>();
+        var pending = new LinkedHashMap<Integer, Cell>();
+        var origin = cells.get(0).pos;
+        var area = new ProjectGather.Area(origin, origin);
         for (int i = 0; i < cells.size(); i++) {
             var cell = cells.get(i);
-            var current = Registries.BLOCK.getId(cell.observed.getBlock());
-            if (!current.equals(cell.desired) && !cell.observed.isAir()) {
+            area = StructureSupply.union(area, new ProjectBlock(cell.pos.down(), cell.stand, AIR),
+                    new ProjectBlock(cell.pos, cell.stand, AIR));
+            if (sameState(cell.desired, cell.observed)) {
+                ready.put(cell.pos, cell.desired);
+                continue;
+            }
+            if (!cell.observed.isAir()) {
                 String id = "clear-" + i;
                 excavation.put(cell.pos, id);
                 changes.add(id);
-                jobs.add(work(id, ProjectQueue.Kind.EXCAVATE, cell, current, List.of()));
+                jobs.add(work(id, ProjectQueue.Kind.EXCAVATE, cell, cell.observed, cell.stand, Direction.UP, List.of()));
             }
+            if (cell.desired.isAir()) continue;
+            if (!cell.desired.isFullCube(client.world, cell.pos)) {
+                throw new IllegalArgumentException("Not a full cube: " + cell.desired);
+            }
+            pending.put(i, cell);
         }
-        for (int i = 0; i < cells.size(); i++) {
-            var cell = cells.get(i);
-            var wanted = cell.desired;
-            if (wanted.equals(AIR) || wanted.equals(Registries.BLOCK.getId(cell.observed.getBlock()))) continue;
-            var state = Registries.BLOCK.get(wanted).getDefaultState();
-            if (!state.isFullCube(client.world, cell.pos)) {
-                throw new IllegalArgumentException("Not a full cube: " + wanted);
+        while (!pending.isEmpty()) {
+            int before = pending.size();
+            for (var iterator = pending.entrySet().iterator(); iterator.hasNext(); ) {
+                var entry = iterator.next();
+                var cell = entry.getValue();
+                var pose = buildPose(client, cell, desired, ready);
+                if (pose == null) continue;
+                var needs = new ArrayList<String>();
+                if (excavation.containsKey(cell.pos)) needs.add(excavation.get(cell.pos));
+                if (placed.containsKey(pose.support)) needs.add(placed.get(pose.support));
+                String id = "place-" + entry.getKey();
+                placed.put(cell.pos, id);
+                ready.put(cell.pos, cell.desired);
+                changes.add(id);
+                jobs.add(work(id, ProjectQueue.Kind.BUILD, cell, cell.desired, pose.stand, pose.face, needs));
+                materials.merge(Registries.ITEM.getId(cell.desired.getBlock().asItem()), 1, Integer::sum);
+                area = StructureSupply.union(area, new ProjectBlock(pose.support, pose.stand, AIR));
+                iterator.remove();
             }
-            var below = cell.pos.down();
-            var support = desired.get(below);
-            String predecessor = placed.get(below);
-            if (AIR.equals(support) || predecessor == null && (!loaded(client, below)
-                    || !client.world.getBlockState(below).isFullCube(client.world, below)
-                    || client.world.getBlockState(below).hasBlockEntity())) {
-                throw new IllegalArgumentException("No solid support below " + cell.pos.toShortString());
+            if (pending.size() == before) {
+                var cell = pending.values().iterator().next();
+                throw new IllegalArgumentException("No reachable support face for " + cell.desired + " at " + cell.pos.toShortString());
             }
-            var needs = new ArrayList<String>();
-            if (excavation.containsKey(cell.pos)) needs.add(excavation.get(cell.pos));
-            if (predecessor != null) needs.add(predecessor);
-            String id = "place-" + i;
-            placed.put(cell.pos, id);
-            changes.add(id);
-            jobs.add(work(id, ProjectQueue.Kind.BUILD, cell, wanted, needs));
-            materials.merge(Registries.ITEM.getId(state.getBlock().asItem()), 1, Integer::sum);
         }
         List<String> prerequisites = List.copyOf(changes);
         for (int i = 0; i < cells.size(); i++) {
             var cell = cells.get(i);
-            jobs.add(work("verify-" + i, ProjectQueue.Kind.VERIFY, cell, cell.desired, prerequisites));
+            jobs.add(work("verify-" + i, ProjectQueue.Kind.VERIFY, cell, cell.desired, cell.stand, Direction.UP, prerequisites));
         }
         if (jobs.size() > LIMIT) throw new IllegalArgumentException("Structure needs more than 256 jobs");
-        var origin = cells.get(0).pos;
-        var area = new ProjectGather.Area(origin, origin);
-        for (var cell : cells) {
-            area = StructureSupply.union(area, new ProjectBlock(cell.pos.down(), cell.stand, cell.desired),
-                    new ProjectBlock(cell.pos, cell.stand, cell.desired));
-        }
         return new Plan(List.copyOf(jobs), Map.copyOf(materials), area);
     }
 
-    private static ProjectQueue.Work work(String id, ProjectQueue.Kind kind, Cell cell,
-                                          Identifier block, List<String> needs) {
-        var location = new ProjectBlock(cell.pos, cell.stand, block);
-        var payload = new ProjectBlock.Payload(position(cell.pos), position(cell.stand), block.toString());
+    private static BuildPose buildPose(MinecraftClient client, Cell cell, Map<BlockPos, BlockState> desired,
+                                       Map<BlockPos, BlockState> ready) {
+        for (Direction face : ProjectPlacement.faces(cell.desired)) {
+            var support = cell.pos.offset(face.getOpposite());
+            if (!loaded(client, support)) continue;
+            var state = desired.containsKey(support) ? ready.get(support) : client.world.getBlockState(support);
+            if (state == null || state.hasBlockEntity() || !state.isFullCube(client.world, support)) continue;
+            var stand = chooseStand(client, cell.pos, desired, face,
+                    pos -> clearBuildFace(client, pos, cell.pos, support, face, desired));
+            // Retain the established approach for ordinary blocks when the final volume obstructs a ray.
+            if (stand == null && face == Direction.UP) stand = cell.stand;
+            if (stand != null) return new BuildPose(stand, face, support);
+        }
+        return null;
+    }
+
+    private static boolean clearBuildFace(MinecraftClient client, BlockPos stand, BlockPos target,
+                                          BlockPos support, Direction face, Map<BlockPos, BlockState> desired) {
+        var eye = Vec3d.ofBottomCenter(stand).add(0, 1.62, 0);
+        var point = ProjectPlacement.facePoint(support, face);
+        if (eye.squaredDistanceTo(point) > 4.4 * 4.4) return false;
+        var hit = BlockView.raycast(eye, point, client.world, (world, pos) -> {
+            if (pos.equals(target)) return null;
+            var state = desired.getOrDefault(pos, world.getBlockState(pos));
+            return state.getOutlineShape(world, pos).raycast(eye, point, pos);
+        }, ignored -> null);
+        return hit != null && hit.getBlockPos().equals(support) && hit.getSide() == face;
+    }
+
+    private static ProjectQueue.Work work(String id, ProjectQueue.Kind kind, Cell cell, BlockState state,
+                                          BlockPos stand, Direction face, List<String> needs) {
+        var blockId = Registries.BLOCK.getId(state.getBlock());
+        var properties = ProjectBlock.properties(state);
+        var location = new ProjectBlock(cell.pos, stand, blockId, properties, face);
+        var payload = new ProjectBlock.Payload(position(cell.pos), position(stand), blockId.toString(),
+                properties.isEmpty() ? null : properties, face == Direction.UP ? null : face.getName());
         return location.reserve(new ProjectQueue.Work(id, kind, JSON.toJson(payload), needs, Set.of()));
     }
 
@@ -203,17 +265,25 @@ final class StructureProject {
         return new ProjectBlock.Position(pos.getX(), pos.getY(), pos.getZ());
     }
 
-    static BlockPos chooseStand(MinecraftClient client, BlockPos target, Map<BlockPos, Identifier> cells) {
-        // Keep stands and their supports outside the planned footprint at every height.
+    static BlockPos chooseStand(MinecraftClient client, BlockPos target, Map<BlockPos, ?> cells) {
+        return chooseStand(client, target, cells, null, ignored -> true);
+    }
+
+    private static BlockPos chooseStand(MinecraftClient client, BlockPos target, Map<BlockPos, ?> cells, Direction face, Predicate<BlockPos> suitable) {
+        // A horizontal placement stand must be on the clickable side of the support.
         for (int dy : new int[]{0, 1, -1}) for (int distance : new int[]{2, 1, 3}) {
-            for (var direction : net.minecraft.util.math.Direction.Type.HORIZONTAL) {
-                var stand = target.offset(direction, distance).up(dy);
-                if (!loaded(client, stand) || cells.containsKey(stand) || cells.containsKey(stand.up())
-                        || cells.containsKey(stand.down())) continue;
-                var floor = client.world.getBlockState(stand.down());
-                if (floor.isFullCube(client.world, stand.down()) && floor.getFluidState().isEmpty()
-                        && client.world.getBlockState(stand).isAir() && client.world.getBlockState(stand.up()).isAir()) {
-                    return stand;
+            for (var direction : Direction.Type.HORIZONTAL) {
+                if (face != null && face != Direction.UP && direction != face) continue;
+                for (int lateral : face == null ? new int[]{0} : new int[]{0, 1, -1, 2, -2}) {
+                    var stand = target.offset(direction, distance).offset(direction.rotateYClockwise(), lateral).up(dy);
+                    if (stand.getSquaredDistance(target) > 16 || !loaded(client, stand) || cells.containsKey(stand)
+                            || cells.containsKey(stand.up()) || cells.containsKey(stand.down())) continue;
+                    var floor = client.world.getBlockState(stand.down());
+                    if (floor.isFullCube(client.world, stand.down()) && floor.getFluidState().isEmpty()
+                            && client.world.getBlockState(stand).isAir() && client.world.getBlockState(stand.up()).isAir()
+                            && suitable.test(stand)) {
+                        return stand;
+                    }
                 }
             }
         }

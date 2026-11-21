@@ -195,12 +195,12 @@ final class ProjectWorker {
         var actual = Registries.BLOCK.getId(state.getBlock());
         var kind = assignment.job().work().kind();
         boolean excavate = kind == ProjectQueue.Kind.EXCAVATE;
-        boolean matches = excavate || block.block().equals(net.minecraft.util.Identifier.of("minecraft", "air"))
-                ? state.isAir() : actual.equals(block.block());
+        boolean matches = excavate ? state.isAir() : block.matches(state);
         if (matches) {
             halt(client);
             if (stableSince == 0) stableSince = now;
-            if (now - stableSince >= seconds(1)) finish(client, true, "Observed " + actual + " at " + target.toShortString());
+            if (now - stableSince >= seconds(1)) finish(client, true, "Observed " + actual + (block.properties().isEmpty() ? "" : ProjectBlock.properties(state))
+                    + " at " + target.toShortString());
             return;
         }
         stableSince = 0;
@@ -212,7 +212,7 @@ final class ProjectWorker {
             }
             return;
         }
-        if (!excavate || !actual.equals(block.block()) || state.hasBlockEntity()
+        if (!excavate || !block.matches(state) || state.hasBlockEntity()
                 || state.getHardness(client.world, target) < 0) {
             finish(client, false, "Unexpected or protected block " + actual + " at " + target.toShortString());
             return;

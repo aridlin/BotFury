@@ -514,10 +514,12 @@ For `.schem` files, the coordinates specify the minimum corner. The planner
 uses the block volume, including air, and leaves biomes untouched. Its
 coordinates take precedence over the stored paste offset.
 
-The vanilla importer uses a single palette. Both formats accept full,
-single-state blocks and explicit air. The planner checks for reachable
-stands and support under each new block. It rejects entities, block
-entities, and structures requiring over 256 jobs. Use an already prepared site with room for the
+The vanilla importer uses a single palette. Both formats accept explicit
+air, full single-state blocks, and full blocks with an axis, such as logs.
+A horizontal log needs a reachable face on a solid neighboring block
+along the requested axis. The planner can place that support first.
+Verification checks the axis, and a log facing the wrong way is replaced.
+The planner rejects entities, block entities, and plans over 256 jobs. Use an already prepared site with room for the
 bots to walk to the stands. Vanilla chest jobs and explicit project jobs
 remain available through the local API.
 

@@ -33,6 +33,7 @@ final class ProjectWorker {
     private static ProjectChest chest;
     private static ProjectProduction production;
     private static ProjectGather gather;
+    private static ProjectQueue.ResourceSite gatherSite;
     private static DroppedItemSearch pickup;
     private static ProjectQueue.ChestReport chestReport;
     private static BaritoneSettings approach;
@@ -140,6 +141,7 @@ final class ProjectWorker {
         chest = null;
         production = null;
         gather = null;
+        gatherSite = null;
         pickup = null;
         chestReport = null;
         success = null;
@@ -194,12 +196,14 @@ final class ProjectWorker {
                 else status = (result == DroppedItemSearch.State.SEARCHING ? "Looking for dropped " : "Collecting ")
                         + gather.item() + " (" + held + "/" + gather.count() + ")";
             } else if (!MiningTask.active()) {
-                MiningTask.startProject(client, gather.mining(port), gather.exclude());
+                MiningTask.startProject(client, gather.mining(port), gather.exclude(), gatherSite);
                 if (!MiningTask.active()) finish(client, false, MiningTask.lastStatus());
             } else {
                 status = assignment.project() + "/" + assignment.job().work().id() + " (" + held + "/" + gather.count()
                         + "): " + MiningTask.status();
                 MiningTask.tick(client);
+                var observation = MiningTask.observedSite();
+                if (observation != null) gatherSite = observation;
             }
         } else execute(client, now);
     }
@@ -328,6 +332,7 @@ final class ProjectWorker {
             args.put("project", assignment.project());
             args.put("job", assignment.job().work().id());
             args.put("token", assignment.job().lease());
+            if (gatherSite != null && !gather.fromDrops()) args.put("resourceSite", gatherSite);
             if (success != null && action.equals("finish")) {
                 args.put("success", success);
                 args.put("evidence", evidence);
@@ -364,6 +369,7 @@ final class ProjectWorker {
                     });
                     if (work.kind() == ProjectQueue.Kind.GATHER) {
                         gather = ProjectGather.parse(work.payload());
+                        gatherSite = assignment.job().resourceSite();
                         if (gather.fromDrops()) pickup = new DroppedItemSearch();
                     } else if (work.kind() == ProjectQueue.Kind.TRANSFER) {
                         var spec = ProjectChest.parse(work.payload());

@@ -240,7 +240,8 @@ class ProjectQueueTest {
         var smelt = new ProjectQueue.Work("smelt", SMELT, "", List.of("fuel"), Set.of(), "fuel");
         board.submitSupplied("house", WORLD, List.of(raw, fuel, smelt), "block:5,64,0");
         var original = board.claim(WORLD, "Original", Set.of(GATHER), 0).job();
-        assertTrue(board.finish("house", "raw", original.lease(), true, "Observed ore", 1));
+        var oreSite = new ProjectQueue.ResourceSite(72, -54, 120);
+        assertTrue(board.finish("house", "raw", original.lease(), true, "Observed ore", null, oreSite, 1));
         var coal = board.claim(WORLD, "Original", Set.of(GATHER), 2).job();
         assertTrue(board.finish("house", "fuel", coal.lease(), true, "Observed coal", 3));
         var abandoned = board.claim(WORLD, "Original", Set.of(SMELT), 4).job();
@@ -250,12 +251,30 @@ class ProjectQueueTest {
         assertNull(recovered.claim(WORLD, "Replacement", Set.of(GATHER, SMELT), 79_999));
         var reassigned = recovered.claim(WORLD, "Replacement", Set.of(GATHER, SMELT), 80_000).job();
         assertEquals("raw", reassigned.work().id());
+        assertEquals(oreSite, reassigned.resourceSite());
         assertFalse(recovered.finish("house", "smelt", abandoned.lease(), true, "Late report", 80_001));
         assertTrue(recovered.finish("house", "raw", reassigned.lease(), true, "Observed replacement ore", 80_002));
         var newFuel = recovered.claim(WORLD, "Replacement", Set.of(GATHER), 80_003).job();
         assertTrue(recovered.finish("house", "fuel", newFuel.lease(), true, "Observed replacement coal", 80_004));
         assertEquals("smelt", recovered.claim(WORLD, "Replacement", Set.of(SMELT), 80_005).job().work().id());
         assertEquals(java.util.Map.of("raw", 1), new ProjectQueue(journal).snapshot(80_006).get(0).supplyRecoveries());
+    }
+
+    @Test void observedResourceSiteSurvivesLeaseExpiryAndCoordinatorRestart() throws Exception {
+        var journal = directory.resolve("board.json");
+        var board = new ProjectQueue(journal);
+        board.submit("mine", WORLD, List.of(job("ore", GATHER, List.of())));
+        var original = board.claim(WORLD, "Original", Set.of(GATHER), 1).job();
+        var source = new ProjectQueue.ResourceSite(400, -54, -240);
+        var renewal = board.renew("mine", "ore", original.lease(), source, 2);
+        assertEquals(source, renewal.resourceSite());
+        var recovered = new ProjectQueue(journal);
+        assertNull(recovered.claim("test|nether", "Replacement", Set.of(GATHER), renewal.expiresAt()));
+        var claimed = recovered.claim(WORLD, "Replacement", Set.of(GATHER), renewal.expiresAt()).job();
+        assertEquals(source, claimed.resourceSite());
+        var stale = new ProjectQueue.ResourceSite(0, 0, 0);
+        assertNull(recovered.renew("mine", "ore", original.lease(), stale, renewal.expiresAt() + 1));
+        assertEquals(source, recovered.snapshot(renewal.expiresAt() + 1).get(0).jobs().get(0).resourceSite());
     }
 
     @Test void producersWorkInParallelButDepositFromDistinctStockObservations() throws Exception {

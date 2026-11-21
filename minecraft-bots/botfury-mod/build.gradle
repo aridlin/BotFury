@@ -63,6 +63,7 @@ processResources {
 }
 
 loom {
+    accessWidenerPath = file("src/main/resources/botfury.accesswidener")
     runs {
         client {
             runDir botfuryRunDir

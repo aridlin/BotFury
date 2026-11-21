@@ -33,20 +33,29 @@ final class ProjectQueue {
 
     record Job(Work work, State state, int attempts, String worker, UUID lease, long expiresAt,
                String evidence, ChestObservation chest) {}
-    record ChestReport(String location, Map<String, Integer> items) {
+    record ChestReport(String location, Map<String, Integer> items, Integer free) {
+        ChestReport(String location, Map<String, Integer> items) { this(location, items, null); }
+
         ChestReport {
             if (location == null || !location.matches("block:-?[0-9]+,-?[0-9]+,-?[0-9]+")
-                    || items == null || items.size() > 27
+                    || items == null || items.size() > 54 || free != null && (free < 0 || free > 3456)
                     || items.entrySet().stream().anyMatch(item -> !item.getKey().matches("[a-z0-9_.-]+:[a-z0-9_./-]+")
-                    || item.getValue() == null || item.getValue() < 1 || item.getValue() > 1728)
-                    || items.values().stream().mapToInt(Integer::intValue).sum() > 1728) {
+                    || item.getValue() == null || item.getValue() < 1 || item.getValue() > 3456)
+                    || items.values().stream().mapToInt(Integer::intValue).sum() > 3456) {
                 throw new IllegalArgumentException("Invalid chest observation");
             }
             items = Map.copyOf(items);
         }
     }
     record ChestObservation(ChestReport report, long observedAt) {}
-    record Repeat(int batch, String item, String chest, int completed, ChestObservation lastStock, boolean cancelled) {}
+    record Repeat(int batch, String item, String chest, int completed, ChestObservation lastStock,
+                  boolean cancelled, int capacity) {
+        Repeat(int batch, String item, String chest, int completed, ChestObservation lastStock, boolean cancelled) {
+            this(batch, item, chest, completed, lastStock, cancelled, 1728);
+        }
+
+        int limit() { return capacity > 0 ? capacity : 1728; }
+    }
     record Project(String id, String world, List<Job> jobs, Repeat repeat, String supplyChest,
                    Map<String, Integer> supplyRecoveries) {
         Project {
@@ -128,7 +137,7 @@ final class ProjectQueue {
         for (Project project : projects.values()) {
             var repeat = project.repeat;
             if (!project.world.equals(world) || repeat == null || repeat.cancelled || !repeat.chest.equals(chest)) continue;
-            var cancelled = new Repeat(repeat.batch, repeat.item, repeat.chest, repeat.completed, repeat.lastStock, true);
+            var cancelled = new Repeat(repeat.batch, repeat.item, repeat.chest, repeat.completed, repeat.lastStock, true, repeat.capacity);
             commit(new Project(project.id, project.world, project.jobs, cancelled, project.supplyChest, project.supplyRecoveries));
             return true;
         }
@@ -179,12 +188,28 @@ final class ProjectQueue {
                 if (world.equals(project.world)) reserved.addAll(job.work.locks);
             }
         }
+        Project ownedOrder = null;
+        String ownedLane = null;
         for (Project project : projects.values()) {
-            if (!world.equals(project.world) || cancelled(project)) continue;
+            if (!world.equals(project.world) || cancelled(project) || project.repeat == null) continue;
+            var pinned = project.jobs.stream().filter(job -> job.state == State.WAITING
+                    && job.work.sameWorkerAs != null && worker.equalsIgnoreCase(find(project, job.work.sameWorkerAs).worker)
+                    && find(project, job.work.sameWorkerAs).state == State.DONE).findFirst();
+            if (pinned.isPresent()) {
+                ownedOrder = project;
+                ownedLane = lane(pinned.get().work.id);
+                break;
+            }
+        }
+        for (Project project : projects.values()) {
+            if (!world.equals(project.world) || cancelled(project) || (ownedOrder != null && ownedOrder != project)) continue;
             Set<String> done = new HashSet<>();
             for (Job job : project.jobs) if (job.state == State.DONE) done.add(job.work.id);
+            String deposit = project.repeat == null ? null : pendingDeposit(project, done);
             for (Job job : project.jobs) {
-                if (job.state != State.WAITING || !kinds.contains(job.work.kind)
+                if (ownedLane != null && !ownedLane.equals(lane(job.work.id))) continue;
+                if (deposit != null && job.work.kind == Kind.TRANSFER && !deposit.equals(job.work.id)) continue;
+                if (job.state != State.WAITING || job.expiresAt > now || !kinds.contains(job.work.kind)
                         || !done.containsAll(job.work.needs) || !Collections.disjoint(reserved, job.work.locks)) continue;
                 if (job.work.locks.stream().anyMatch(key -> outputChests.containsKey(key)
                         && !project.id.equals(outputChests.get(key)))) continue;
@@ -238,33 +263,51 @@ final class ProjectQueue {
         Job result = success
                 ? new Job(job.work, State.DONE, job.attempts, job.worker, job.lease, 0, evidence, observation)
                 : retry(job, evidence, observation);
-        if (success && project.repeat != null && !project.repeat.cancelled && job.work.id.equals("inspect")) {
+        if (success && project.repeat != null && !project.repeat.cancelled && job.work.id.equals(lane(job.work.id) + "inspect")) {
             prepareOutputDeposit(project, result);
-        } else if (success && project.repeat != null && job.work.id.equals("deposit")) {
+        } else if (success && project.repeat != null && job.work.id.equals(lane(job.work.id) + "deposit")) {
             var repeat = project.repeat;
-            var next = new Repeat(repeat.batch, repeat.item, repeat.chest, repeat.completed + 1, observation, repeat.cancelled);
+            var next = new Repeat(repeat.batch, repeat.item, repeat.chest, repeat.completed + 1, observation, repeat.cancelled, repeat.capacity);
             var reset = repeat.cancelled
                     ? project.jobs.stream().map(entry -> entry == job ? result : entry).toList()
-                    : project.jobs.stream().map(entry -> new Job(entry.work, State.WAITING, 0,
-                            null, null, 0, null, null)).toList();
+                    : project.jobs.stream().map(entry -> lane(entry.work.id).equals(lane(job.work.id))
+                            ? new Job(entry.work, State.WAITING, 0, null, null, 0, null, null) : entry).toList();
             commit(new Project(project.id, project.world, reset, next, project.supplyChest, project.supplyRecoveries));
         } else replace(project, result);
         markSeen(project.world, job.worker, now);
         return true;
     }
 
+    private static String lane(String id) {
+        if (!id.startsWith("lane-")) return "";
+        int end = id.indexOf('-', 5);
+        return end < 0 ? "" : id.substring(0, end + 1);
+    }
+
+    private static String pendingDeposit(Project project, Set<String> done) {
+        for (Job job : project.jobs) {
+            String prefix = lane(job.work.id);
+            if (job.work.id.equals(prefix + "deposit") && done.contains(prefix + "inspect")
+                    && (job.state == State.WAITING || job.state == State.LEASED)) return job.work.id;
+        }
+        return null;
+    }
+
     private void prepareOutputDeposit(Project project, Job inspected) throws IOException {
         var repeat = project.repeat;
         int current = inspected.chest.report.items.getOrDefault(repeat.item, 0);
+        Integer free = inspected.chest.report.free;
+        if (current + repeat.batch > repeat.limit() || free != null && free < repeat.batch) {
+            replace(project, new Job(inspected.work, State.WAITING, 0, null, null,
+                    inspected.chest.observedAt + 10_000, "Output chest has no room for this batch", inspected.chest));
+            return;
+        }
+        String deposit = lane(inspected.work.id) + "deposit";
         var jobs = new ArrayList<Job>();
         for (Job entry : project.jobs) {
-            if (entry.work.id.equals("inspect")) jobs.add(inspected);
-            else if (entry.work.id.equals("deposit")) {
+            if (entry.work.id.equals(inspected.work.id)) jobs.add(inspected);
+            else if (entry.work.id.equals(deposit)) {
                 Work old = entry.work;
-                if (current + repeat.batch > 1728) {
-                    jobs.add(new Job(old, State.FAILED, 0, null, null, 0, "Output chest is full", null));
-                    continue;
-                }
                 var payload = com.google.gson.JsonParser.parseString(old.payload).getAsJsonObject();
                 payload.addProperty("stock", current + repeat.batch);
                 var next = new Work(old.id, old.kind, JSON.toJson(payload), old.needs, old.locks, old.sameWorkerAs);

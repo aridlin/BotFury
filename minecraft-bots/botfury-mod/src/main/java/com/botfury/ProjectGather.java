@@ -35,7 +35,7 @@ record ProjectGather(String resource, String variant, Identifier item, int count
                 || payload.count == null || payload.count < 1 || payload.count > 576) {
             throw new IllegalArgumentException("Provide mining resource, variant, item and count (1–576)");
         }
-        ResourceCatalog.blocks(payload.resource, payload.variant);
+        if (!payload.resource.equals("dropped")) ResourceCatalog.blocks(payload.resource, payload.variant);
         Identifier item = Identifier.tryParse(payload.item);
         if (item == null || !Registries.ITEM.containsId(item) || item.equals(Identifier.of("minecraft", "air"))) {
             throw new IllegalArgumentException("Unknown gathering item");
@@ -52,6 +52,8 @@ record ProjectGather(String resource, String variant, Identifier item, int count
         }
         return total;
     }
+
+    boolean fromDrops() { return resource.equals("dropped"); }
 
     MiningTask.Job mining(int port) { return new MiningTask.Job(resource, variant, port); }
 }

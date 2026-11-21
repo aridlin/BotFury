@@ -7,6 +7,7 @@
   "authors": ["BotFury"],
   "license": "MIT",
   "environment": "*",
+  "accessWidener": "botfury.accesswidener",
   "entrypoints": {
     "main": ["com.botfury.FormationServer"],
     "client": ["com.botfury.BotFuryMod"]

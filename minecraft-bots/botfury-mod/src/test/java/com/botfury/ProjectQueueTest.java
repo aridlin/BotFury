@@ -154,6 +154,50 @@ class ProjectQueueTest {
         assertEquals(java.util.Map.of("raw", 1), new ProjectQueue(journal).snapshot(80_006).get(0).supplyRecoveries());
     }
 
+    @Test void producersWorkInParallelButDepositFromDistinctStockObservations() throws Exception {
+        Path journal = directory.resolve("board.json");
+        String key = "block:5,64,0";
+        String item = "minecraft:iron_pickaxe";
+        var work = new java.util.ArrayList<ProjectQueue.Work>();
+        for (int index = 0; index < 2; index++) {
+            String lane = "lane-" + index + "-";
+            work.add(job(lane + "gather", GATHER, List.of()));
+            work.add(new ProjectQueue.Work(lane + "inspect", TRANSFER, "", List.of(lane + "gather"),
+                    Set.of(key), lane + "gather"));
+            work.add(new ProjectQueue.Work(lane + "deposit", TRANSFER, "{\"stock\":0}",
+                    List.of(lane + "inspect"), Set.of(key), lane + "inspect"));
+        }
+        var board = new ProjectQueue(journal);
+        board.submitOutput("tools", WORLD, work, new ProjectQueue.Repeat(2, item, key, 0, null, false, 54));
+        var first = board.claim(WORLD, "First", Set.of(GATHER), 0).job();
+        var second = board.claim(WORLD, "Second", Set.of(GATHER), 0).job();
+        assertEquals("lane-0-gather", first.work().id());
+        assertEquals("lane-1-gather", second.work().id());
+        assertTrue(board.finish("tools", first.work().id(), first.lease(), true, "Carried", 1));
+        assertTrue(board.finish("tools", second.work().id(), second.lease(), true, "Carried", 1));
+
+        var inspection = board.claim(WORLD, "First", Set.of(TRANSFER), 2).job();
+        assertTrue(board.finish("tools", inspection.work().id(), inspection.lease(), true, "Full",
+                new ProjectQueue.ChestReport(key, java.util.Map.of(), 0), 3));
+        assertNull(board.claim(WORLD, "First", Set.of(TRANSFER), 4));
+        board = new ProjectQueue(journal);
+        inspection = board.claim(WORLD, "First", Set.of(TRANSFER), 10_003).job();
+        assertTrue(board.finish("tools", inspection.work().id(), inspection.lease(), true, "Observed",
+                new ProjectQueue.ChestReport(key, java.util.Map.of(), 10), 10_004));
+        board = new ProjectQueue(journal);
+        assertNull(board.claim(WORLD, "Second", Set.of(TRANSFER), 10_005));
+        var delivery = board.claim(WORLD, "First", Set.of(TRANSFER), 10_005).job();
+        assertEquals("{\"stock\":2}", delivery.work().payload());
+        assertTrue(board.finish("tools", delivery.work().id(), delivery.lease(), true, "Deposited",
+                new ProjectQueue.ChestReport(key, java.util.Map.of(item, 2)), 10_006));
+        var nextInspection = board.claim(WORLD, "Second", Set.of(TRANSFER), 10_007).job();
+        assertEquals("lane-1-inspect", nextInspection.work().id());
+        assertTrue(board.finish("tools", nextInspection.work().id(), nextInspection.lease(), true, "Observed",
+                new ProjectQueue.ChestReport(key, java.util.Map.of(item, 2), 8), 10_008));
+        assertEquals("{\"stock\":4}", board.claim(WORLD, "Second", Set.of(TRANSFER), 10_009).job().work().payload());
+        assertEquals(1, board.snapshot(10_010).get(0).repeat().completed());
+    }
+
     @Test void outputCyclesAddToObservedStockAndRespectCancellationAfterRestart() throws Exception {
         Path journal = directory.resolve("board.json");
         var board = new ProjectQueue(journal);

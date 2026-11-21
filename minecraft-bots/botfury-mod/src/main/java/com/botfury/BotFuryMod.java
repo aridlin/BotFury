@@ -169,7 +169,7 @@ public class BotFuryMod implements ClientModInitializer {
         status.put("miningTask", MiningTask.status());
         if(LocalFormation.here()!=null){status.put("server",LocalFormation.here().server());status.put("dimension",LocalFormation.here().dimension());}
         status.put("uptimeMillis", System.currentTimeMillis() - startedAtMillis);
-        status.put("inventoryTask", BotInventory.status());
+        status.put("inventoryTask", ProjectWorker.enabled() ? ProjectWorker.status() : BotInventory.status());
         status.put("friends", BotFriends.names());
         status.put("lastEvent", BotEvents.last);
         status.put("lastEventLevel", BotEvents.lastLevel);

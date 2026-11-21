@@ -17,6 +17,42 @@ class ProjectQueueTest {
         return new ProjectQueue.Work(id, kind, "", needs, Set.of(locks));
     }
 
+    @Test void orderedTemporaryAccessCleanupWaitsForAllChecksEvenWhenOneFails() throws Exception {
+        var journal = directory.resolve("board.json");
+        var board = new ProjectQueue(journal);
+        String lower = "block:4,64,0";
+        String upper = "block:5,65,0";
+        board.submit("access", WORLD, List.of(
+                job("lower", BUILD, List.of(), lower),
+                job("upper", BUILD, List.of("lower"), upper),
+                job("check-left", VERIFY, List.of("upper")),
+                job("check-right", VERIFY, List.of("upper")),
+                new ProjectQueue.Work("remove-upper", EXCAVATE, "", List.of("upper"), Set.of(upper), null,
+                        new ProjectQueue.Cleanup(upper, "check-left", List.of("check-right"))),
+                new ProjectQueue.Work("remove-lower", EXCAVATE, "", List.of("lower"), Set.of(lower), null,
+                        new ProjectQueue.Cleanup(lower, "remove-upper", List.of("check-right")))));
+        long now = 0;
+        for (var id : List.of("lower", "upper")) {
+            var work = board.claim(WORLD, "Builder", Set.of(BUILD), now++).job();
+            assertEquals(id, work.work().id());
+            assertTrue(board.finish("access", id, work.lease(), true, "Observed access block", now++));
+        }
+        var first = board.claim(WORLD, "Verifier", Set.of(VERIFY), now++).job();
+        assertTrue(board.finish("access", "check-left", first.lease(), true, "Observed expected block", now++));
+        assertNull(board.claim(WORLD, "Cleaner", Set.of(EXCAVATE), now++));
+        for (int attempt = 0; attempt < 3; attempt++) {
+            var other = board.claim(WORLD, "Verifier", Set.of(VERIFY), now).job();
+            assertTrue(board.finish("access", "check-right", other.lease(), false, "Mismatched block", now + 1));
+            now += 30_000;
+        }
+        board = new ProjectQueue(journal);
+        var top = board.claim(WORLD, "Cleaner", Set.of(EXCAVATE), now++).job();
+        assertEquals("remove-upper", top.work().id());
+        assertNull(board.claim(WORLD, "Another", Set.of(EXCAVATE), now++));
+        assertTrue(board.finish("access", "remove-upper", top.lease(), true, "Observed restored air", now++));
+        assertEquals("remove-lower", board.claim(WORLD, "Cleaner", Set.of(EXCAVATE), now).job().work().id());
+    }
+
     @Test void pickupShortfallRestartsOnlyItsSupplyChainAndKeepsCompletedHandoffs() throws Exception {
         var journal = directory.resolve("board.json");
         var board = new ProjectQueue(journal);

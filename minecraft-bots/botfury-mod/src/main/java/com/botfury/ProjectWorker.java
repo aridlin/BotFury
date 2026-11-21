@@ -222,9 +222,13 @@ final class ProjectWorker {
         }
         Vec3d feet = Vec3d.ofBottomCenter(block.stand());
         var kind = assignment.job().work().kind();
+        boolean targetLoaded = client.world.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4);
+        boolean inspectNearby = kind == ProjectQueue.Kind.VERIFY && targetLoaded
+                && player.getPos().squaredDistanceTo(Vec3d.ofBottomCenter(target)) <= 16;
         boolean exactFooting = kind == ProjectQueue.Kind.EXCAVATE || kind == ProjectQueue.Kind.BUILD;
-        if (!player.isOnGround() || player.getPos().squaredDistanceTo(feet) > 1.21
-                || exactFooting && !player.getBlockPos().equals(block.stand())) {
+        boolean atStand = player.getPos().squaredDistanceTo(feet) <= 1.21
+                && (!exactFooting || player.getBlockPos().equals(block.stand()));
+        if (!player.isOnGround() || !atStand && !inspectNearby) {
             releaseCentering(client);
             stableSince = 0;
             var recovery = approachRecovery.tick(client, block.stand(),
@@ -258,7 +262,7 @@ final class ProjectWorker {
             return;
         }
         if (approach != null) halt(client);
-        if (!client.world.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)) return;
+        if (!targetLoaded) return;
         if (chest != null) {
             var result = chest.tick(client, now);
             if (result != null) {
@@ -292,6 +296,12 @@ final class ProjectWorker {
                 nextPlacement = now + seconds(1);
                 if (failure != null) finish(client, false, failure);
             }
+            return;
+        }
+        if (kind == ProjectQueue.Kind.VERIFY) {
+            String expected = block.block() + (block.properties().isEmpty() ? "" : block.properties().toString());
+            String observed = actual + (block.properties().isEmpty() ? "" : ProjectBlock.properties(state).toString());
+            finish(client, false, "Expected " + expected + " but observed " + observed + " at " + target.toShortString());
             return;
         }
         if (!excavate || !block.matches(state) || state.hasBlockEntity()

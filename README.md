@@ -499,8 +499,9 @@ Submit ordered jobs with a local HTTP POST to `/projects`. For `EXCAVATE` and
 `VERIFY`, the job's `payload` is a JSON string containing `target` and `stand`
 objects with integer `x`, `y`, `z` fields, and a `block` registry ID.
 Excavation only removes the specified block type at the target, and an
-already-clear target counts as finished. Verification checks a block ID
-without changing it. Both jobs reserve the target, stand, and the blocks
+already-clear target counts as finished. Verification checks the loaded block from
+nearby ground within four blocks, or walks to the planned stand when farther
+away. Both jobs reserve the target, stand, and the blocks
 above and below the stand. Excavation leaves block entities alone and
 requires a suitable hotbar tool for blocks that require one.
 

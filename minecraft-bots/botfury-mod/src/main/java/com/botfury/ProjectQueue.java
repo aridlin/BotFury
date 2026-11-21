@@ -11,7 +11,8 @@ import java.util.*;
 
 /** The coordinator persists each transition before acknowledging it to a worker. */
 final class ProjectQueue {
-    enum Kind { EXCAVATE, GATHER, CRAFT, SMELT, TRANSFER, BUILD, VERIFY }
+    static final int MAX_JOBS = 4096;
+    enum Kind { EXCAVATE, GATHER, CRAFT, SMELT, TRANSFER, BUILD, VERIFY, INSPECT, BARRIER }
     enum State { WAITING, LEASED, DONE, FAILED }
 
     record Cleanup(String site, String afterSettled, List<String> alsoSettled) {
@@ -21,7 +22,7 @@ final class ProjectQueue {
 
         Cleanup {
             alsoSettled = alsoSettled == null ? List.of() : List.copyOf(alsoSettled);
-            if (alsoSettled.size() > 256 || alsoSettled.stream().anyMatch(id -> !validId(id))) {
+            if (alsoSettled.size() > MAX_JOBS || alsoSettled.stream().anyMatch(id -> !validId(id))) {
                 throw new IllegalArgumentException("Invalid temporary support cleanup dependencies");
             }
             if (site == null || !site.matches("block:-?[0-9]+,-?[0-9]+,-?[0-9]+") || !validId(afterSettled)) {
@@ -45,7 +46,9 @@ final class ProjectQueue {
         }
         Work {
             if (!validId(id) || kind == null || payload == null || payload.length() > 8192
-                    || needs == null || locks == null || needs.size() > 256 || locks.size() > 128
+                    || needs == null || locks == null || needs.size() > MAX_JOBS || locks.size() > 128
+                    || kind == Kind.BARRIER && (!payload.isEmpty() || !locks.isEmpty()
+                    || sameWorkerAs != null || cleanup != null || constructionMaterial != null)
                     || needs.stream().anyMatch(dep -> !validId(dep))
                     || sameWorkerAs != null && !needs.contains(sameWorkerAs)
                     || cleanup != null && (kind != Kind.EXCAVATE || needs.size() != 1
@@ -118,6 +121,7 @@ final class ProjectQueue {
     private static final long SUPPLIER_OFFLINE_MS = 60_000;
     private static final int MAX_SUPPLY_RECOVERIES = 2;
     private static final int MAX_PROJECTS = 32;
+    private static final int MAX_DEPENDENCIES = 250_000;
     private final Path journal;
     private final Path archive;
     private final Map<String, Long> workerSeen = new HashMap<>();
@@ -200,13 +204,14 @@ final class ProjectQueue {
 
     private void submit(String id, String world, List<Work> work, Repeat repeat, String supplyChest) throws IOException {
         if (!validId(id) || world == null || world.isBlank() || world.length() > 240
-                || work == null || work.isEmpty() || work.size() > 256) {
+                || work == null || work.isEmpty() || work.size() > MAX_JOBS) {
             throw new IllegalArgumentException("Invalid project");
         }
         if (projects.containsKey(id) || readArchived(id) != null) {
             throw new IllegalArgumentException("Project already exists");
         }
         // Submit in topological order. This rejects both missing predecessors and cycles.
+        int dependencyCount = 0;
         Set<String> defined = new HashSet<>();
         List<Job> jobs = new ArrayList<>();
         for (Work item : work) {
@@ -216,9 +221,11 @@ final class ProjectQueue {
                     || !defined.add(item.id)) {
                 throw new IllegalArgumentException("Jobs must be unique and follow their dependencies");
             }
+            dependencyCount += item.needs.size() + (item.cleanup == null ? 0 : item.cleanup.alsoSettled.size());
+            if (dependencyCount > MAX_DEPENDENCIES) throw new IllegalArgumentException("Project has too many dependencies");
             jobs.add(new Job(item, State.WAITING, 0, null, null, 0, null, null));
         }
-        var project = new Project(id, world, jobs, repeat, supplyChest, Map.of());
+        var project = settleBarriers(new Project(id, world, jobs, repeat, supplyChest, Map.of()));
         var next = new LinkedHashMap<>(projects);
         if (next.size() >= MAX_PROJECTS) {
             var finished = next.values().stream().filter(ProjectQueue::terminal).findFirst()
@@ -325,7 +332,8 @@ final class ProjectQueue {
                 if (job.work.constructionMaterial != null && carried.contains(job.work.constructionMaterial)) continue;
                 if (ownedLane != null && !ownedLane.equals(lane(job.work.id))) continue;
                 if (deposit != null && job.work.kind == Kind.TRANSFER && !deposit.equals(job.work.id)) continue;
-                if (job.state != State.WAITING || job.expiresAt > now || !kinds.contains(job.work.kind)
+                if (job.state != State.WAITING || job.work.kind == Kind.BARRIER
+                        || job.expiresAt > now || !kinds.contains(job.work.kind)
                         || !done.containsAll(job.work.needs) || !Collections.disjoint(reserved, job.work.locks)) continue;
                 if (job.work.cleanup != null && (!settled(job.work.cleanup.afterSettled, done, blocked)
                         || job.work.cleanup.alsoSettled.stream().anyMatch(id -> !settled(id, done, blocked)))) continue;
@@ -636,8 +644,24 @@ final class ProjectQueue {
 
     private void commit(Project project) throws IOException {
         var next = new LinkedHashMap<>(projects);
-        next.put(project.id, project);
+        next.put(project.id, settleBarriers(project));
         persist(next);
+    }
+
+    private static Project settleBarriers(Project project) {
+        if (project.jobs.stream().noneMatch(job -> job.work.kind == Kind.BARRIER && job.state == State.WAITING)) {
+            return project;
+        }
+        Set<String> done = new HashSet<>();
+        List<Job> updated = new ArrayList<>(project.jobs.size());
+        for (Job job : project.jobs) {
+            if (job.work.kind == Kind.BARRIER && job.state == State.WAITING && done.containsAll(job.work.needs)) {
+                job = new Job(job.work, State.DONE, 0, null, null, 0, "Prerequisites complete", null);
+            }
+            if (job.state == State.DONE) done.add(job.work.id);
+            updated.add(job);
+        }
+        return project.withJobs(updated);
     }
 
     private void persist(Map<String, Project> next) throws IOException {

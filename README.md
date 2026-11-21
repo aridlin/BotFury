@@ -505,7 +505,7 @@ away. Both jobs reserve the target, stand, and the blocks
 above and below the stand. Excavation leaves block entities alone and
 requires a suitable hotbar tool for blocks that require one.
 
-For a small structure build, put a compressed vanilla `.nbt` or a WorldEdit
+For a structure build, put a compressed vanilla `.nbt` or a WorldEdit
 Sponge v2/v3 `.schem` file in the controller's `config/botfury-structures`
 directory.
 Run `/bf project build example.nbt 100 64 100` at a loaded site. The command
@@ -539,7 +539,12 @@ When permanent steps are unavailable, the planner can add temporary
 cobblestone staircases beside separated parts of the structure. It verifies
 the build before taking the staircases down in reverse construction order. Supplied builds include the
 scaffold material, and workers need a pickaxe for teardown.
-The planner rejects entities, block entities, and plans over 256 jobs.
+The planner accepts up to 32,768 cells and 4,096 jobs, with a separate
+limit on dependency count. For volumes above 128 cells, workers check up
+to 32 exact block states in one loaded chunk per inspection job. This
+includes explicit air and lets workers inspect high or enclosed cells
+from a safe stand near the chunk. The planner rejects entities and block
+entities.
 Vanilla chest jobs and explicit project jobs
 remain available through the local API.
 
@@ -568,7 +573,7 @@ unrelated material chains keep their progress.
 Automatic supply uses the server's crafting and furnace recipes, including
 intermediate ingredients, when it can trace them to supported raw resources.
 For example, it can make glass from sand and bricks from clay. A material
-with no supported source is reported before the project starts. The 256-job
+with no supported source is reported before the project starts. The 4,096-job
 limit includes production jobs. Keep reachable raw materials outside the
 construction and chest area.
 

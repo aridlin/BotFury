@@ -495,18 +495,23 @@ without changing it. Both jobs reserve the target, stand, and the blocks
 above and below the stand. Excavation leaves block entities alone and
 requires a suitable hotbar tool for blocks that require one.
 
-For a small vanilla structure build, put a compressed structure-block
-`.nbt` file in the controller's `config/botfury-structures` directory.
+For a small structure build, put a compressed vanilla `.nbt` or a WorldEdit
+Sponge v2/v3 `.schem` file in the controller's `config/botfury-structures`
+directory.
 Run `/bf project build example.nbt 100 64 100` at a loaded site. The command
 queues the project and enables workers on the selected bots. It plans
 excavation for conflicting blocks, placements in support order, and a
 verification pass after changes complete. The command reports the material
 count. Stock the bots with the blocks they will place.
 
-This importer handles single-palette vanilla structures, full blocks with
-one block state, and explicit air. It checks for a nearby clear stand and
-support under each new block, and rejects block entities and structures
-requiring over 256 jobs. Use an already prepared site with room for the
+For `.schem` files, the coordinates specify the minimum corner. The planner
+uses the block volume, including air, and leaves biomes untouched. Its
+coordinates take precedence over the stored paste offset.
+
+The vanilla importer uses a single palette. Both formats accept full,
+single-state blocks and explicit air. The planner checks for reachable
+stands and support under each new block. It rejects entities, block
+entities, and structures requiring over 256 jobs. Use an already prepared site with room for the
 bots to walk to the stands. Vanilla chest jobs and explicit project jobs
 remain available through the local API.
 

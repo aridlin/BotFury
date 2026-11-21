@@ -48,15 +48,14 @@ final class OutputOrder {
             var chest = new ProjectBlock(storage.key, chestStand, CHEST);
             var table = findStation(client, storage.key, Identifier.of("minecraft", "crafting_table"));
             var furnace = findStation(client, storage.key, Identifier.of("minecraft", "furnace"));
-            var steps = new OutputRecipe(client, table != null, furnace != null).plan(item);
+            var steps = new MaterialRecipe(client, table != null, furnace != null).plan(item, batch, true);
             int selected = (int) BotTracker.targets().stream()
                     .filter(bot -> bot.fresh() && bot.connected() && bot.alive()).count();
             var plan = plan(storage, chest, table, furnace, item, batch, stackSize, Math.max(1, selected), steps);
             String id = "output-" + UUID.randomUUID().toString().substring(0, 8);
             ProjectBroker.submitOutput(id, here, plan);
             int workers = BotTracker.sendSelected("project:worker " + port);
-            String method = steps.get(item).kind() == ProjectQueue.Kind.GATHER
-                    && "dropped".equals(steps.get(item).resource()) ? " (carried or dropped items)" : "";
+            String method = steps.usesDroppedItems() ? " (carried or dropped items)" : "";
             ClientActions.message(client, "Queued " + id + " for batches of " + batch + " " + item
                     + method + " · " + workers + " bots requested");
             return 1;
@@ -112,24 +111,7 @@ final class OutputOrder {
     }
 
     private static Plan plan(Storage storage, ProjectBlock chest, ProjectBlock table, ProjectBlock furnace,
-                             Identifier item, int batch, int stackSize, int workers, Map<Identifier, OutputRecipe.Step> steps) {
-        var demand = new HashMap<Identifier, Integer>();
-        demand.put(item, batch);
-        var ordered = new ArrayList<>(steps.entrySet());
-        var reversed = new ArrayList<>(ordered);
-        Collections.reverse(reversed);
-        for (var entry : reversed) {
-            int count = demand.getOrDefault(entry.getKey(), 0);
-            var step = entry.getValue();
-            int min = (count + step.yield() - 1) / step.yield();
-            if (count > (step.kind() == ProjectQueue.Kind.GATHER ? 576 : 256)) {
-                throw new IllegalArgumentException("This recipe needs a smaller output batch");
-            }
-            step.ingredients().forEach((ingredient, quantity) -> demand.merge(ingredient, quantity * min, Integer::sum));
-            if (step.cookTime() > 0) {
-                demand.merge(OutputRecipe.COAL, (int) (((long) step.cookTime() * min + 1599) / 1600), Integer::sum);
-            }
-        }
+                             Identifier item, int batch, int stackSize, int workers, MaterialRecipe.Plan steps) {
         int capacity = stackSize * storage.slots();
         int lanes = Math.min(workers, Math.min(Math.max(1, capacity / batch), JOB_LIMIT / (steps.size() + 2)));
         if (lanes == 0) throw new IllegalArgumentException("This recipe requires too many jobs");
@@ -137,40 +119,13 @@ final class OutputOrder {
         var protectedArea = StructureSupply.union(new ProjectGather.Area(chest.target(), chest.target()), chest, table, furnace);
         for (int lane = 0; lane < lanes; lane++) {
             String prefix = "lane-" + lane + "-";
-            String previous = null;
-            int stage = 0;
-            for (var entry : ordered) {
-                var id = entry.getKey();
-                var step = entry.getValue();
-                int quantity = demand.getOrDefault(id, 0);
-                if (quantity == 0) continue;
-                String name = prefix + "produce-" + stage++;
-                JsonObject payload;
-                ProjectBlock station = null;
-                if (step.kind() == ProjectQueue.Kind.GATHER) {
-                    payload = new JsonObject();
-                    payload.addProperty("resource", step.resource());
-                    payload.addProperty("variant", "both");
-                    payload.addProperty("item", id.toString());
-                    payload.add("exclude", JSON.toJsonTree(Map.of("min", StructureSupply.position(protectedArea.min()),
-                            "max", StructureSupply.position(protectedArea.max()))));
-                } else {
-                    station = step.kind() == ProjectQueue.Kind.CRAFT ? table : furnace;
-                    payload = payload(station);
-                    payload.addProperty("recipe", step.recipe().toString());
-                    if (step.cookTime() > 0) {
-                        payload.addProperty("input", step.ingredients().keySet().iterator().next().toString());
-                        payload.addProperty("fuel", OutputRecipe.COAL.toString());
-                    }
-                }
-                payload.addProperty("count", quantity);
-                jobs.add(work(name, step.kind(), station, payload, previous));
-                previous = name;
-            }
-            var inspect = payload(chest);
+            var production = steps.jobs(prefix + "produce-", protectedArea, table, furnace);
+            jobs.addAll(production);
+            String previous = production.get(production.size() - 1).id();
+            var inspect = MaterialRecipe.stationPayload(chest);
             inspect.addProperty("direction", "INSPECT");
             inspect.addProperty("item", item.toString());
-            var deposit = payload(chest);
+            var deposit = MaterialRecipe.stationPayload(chest);
             deposit.addProperty("direction", "DEPOSIT");
             deposit.addProperty("item", item.toString());
             deposit.addProperty("stock", 0);
@@ -178,23 +133,15 @@ final class OutputOrder {
                 inspect.add("partner", JSON.toJsonTree(StructureSupply.position(storage.other)));
                 deposit.add("partner", JSON.toJsonTree(StructureSupply.position(storage.other)));
             }
-            for (var transfer : List.of(work(prefix + "inspect", ProjectQueue.Kind.TRANSFER, null, inspect, previous),
-                    work(prefix + "deposit", ProjectQueue.Kind.TRANSFER, null, deposit, prefix + "inspect"))) {
-                jobs.add(ProjectChest.parse(transfer.payload()).reserve(transfer));
-            }
+            jobs.add(transfer(prefix + "inspect", inspect, previous));
+            jobs.add(transfer(prefix + "deposit", deposit, prefix + "inspect"));
         }
         return new Plan(List.copyOf(jobs), new ProjectQueue.Repeat(batch, item.toString(),
                 ProjectBlock.key(storage.key), 0, null, false, capacity));
     }
 
-    private static ProjectQueue.Work work(String id, ProjectQueue.Kind kind, ProjectBlock station,
-                                          JsonObject payload, String after) {
-        var work = new ProjectQueue.Work(id, kind, JSON.toJson(payload), after == null ? List.of() : List.of(after), Set.of(), after);
-        return station == null ? work : station.reserve(work);
-    }
-
-    private static JsonObject payload(ProjectBlock location) {
-        return JSON.toJsonTree(new ProjectBlock.Payload(StructureSupply.position(location.target()),
-                StructureSupply.position(location.stand()), location.block().toString())).getAsJsonObject();
+    private static ProjectQueue.Work transfer(String id, JsonObject payload, String after) {
+        return ProjectChest.parse(payload.toString()).reserve(new ProjectQueue.Work(id,
+                ProjectQueue.Kind.TRANSFER, JSON.toJson(payload), List.of(after), Set.of(), after));
     }
 }

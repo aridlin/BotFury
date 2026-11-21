@@ -535,10 +535,12 @@ other workers can reacquire the materials after a 60-second grace period.
 Each material chain can be reacquired twice. Completed placements and
 unrelated material chains keep their progress.
 
-Automatic supply supports cobblestone, stone, stone bricks, diamond blocks,
-iron blocks, copper blocks, oak planks, and spruce planks. Each smelting
-job handles up to 24 input items, and the 256-job limit includes production
-jobs. Keep reachable raw materials outside the construction and chest area.
+Automatic supply uses the server's crafting and furnace recipes, including
+intermediate ingredients, when it can trace them to supported raw resources.
+For example, it can make glass from sand and bricks from clay. A material
+with no supported source is reported before the project starts. The 256-job
+limit includes production jobs. Keep reachable raw materials outside the
+construction and chest area.
 
 For a `TRANSFER` job, set `block` to `minecraft:chest` and add a
 `direction` of `DEPOSIT`, `WITHDRAW` or `INSPECT` to the payload. Supply

@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit;
 final class ProjectWorker {
     private static final Gson JSON = new Gson();
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(750)).build();
-    private static final Set<ProjectQueue.Kind> KINDS = Set.of(ProjectQueue.Kind.EXCAVATE, ProjectQueue.Kind.VERIFY, ProjectQueue.Kind.TRANSFER);
+    private static final Set<ProjectQueue.Kind> KINDS = Set.of(ProjectQueue.Kind.EXCAVATE, ProjectQueue.Kind.VERIFY, ProjectQueue.Kind.TRANSFER, ProjectQueue.Kind.BUILD);
     private static int port;
     private static int generation;
     private static boolean pending;
@@ -29,7 +29,7 @@ final class ProjectWorker {
     private static BaritoneSettings approach;
     private static Vec3d approachProgress;
     private static long retryApproach;
-    private static long nextRequest, deadline, taskEnd, stableSince;
+    private static long nextRequest, deadline, taskEnd, stableSince, nextPlacement;
     private static Boolean success;
     private static String evidence;
     private static boolean breaking;
@@ -40,6 +40,7 @@ final class ProjectWorker {
     static boolean supports(ProjectQueue.Kind kind) { return KINDS.contains(kind); }
 
     static void start(MinecraftClient client, int coordinator) {
+        if (port == coordinator) return;
         LocalFormation.pauseMovement();
         BotInventory.hold();
         port = coordinator;
@@ -69,7 +70,7 @@ final class ProjectWorker {
         success = null;
         evidence = null;
         pending = false;
-        nextRequest = deadline = taskEnd = stableSince = 0;
+        nextRequest = deadline = taskEnd = stableSince = nextPlacement = 0;
     }
 
     private static void halt(MinecraftClient client) {
@@ -149,8 +150,10 @@ final class ProjectWorker {
         }
         var state = client.world.getBlockState(target);
         var actual = Registries.BLOCK.getId(state.getBlock());
-        boolean excavate = assignment.job().work().kind() == ProjectQueue.Kind.EXCAVATE;
-        boolean matches = excavate ? state.isAir() : actual.equals(block.block());
+        var kind = assignment.job().work().kind();
+        boolean excavate = kind == ProjectQueue.Kind.EXCAVATE;
+        boolean matches = excavate || block.block().equals(net.minecraft.util.Identifier.of("minecraft", "air"))
+                ? state.isAir() : actual.equals(block.block());
         if (matches) {
             halt(client);
             if (stableSince == 0) stableSince = now;
@@ -158,6 +161,14 @@ final class ProjectWorker {
             return;
         }
         stableSince = 0;
+        if (kind == ProjectQueue.Kind.BUILD) {
+            if (now >= nextPlacement) {
+                var failure = ProjectPlacement.attempt(client, block);
+                nextPlacement = now + seconds(1);
+                if (failure != null) finish(client, false, failure);
+            }
+            return;
+        }
         if (!excavate || !actual.equals(block.block()) || state.hasBlockEntity()
                 || state.getHardness(client.world, target) < 0) {
             finish(client, false, "Unexpected or protected block " + actual + " at " + target.toShortString());

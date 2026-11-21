@@ -9,7 +9,7 @@ import java.util.Set;
 
 /** Explicit position, expected block, and an approved place to stand while working. */
 record ProjectBlock(BlockPos target, BlockPos stand, Identifier block) {
-    private record Position(Integer x, Integer y, Integer z) {
+    record Position(Integer x, Integer y, Integer z) {
         BlockPos checked() {
             if (x == null || y == null || z == null || Math.abs((long)x) > 29_999_983
                     || Math.abs((long)z) > 29_999_983 || y < -64 || y > 319) {
@@ -18,7 +18,7 @@ record ProjectBlock(BlockPos target, BlockPos stand, Identifier block) {
             return new BlockPos(x, y, z);
         }
     }
-    private record Payload(Position target, Position stand, String block) {}
+    record Payload(Position target, Position stand, String block) {}
 
     static ProjectBlock parse(String json) {
         Payload data = new Gson().fromJson(json, Payload.class);
@@ -39,6 +39,7 @@ record ProjectBlock(BlockPos target, BlockPos stand, Identifier block) {
     ProjectQueue.Work reserve(ProjectQueue.Work work) {
         Set<String> locks = new HashSet<>(work.locks());
         locks.add(key(target));
+        if (work.kind() == ProjectQueue.Kind.BUILD) locks.add(key(target.down()));
         locks.add(key(stand));
         locks.add(key(stand.down()));
         locks.add(key(stand.up()));

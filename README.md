@@ -478,7 +478,7 @@ undoing the dodge; Baritone resumes afterwards. No valid landing means no jump.
 Stop and task pause suppress evasion. These checks cannot guarantee every dodge
 under network latency or every anti-cheat configuration. No server mod is needed.
 
-### Project excavation workers
+### Project workers and structure builds
 
 Use `/bf project workers` on the controller to enable project work on the
 selected bots. Regular Stop cancels worker mode. Workers claim jobs from the
@@ -494,8 +494,20 @@ without changing it. Both jobs reserve the target, stand, and the blocks
 above and below the stand. Excavation leaves block entities alone and
 requires a suitable hotbar tool for blocks that require one.
 
-The coordinator still needs explicit project descriptions. Workers currently
-execute excavation, verification and shared chest jobs.
+For a small vanilla structure build, put a compressed structure-block
+`.nbt` file in the controller's `config/botfury-structures` directory.
+Run `/bf project build example.nbt 100 64 100` at a loaded site. The command
+queues the project and enables workers on the selected bots. It plans
+excavation for conflicting blocks, placements in support order, and a
+verification pass after changes complete. The command reports the material
+count. Stock the bots with the blocks they will place.
+
+This importer handles single-palette vanilla structures, full blocks with
+one block state, and explicit air. It checks for a nearby clear stand and
+support under each new block, and rejects block entities and structures
+requiring over 256 jobs. Use an already prepared site with room for the
+bots to walk to the stands. Vanilla chest jobs and explicit project jobs
+remain available through the local API.
 
 For a `TRANSFER` job, set `block` to `minecraft:chest` and add a
 `direction` of `DEPOSIT`, `WITHDRAW` or `INSPECT` to the payload. Supply

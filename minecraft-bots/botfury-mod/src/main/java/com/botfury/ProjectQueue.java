@@ -28,7 +28,20 @@ final class ProjectQueue {
     }
 
     record Job(Work work, State state, int attempts, String worker, UUID lease, long expiresAt,
-               String evidence) {}
+               String evidence, ChestObservation chest) {}
+    record ChestReport(String location, Map<String, Integer> items) {
+        ChestReport {
+            if (location == null || !location.matches("block:-?[0-9]+,-?[0-9]+,-?[0-9]+")
+                    || items == null || items.size() > 27
+                    || items.entrySet().stream().anyMatch(item -> !item.getKey().matches("[a-z0-9_.-]+:[a-z0-9_./-]+")
+                    || item.getValue() == null || item.getValue() < 1 || item.getValue() > 1728)
+                    || items.values().stream().mapToInt(Integer::intValue).sum() > 1728) {
+                throw new IllegalArgumentException("Invalid chest observation");
+            }
+            items = Map.copyOf(items);
+        }
+    }
+    record ChestObservation(ChestReport report, long observedAt) {}
     record Project(String id, String world, List<Job> jobs) {
         Project { jobs = List.copyOf(jobs); }
     }
@@ -77,7 +90,7 @@ final class ProjectQueue {
             if (item == null || !defined.containsAll(item.needs) || !defined.add(item.id)) {
                 throw new IllegalArgumentException("Jobs must be unique and follow their dependencies");
             }
-            jobs.add(new Job(item, State.WAITING, 0, null, null, 0, null));
+            jobs.add(new Job(item, State.WAITING, 0, null, null, 0, null, null));
         }
         commit(new Project(id, world, jobs));
     }
@@ -107,7 +120,7 @@ final class ProjectQueue {
                 if (job.state != State.WAITING || !kinds.contains(job.work.kind)
                         || !done.containsAll(job.work.needs) || !Collections.disjoint(reserved, job.work.locks)) continue;
                 Job assigned = new Job(job.work, State.LEASED, job.attempts + 1, worker,
-                        UUID.randomUUID(), now + LEASE_MS, null);
+                        UUID.randomUUID(), now + LEASE_MS, null, job.chest);
                 replace(project, assigned);
                 return new Assignment(project.id, project.world, assigned);
             }
@@ -120,27 +133,52 @@ final class ProjectQueue {
         Job job = find(project, jobId);
         if (!owns(job, token, now)) return null;
         Job renewed = new Job(job.work, State.LEASED, job.attempts, job.worker,
-                job.lease, now + LEASE_MS, null);
+                job.lease, now + LEASE_MS, null, job.chest);
         replace(project, renewed);
         return renewed;
     }
 
     synchronized boolean finish(String projectId, String jobId, UUID token, boolean success,
                                 String evidence, long now) throws IOException {
+        return finish(projectId, jobId, token, success, evidence, null, now);
+    }
+
+    synchronized boolean finish(String projectId, String jobId, UUID token, boolean success,
+                                String evidence, ChestReport chest, long now) throws IOException {
         if (evidence == null || evidence.isBlank() || evidence.length() > 2048) {
             throw new IllegalArgumentException("Report an observed outcome or failure reason");
         }
         Project project = projects.get(projectId);
         Job job = find(project, jobId);
         if (job != null && job.state == State.DONE) {
-            return success && Objects.equals(job.lease, token) && job.evidence.equals(evidence);
+            return success && Objects.equals(job.lease, token) && job.evidence.equals(evidence)
+                    && Objects.equals(job.chest == null ? null : job.chest.report, chest);
         }
         if (!owns(job, token, now)) return false;
+        if (chest != null && (job.work.kind != Kind.TRANSFER || !job.work.locks.contains(chest.location))) {
+            throw new IllegalArgumentException("Chest report does not match the leased transfer");
+        }
+        if (success && job.work.kind == Kind.TRANSFER && chest == null) {
+            throw new IllegalArgumentException("Successful transfer requires a chest observation");
+        }
+        var observation = chest == null ? job.chest : new ChestObservation(chest, now);
         Job result = success
-                ? new Job(job.work, State.DONE, job.attempts, job.worker, job.lease, 0, evidence)
-                : retry(job, evidence);
+                ? new Job(job.work, State.DONE, job.attempts, job.worker, job.lease, 0, evidence, observation)
+                : retry(job, evidence, observation);
         replace(project, result);
         return true;
+    }
+
+    synchronized Map<String, ChestObservation> chestStock(String world) {
+        Map<String, ChestObservation> latest = new TreeMap<>();
+        for (Project project : projects.values()) {
+            if (!project.world.equals(world)) continue;
+            for (Job job : project.jobs) {
+                if (job.chest != null) latest.merge(job.chest.report.location, job.chest,
+                        (a, b) -> a.observedAt > b.observedAt ? a : b);
+            }
+        }
+        return latest;
     }
 
     private void expire(long now) throws IOException {
@@ -152,7 +190,7 @@ final class ProjectQueue {
                 Job job = project.jobs.get(i);
                 if (job.state == State.LEASED && job.expiresAt <= now) {
                     if (jobs == null) jobs = new ArrayList<>(project.jobs);
-                    jobs.set(i, retry(job, "Worker lease expired"));
+                    jobs.set(i, retry(job, "Worker lease expired", job.chest));
                 }
             }
             if (jobs != null) {
@@ -163,9 +201,9 @@ final class ProjectQueue {
         if (changed) persist(next);
     }
 
-    private static Job retry(Job job, String reason) {
+    private static Job retry(Job job, String reason, ChestObservation chest) {
         State state = job.attempts < MAX_ATTEMPTS ? State.WAITING : State.FAILED;
-        return new Job(job.work, state, job.attempts, null, null, 0, reason);
+        return new Job(job.work, state, job.attempts, null, null, 0, reason, chest);
     }
 
     private static boolean owns(Job job, UUID token, long now) {

@@ -45,7 +45,7 @@ record ProjectBlock(BlockPos target, BlockPos stand, Identifier block) {
         return new ProjectQueue.Work(work.id(), work.kind(), work.payload(), work.needs(), locks);
     }
 
-    private static String key(BlockPos block) {
+    static String key(BlockPos block) {
         return "block:" + block.getX() + "," + block.getY() + "," + block.getZ();
     }
 }

@@ -123,7 +123,8 @@ class ProjectQueueTest {
         var material = recovered.claim(WORLD, "Miner", Set.of(GATHER), 1).job();
         assertTrue(recovered.finish("house", "materials", material.lease(), true, "Gathered", 2));
         var store = recovered.claim(WORLD, "Miner", Set.of(TRANSFER), 3).job();
-        assertTrue(recovered.finish("house", "store", store.lease(), true, "Deposited", 4));
+        var observation = new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:stone", 1));
+        assertTrue(recovered.finish("house", "store", store.lease(), true, "Deposited", observation, 4));
         assertEquals("other", recovered.claim(WORLD, "Other", Set.of(TRANSFER), 5).project());
     }
 

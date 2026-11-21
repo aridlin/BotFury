@@ -222,8 +222,8 @@ final class StructureProject {
                 removed.add(cell.pos);
             }
             if (cell.desired.isAir()) continue;
-            if (!ProjectPlacement.container(cell.desired) && !cell.desired.isFullCube(client.world, cell.pos)) {
-                throw new IllegalArgumentException("Not a full cube: " + cell.desired);
+            if (!ProjectPlacement.placeable(cell.desired, client.world, cell.pos)) {
+                throw new IllegalArgumentException("Unsupported placement geometry: " + cell.desired);
             }
             pending.put(i, cell);
         }
@@ -568,8 +568,8 @@ final class StructureProject {
             var support = cell.pos.offset(face.getOpposite());
             if (!loaded(client, support)) continue;
             var state = desired.containsKey(support) ? ready.get(support) : client.world.getBlockState(support);
-            if (state == null || !ProjectPlacement.support(state, placement, client.world, support)) continue;
-            Predicate<BlockPos> visible = pos -> clearBuildFace(client, pos, cell.pos, support, face, desired, avoidCorners);
+            if (state == null || !ProjectPlacement.support(state, placement, face, client.world, support)) continue;
+            Predicate<BlockPos> visible = pos -> clearBuildFace(client, pos, cell.pos, support, face, desired, placement, avoidCorners);
             var stand = chooseStand(client, cell.pos, desired, face, visible);
             if (stand == null) {
                 stand = findStand(client, cell.pos, face, true, pos ->
@@ -580,7 +580,7 @@ final class StructureProject {
             current.putAll(ready);
             stand = findStand(client, cell.pos, face, true, pos ->
                     safeStand(client, pos, cleared) && safeStand(client, pos, desired)
-                            && clearBuildFace(client, pos, cell.pos, support, face, current, avoidCorners));
+                            && clearBuildFace(client, pos, cell.pos, support, face, current, placement, avoidCorners));
             // Later placements wait until a face that will be covered has been used.
             if (stand != null) return new BuildPose(stand, face, support, true);
             for (boolean exposed : new boolean[]{false, true}) {
@@ -589,7 +589,7 @@ final class StructureProject {
                 stand = findStand(client, cell.pos, face, true, pos -> {
                     if (!placed.containsKey(pos.down()) || !safeStand(client, pos, current)
                             || !safeStand(client, pos, visibleLayout)
-                            || !clearBuildFace(client, pos, cell.pos, support, face, visibleLayout, avoidCorners)) return false;
+                            || !clearBuildFace(client, pos, cell.pos, support, face, visibleLayout, placement, avoidCorners)) return false;
                     var access = builtAccess(client, pos, cell.pos, cleared, current, visibleLayout, placed);
                     if (access == null) return false;
                     accessRoutes.put(pos, access);
@@ -647,7 +647,7 @@ final class StructureProject {
 
     private static TemporarySupport temporarySupport(MinecraftClient client, Cell cell, Map<BlockPos, BlockState> layout,
                                                        Map<BlockPos, BlockState> cleared) {
-        if (ProjectPlacement.faces(cell.desired).contains(Direction.UP)) return null;
+        if (ProjectShapedBlock.recognized(cell.desired) || ProjectPlacement.faces(cell.desired).contains(Direction.UP)) return null;
         for (var face : ProjectPlacement.faces(cell.desired)) {
             var support = cell.pos.offset(face.getOpposite());
             var floorPos = support.down();
@@ -673,15 +673,16 @@ final class StructureProject {
 
     private static boolean clearBuildFace(MinecraftClient client, BlockPos stand, BlockPos target,
                                           BlockPos support, Direction face, Map<BlockPos, BlockState> desired) {
-        return clearBuildFace(client, stand, target, support, face, desired, false);
+        return clearBuildFace(client, stand, target, support, face, desired,
+                desired.getOrDefault(target, Blocks.AIR.getDefaultState()), false);
     }
 
     private static boolean clearBuildFace(MinecraftClient client, BlockPos stand, BlockPos target,
                                           BlockPos support, Direction face, Map<BlockPos, BlockState> desired,
-                                          boolean avoidCorners) {
+                                          BlockState placement, boolean avoidCorners) {
         var eye = Vec3d.ofBottomCenter(stand).add(0, 1.62, 0);
         var state = desired.getOrDefault(support, client.world.getBlockState(support));
-        var point = ProjectPlacement.facePoint(support, face, state);
+        var point = ProjectPlacement.facePoint(support, face, state, placement);
         if (!hitsFace(client, eye, point, target, support, face, desired)) return false;
         if (!avoidCorners) return true;
         // A ray that only slips past the exact corner of a block is too fragile in game.
@@ -770,7 +771,7 @@ final class StructureProject {
                                       boolean allowDiagonal, int[] heights, Predicate<BlockPos> suitable) {
         for (int dy : heights) for (int distance : new int[]{2, 1, 3}) {
             for (var direction : Direction.Type.HORIZONTAL) {
-                if (face != null && face != Direction.UP && direction != face) continue;
+                if (face != null && face.getAxis().isHorizontal() && direction != face) continue;
                 for (int lateral : allowDiagonal ? new int[]{0, 1, -1, 2, -2} : new int[]{0}) {
                     var stand = target.offset(direction, distance).offset(direction.rotateYClockwise(), lateral).up(dy);
                     if (stand.getSquaredDistance(target) <= 16 && !stand.up().equals(target)

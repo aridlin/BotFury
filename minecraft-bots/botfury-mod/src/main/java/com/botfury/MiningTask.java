@@ -88,7 +88,7 @@ final class MiningTask {
         var ids=ResourceCatalog.blocks(next.resource,next.variant);
         for(String id:ids)if(!Registries.BLOCK.containsId(new Identifier(id))){fail("Unknown mining block: "+id);return;}
         for(String id:ids){var state=Registries.BLOCK.get(new Identifier(id)).getDefaultState();if(state.isAir()||state.getHardness(client.world,client.player.getBlockPos())<0){fail("Choose a breakable mining block");return;}}
-        try{settings=new BaritoneSettings(exclude == null);}catch(ReflectiveOperationException|LinkageError e){fail("Could not configure mining approach");return;}
+        try{settings=new BaritoneSettings(exclude == null, project);}catch(ReflectiveOperationException|LinkageError e){fail("Could not configure mining approach");return;}
         projectMining=project;
         rememberedSite = null;
         observedSite = null;

@@ -3,12 +3,15 @@ package com.botfury;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.ChestBlock;
-import net.minecraft.block.HopperBlock;
 import net.minecraft.block.FallingBlock;
+import net.minecraft.block.FenceGateBlock;
+import net.minecraft.block.HopperBlock;
 import net.minecraft.block.PillarBlock;
+import net.minecraft.block.SlabBlock;
 import net.minecraft.block.enums.ChestType;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.BlockItem;
+import net.minecraft.item.ItemPlacementContext;
 import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import net.minecraft.registry.Registries;
@@ -31,6 +34,7 @@ final class ProjectPlacement {
     static boolean supported(BlockState state) {
         if (state.isOf(Blocks.CHEST)) return !state.get(ChestBlock.WATERLOGGED);
         if (state.isOf(Blocks.HOPPER)) return state.get(HopperBlock.ENABLED);
+        if (ProjectShapedBlock.recognized(state)) return ProjectShapedBlock.supported(state);
         return !state.isAir() && !state.hasBlockEntity()
                 && (state.getBlock().getStateManager().getStates().size() == 1
                 || state.getBlock() instanceof PillarBlock && state.getProperties().size() == 1 && state.contains(PillarBlock.AXIS))
@@ -50,9 +54,16 @@ final class ProjectPlacement {
         return state.with(ChestBlock.CHEST_TYPE, ChestType.SINGLE);
     }
 
-    static boolean support(BlockState state, BlockState desired, BlockView world, BlockPos pos) {
+    static boolean placeable(BlockState state, BlockView world, BlockPos pos) {
+        return supported(state) && (container(state) || ProjectShapedBlock.recognized(state) || state.isFullCube(world, pos));
+    }
+
+    static boolean support(BlockState state, BlockState desired, Direction face, BlockView world, BlockPos pos) {
         if (desired.isOf(Blocks.CHEST) && desired.get(ChestBlock.CHEST_TYPE) != ChestType.SINGLE) {
             return state.equals(singleChest(desired));
+        }
+        if (state.getBlock() instanceof SlabBlock && desired.getBlock() instanceof SlabBlock) {
+            return face.getAxis().isHorizontal() && state.get(SlabBlock.TYPE) == desired.get(SlabBlock.TYPE);
         }
         return desired.isOf(Blocks.HOPPER) && container(state)
                 || !state.hasBlockEntity() && state.isFullCube(world, pos);
@@ -62,6 +73,7 @@ final class ProjectPlacement {
         if (state.isOf(Blocks.CHEST)) return List.of(state.get(ChestBlock.CHEST_TYPE) == ChestType.SINGLE
                 ? Direction.UP : ChestBlock.getFacing(state).getOpposite());
         if (state.isOf(Blocks.HOPPER)) return List.of(state.get(HopperBlock.FACING).getOpposite());
+        if (ProjectShapedBlock.recognized(state)) return ProjectShapedBlock.faces(state);
         if (!state.contains(PillarBlock.AXIS)) {
             if (state.getBlock() instanceof FallingBlock) return List.of(Direction.UP);
             return List.of(Direction.UP, Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST);
@@ -73,7 +85,7 @@ final class ProjectPlacement {
         };
     }
 
-    static Vec3d facePoint(BlockPos support, Direction face, BlockState state) {
+    static Vec3d facePoint(BlockPos support, Direction face, BlockState state, BlockState desired) {
         if (state.isOf(Blocks.CHEST)) {
             if (face == Direction.UP) return Vec3d.ofCenter(support).add(0, .374, 0);
             return Vec3d.ofCenter(support).add(Vec3d.of(face.getVector()).multiply(.436));
@@ -82,7 +94,8 @@ final class ProjectPlacement {
             if (face == Direction.UP) return Vec3d.ofCenter(support).add(.375, .499, 0);
             return Vec3d.ofCenter(support).add(Vec3d.of(face.getVector()).multiply(.499)).add(0, .3125, 0);
         }
-        return Vec3d.ofCenter(support).add(Vec3d.of(face.getVector()).multiply(.499));
+        var point = Vec3d.ofCenter(support).add(Vec3d.of(face.getVector()).multiply(.499));
+        return face.getAxis().isHorizontal() ? point.add(0, ProjectShapedBlock.clickHeight(desired) - .5, 0) : point;
     }
 
     /** Null means a placement packet was accepted for processing, or an inventory swap is pending. */
@@ -91,21 +104,22 @@ final class ProjectPlacement {
         var target = block.target();
         var desired = block.desired();
         var item = desired.getBlock().asItem();
-        if (!supported(desired) || !faces(desired).contains(block.face())
-                || !container(desired) && !desired.isFullCube(client.world, target)) {
+        if (!placeable(desired, client.world, target) || !faces(desired).contains(block.face())) {
             return "This block needs placement behavior the project worker does not support";
         }
-        if (!client.world.getBlockState(target).isAir()) return "Build target is occupied";
         if (player.currentScreenHandler != player.playerScreenHandler
                 || !player.currentScreenHandler.getCursorStack().isEmpty()) return "Close the open container or clear the cursor";
+        var observed = client.world.getBlockState(target);
+        if (ProjectShapedBlock.canOpen(observed, desired)) return open(client, target, desired);
+        if (!observed.isAir()) return "Build target is occupied";
         var support = block.support();
         Vec3d eye = player.getEyePos();
         var supportState = client.world.getBlockState(support);
-        Vec3d point = facePoint(support, block.face(), supportState);
+        Vec3d point = facePoint(support, block.face(), supportState, desired);
         var hit = client.world.raycast(new RaycastContext(eye, point, RaycastContext.ShapeType.OUTLINE,
                 RaycastContext.FluidHandling.NONE, player));
         double reach = client.interactionManager.getReachDistance() - .1;
-        if (!support(supportState, desired, client.world, support)
+        if (!support(supportState, desired, block.face(), client.world, support)
                 || eye.squaredDistanceTo(point) > reach * reach || hit.getType() != HitResult.Type.BLOCK
                 || !support.equals(hit.getBlockPos()) || hit.getSide() != block.face()) {
             return "No reachable solid support face for " + target.toShortString();
@@ -126,11 +140,9 @@ final class ProjectPlacement {
         player.getInventory().selectedSlot = slot;
         player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, hit.getPos());
         boolean sneak = desired.isOf(Blocks.CHEST) || container(supportState);
-        if (desired.isOf(Blocks.CHEST)) {
-            player.setYaw(desired.get(ChestBlock.FACING).getOpposite().asRotation());
-            player.networkHandler.sendPacket(new PlayerMoveC2SPacket.LookAndOnGround(
-                    player.getYaw(), player.getPitch(), player.isOnGround()));
-        }
+        Direction facing = desired.isOf(Blocks.CHEST) ? desired.get(ChestBlock.FACING).getOpposite()
+                : ProjectShapedBlock.playerFacing(desired);
+        if (facing != null) facePlayer(client, facing);
         boolean startSneak = sneak && !player.isSneaking();
         if (startSneak) {
             player.input.sneaking = true;
@@ -138,6 +150,15 @@ final class ProjectPlacement {
         }
         ActionResult result;
         try {
+            if (ProjectShapedBlock.recognized(desired)) {
+                var context = new ItemPlacementContext(player, Hand.MAIN_HAND, player.getMainHandStack(), hit);
+                var predicted = desired.getBlock().getPlacementState(context);
+                if (!context.getBlockPos().equals(target) || predicted == null
+                        || !predicted.equals(desired) && !ProjectShapedBlock.canOpen(predicted, desired)
+                        || !predicted.canPlaceAt(client.world, target)) {
+                    return "Block cannot be placed in the requested state at " + target.toShortString();
+                }
+            }
             result = client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
         } finally {
             if (startSneak) {
@@ -148,5 +169,32 @@ final class ProjectPlacement {
         if (!result.isAccepted()) return "Placement was rejected at " + target.toShortString();
         player.swingHand(Hand.MAIN_HAND);
         return null;
+    }
+
+    private static String open(MinecraftClient client, BlockPos target, BlockState desired) {
+        var player = client.player;
+        var eye = player.getEyePos();
+        double reach = client.interactionManager.getReachDistance() - .1;
+        for (var box : client.world.getBlockState(target).getOutlineShape(client.world, target).getBoundingBoxes()) {
+            var point = box.getCenter().add(target.getX(), target.getY(), target.getZ());
+            if (eye.squaredDistanceTo(point) > reach * reach) continue;
+            var hit = client.world.raycast(new RaycastContext(eye, point, RaycastContext.ShapeType.OUTLINE,
+                    RaycastContext.FluidHandling.NONE, player));
+            if (hit.getType() != HitResult.Type.BLOCK || !target.equals(hit.getBlockPos())) continue;
+            player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, hit.getPos());
+            if (desired.getBlock() instanceof FenceGateBlock) facePlayer(client, desired.get(FenceGateBlock.FACING));
+            var result = client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
+            if (!result.isAccepted()) return "Could not open " + target.toShortString();
+            player.swingHand(Hand.MAIN_HAND);
+            return null;
+        }
+        return "No reachable interaction face for " + target.toShortString();
+    }
+
+    private static void facePlayer(MinecraftClient client, Direction facing) {
+        var player = client.player;
+        player.setYaw(facing.asRotation());
+        player.networkHandler.sendPacket(new PlayerMoveC2SPacket.LookAndOnGround(
+                player.getYaw(), player.getPitch(), player.isOnGround()));
     }
 }

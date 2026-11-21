@@ -551,6 +551,12 @@ with no supported source is reported before the project starts. The 256-job
 limit includes production jobs. Keep reachable raw materials outside the
 construction and chest area.
 
+The coordinator keeps up to 32 projects available for scheduling or recent
+inspection. When a new submission needs space, it moves the oldest finished
+project to durable history, retaining job evidence and chest observations.
+Repeating orders stay on the board until cancelled. Inspect archived IDs with
+`GET /projects?history` or a full record with `GET /projects?history=PROJECT_ID`.
+
 For a `TRANSFER` job, set `block` to `minecraft:chest` and add a
 `direction` of `DEPOSIT`, `WITHDRAW` or `INSPECT` to the payload. Supply
 `item` as an item registry ID and `stock` as the desired count in the

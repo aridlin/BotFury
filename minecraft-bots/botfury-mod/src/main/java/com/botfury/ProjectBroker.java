@@ -53,7 +53,20 @@ final class ProjectBroker {
             if ("GET".equals(exchange.getRequestMethod())) {
                 String query = exchange.getRequestURI().getQuery();
                 if ("summary".equals(query)) {
-                    text(exchange, summarize(queue().snapshot(System.currentTimeMillis())));
+                    var board = queue();
+                    var details = summarize(board.snapshot(System.currentTimeMillis()));
+                    int archived = board.history().size();
+                    text(exchange, archived == 0 ? details : details + "\nArchived projects: " + archived);
+                    return;
+                }
+                if ("history".equals(query)) {
+                    reply(exchange, 200, queue().history());
+                    return;
+                }
+                if (query != null && query.startsWith("history=")) {
+                    var archived = queue().archived(query.substring("history=".length()));
+                    if (archived == null) reply(exchange, 404, "Archived project not found");
+                    else reply(exchange, 200, archived);
                     return;
                 }
                 if ("stock".equals(query) || "stock-summary".equals(query)) {

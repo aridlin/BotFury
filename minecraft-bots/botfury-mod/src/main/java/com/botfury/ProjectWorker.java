@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import net.minecraft.client.MinecraftClient;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.registry.Registries;
+import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
@@ -341,7 +342,7 @@ final class ProjectWorker {
         }
         stableSince = 0;
         if (kind == ProjectQueue.Kind.BUILD) {
-            if (centerForPlacement(client, feet)) return;
+            if (centerOnStand(client, feet)) return;
             if (now >= nextPlacement) {
                 var failure = BuildProtection.projectAction(assignment.project(), () -> ProjectPlacement.attempt(client, block));
                 nextPlacement = now + seconds(1);
@@ -360,19 +361,32 @@ final class ProjectWorker {
             finish(client, false, "Unexpected or protected block " + actual + " at " + target.toShortString());
             return;
         }
+        if (centering && centerOnStand(client, feet)) return;
         var ray = excavationHit(client, target);
         if (ray == null) {
+            if (player.getBlockPos().equals(block.stand()) && centerOnStand(client, feet)) return;
             finish(client, false, "Target obstructed or out of reach from the approved stand");
             return;
         }
         if (state.isToolRequired() && !player.getMainHandStack().isSuitableFor(state)) {
+            var inventory = player.getInventory();
             int slot = 0;
-            while (slot < 9 && !player.getInventory().getStack(slot).isSuitableFor(state)) slot++;
-            if (slot == 9) {
-                finish(client, false, "No suitable tool in hotbar for " + actual);
+            while (slot < 36 && !inventory.getStack(slot).isSuitableFor(state)) slot++;
+            if (slot == 36) {
+                finish(client, false, "No suitable tool in inventory for " + actual);
                 return;
             }
-            player.getInventory().selectedSlot = slot;
+            if (slot >= 9) {
+                if (player.currentScreenHandler != player.playerScreenHandler
+                        || !player.playerScreenHandler.getCursorStack().isEmpty()) {
+                    finish(client, false, "Close the container or clear the cursor to equip an excavation tool");
+                    return;
+                }
+                client.interactionManager.clickSlot(player.playerScreenHandler.syncId, slot,
+                        inventory.selectedSlot, SlotActionType.SWAP, player);
+                return;
+            }
+            inventory.selectedSlot = slot;
         }
         player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, Vec3d.ofCenter(target));
         if (BuildProtection.projectAction(assignment.project(),
@@ -390,11 +404,11 @@ final class ProjectWorker {
         return hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(target) ? hit : null;
     }
 
-    private static boolean centerForPlacement(MinecraftClient client, Vec3d stand) {
+    private static boolean centerOnStand(MinecraftClient client, Vec3d stand) {
         var player = client.player;
         double dx = stand.x - player.getX();
         double dz = stand.z - player.getZ();
-        // The face was planned from the center of the stand, not from its edge.
+        // Match the eye position used to check reach in the planner.
         if (dx * dx + dz * dz <= .075 * .075) {
             releaseCentering(client);
             return player.isSneaking();

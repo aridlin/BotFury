@@ -47,8 +47,16 @@ final class ProjectQueue {
     }
     record ChestObservation(ChestReport report, long observedAt) {}
     record Repeat(int batch, String item, String chest, int completed, ChestObservation lastStock, boolean cancelled) {}
-    record Project(String id, String world, List<Job> jobs, Repeat repeat, String supplyChest) {
-        Project { jobs = List.copyOf(jobs); }
+    record Project(String id, String world, List<Job> jobs, Repeat repeat, String supplyChest,
+                   Map<String, Integer> supplyRecoveries) {
+        Project {
+            jobs = List.copyOf(jobs);
+            supplyRecoveries = supplyRecoveries == null ? Map.of() : Map.copyOf(supplyRecoveries);
+        }
+
+        Project withJobs(List<Job> updated) {
+            return new Project(id, world, updated, repeat, supplyChest, supplyRecoveries);
+        }
     }
     record Assignment(String project, String world, Job job) {}
     private record Board(int schema, Map<String, Project> projects) {}
@@ -56,8 +64,11 @@ final class ProjectQueue {
     private static final Gson JSON = new Gson();
     private static final long LEASE_MS = 15_000;
     private static final int MAX_ATTEMPTS = 3;
+    private static final long SUPPLIER_OFFLINE_MS = 60_000;
+    private static final int MAX_SUPPLY_RECOVERIES = 2;
     private static final int MAX_PROJECTS = 32;
     private final Path journal;
+    private final Map<String, Long> workerSeen = new HashMap<>();
     private Map<String, Project> projects;
 
     ProjectQueue(Path journal) throws IOException {
@@ -118,7 +129,7 @@ final class ProjectQueue {
             var repeat = project.repeat;
             if (!project.world.equals(world) || repeat == null || repeat.cancelled || !repeat.chest.equals(chest)) continue;
             var cancelled = new Repeat(repeat.batch, repeat.item, repeat.chest, repeat.completed, repeat.lastStock, true);
-            commit(new Project(project.id, project.world, project.jobs, cancelled, project.supplyChest));
+            commit(new Project(project.id, project.world, project.jobs, cancelled, project.supplyChest, project.supplyRecoveries));
             return true;
         }
         return false;
@@ -141,14 +152,16 @@ final class ProjectQueue {
             }
             jobs.add(new Job(item, State.WAITING, 0, null, null, 0, null, null));
         }
-        commit(new Project(id, world, jobs, repeat, supplyChest));
+        commit(new Project(id, world, jobs, repeat, supplyChest, Map.of()));
     }
 
     synchronized Assignment claim(String world, String worker, Set<Kind> kinds, long now) throws IOException {
         if (world == null || !validId(worker) || kinds == null || kinds.isEmpty()) {
             throw new IllegalArgumentException("Invalid worker or world");
         }
+        markSeen(world, worker, now);
         expire(now);
+        recoverMissingSuppliers(world, now);
         Set<String> reserved = new HashSet<>();
         Map<String, String> outputChests = new HashMap<>();
         for (Project project : projects.values()) {
@@ -193,6 +206,7 @@ final class ProjectQueue {
         Job renewed = new Job(job.work, State.LEASED, job.attempts, job.worker,
                 job.lease, now + LEASE_MS, null, job.chest);
         replace(project, renewed);
+        markSeen(project.world, job.worker, now);
         return renewed;
     }
 
@@ -233,8 +247,9 @@ final class ProjectQueue {
                     ? project.jobs.stream().map(entry -> entry == job ? result : entry).toList()
                     : project.jobs.stream().map(entry -> new Job(entry.work, State.WAITING, 0,
                             null, null, 0, null, null)).toList();
-            commit(new Project(project.id, project.world, reset, next, project.supplyChest));
+            commit(new Project(project.id, project.world, reset, next, project.supplyChest, project.supplyRecoveries));
         } else replace(project, result);
+        markSeen(project.world, job.worker, now);
         return true;
     }
 
@@ -256,7 +271,7 @@ final class ProjectQueue {
                 jobs.add(new Job(next, State.WAITING, 0, null, null, 0, null, null));
             } else jobs.add(entry);
         }
-        commit(new Project(project.id, project.world, jobs, repeat, project.supplyChest));
+        commit(project.withJobs(jobs));
     }
 
     synchronized Map<String, ChestObservation> chestStock(String world) {
@@ -275,6 +290,61 @@ final class ProjectQueue {
         return latest;
     }
 
+    private static String workerKey(String world, String worker) {
+        return world + "\n" + worker.toLowerCase(Locale.ROOT);
+    }
+
+    private void markSeen(String world, String worker, long now) {
+        workerSeen.put(workerKey(world, worker), now);
+    }
+
+    private void recoverMissingSuppliers(String world, long now) throws IOException {
+        for (Project project : List.copyOf(projects.values())) {
+            if (project.supplyChest == null || !world.equals(project.world)) continue;
+            var jobs = new HashMap<String, Job>();
+            project.jobs.forEach(job -> jobs.put(job.work.id, job));
+            for (Job job : project.jobs) {
+                if (job.state != State.WAITING || job.work.sameWorkerAs == null
+                        || !job.work.needs.stream().allMatch(id -> jobs.get(id).state == State.DONE)) continue;
+                var supplier = jobs.get(job.work.sameWorkerAs);
+                var key = workerKey(world, supplier.worker);
+                // After a coordinator restart, give workers the full window to reconnect.
+                long seen = workerSeen.computeIfAbsent(key, ignored -> now);
+                if (now - seen < SUPPLIER_OFFLINE_MS) continue;
+                rewindSupply(project, job, supplier, jobs);
+                break;
+            }
+        }
+    }
+
+    private void rewindSupply(Project project, Job waiting, Job supplier, Map<String, Job> jobs) throws IOException {
+        Set<String> rewind = new HashSet<>();
+        Job stage = supplier;
+        // A supplied material follows a single dependency chain from gathering to chest collection.
+        while (!stage.work.needs.isEmpty()) {
+            if (stage.work.needs.size() != 1) return;
+            rewind.add(stage.work.id);
+            stage = jobs.get(stage.work.needs.get(0));
+        }
+        if (stage.work.kind != Kind.GATHER) return;
+        String root = stage.work.id;
+        rewind.add(root);
+        var recoveries = new HashMap<>(project.supplyRecoveries);
+        int attempts = recoveries.getOrDefault(root, 0);
+        String evidence = "Supplier " + supplier.worker + " went offline";
+        if (attempts >= MAX_SUPPLY_RECOVERIES) {
+            replace(project, new Job(waiting.work, State.FAILED, waiting.attempts, null, null, 0,
+                    evidence + " after " + attempts + " supply recoveries", waiting.chest));
+            return;
+        }
+        recoveries.put(root, attempts + 1);
+        rewind.add(waiting.work.id);
+        var updated = project.jobs.stream().map(job -> rewind.contains(job.work.id)
+                ? new Job(job.work, State.WAITING, 0, null, null, 0, evidence + "; reacquiring materials", job.chest)
+                : job).toList();
+        commit(new Project(project.id, project.world, updated, project.repeat, project.supplyChest, recoveries));
+    }
+
     private void expire(long now) throws IOException {
         var next = new LinkedHashMap<>(projects);
         boolean changed = false;
@@ -288,7 +358,7 @@ final class ProjectQueue {
                 }
             }
             if (jobs != null) {
-                next.put(project.id, new Project(project.id, project.world, jobs, project.repeat, project.supplyChest));
+                next.put(project.id, project.withJobs(jobs));
                 changed = true;
             }
         }
@@ -316,7 +386,7 @@ final class ProjectQueue {
 
     private void replace(Project project, Job changed) throws IOException {
         var jobs = project.jobs.stream().map(job -> job.work.id.equals(changed.work.id) ? changed : job).toList();
-        commit(new Project(project.id, project.world, jobs, project.repeat, project.supplyChest));
+        commit(project.withJobs(jobs));
     }
 
     private void commit(Project project) throws IOException {

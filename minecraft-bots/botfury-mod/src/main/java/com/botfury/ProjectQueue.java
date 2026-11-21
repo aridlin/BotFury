@@ -23,7 +23,11 @@ final class ProjectQueue {
     }
 
     record Work(String id, Kind kind, String payload, List<String> needs, Set<String> locks, String sameWorkerAs,
-                Cleanup cleanup) {
+                Cleanup cleanup, String constructionMaterial) {
+        Work(String id, Kind kind, String payload, List<String> needs, Set<String> locks, String sameWorkerAs,
+             Cleanup cleanup) {
+            this(id, kind, payload, needs, locks, sameWorkerAs, cleanup, null);
+        }
         Work(String id, Kind kind, String payload, List<String> needs, Set<String> locks, String sameWorkerAs) {
             this(id, kind, payload, needs, locks, sameWorkerAs, null);
         }
@@ -38,6 +42,8 @@ final class ProjectQueue {
                     || sameWorkerAs != null && !needs.contains(sameWorkerAs)
                     || cleanup != null && (kind != Kind.EXCAVATE || needs.size() != 1
                     || sameWorkerAs != null || !locks.contains(cleanup.site))
+                    || constructionMaterial != null && (kind != Kind.TRANSFER || needs.size() != 1
+                    || sameWorkerAs != null || !constructionMaterial.matches("[a-z0-9_.-]+:[a-z0-9_./-]+"))
                     || locks.stream().anyMatch(key -> key == null || key.isBlank() || key.length() > 240)) {
                 throw new IllegalArgumentException("Invalid project job");
             }
@@ -272,6 +278,8 @@ final class ProjectQueue {
                 if (world.equals(project.world)) reserved.addAll(job.work.locks);
             }
         }
+        // TAKE measures an inventory minimum. The same blocks cannot satisfy two unfinished batches.
+        var carried = pendingBuildMaterials(world, worker);
         Project ownedOrder = null;
         String ownedLane = null;
         for (Project project : projects.values()) {
@@ -292,6 +300,7 @@ final class ProjectQueue {
             var blocked = blockedJobs(project);
             String deposit = project.repeat == null ? null : pendingDeposit(project, done);
             for (Job job : project.jobs) {
+                if (job.work.constructionMaterial != null && carried.contains(job.work.constructionMaterial)) continue;
                 if (ownedLane != null && !ownedLane.equals(lane(job.work.id))) continue;
                 if (deposit != null && job.work.kind == Kind.TRANSFER && !deposit.equals(job.work.id)) continue;
                 if (job.state != State.WAITING || job.expiresAt > now || !kinds.contains(job.work.kind)
@@ -309,6 +318,29 @@ final class ProjectQueue {
             }
         }
         return null;
+    }
+
+    private Set<String> pendingBuildMaterials(String world, String worker) {
+        var materials = new HashSet<String>();
+        for (var project : projects.values()) {
+            if (project.supplyChest == null || !project.world.equals(world)) continue;
+            var pickups = new HashMap<String, String>();
+            for (var job : project.jobs) {
+                if (job.state == State.DONE && job.work.constructionMaterial != null
+                        && worker.equalsIgnoreCase(job.worker)) {
+                    pickups.put(job.work.id, job.work.constructionMaterial);
+                }
+            }
+            if (pickups.isEmpty()) continue;
+            var blocked = blockedJobs(project);
+            for (var job : project.jobs) {
+                if (job.work.kind != Kind.BUILD || job.work.sameWorkerAs == null
+                        || job.state != State.WAITING || blocked.contains(job.work.id)) continue;
+                var material = pickups.get(job.work.sameWorkerAs);
+                if (material != null) materials.add(material);
+            }
+        }
+        return materials;
     }
 
     synchronized Job renew(String projectId, String jobId, UUID token, long now) throws IOException {

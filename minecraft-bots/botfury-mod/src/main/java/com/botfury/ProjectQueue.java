@@ -14,8 +14,16 @@ final class ProjectQueue {
     enum Kind { EXCAVATE, GATHER, CRAFT, SMELT, TRANSFER, BUILD, VERIFY }
     enum State { WAITING, LEASED, DONE, FAILED }
 
-    record Cleanup(String site, String afterSettled) {
+    record Cleanup(String site, String afterSettled, List<String> alsoSettled) {
+        Cleanup(String site, String afterSettled) {
+            this(site, afterSettled, List.of());
+        }
+
         Cleanup {
+            alsoSettled = alsoSettled == null ? List.of() : List.copyOf(alsoSettled);
+            if (alsoSettled.size() > 256 || alsoSettled.stream().anyMatch(id -> !validId(id))) {
+                throw new IllegalArgumentException("Invalid temporary support cleanup dependencies");
+            }
             if (site == null || !site.matches("block:-?[0-9]+,-?[0-9]+,-?[0-9]+") || !validId(afterSettled)) {
                 throw new IllegalArgumentException("Invalid temporary support cleanup");
             }
@@ -203,7 +211,8 @@ final class ProjectQueue {
         List<Job> jobs = new ArrayList<>();
         for (Work item : work) {
             if (item == null || !defined.containsAll(item.needs)
-                    || item.cleanup != null && (repeat != null || !defined.contains(item.cleanup.afterSettled))
+                    || item.cleanup != null && (repeat != null
+                    || !defined.contains(item.cleanup.afterSettled) || !defined.containsAll(item.cleanup.alsoSettled))
                     || !defined.add(item.id)) {
                 throw new IllegalArgumentException("Jobs must be unique and follow their dependencies");
             }
@@ -318,8 +327,8 @@ final class ProjectQueue {
                 if (deposit != null && job.work.kind == Kind.TRANSFER && !deposit.equals(job.work.id)) continue;
                 if (job.state != State.WAITING || job.expiresAt > now || !kinds.contains(job.work.kind)
                         || !done.containsAll(job.work.needs) || !Collections.disjoint(reserved, job.work.locks)) continue;
-                if (job.work.cleanup != null && !done.contains(job.work.cleanup.afterSettled)
-                        && !blocked.contains(job.work.cleanup.afterSettled)) continue;
+                if (job.work.cleanup != null && (!settled(job.work.cleanup.afterSettled, done, blocked)
+                        || job.work.cleanup.alsoSettled.stream().anyMatch(id -> !settled(id, done, blocked)))) continue;
                 if (job.work.locks.stream().anyMatch(key -> projectReservations.containsKey(key)
                         && !project.id.equals(projectReservations.get(key)))) continue;
                 if (job.work.sameWorkerAs != null
@@ -331,6 +340,10 @@ final class ProjectQueue {
             }
         }
         return null;
+    }
+
+    private static boolean settled(String id, Set<String> done, Set<String> blocked) {
+        return done.contains(id) || blocked.contains(id);
     }
 
     private Set<String> pendingBuildMaterials(String world, String worker) {

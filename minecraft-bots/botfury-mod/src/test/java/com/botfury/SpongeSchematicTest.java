@@ -5,6 +5,8 @@ import net.minecraft.nbt.NbtList;
 import net.minecraft.util.math.BlockPos;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 class SpongeSchematicTest {
@@ -44,6 +46,33 @@ class SpongeSchematicTest {
         entities.add(new NbtCompound());
         root.getCompound("Schematic").getCompound("Blocks").put("BlockEntities", entities);
         assertThrows(IllegalArgumentException.class, () -> SpongeSchematic.blocks(root, 256));
+    }
+
+    @Test void acceptsOnlyContainerRecordsMatchingTheirCells() {
+        var root = v3(new byte[]{1});
+        var blocks = root.getCompound("Schematic").getCompound("Blocks");
+        var palette = blocks.getCompound("Palette");
+        palette.remove("minecraft:stone");
+        String expected = "minecraft:chest[facing=north,type=single,waterlogged=false]";
+        palette.putInt(expected, 1);
+        var entity = new NbtCompound();
+        entity.putString("Id", "minecraft:chest");
+        entity.putIntArray("Pos", new int[]{0, 0, 0});
+        var saved = new NbtCompound();
+        saved.putString("LootTable", "minecraft:chests/simple_dungeon");
+        entity.put("Data", saved);
+        var list = new NbtList();
+        list.add(entity);
+        blocks.put("BlockEntities", list);
+        assertEquals(Map.of(BlockPos.ORIGIN, expected), SpongeSchematic.blocks(root, 1));
+        entity.putIntArray("Pos", new int[]{-1, 0, 0});
+        assertThrows(IllegalArgumentException.class, () -> SpongeSchematic.blocks(root, 1));
+        entity.putIntArray("Pos", new int[]{0, 0, 0});
+        entity.putString("Id", "minecraft:hopper");
+        assertThrows(IllegalArgumentException.class, () -> SpongeSchematic.blocks(root, 1));
+        entity.putString("Id", "minecraft:chest");
+        list.add(entity.copy());
+        assertThrows(IllegalArgumentException.class, () -> SpongeSchematic.blocks(root, 1));
     }
 
     private static NbtCompound v3(byte[] data) {

@@ -4,6 +4,8 @@ import com.google.gson.Gson;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
+import net.minecraft.block.ChestBlock;
+import net.minecraft.block.enums.ChestType;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.nbt.*;
 import net.minecraft.registry.Registries;
@@ -92,7 +94,9 @@ final class StructureProject {
             var pos = entry.getKey();
             if (!loaded(client, pos)) throw new IllegalArgumentException("Load the entire build site first");
             var state = client.world.getBlockState(pos);
-            if (!sameState(entry.getValue(), state) && !state.isAir()
+            var partner = ProjectPlacement.chestPartner(pos, entry.getValue());
+            boolean reusable = partner != null && state.equals(ProjectPlacement.singleChest(entry.getValue()));
+            if (!sameState(entry.getValue(), state) && !reusable && !state.isAir()
                     && (state.hasBlockEntity() || !state.getFluidState().isEmpty() || state.getHardness(client.world, pos) < 0)) {
                 throw new IllegalArgumentException("Protected block or fluid at " + pos.toShortString());
             }
@@ -116,7 +120,7 @@ final class StructureProject {
             var block = blocks.getCompound(i);
             var position = block.getList("pos", NbtElement.INT_TYPE);
             int index = block.getInt("state");
-            if (block.contains("nbt") || !block.contains("state", NbtElement.INT_TYPE)
+            if (!block.contains("state", NbtElement.INT_TYPE)
                     || index < 0 || index >= palette.size() || position.size() != 3) {
                 throw new IllegalArgumentException("Invalid structure block or block entity");
             }
@@ -132,7 +136,12 @@ final class StructureProject {
                 if (!tag.contains(key, NbtElement.STRING_TYPE)) throw new IllegalArgumentException("Invalid block property " + key);
                 properties.put(key, tag.getString(key));
             }
-            var blockState = supportedBlock(state.getString("Name"), properties);
+            String name = state.getString("Name");
+            if (block.contains("nbt") && (!SpongeSchematic.survivalContainer(name)
+                    || !name.equals(block.getCompound("nbt").getString("id")))) {
+                throw new IllegalArgumentException("Unsupported structure block entity " + name);
+            }
+            var blockState = supportedBlock(name, properties);
             var pos = absolute(origin, position.getInt(0), position.getInt(1), position.getInt(2));
             if (result.put(pos, blockState) != null) throw new IllegalArgumentException("Duplicate structure position");
         }
@@ -191,8 +200,21 @@ final class StructureProject {
         for (int i = 0; i < cells.size(); i++) {
             var cell = cells.get(i);
             area = StructureSupply.include(StructureSupply.include(area, cell.pos), cell.pos.down());
-            if (sameState(cell.desired, cell.observed)) {
-                ready.put(cell.pos, cell.desired);
+            var partner = ProjectPlacement.chestPartner(cell.pos, cell.desired);
+            if (partner != null) {
+                var other = desired.get(partner);
+                if (other == null || !cell.pos.equals(ProjectPlacement.chestPartner(partner, other))
+                        || other.get(ChestBlock.FACING) != cell.desired.get(ChestBlock.FACING)) {
+                    throw new IllegalArgumentException("Missing matching double chest half at " + partner.toShortString());
+                }
+                var single = ProjectPlacement.singleChest(cell.desired);
+                if (cell.observed.equals(single) && client.world.getBlockState(partner).equals(single)) {
+                    throw new IllegalArgumentException("Two existing single chests cannot be joined in place at " + cell.pos.toShortString());
+                }
+            }
+            if (sameState(cell.desired, cell.observed)
+                    || partner != null && cell.observed.equals(ProjectPlacement.singleChest(cell.desired))) {
+                ready.put(cell.pos, cell.observed);
                 continue;
             }
             if (!cell.observed.isAir()) {
@@ -200,7 +222,7 @@ final class StructureProject {
                 removed.add(cell.pos);
             }
             if (cell.desired.isAir()) continue;
-            if (!cell.desired.isFullCube(client.world, cell.pos)) {
+            if (!ProjectPlacement.container(cell.desired) && !cell.desired.isFullCube(client.world, cell.pos)) {
                 throw new IllegalArgumentException("Not a full cube: " + cell.desired);
             }
             pending.put(i, cell);
@@ -251,8 +273,11 @@ final class StructureProject {
             for (var iterator = pending.entrySet().iterator(); iterator.hasNext(); ) {
                 var entry = iterator.next();
                 var cell = entry.getValue();
+                var placementState = placementState(cell, ready);
+                if (placementState == null) continue;
                 var pose = buildPose(client, cell, layout, ready, cleared, placed, !scaffolds.isEmpty());
-                var temporary = pose == null && allowTemporarySupport ? temporarySupport(client, cell, layout, cleared) : null;
+                var temporary = pose == null && allowTemporarySupport
+                        ? temporarySupport(client, new Cell(cell.pos, placementState, cell.observed), layout, cleared) : null;
                 if (temporary != null) pose = temporary.pillar;
                 if (pose == null) continue;
                 var approachNeeds = new ArrayList<>(excavationFrontier);
@@ -281,13 +306,19 @@ final class StructureProject {
                     allowTemporarySupport = false;
                 }
                 placed.put(cell.pos, id);
-                ready.put(cell.pos, cell.desired);
+                ready.put(cell.pos, placementState);
+                var partner = ProjectPlacement.chestPartner(cell.pos, cell.desired);
+                if (partner != null && placementState.equals(cell.desired)) {
+                    ready.put(partner, desired.get(partner));
+                    placed.put(partner, id);
+                }
                 changes.add(id);
                 if (pose.access != null) needs.addAll(pose.access.needs);
-                var placement = work(id, ProjectQueue.Kind.BUILD, cell.pos, cell.desired, pose.stand, pose.face, List.copyOf(needs));
-                if (pose.access != null) {
+                var placement = work(id, ProjectQueue.Kind.BUILD, cell.pos, placementState, pose.stand, pose.face, List.copyOf(needs));
+                if (pose.access != null || partner != null) {
                     var locks = new LinkedHashSet<>(placement.locks());
-                    locks.addAll(pose.access.locks);
+                    if (pose.access != null) locks.addAll(pose.access.locks);
+                    if (partner != null) locks.add(ProjectBlock.key(partner));
                     placement = new ProjectQueue.Work(id, placement.kind(), placement.payload(), placement.needs(), locks);
                 }
                 jobs.add(placement);
@@ -519,14 +550,25 @@ final class StructureProject {
         return settled;
     }
 
+    private static BlockState placementState(Cell cell, Map<BlockPos, BlockState> ready) {
+        var partner = ProjectPlacement.chestPartner(cell.pos, cell.desired);
+        if (partner == null) return cell.desired;
+        var single = ProjectPlacement.singleChest(cell.desired);
+        var other = ready.get(partner);
+        if (single.equals(other)) return cell.desired;
+        return other == null && cell.desired.get(ChestBlock.CHEST_TYPE) == ChestType.LEFT ? single : null;
+    }
+
     private static BuildPose buildPose(MinecraftClient client, Cell cell, Map<BlockPos, BlockState> desired,
                                        Map<BlockPos, BlockState> ready, Map<BlockPos, BlockState> cleared,
                                        Map<BlockPos, String> placed, boolean avoidCorners) {
-        for (Direction face : ProjectPlacement.faces(cell.desired)) {
+        var placement = placementState(cell, ready);
+        if (placement == null) return null;
+        for (Direction face : ProjectPlacement.faces(placement)) {
             var support = cell.pos.offset(face.getOpposite());
             if (!loaded(client, support)) continue;
             var state = desired.containsKey(support) ? ready.get(support) : client.world.getBlockState(support);
-            if (state == null || state.hasBlockEntity() || !state.isFullCube(client.world, support)) continue;
+            if (state == null || !ProjectPlacement.support(state, placement, client.world, support)) continue;
             Predicate<BlockPos> visible = pos -> clearBuildFace(client, pos, cell.pos, support, face, desired, avoidCorners);
             var stand = chooseStand(client, cell.pos, desired, face, visible);
             if (stand == null) {
@@ -638,7 +680,8 @@ final class StructureProject {
                                           BlockPos support, Direction face, Map<BlockPos, BlockState> desired,
                                           boolean avoidCorners) {
         var eye = Vec3d.ofBottomCenter(stand).add(0, 1.62, 0);
-        var point = ProjectPlacement.facePoint(support, face);
+        var state = desired.getOrDefault(support, client.world.getBlockState(support));
+        var point = ProjectPlacement.facePoint(support, face, state);
         if (!hitsFace(client, eye, point, target, support, face, desired)) return false;
         if (!avoidCorners) return true;
         // A ray that only slips past the exact corner of a block is too fragile in game.

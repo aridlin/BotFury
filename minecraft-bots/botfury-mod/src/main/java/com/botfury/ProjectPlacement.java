@@ -1,15 +1,19 @@
 package com.botfury;
 
 import net.minecraft.block.BlockState;
+import net.minecraft.block.PillarBlock;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.BlockItem;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
+
+import java.util.List;
 
 /** Places a simple block through the same interaction as a player using a block item. */
 final class ProjectPlacement {
@@ -17,32 +21,46 @@ final class ProjectPlacement {
 
     static boolean supported(BlockState state) {
         return !state.isAir() && !state.hasBlockEntity()
-                && state.getBlock().getStateManager().getStates().size() == 1
+                && (state.getBlock().getStateManager().getStates().size() == 1
+                || state.getBlock() instanceof PillarBlock && state.getProperties().size() == 1 && state.contains(PillarBlock.AXIS))
                 && state.getBlock().asItem() instanceof BlockItem item && item.getBlock() == state.getBlock();
+    }
+
+    static List<Direction> faces(BlockState state) {
+        if (!state.contains(PillarBlock.AXIS)) return List.of(Direction.UP);
+        return switch (state.get(PillarBlock.AXIS)) {
+            case X -> List.of(Direction.EAST, Direction.WEST);
+            case Z -> List.of(Direction.NORTH, Direction.SOUTH);
+            case Y -> List.of(Direction.UP);
+        };
+    }
+
+    static Vec3d facePoint(BlockPos support, Direction face) {
+        return Vec3d.ofCenter(support).add(Vec3d.of(face.getVector()).multiply(.499));
     }
 
     /** Null means a placement packet was accepted for processing, or an inventory swap is pending. */
     static String attempt(MinecraftClient client, ProjectBlock block) {
         var player = client.player;
         var target = block.target();
-        var desired = Registries.BLOCK.get(block.block()).getDefaultState();
+        var desired = block.desired();
         var item = desired.getBlock().asItem();
-        if (!supported(desired) || !desired.isFullCube(client.world, target)) {
+        if (!supported(desired) || !faces(desired).contains(block.face()) || !desired.isFullCube(client.world, target)) {
             return "This block needs placement behavior the project worker does not support";
         }
         if (!client.world.getBlockState(target).isAir()) return "Build target is occupied";
         if (player.currentScreenHandler != player.playerScreenHandler
                 || !player.currentScreenHandler.getCursorStack().isEmpty()) return "Close the open container or clear the cursor";
-        var support = target.down();
+        var support = block.support();
         Vec3d eye = player.getEyePos();
-        Vec3d point = Vec3d.ofCenter(support).add(0, .499, 0);
+        Vec3d point = facePoint(support, block.face());
         var hit = client.world.raycast(new RaycastContext(eye, point, RaycastContext.ShapeType.OUTLINE,
                 RaycastContext.FluidHandling.NONE, player));
         double reach = client.interactionManager.getReachDistance() - .1;
         var supportState = client.world.getBlockState(support);
         if (supportState.hasBlockEntity() || !supportState.isFullCube(client.world, support)
                 || eye.squaredDistanceTo(point) > reach * reach || hit.getType() != HitResult.Type.BLOCK
-                || !support.equals(hit.getBlockPos()) || hit.getSide() != Direction.UP) {
+                || !support.equals(hit.getBlockPos()) || hit.getSide() != block.face()) {
             return "No reachable solid support face for " + target.toShortString();
         }
 

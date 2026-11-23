@@ -14,6 +14,23 @@ class ProjectQueueTest {
     @TempDir Path directory;
     private static final String WORLD = "test|overworld";
 
+    @Test void retriesOnlyPlacementsWithExhaustedApproaches() throws Exception {
+        var journal = directory.resolve("placement-approaches.json");
+        var board = new ProjectQueue(journal);
+        board.submit("house", WORLD, List.of(job("first", BUILD, List.of()), job("second", BUILD, List.of())));
+        for (long now = 1; now <= 11; now += 2) {
+            var lease = board.claim(WORLD, "worker", Set.of(BUILD), now).job();
+            String evidence = lease.work().id().equals("first") ? "No reachable solid support face for 1, 2, 3"
+                    : "Build target is occupied";
+            assertTrue(board.finish("house", lease.work().id(), lease.lease(), false, evidence, now + 1));
+        }
+        assertEquals(1, board.retryPlacementApproaches(WORLD, "house"));
+        var restored = new ProjectQueue(journal);
+        var jobs = restored.snapshot(13).get(0).jobs();
+        assertEquals(ProjectQueue.State.WAITING, jobs.get(0).state());
+        assertEquals(ProjectQueue.State.FAILED, jobs.get(1).state());
+    }
+
     private static ProjectQueue.Work job(String id, ProjectQueue.Kind kind, List<String> needs, String... locks) {
         return new ProjectQueue.Work(id, kind, "", needs, Set.of(locks));
     }

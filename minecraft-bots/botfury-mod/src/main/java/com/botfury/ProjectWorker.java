@@ -11,6 +11,7 @@ import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
 import java.io.IOException;
@@ -482,7 +483,7 @@ final class ProjectWorker {
             }
             inventory.selectedSlot = slot;
         }
-        player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, Vec3d.ofCenter(target));
+        player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, ray.getPos());
         if (BuildProtection.projectAction(assignment.project(),
                 () -> client.interactionManager.updateBlockBreakingProgress(target, ray.getSide()))) player.swingHand(Hand.MAIN_HAND);
         breaking = true;
@@ -523,10 +524,33 @@ final class ProjectWorker {
     }
 
     private static BlockHitResult excavationHit(MinecraftClient client, BlockPos target, Vec3d eye) {
-        var center = Vec3d.ofCenter(target);
         double reach = client.interactionManager.getReachDistance() - .1;
-        if (eye.squaredDistanceTo(center) > reach * reach) return null;
-        var hit = client.world.raycast(new RaycastContext(eye, center, RaycastContext.ShapeType.OUTLINE,
+        if (eye.squaredDistanceTo(Vec3d.ofCenter(target)) > (reach + 1) * (reach + 1)) return null;
+        var shape = client.world.getBlockState(target).getOutlineShape(client.world, target);
+        for (var box : shape.getBoundingBoxes()) {
+            var center = box.getCenter().add(target.getX(), target.getY(), target.getZ());
+            var hit = excavationRay(client, target, eye, center, reach);
+            if (hit != null) return hit;
+            for (var face : Direction.values()) {
+                var normal = Vec3d.of(face.getVector());
+                double halfSize = switch (face.getAxis()) {
+                    case X -> (box.maxX - box.minX) / 2;
+                    case Y -> (box.maxY - box.minY) / 2;
+                    case Z -> (box.maxZ - box.minZ) / 2;
+                };
+                var point = center.add(normal.multiply(halfSize * .98));
+                if (eye.subtract(point).dotProduct(normal) <= 0) continue;
+                hit = excavationRay(client, target, eye, point, reach);
+                if (hit != null) return hit;
+            }
+        }
+        return null;
+    }
+
+    private static BlockHitResult excavationRay(MinecraftClient client, BlockPos target, Vec3d eye, Vec3d point,
+                                                double reach) {
+        if (eye.squaredDistanceTo(point) > reach * reach) return null;
+        var hit = client.world.raycast(new RaycastContext(eye, point, RaycastContext.ShapeType.OUTLINE,
                 RaycastContext.FluidHandling.NONE, client.player));
         return hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(target) ? hit : null;
     }

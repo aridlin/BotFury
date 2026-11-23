@@ -58,6 +58,7 @@ final class MiningTask {
     static ProjectQueue.ResourceSite observedSite() { return observedSite; }
     private static BaritoneSettings settings;
     private static final StallRecovery routeRecovery = new StallRecovery();
+    private static final SubsurfaceAccess subsurface = new SubsurfaceAccess();
     private static final Map<BlockPos,Integer> rejected=new HashMap<>();
     private static final Map<BlockPos,Integer> rejectedStands = new HashMap<>();
     private static int approachProgress;
@@ -67,6 +68,9 @@ final class MiningTask {
     static boolean working(){return job!=null&&!paused&&!dead;}
     static String status(){return job==null?"":status;}
     static String lastStatus(){return status;}
+    static boolean blocksProspectingBreak(BlockPos pos) {
+        return subsurface.blocksBreaking(MinecraftClient.getInstance(), pos);
+    }
     static Job parse(String value){
         String[] parts=value.split("\\|",-1);
         if(parts.length!=3)throw new IllegalArgumentException("Expected resource, variant, coordinator port");
@@ -104,6 +108,7 @@ final class MiningTask {
         for(String id:ids){var state=Registries.BLOCK.get(new Identifier(id)).getDefaultState();if(state.isAir()||state.getHardness(client.world,client.player.getBlockPos())<0){fail("Choose a breakable mining block");return;}}
         try{settings=new BaritoneSettings(exclude == null, project);}catch(ReflectiveOperationException|LinkageError e){fail("Could not configure mining approach");return;}
         projectMining=project;
+        subsurface.reset();
         rememberedSite = null;
         observedSite = null;
         excluded=exclude;
@@ -233,6 +238,7 @@ final class MiningTask {
             }
             var place = supportsAnotherPlayer(client, candidate) ? null : standing(client, candidate);
             if (place != null) {
+                subsurface.stop();
                 pendingCandidates.clear();
                 nextSearch = age + 20;
                 request(client, candidate, place, "claim");
@@ -288,6 +294,15 @@ final class MiningTask {
 
     private static void explore(MinecraftClient client) {
         if (returnToResourceSite(client)) return;
+        if (projectMining && client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)
+                && client.world.getBottomY() <= -54
+                && (job.resource.equals("diamond") || job.resource.equals("redstone"))) {
+            if (pathActive) stopPath();
+            if (subsurface.advance(client, age, -54, excluded)) {
+                status = "Prospecting for " + job.resource + " toward Y -54";
+                return;
+            }
+        }
         status = "Exploring for " + job.resource;
         if(age>=nextPath){
             nextPath = age + (projectMining ? 400 : 200);
@@ -335,6 +350,7 @@ final class MiningTask {
 
     private static void stopPath() {
         routeRecovery.reset();
+        subsurface.stop();
         if (pathActive) {
             BaritoneClient.execute("stop");
             pathActive = false;

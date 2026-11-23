@@ -467,39 +467,47 @@ final class StructureProject {
                                      List<String> prerequisites, int index, int room) {
         if (room < 3) return null;
         // A staircase is useful only around the work that can be reached from its upper steps.
-        var nearby = pending.stream().filter(cell -> horizontalDistance(first.pos, cell.pos) <= 36).toList();
+        var nearby = pending.stream().filter(cell -> horizontalDistance(first.pos, cell.pos) <= 36
+                && cell.pos.getY() <= first.pos.getY() + 6).toList();
         BlockPos highTarget = nearby.stream().filter(cell -> horizontalDistance(first.pos, cell.pos) <= 4
                         && cell.pos.getY() <= first.pos.getY() + 4)
                 .max(Comparator.comparingInt(cell -> cell.pos.getY())).orElseThrow().pos;
-        int high = highTarget.getY();
         String suffix = index == 0 ? "" : index + "-";
         var anchor = scaffoldAnchor(client, first, nearby, layout, cleared, ready, placed,
                 prerequisites, suffix, room);
         if (anchor != null) return anchor;
+        var current = new HashMap<>(cleared);
+        current.putAll(ready);
+        var stairs = new HashSet<List<BlockPos>>();
         Scaffold best = null;
         int fewestRemaining = nearby.size();
-        for (int rise = 1; rise <= 5 && 3 * rise * (rise + 1) / 2 <= room; rise++) {
-            for (int feetY : new int[]{high - 1, high, high + 1}) {
-                for (var side : Direction.Type.HORIZONTAL) for (var ascent : List.of(side.getOpposite(),
-                        side.rotateYClockwise(), side.rotateYCounterclockwise())) {
-                    for (int gap : new int[]{1, 2}) for (int lateral : new int[]{0, 1, -1}) {
-                        var top = new BlockPos(highTarget.getX(), feetY - 1, highTarget.getZ())
-                                .offset(side, gap).offset(side.rotateYClockwise(), lateral);
-                        var trial = planScaffold(client, top, ascent, rise, layout, cleared, prerequisites, suffix);
-                        if (trial == null) continue;
-                        var expanded = new HashMap<>(layout);
-                        expanded.putAll(trial.layout);
-                        var expandedReady = new HashMap<>(ready);
-                        expandedReady.putAll(trial.layout);
-                        var expandedPlaced = new HashMap<>(placed);
-                        expandedPlaced.putAll(trial.placed);
-                        if (buildPose(client, first, expanded, expandedReady, cleared, expandedPlaced, true) == null
-                                || verificationStand(client, highTarget, expanded) == null) continue;
-                        int remaining = unsupportedWithScaffold(client, nearby, expanded, cleared, expandedReady, expandedPlaced);
-                        if (remaining == 0) return trial;
-                        if (remaining < fewestRemaining) {
-                            best = trial;
-                            fewestRemaining = remaining;
+        for (var target : new LinkedHashSet<>(List.of(first.pos, highTarget))) {
+            for (int rise = 1; rise <= 5 && 3 * rise * (rise + 1) / 2 <= room; rise++) {
+                for (int yOffset : new int[]{-2, -1, 0, 1, 2}) {
+                    for (var side : Direction.Type.HORIZONTAL) {
+                        for (var ascent : List.of(side.getOpposite(), side.rotateYClockwise(), side.rotateYCounterclockwise())) {
+                            for (int gap : new int[]{1, 2, 3}) for (int lateral : new int[]{0, 1, -1}) {
+                                var top = target.up(yOffset - 1).offset(side, gap)
+                                        .offset(side.rotateYClockwise(), lateral);
+                                var bottom = top.down(rise - 1).offset(ascent.getOpposite(), rise - 1);
+                                if (!stairs.add(List.of(bottom, top))) continue;
+                                var trial = planScaffold(client, top, ascent, rise, layout, cleared, current,
+                                        ready, placed, prerequisites, suffix);
+                                if (trial == null) continue;
+                                var expanded = new HashMap<>(layout);
+                                expanded.putAll(trial.layout);
+                                var expandedReady = new HashMap<>(ready);
+                                expandedReady.putAll(trial.layout);
+                                var expandedPlaced = new HashMap<>(placed);
+                                expandedPlaced.putAll(trial.placed);
+                                int remaining = unsupportedWithScaffold(client, nearby, expanded, cleared,
+                                        expandedReady, expandedPlaced);
+                                if (remaining == 0) return trial;
+                                if (remaining < fewestRemaining) {
+                                    best = trial;
+                                    fewestRemaining = remaining;
+                                }
+                            }
                         }
                     }
                 }
@@ -574,21 +582,21 @@ final class StructureProject {
 
     private static Scaffold planScaffold(MinecraftClient client, BlockPos top, Direction ascent, int rise,
                                          Map<BlockPos, BlockState> layout, Map<BlockPos, BlockState> cleared,
-                                         List<String> prerequisites, String suffix) {
+                                         Map<BlockPos, BlockState> current, Map<BlockPos, BlockState> ready,
+                                         Map<BlockPos, String> placed, List<String> prerequisites, String suffix) {
         var scaffold = new LinkedHashMap<BlockPos, BlockState>();
         int baseY = top.getY() - rise + 1;
         for (int height = 1; height <= rise; height++) {
             var column = new BlockPos(top.getX(), baseY, top.getZ()).offset(ascent.getOpposite(), rise - height);
-            if (layout.containsKey(column.down()) || !safeStand(client, column, cleared)
-                    || !safeStand(client, column, layout)) return null;
+            if (!safeStand(client, column, current) || !safeStand(client, column, layout)) return null;
             for (int layer = 0; layer < height; layer++) {
                 var pos = column.up(layer);
                 if (!loaded(client, pos) || BuildProtection.blocked(pos)
-                        || !airAt(client, pos, layout) || !airAt(client, pos, cleared)) return null;
+                        || !airAt(client, pos, layout) || !airAt(client, pos, current)) return null;
                 scaffold.put(pos, SCAFFOLD);
             }
         }
-        return planScaffoldBlocks(client, scaffold, layout, cleared, Map.of(), Map.of(), prerequisites, suffix);
+        return planScaffoldBlocks(client, scaffold, layout, cleared, ready, placed, prerequisites, suffix);
     }
 
     private static Scaffold planScaffoldBlocks(MinecraftClient client, Map<BlockPos, BlockState> scaffold,

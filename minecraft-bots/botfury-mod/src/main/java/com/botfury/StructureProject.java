@@ -761,7 +761,17 @@ final class StructureProject {
     private static BlockPos findPlacementStand(MinecraftClient client, BlockPos target, Direction face,
                                                 Predicate<BlockPos> suitable) {
         // Minecraft measures placement reach from the eyes, which can reach upward from lower floors.
-        return findStand(client, target, face, true, new int[]{0, 1, -1, -2, -3}, suitable);
+        int[] heights = {0, 1, -1, -2, -3};
+        var stand = findStand(client, target, face, true, heights, suitable);
+        if (stand != null || face == null || !face.getAxis().isHorizontal()) return stand;
+        // The target cell is already on the exposed side of the supporting face.
+        var side = face.rotateYClockwise();
+        for (int dy : heights) for (int lateral : new int[]{1, -1, 2, -2, 3, -3}) {
+            var beside = target.offset(side, lateral).up(dy);
+            if (beside.getSquaredDistance(target) <= 16 && loaded(client, beside) && loaded(client, beside.up())
+                    && loaded(client, beside.down()) && suitable.test(beside)) return beside;
+        }
+        return null;
     }
 
     private static BuildAccess builtAccess(MinecraftClient client, BlockPos stand, BlockPos target,

@@ -12,7 +12,10 @@ import java.util.*;
 /** The coordinator persists each transition before acknowledging it to a worker. */
 final class ProjectQueue {
     static final int MAX_JOBS = 4096;
-    enum Kind { EXCAVATE, GATHER, CRAFT, SMELT, TRANSFER, BUILD, VERIFY, INSPECT, BARRIER, FILL_BUCKETS }
+    enum Kind { EXCAVATE, GATHER, CRAFT, SMELT, TRANSFER, BUILD, VERIFY, INSPECT, BARRIER, SETTLEMENT_BARRIER, FILL_BUCKETS;
+
+        boolean coordinatorOnly() { return this == BARRIER || this == SETTLEMENT_BARRIER; }
+    }
     enum State { WAITING, LEASED, DONE, FAILED }
 
     record Cleanup(String site, String afterSettled, List<String> alsoSettled) {
@@ -47,7 +50,7 @@ final class ProjectQueue {
         Work {
             if (!validId(id) || kind == null || payload == null || payload.length() > 8192
                     || needs == null || locks == null || needs.size() > MAX_JOBS || locks.size() > 128
-                    || kind == Kind.BARRIER && (!payload.isEmpty() || !locks.isEmpty()
+                    || kind.coordinatorOnly() && (!payload.isEmpty() || !locks.isEmpty()
                     || sameWorkerAs != null || cleanup != null || constructionMaterial != null)
                     || needs.stream().anyMatch(dep -> !validId(dep))
                     || sameWorkerAs != null && !needs.contains(sameWorkerAs)
@@ -184,11 +187,14 @@ final class ProjectQueue {
     private static Set<String> blockedJobs(Project project) {
         Set<String> blocked = new HashSet<>();
         for (Job job : project.jobs) {
-            if (job.state == State.FAILED || (job.state == State.WAITING && job.work.needs.stream().anyMatch(blocked::contains))) {
-                blocked.add(job.work.id);
-            }
+            if (blockedByPrevious(job, blocked)) blocked.add(job.work.id);
         }
         return blocked;
+    }
+
+    private static boolean blockedByPrevious(Job job, Set<String> blocked) {
+        return job.state == State.FAILED || job.state == State.WAITING
+                && job.work.kind != Kind.SETTLEMENT_BARRIER && job.work.needs.stream().anyMatch(blocked::contains);
     }
 
     synchronized boolean cancelOutput(String world, String chest) throws IOException {
@@ -332,7 +338,7 @@ final class ProjectQueue {
                 if (job.work.constructionMaterial != null && carried.contains(job.work.constructionMaterial)) continue;
                 if (ownedLane != null && !ownedLane.equals(lane(job.work.id))) continue;
                 if (deposit != null && job.work.kind == Kind.TRANSFER && !deposit.equals(job.work.id)) continue;
-                if (job.state != State.WAITING || job.work.kind == Kind.BARRIER
+                if (job.state != State.WAITING || job.work.kind.coordinatorOnly()
                         || job.expiresAt > now || !kinds.contains(job.work.kind)
                         || !done.containsAll(job.work.needs) || !Collections.disjoint(reserved, job.work.locks)) continue;
                 if (job.work.cleanup != null && (!settled(job.work.cleanup.afterSettled, done, blocked)
@@ -606,7 +612,7 @@ final class ProjectQueue {
                 }
             }
             if (jobs != null) {
-                next.put(project.id, project.withJobs(jobs));
+                next.put(project.id, settleBarriers(project.withJobs(jobs)));
                 changed = true;
             }
         }
@@ -649,16 +655,25 @@ final class ProjectQueue {
     }
 
     private static Project settleBarriers(Project project) {
-        if (project.jobs.stream().noneMatch(job -> job.work.kind == Kind.BARRIER && job.state == State.WAITING)) {
+        if (project.jobs.stream().noneMatch(job -> job.work.kind.coordinatorOnly() && job.state == State.WAITING)) {
             return project;
         }
         Set<String> done = new HashSet<>();
+        Set<String> blocked = new HashSet<>();
         List<Job> updated = new ArrayList<>(project.jobs.size());
         for (Job job : project.jobs) {
-            if (job.work.kind == Kind.BARRIER && job.state == State.WAITING && done.containsAll(job.work.needs)) {
-                job = new Job(job.work, State.DONE, 0, null, null, 0, "Prerequisites complete", null);
+            var kind = job.work.kind;
+            if (job.state == State.WAITING && kind.coordinatorOnly()) {
+                boolean ready = kind == Kind.SETTLEMENT_BARRIER
+                        ? job.work.needs.stream().allMatch(id -> settled(id, done, blocked))
+                        : done.containsAll(job.work.needs);
+                if (ready) {
+                    String evidence = kind == Kind.SETTLEMENT_BARRIER ? "Prerequisites settled" : "Prerequisites complete";
+                    job = new Job(job.work, State.DONE, 0, null, null, 0, evidence, null);
+                }
             }
             if (job.state == State.DONE) done.add(job.work.id);
+            if (blockedByPrevious(job, blocked)) blocked.add(job.work.id);
             updated.add(job);
         }
         return project.withJobs(updated);

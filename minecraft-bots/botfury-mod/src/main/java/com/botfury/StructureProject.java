@@ -356,7 +356,9 @@ final class StructureProject {
                 }
                 var cell = pending.values().iterator().next();
                 int cleanupJobs = scaffolds.stream().mapToInt(entry -> entry.blocks.size()).sum() + cleanup.size();
-                int room = ProjectQueue.MAX_JOBS - jobs.size() - cleanupJobs - pending.size() - verificationJobs - wetJobs;
+                int cleanupGates = cleanup.isEmpty() ? 1 : 2;
+                int room = ProjectQueue.MAX_JOBS - jobs.size() - cleanupJobs - pending.size()
+                        - verificationJobs - wetJobs - cleanupGates;
                 var scaffold = scaffold(client, cell, pending.values(), layout, cleared, ready, placed,
                         List.copyOf(changes), scaffolds.size(), room);
                 if (scaffold != null) {
@@ -378,12 +380,16 @@ final class StructureProject {
                 throw new IllegalArgumentException("No reachable support face for " + cell.desired + " at " + cell.pos.toShortString());
             }
         }
-        var dryChanges = List.copyOf(changes);
-        for (var removal : cleanup) {
-            var support = removal.cleanup();
-            jobs.add(new ProjectQueue.Work(removal.id(), removal.kind(), removal.payload(), removal.needs(),
-                    removal.locks(), null, new ProjectQueue.Cleanup(support.site(), support.afterSettled(), dryChanges)));
-            changes.add(removal.id());
+        if (!cleanup.isEmpty()) {
+            String dryCleanup = "before-support-cleanup";
+            jobs.add(new ProjectQueue.Work(dryCleanup, ProjectQueue.Kind.SETTLEMENT_BARRIER, "",
+                    List.copyOf(changes), Set.of()));
+            for (var removal : cleanup) {
+                var support = removal.cleanup();
+                jobs.add(new ProjectQueue.Work(removal.id(), removal.kind(), removal.payload(), removal.needs(),
+                        removal.locks(), null, new ProjectQueue.Cleanup(support.site(), dryCleanup)));
+                changes.add(removal.id());
+            }
         }
         if (!waterSources.isEmpty()) {
             String dryBarrier = "before-water";
@@ -447,11 +453,15 @@ final class StructureProject {
                 area = StructureSupply.union(area, new ProjectBlock(cell.pos, stand, AIR));
             }
         }
-        var settledWork = new ArrayList<>(changes);
-        settledWork.addAll(inspections);
-        String previousCleanup = null;
-        for (int i = scaffolds.size() - 1; i >= 0; i--) {
-            previousCleanup = appendScaffoldCleanup(jobs, scaffolds.get(i), settledWork, previousCleanup);
+        if (!scaffolds.isEmpty()) {
+            var settledWork = new ArrayList<>(changes);
+            settledWork.addAll(inspections);
+            String scaffoldCleanup = "before-access-cleanup";
+            jobs.add(new ProjectQueue.Work(scaffoldCleanup, ProjectQueue.Kind.SETTLEMENT_BARRIER, "", settledWork, Set.of()));
+            String previousCleanup = scaffoldCleanup;
+            for (int i = scaffolds.size() - 1; i >= 0; i--) {
+                previousCleanup = appendScaffoldCleanup(jobs, scaffolds.get(i), scaffoldCleanup, previousCleanup);
+            }
         }
         requireJobBudget(jobs.size());
         return new Plan(List.copyOf(jobs), Map.copyOf(materials), area, footprint);
@@ -652,16 +662,16 @@ final class StructureProject {
     }
 
     private static String appendScaffoldCleanup(List<ProjectQueue.Work> jobs, Scaffold scaffold,
-                                                List<String> settledWork, String previousCleanup) {
-        var other = List.copyOf(settledWork);
-        String settled = previousCleanup == null ? scaffold.lastPlacement() : previousCleanup;
+                                                String scaffoldCleanup, String previousCleanup) {
+        String settled = previousCleanup;
         for (int i = scaffold.blocks.size() - 1; i >= 0; i--) {
             var step = scaffold.blocks.get(i);
             String id = "remove-" + step.placement.id().substring("place-".length());
             var removal = work(id, ProjectQueue.Kind.EXCAVATE, step.block, SCAFFOLD,
                     step.removalStand, Direction.UP, List.of(step.placement.id()));
             jobs.add(new ProjectQueue.Work(id, removal.kind(), removal.payload(), removal.needs(), removal.locks(),
-                    null, new ProjectQueue.Cleanup(ProjectBlock.key(step.block), settled, other)));
+                    null, new ProjectQueue.Cleanup(ProjectBlock.key(step.block), settled,
+                            settled.equals(scaffoldCleanup) ? List.of() : List.of(scaffoldCleanup))));
             settled = id;
         }
         return settled;

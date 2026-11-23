@@ -205,7 +205,21 @@ final class ProjectPlacement {
             if (hit.getType() != HitResult.Type.BLOCK || !target.equals(hit.getBlockPos())) continue;
             player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, hit.getPos());
             if (desired.getBlock() instanceof FenceGateBlock) facePlayer(client, desired.get(FenceGateBlock.FACING));
-            var result = client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
+            boolean resumeSneak = player.isSneaking();
+            if (resumeSneak) {
+                // Sneaking with an item bypasses the use action on the trapdoor or gate.
+                player.input.sneaking = false;
+                player.networkHandler.sendPacket(new ClientCommandC2SPacket(player, ClientCommandC2SPacket.Mode.RELEASE_SHIFT_KEY));
+            }
+            ActionResult result;
+            try {
+                result = client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
+            } finally {
+                if (resumeSneak) {
+                    player.input.sneaking = true;
+                    player.networkHandler.sendPacket(new ClientCommandC2SPacket(player, ClientCommandC2SPacket.Mode.PRESS_SHIFT_KEY));
+                }
+            }
             if (!result.isAccepted()) return "Could not open " + target.toShortString();
             player.swingHand(Hand.MAIN_HAND);
             return null;

@@ -7,6 +7,7 @@ import net.minecraft.block.Blocks;
 import net.minecraft.block.ChestBlock;
 import net.minecraft.block.FallingBlock;
 import net.minecraft.block.SlabBlock;
+import net.minecraft.block.TrapdoorBlock;
 import net.minecraft.block.enums.ChestType;
 import net.minecraft.block.enums.SlabType;
 import net.minecraft.client.MinecraftClient;
@@ -731,8 +732,9 @@ final class StructureProject {
                 if (stand != null) return new BuildPose(stand, face, support, exposed, accessRoutes.get(stand));
             }
         }
-        if (current == null || !placement.isFullCube(client.world, cell.pos)
-                || placement.getBlock() instanceof FallingBlock) return null;
+        boolean supportsEdgePlacement = placement.getBlock() instanceof TrapdoorBlock
+                || placement.isFullCube(client.world, cell.pos) && !(placement.getBlock() instanceof FallingBlock);
+        if (current == null || !supportsEdgePlacement) return null;
         for (Direction face : ProjectPlacement.faces(placement)) {
             if (!face.getAxis().isHorizontal()) continue;
             var support = cell.pos.offset(face.getOpposite());

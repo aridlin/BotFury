@@ -14,6 +14,38 @@ class ProjectQueueTest {
     @TempDir Path directory;
     private static final String WORLD = "test|overworld";
 
+    @Test void lostBuildInventoryRequestsOnlyUnplacedMaterialAfterRestart() throws Exception {
+        var journal = directory.resolve("lost-construction-cargo.json");
+        var queue = new ProjectQueue(journal);
+        String chest = "block:3,64,0";
+        String material = "minecraft:red_stained_glass";
+        queue.submitSupplied("house", WORLD, List.of(job("prepare", GATHER, List.of()),
+                new ProjectQueue.Work("pickup", TRANSFER,
+                        "{\"direction\":\"TAKE\",\"item\":\"" + material + "\",\"stock\":3}",
+                        List.of("prepare"), Set.of(chest), null, null, material),
+                new ProjectQueue.Work("placed", BUILD, "", List.of("pickup"), Set.of(), "pickup"),
+                new ProjectQueue.Work("missing", BUILD, "", List.of("pickup"), Set.of(), "pickup"),
+                new ProjectQueue.Work("pending", BUILD, "", List.of("pickup"), Set.of(), "pickup")), chest);
+        var gather = queue.claim(WORLD, "builder", Set.of(GATHER), 1).job();
+        assertTrue(queue.finish("house", "prepare", gather.lease(), true, "Gathered", 2));
+        var pickup = queue.claim(WORLD, "builder", Set.of(TRANSFER), 3).job();
+        var emptyChest = new ProjectQueue.ChestReport(chest, java.util.Map.of());
+        assertTrue(queue.finish("house", "pickup", pickup.lease(), true, "Collected", emptyChest, 4));
+        var placed = queue.claim(WORLD, "builder", Set.of(BUILD), 5).job();
+        assertTrue(queue.finish("house", "placed", placed.lease(), true, "Placed", 6));
+        var missing = queue.claim(WORLD, "builder", Set.of(BUILD), 7).job();
+        assertTrue(queue.finish("house", "missing", missing.lease(), false, "Missing material " + material, 8));
+
+        var restored = new ProjectQueue(journal);
+        assertNull(restored.claim(WORLD, "builder", Set.of(BUILD), 9));
+        var refill = restored.claim(WORLD, "replacement", Set.of(TRANSFER), 10).job();
+        var payload = com.google.gson.JsonParser.parseString(refill.work().payload()).getAsJsonObject();
+        assertEquals(2, payload.get("stock").getAsInt());
+        assertEquals(ProjectQueue.State.DONE, restored.snapshot(11).get(0).jobs().get(2).state());
+        assertTrue(restored.finish("house", "pickup", refill.lease(), true, "Collected replacement", emptyChest, 12));
+        assertEquals("missing", restored.claim(WORLD, "replacement", Set.of(BUILD), 13).job().work().id());
+    }
+
     @Test void missingCargoReopensOnlyTheAffectedGatheringChain() throws Exception {
         var journal = directory.resolve("missing-cargo.json");
         var queue = new ProjectQueue(journal);

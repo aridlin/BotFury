@@ -9,6 +9,7 @@ import net.minecraft.block.HopperBlock;
 import net.minecraft.block.PillarBlock;
 import net.minecraft.block.SlabBlock;
 import net.minecraft.block.enums.ChestType;
+import net.minecraft.block.enums.SlabType;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.BlockItem;
 import net.minecraft.item.ItemPlacementContext;
@@ -72,6 +73,10 @@ final class ProjectPlacement {
         if (state.getBlock() instanceof SlabBlock && desired.getBlock() instanceof SlabBlock) {
             return face.getAxis().isHorizontal() && state.get(SlabBlock.TYPE) == desired.get(SlabBlock.TYPE);
         }
+        if (state.getBlock() instanceof SlabBlock && face.getAxis().isHorizontal()
+                && state.get(SlabBlock.TYPE) != SlabType.DOUBLE) {
+            return desired.isFullCube(world, pos.offset(face)) && !(desired.getBlock() instanceof FallingBlock);
+        }
         if (state.isOf(Blocks.HOPPER) && desired.getBlock() instanceof SlabBlock && face == Direction.UP) return true;
         return desired.isOf(Blocks.HOPPER) && container(state)
                 || !state.hasBlockEntity() && state.isFullCube(world, pos);
@@ -103,7 +108,12 @@ final class ProjectPlacement {
             return Vec3d.ofCenter(support).add(Vec3d.of(face.getVector()).multiply(.499)).add(0, .3125, 0);
         }
         var point = Vec3d.ofCenter(support).add(Vec3d.of(face.getVector()).multiply(.499));
-        return face.getAxis().isHorizontal() ? point.add(0, ProjectShapedBlock.clickHeight(desired) - .5, 0) : point;
+        if (!face.getAxis().isHorizontal()) return point;
+        double height = ProjectShapedBlock.clickHeight(desired);
+        if (state.getBlock() instanceof SlabBlock && state.get(SlabBlock.TYPE) != SlabType.DOUBLE) {
+            height = state.get(SlabBlock.TYPE) == SlabType.TOP ? .75 : .25;
+        }
+        return point.add(0, height - .5, 0);
     }
 
     /** Null means a placement packet was accepted for processing, or an inventory swap is pending. */

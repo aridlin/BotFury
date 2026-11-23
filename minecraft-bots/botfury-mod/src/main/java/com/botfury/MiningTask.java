@@ -345,26 +345,43 @@ final class MiningTask {
         else if(c.player.currentScreenHandler==c.player.playerScreenHandler)c.interactionManager.clickSlot(c.player.playerScreenHandler.syncId,best,c.player.getInventory().selectedSlot,SlotActionType.SWAP,c.player);
         return true;
     }
-    private static Vec3d standing(MinecraftClient c,BlockPos ore){
-        Vec3d best=null;double score=Double.POSITIVE_INFINITY;
+    private static Vec3d standing(MinecraftClient client, BlockPos target) {
+        var player = client.player;
+        var world = client.world;
+        var origin = player.getPos();
+        var body = player.getBoundingBox();
         boolean preserveTerrain = projectMining && excluded != null
-                || c.world.getBlockState(ore).getCollisionShape(c.world, ore).isEmpty();
-        for(int dx=-1;dx<=1;dx++)for(int dz=-1;dz<=1;dz++)for(int dy=-1;dy<=1;dy++){
-            if(dx==0&&dz==0)continue;BlockPos feet=ore.add(dx,dy,dz),below=feet.down();
-            if (rejectedStands.containsKey(feet)) continue;
-            if(!c.world.isChunkLoaded(feet.getX()>>4,feet.getZ()>>4)||c.world.getBlockState(below).getCollisionShape(c.world,below).isEmpty()
-                    ||!c.world.getFluidState(feet).isEmpty()||!c.world.getFluidState(feet.up()).isEmpty()
-                    ||c.world.getBlockState(feet).getHardness(c.world,feet)<0||c.world.getBlockState(feet.up()).getHardness(c.world,feet.up())<0)continue;
-            Vec3d point=Vec3d.ofBottomCenter(feet);var box=c.player.getBoundingBox().offset(point.subtract(c.player.getPos())).expand(.35,0,.35);
-            boolean clear = c.world.isSpaceEmpty(c.player, c.player.getBoundingBox().offset(point.subtract(c.player.getPos())));
-            if (preserveTerrain && (!clear || miningHit(c, ore, point.add(0, 1.62, 0), 4.3) == null)) continue;
-            if(!c.world.getOtherEntities(c.player,box,e->e instanceof PlayerEntity&&e.isAlive()).isEmpty())continue;
-            double climb = Math.max(0, point.y - c.player.getY());
-            double distance=c.player.squaredDistanceTo(point) + climb * 6 + (c.world.isSpaceEmpty(c.player,box)?0:16);
-            if(distance<score){score=distance;best=point;}
+                || world.getBlockState(target).getCollisionShape(world, target).isEmpty();
+        double reach = Math.min(4.3, client.interactionManager.getReachDistance() - .1);
+        Vec3d best = null;
+        double bestScore = Double.POSITIVE_INFINITY;
+        // Reach comes from the eyes, so useful poses can be several blocks below the target.
+        for (var offset : BlockPos.iterateOutwards(target, 2, 5, 2)) {
+            if (offset.getY() > target.getY() + 2 || offset.equals(target) || offset.up().equals(target)
+                    || rejectedStands.containsKey(offset)
+                    || !world.isChunkLoaded(offset.getX() >> 4, offset.getZ() >> 4)) continue;
+            var below = offset.down();
+            if (world.getBlockState(below).getCollisionShape(world, below).isEmpty()
+                    || !world.getFluidState(offset).isEmpty() || !world.getFluidState(offset.up()).isEmpty()
+                    || world.getBlockState(offset).getHardness(world, offset) < 0
+                    || world.getBlockState(offset.up()).getHardness(world, offset.up()) < 0) continue;
+            var point = Vec3d.ofBottomCenter(offset);
+            double score = origin.squaredDistanceTo(point) + Math.max(0, point.y - origin.y) * 6;
+            if (score >= bestScore) continue;
+            var box = body.offset(point.subtract(origin));
+            if (preserveTerrain && (!world.isSpaceEmpty(player, box)
+                    || miningHit(client, target, point.add(0, 1.62, 0), reach) == null)) continue;
+            var space = box.expand(.35, 0, .35);
+            if (!world.getOtherEntities(player, space, entity -> entity instanceof PlayerEntity && entity.isAlive()).isEmpty()) continue;
+            if (!world.isSpaceEmpty(player, space)) score += 16;
+            if (score < bestScore) {
+                bestScore = score;
+                best = point;
+            }
         }
         return best;
     }
+
     private static void request(MinecraftClient client,BlockPos ore,Vec3d place,String action){
         if(job==null||place==null)return;requesting=true;
         Job current=job;String token=action.equals("renew")&&leaseToken!=null?leaseToken:owner+":"+(++claimSerial);int epoch=generation;

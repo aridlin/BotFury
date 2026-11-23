@@ -73,9 +73,10 @@ final class ProjectPlacement {
         if (state.getBlock() instanceof SlabBlock && desired.getBlock() instanceof SlabBlock) {
             return face.getAxis().isHorizontal() && state.get(SlabBlock.TYPE) == desired.get(SlabBlock.TYPE);
         }
-        if (state.getBlock() instanceof SlabBlock && face.getAxis().isHorizontal()
-                && state.get(SlabBlock.TYPE) != SlabType.DOUBLE) {
-            return desired.isFullCube(world, pos.offset(face)) && !(desired.getBlock() instanceof FallingBlock);
+        if (state.getBlock() instanceof SlabBlock && state.get(SlabBlock.TYPE) != SlabType.DOUBLE
+                && !state.hasBlockEntity() && desired.isFullCube(world, pos.offset(face))
+                && !(desired.getBlock() instanceof FallingBlock)) {
+            return face.getAxis().isHorizontal() || face == Direction.UP && state.get(SlabBlock.TYPE) == SlabType.TOP;
         }
         if (state.isOf(Blocks.HOPPER) && desired.getBlock() instanceof SlabBlock && face == Direction.UP) return true;
         return desired.isOf(Blocks.HOPPER) && container(state)

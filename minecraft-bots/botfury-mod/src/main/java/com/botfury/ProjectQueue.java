@@ -353,6 +353,7 @@ final class ProjectQueue {
         if (projectId == null) unscopedWorkers.add(workerKey);
         else unscopedWorkers.remove(workerKey);
         expire(now);
+        recoverMissingBuildCargo(world);
         recoverMissingSuppliers(world, now);
         Set<String> reserved = new HashSet<>();
         Map<String, String> projectReservations = new HashMap<>();
@@ -673,6 +674,63 @@ final class ProjectQueue {
         project.jobs.forEach(job -> jobs.put(job.work.id, job));
         var prerequisite = jobs.get(transfer.work.needs.get(0));
         return rewindSupply(project, transfer, prerequisite, jobs, evidence, observation);
+    }
+
+    private void recoverMissingBuildCargo(String world) throws IOException {
+        for (var project : List.copyOf(projects.values())) {
+            if (!world.equals(project.world) || project.supplyChest == null || cancelled(project)
+                    || project.jobs.stream().noneMatch(job -> job.work.kind == Kind.BUILD && job.work.sameWorkerAs != null
+                    && job.evidence != null && job.evidence.startsWith("Missing ")
+                    && (job.state == State.WAITING || job.state == State.FAILED))) continue;
+            var consumers = new HashMap<String, List<Job>>();
+            for (var job : project.jobs) {
+                if (job.work.kind == Kind.BUILD && job.work.sameWorkerAs != null && job.state != State.DONE) {
+                    consumers.computeIfAbsent(job.work.sameWorkerAs, ignored -> new ArrayList<>()).add(job);
+                }
+            }
+            var recovery = new HashMap<>(project.supplyRecoveries);
+            var changes = new HashMap<String, Job>();
+            for (var pickup : project.jobs) {
+                var builds = consumers.get(pickup.work.id);
+                String material = pickup.work.constructionMaterial;
+                if (builds == null || pickup.state != State.DONE || material == null
+                        || !pickup.work.locks.contains(project.supplyChest)
+                        || builds.stream().anyMatch(job -> job.state == State.LEASED)) continue;
+                var missing = builds.stream().filter(job -> missingBuildMaterial(job, material)).toList();
+                if (missing.isEmpty()) continue;
+                var target = JSON.fromJson(pickup.work.payload, PickupTarget.class);
+                if (target == null || !"TAKE".equals(target.direction) || !material.equals(target.item)) continue;
+                String key = "pickup:" + pickup.work.id;
+                int attempts = recovery.getOrDefault(key, 0);
+                if (attempts >= MAX_SUPPLY_RECOVERIES) continue;
+                if (reservedStorage(project) == null && projects.values().stream().anyMatch(other ->
+                        !other.id.equals(project.id) && other.world.equals(world)
+                                && project.supplyChest.equals(reservedStorage(other)))) break;
+                long outstanding = builds.stream().filter(job -> job.state == State.WAITING
+                        || missingBuildMaterial(job, material)).count();
+                var payload = JSON.fromJson(pickup.work.payload, com.google.gson.JsonObject.class);
+                payload.addProperty("stock", Math.min(outstanding, target.stock));
+                var work = new Work(pickup.work.id, pickup.work.kind, JSON.toJson(payload), pickup.work.needs,
+                        pickup.work.locks, pickup.work.sameWorkerAs, pickup.work.cleanup, material);
+                changes.put(work.id, new Job(work, State.WAITING, 0, null, null, 0,
+                        "Build inventory is short; requesting remaining materials", pickup.chest, pickup.resourceSite));
+                for (var job : missing) {
+                    changes.put(job.work.id, new Job(job.work, State.WAITING, 0, null, null, 0,
+                            "Waiting for replacement build materials", job.chest, job.resourceSite));
+                }
+                recovery.put(key, attempts + 1);
+            }
+            if (!changes.isEmpty()) {
+                var jobs = project.jobs.stream().map(job -> changes.getOrDefault(job.work.id, job)).toList();
+                commit(new Project(project.id, project.world, jobs, project.repeat, project.supplyChest, recovery));
+            }
+        }
+    }
+
+    private static boolean missingBuildMaterial(Job job, String material) {
+        return (job.state == State.WAITING || job.state == State.FAILED)
+                && (("Missing material " + material).equals(job.evidence)
+                || ("Missing unmodified material " + material).equals(job.evidence));
     }
 
     private void recoverMissingSuppliers(String world, long now) throws IOException {

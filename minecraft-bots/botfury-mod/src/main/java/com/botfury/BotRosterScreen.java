@@ -118,6 +118,7 @@ final class BotRosterScreen extends FleetPanel {
         }
         switch (tab) {
             case FLEET -> {
+                button("Squads…", detailLeft(), 42, width - detailLeft() - MARGIN, () -> client.setScreen(new SquadScreen(this)));
                 controls(0, "Recall", () -> BotTracker.manageSelected("recall"),
                         "Hold / Stop", () -> BotTracker.manageSelected("hold"));
                 controls(1, "Resume", () -> BotTracker.manageSelected("resume"), "Join my world", this::joinBots);
@@ -381,7 +382,7 @@ final class BotRosterScreen extends FleetPanel {
             assign.active = project != null && needsWorkers(project);
             stopOrder.visible = project != null && project.repeat() != null && !project.repeat().cancelled();
         }
-        if (guide == null) drawDetails(draw, selected, tab == Tab.PROJECTS ? ROW_TOP : 49);
+        if (guide == null) drawDetails(draw, selected, tab == Tab.PROJECTS || tab == Tab.FLEET ? ROW_TOP : 49);
         else {
             int nextY = drawGuide(draw) + 10;
             if (tab != Tab.FLEET && selected != null && nextY + 35 < height - 34) {
@@ -468,7 +469,8 @@ final class BotRosterScreen extends FleetPanel {
                 String control = LocalFormation.overrideLabel(bot.port());
                 if (!control.isBlank()) lines.add("Control · " + control);
                 if (bot.items() != null) items = bot.items();
-            } else lines.add("Actions apply to the fleet. Select a bot to control it individually.");
+            } else lines.add(BotTracker.selectedSquad() == null
+                    ? "Select a bot to control it individually." : BotTracker.targets().size() + " tracked squad members");
         } else if (selected != null) {
             switch (tab) {
                 case PROJECTS -> projectDetails(lines, selected.key);

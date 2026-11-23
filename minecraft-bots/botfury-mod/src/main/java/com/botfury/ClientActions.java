@@ -13,6 +13,10 @@ final class ClientActions {
             case "saturn", "orbit" -> LocalFormation.activate(client, "orbit");
             case "scatter" -> LocalFormation.activate(client, "scatter");
             case "stop" -> {
+                if (!BotTracker.target().all()) {
+                    BotTracker.manageSelected("hold");
+                    return;
+                }
                 BotTracker.all().forEach(bot -> BotTracker.command(bot.port(), "control:stop"));
                 LocalFormation.pauseMovement();
                 BotInventory.hold();
@@ -55,7 +59,7 @@ final class ClientActions {
             if ((action.equals("gather") || action.equals("deliver")) && here != null && port >= 1024) {
                 coordinates = "|" + here.server() + "|" + here.dimension() + "|" + here.x() + "|" + here.y() + "|" + here.z() + "|" + port;
             }
-            if (BotTracker.targets().isEmpty()) LocalFormation.fleetCommand(command);
+            if (BotTracker.targets().isEmpty() && BotTracker.target().all()) LocalFormation.fleetCommand(command);
             else if (BotTracker.sendSelected(command, coordinates) > 0 && !item.equals("minecraft:air")) {
                 BotUiConfig.trackRequest(java.util.List.of(item));
             }

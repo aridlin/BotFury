@@ -27,7 +27,7 @@ final class BotMarkers {
         int itemHeight = ((tracked.size() + ITEMS_PER_ROW - 1) / ITEMS_PER_ROW) * 18;
         int labelHeight = 24 + itemHeight;
         int heightScaled = (int)Math.ceil(labelScale * labelHeight);
-        boolean saturn = LocalFormation.mode().equals("orbit");
+
         var occupied=new java.util.ArrayList<int[]>();
         for(var bot:BotTracker.all()){
             long age=System.currentTimeMillis()-bot.positionAt();
@@ -50,7 +50,7 @@ final class BotMarkers {
             int x=(int)point.x(),y=(int)point.y();
             if(point.edge()&&Math.abs(x-width/2)<140&&y>height-80)y=height-80;
             int color=!live?0xFF8995A5:!alive?0xFFFF7777:entity==null&&age>2000?0xFFFFC35C:0xFF000000 | WorldOverlays.pathColor(bot.port());
-            if (saturn) {
+            if (bot.task().equals("orbit")) {
                 if (!point.edge()) BotGeometry.circle(draw, x, y, Math.max(1.2f, 3.2f * hudScale), color);
                 continue;
             }

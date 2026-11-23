@@ -16,6 +16,12 @@ final class BotUiConfig {
     static final int TRACK_LIMIT = 6;
     static final List<String> trackedItems = new ArrayList<>();
     private static List<String> requestedItems = List.of();
+    static final Map<String, List<String>> squads = new java.util.LinkedHashMap<>();
+
+    static boolean validSquadName(String name) {
+        return !name.isBlank() && name.length() <= 24 && !name.equalsIgnoreCase("All bots");
+    }
+
     record Tracked(String icon, List<String> items) {
         int count(Map<String, Integer> inventory) {
             return items.stream().mapToInt(id -> inventory.getOrDefault(id, 0)).sum();
@@ -46,6 +52,18 @@ final class BotUiConfig {
             if (value.has("defense")) defense = value.get("defense").getAsBoolean();
             if (value.has("fleetGuideSeen")) fleetGuideSeen = value.get("fleetGuideSeen").getAsBoolean();
             if (value.has("item")) item = value.get("item").getAsString();
+            squads.clear();
+            if (value.has("squads") && value.get("squads").isJsonObject()) {
+                for (var entry : value.getAsJsonObject("squads").entrySet()) {
+                    if (!validSquadName(entry.getKey()) || !entry.getValue().isJsonArray()) continue;
+                    var members = new ArrayList<String>();
+                    for (var member : entry.getValue().getAsJsonArray()) {
+                        if (member.isJsonPrimitive() && member.getAsJsonPrimitive().isString()
+                                && member.getAsString().matches("[A-Za-z0-9_]{1,16}")) members.add(member.getAsString());
+                    }
+                    if (!members.isEmpty()) squads.put(entry.getKey(), members.stream().distinct().toList());
+                }
+            }
             trackedItems.clear();
             if (value.has("trackedItems") && value.get("trackedItems").isJsonArray()) {
                 for (var entry : value.getAsJsonArray("trackedItems")) {
@@ -81,7 +99,7 @@ final class BotUiConfig {
     }
 
     static void save() {
-        try { Files.createDirectories(path().getParent()); Files.writeString(path(), new Gson().toJson(Map.of("hud", hud, "esp", esp, "paths", paths, "item", item, "trackedItems", trackedItems, "defense", defense, "fleetGuideSeen", fleetGuideSeen))); }
+        try { Files.createDirectories(path().getParent()); Files.writeString(path(), new Gson().toJson(Map.of("hud", hud, "esp", esp, "paths", paths, "item", item, "trackedItems", trackedItems, "defense", defense, "fleetGuideSeen", fleetGuideSeen, "squads", squads))); }
         catch (Exception error) { BotEvents.add("warn", "settings", "Could not save HUD preference"); }
     }
 }

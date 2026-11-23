@@ -159,14 +159,14 @@ final class CommandWheel extends FleetPanel {
         String center = switch (page) {
             case 1 -> selected == 4 && !quantityChosen ? "All" : "×" + quantity;
             case 4 -> "×" + outputBatch;
-            default -> BotTracker.selected() < 0 ? "Fleet" : "1 bot";
+            default -> BotTracker.targetLabel();
         };
-        draw.drawCenteredTextWithShadow(textRenderer, center, cx, cy - 4, BotUiTheme.ACCENT);
+        draw.drawCenteredTextWithShadow(textRenderer, textRenderer.trimToWidth(center, (int) (baseRadius * .68f)), cx, cy - 4, BotUiTheme.ACCENT);
         String hint;
         if (page == 1 || page == 4) hint = net.minecraft.registry.Registries.ITEM.get(new net.minecraft.util.Identifier(item))
                 .getName().getString() + "  ·  Scroll to set count";
         else if (page == 2) hint = aimedFriend.isEmpty() ? "Aim at a player before opening" : "Aimed at " + aimedFriend;
-        else hint = "Target  " + BotTracker.targetLabel();
+        else hint = BotTracker.targetLabel() + "  ·  Right-click to cycle squads";
         String description = selected < 0
                 ? gesture ? "Release over a wedge to select. Release in the center to cancel." : "Point at a wedge and click to select."
                 : DESCRIPTIONS[page][selected];
@@ -246,7 +246,7 @@ final class CommandWheel extends FleetPanel {
 
     @Override protected boolean panelMouseClicked(double x, double y, int button) {
         if (FormationClient.wheel.matchesMouse(button)) { beginGesture(); return true; }
-        if (button == 1) { gesture = false; back(); return true; }
+        if (button == 1) { BotTracker.cycleSquad(); BotUiSound.hover(); return true; }
         if (button != 0) return false;
         gesture = false;
         int action = sectorAt(x, y);

@@ -160,6 +160,11 @@ public class BotFuryMod implements ClientModInitializer {
         status.put("ready", ready);
         status.put("renderEnabled", renderEnabled);
         status.put("projectTask", ProjectWorker.status());
+        String task = ProjectWorker.taskKind();
+        if (task.isEmpty() && !ProjectWorker.enabled()) {
+            task = MiningTask.working() ? "mining" : BotInventory.working() ? "inventory" : LocalFormation.mode();
+        }
+        status.put("taskKind", task);
         status.put("player", client.player == null ? "None" : client.player.getGameProfile().getName());
         status.put("offlineUsername", firstNonBlank(System.getProperty("botfury.offlineUsername"), System.getProperty("botfury.username"), ""));
         status.put("httpPort", httpPort);

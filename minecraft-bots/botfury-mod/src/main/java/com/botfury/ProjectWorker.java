@@ -262,7 +262,9 @@ final class ProjectWorker {
                 && (client.world.getBlockState(target).isAir() || excavationHit(client, target) != null);
         boolean atStand = nearStand && (!exactFooting || player.getBlockPos().equals(block.stand()) || canCleanFromHere
                 || edge && centering && player.getBlockPos().equals(target.up()));
-        if (!player.isOnGround() || !atStand && !inspectNearby) {
+        // A leased station can be used from the first safe position with a clear interaction ray.
+        boolean workstationNearby = production != null && targetLoaded && production.reachableFromHere(client);
+        if (!player.isOnGround() || !atStand && !inspectNearby && !workstationNearby) {
             releaseCentering(client);
             stableSince = 0;
             var recovery = approachRecovery.tick(client, block.stand(),

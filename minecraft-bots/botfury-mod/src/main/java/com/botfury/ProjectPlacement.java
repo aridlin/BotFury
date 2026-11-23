@@ -21,6 +21,7 @@ import net.minecraft.registry.Registries;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
+import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
@@ -122,6 +123,21 @@ final class ProjectPlacement {
         return point.add(0, height - .5, 0);
     }
 
+    static BlockHitResult supportHit(MinecraftClient client, ProjectBlock block) {
+        var support = block.support();
+        var desired = block.desired();
+        var state = client.world.getBlockState(support);
+        var eye = client.player.getEyePos();
+        var point = facePoint(support, block.face(), state, desired);
+        double reach = client.interactionManager.getReachDistance() - .1;
+        if (!support(state, desired, block.face(), client.world, support)
+                || eye.squaredDistanceTo(point) > reach * reach) return null;
+        var hit = client.world.raycast(new RaycastContext(eye, point, RaycastContext.ShapeType.OUTLINE,
+                RaycastContext.FluidHandling.NONE, client.player));
+        return hit.getType() == HitResult.Type.BLOCK && support.equals(hit.getBlockPos())
+                && hit.getSide() == block.face() ? hit : null;
+    }
+
     /** Null means a placement packet was accepted for processing, or an inventory swap is pending. */
     static String attempt(MinecraftClient client, ProjectBlock block) {
         var player = client.player;
@@ -137,17 +153,9 @@ final class ProjectPlacement {
         if (ProjectShapedBlock.canOpen(observed, desired)) return open(client, target, desired);
         if (!observed.isAir() && !(ProjectWater.source(desired) && ProjectWater.water(observed))) return "Build target is occupied";
         var support = block.support();
-        Vec3d eye = player.getEyePos();
         var supportState = client.world.getBlockState(support);
-        Vec3d point = facePoint(support, block.face(), supportState, desired);
-        var hit = client.world.raycast(new RaycastContext(eye, point, RaycastContext.ShapeType.OUTLINE,
-                RaycastContext.FluidHandling.NONE, player));
-        double reach = client.interactionManager.getReachDistance() - .1;
-        if (!support(supportState, desired, block.face(), client.world, support)
-                || eye.squaredDistanceTo(point) > reach * reach || hit.getType() != HitResult.Type.BLOCK
-                || !support.equals(hit.getBlockPos()) || hit.getSide() != block.face()) {
-            return "No reachable solid support face for " + target.toShortString();
-        }
+        var hit = supportHit(client, block);
+        if (hit == null) return "No reachable solid support face for " + target.toShortString();
 
         boolean container = container(desired);
         int slot = 0;
@@ -163,7 +171,7 @@ final class ProjectPlacement {
         }
         player.getInventory().selectedSlot = slot;
         if (ProjectWater.source(desired)) {
-            return ProjectWater.useBucket(client, point, support, block.face());
+            return ProjectWater.useBucket(client, facePoint(support, block.face(), supportState, desired), support, block.face());
         }
         player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, hit.getPos());
         boolean sneak = desired.isOf(Blocks.CHEST) || container(supportState);

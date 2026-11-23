@@ -31,7 +31,7 @@ final class ClientActions {
             case "status" -> message(client, "BotFury · " + LocalFormation.mode() + " · " + LocalFormation.peers()
                     + " bots · " + LocalFormation.stage());
             case "help" -> message(client, "/bf saturn | lightning | stop | scatter | gather | spread | hud | status\n"
-                    + "/bf inventory <collect|deliver|keep|only|drop> <item> <count>\n/bf friend <add|remove> <name>");
+                    + "/bf inventory <collect|deliver|keep|only|drop> <item> <count>\n/bf friend <add|remove> <name>\n/bf tutorial");
             default -> message(client, "Unknown BotFury action. Use /bf help.");
         }
     }

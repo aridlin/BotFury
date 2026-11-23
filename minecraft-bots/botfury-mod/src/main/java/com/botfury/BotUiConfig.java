@@ -10,6 +10,7 @@ final class BotUiConfig {
     static boolean hud = true;
     static boolean esp = true;
     static boolean defense;
+    static boolean fleetGuideSeen;
     static String item = "";
     static final int TRACK_LIMIT = 6;
     static final List<String> trackedItems = new ArrayList<>();
@@ -23,6 +24,7 @@ final class BotUiConfig {
             if (value.has("hud")) hud = value.get("hud").getAsBoolean();
             if (value.has("esp")) esp = value.get("esp").getAsBoolean();
             if (value.has("defense")) defense = value.get("defense").getAsBoolean();
+            if (value.has("fleetGuideSeen")) fleetGuideSeen = value.get("fleetGuideSeen").getAsBoolean();
             if (value.has("item")) item = value.get("item").getAsString();
             trackedItems.clear();
             if (value.has("trackedItems") && value.get("trackedItems").isJsonArray()) {
@@ -44,6 +46,11 @@ final class BotUiConfig {
         save();
     }
     static void toggleEsp() { esp = !esp; save(); }
+    static void markFleetGuideSeen() {
+        if (fleetGuideSeen) return;
+        fleetGuideSeen = true;
+        save();
+    }
     static boolean addTracked(String item) {
         var id = net.minecraft.util.Identifier.tryParse(item);
         if (id == null || id.equals(net.minecraft.util.Identifier.of("minecraft", "air"))
@@ -53,7 +60,7 @@ final class BotUiConfig {
     }
 
     static void save() {
-        try { Files.createDirectories(path().getParent()); Files.writeString(path(), new Gson().toJson(Map.of("hud", hud, "esp", esp, "item", item, "trackedItems", trackedItems, "defense", defense))); }
+        try { Files.createDirectories(path().getParent()); Files.writeString(path(), new Gson().toJson(Map.of("hud", hud, "esp", esp, "item", item, "trackedItems", trackedItems, "defense", defense, "fleetGuideSeen", fleetGuideSeen))); }
         catch (Exception error) { BotEvents.add("warn", "settings", "Could not save HUD preference"); }
     }
 }

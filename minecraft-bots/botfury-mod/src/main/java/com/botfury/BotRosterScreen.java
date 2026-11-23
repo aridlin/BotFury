@@ -20,6 +20,21 @@ import java.util.concurrent.CompletionException;
 
 final class BotRosterScreen extends Screen {
     private enum Tab { FLEET, PROJECTS, CHESTS, ACTIVITY }
+    private enum GuideStep {
+        PICK(Tab.FLEET, "Choose who gets orders", "Select All bots or an individual bot. This sets the target for fleet actions."),
+        BUILDS(Tab.PROJECTS, "Find your builds", "Open Projects to queue schematics and see what each worker is doing."),
+        STOCK(Tab.CHESTS, "Check shared stock", "Open Chests to see which items workers last counted and when they checked."),
+        LOG(Tab.ACTIVITY, "Find out what happened", "Open Activity to read recent commands and errors, or enter a Baritone command."),
+        DONE(null, "Ready to manage the fleet", "Use Bots on the pie menu to return here. Run /bf tutorial to replay this guide.");
+
+        final Tab target;
+        final String heading, detail;
+        GuideStep(Tab target, String heading, String detail) {
+            this.target = target;
+            this.heading = heading;
+            this.detail = detail;
+        }
+    }
     private record Row(String key, String title, String subtitle, int color) {}
     private static final int ACCENT = BotUiTheme.ACCENT, TEXT = BotUiTheme.TEXT, MUTED = BotUiTheme.MUTED, RED = BotUiTheme.DANGER;
     private static final int MARGIN = 14, ROW_TOP = 69, ROW_HEIGHT = 30;
@@ -32,16 +47,23 @@ final class BotRosterScreen extends Screen {
     private TextFieldWidget search;
     private TextFieldWidget command;
     private int offset, detailOffset, detailLimit;
+    private GuideStep guide;
 
     BotRosterScreen(Screen parent) {
+        this(parent, false);
+    }
+
+    BotRosterScreen(Screen parent, boolean replayGuide) {
         super(Text.literal("BotFury"));
         this.parent = parent;
+        if (replayGuide || !BotUiConfig.fleetGuideSeen) guide = GuideStep.PICK;
         selection.put(Tab.FLEET, Integer.toString(BotTracker.selected()));
     }
 
     @Override public boolean shouldPause() { return false; }
 
     @Override protected void init() {
+        if (guide != null) BotUiConfig.markFleetGuideSeen();
         int cell = (width - 2 * MARGIN - 12) / 4;
         var tabs = Tab.values();
         for (int i = 0; i < tabs.length; i++) {
@@ -68,6 +90,12 @@ final class BotRosterScreen extends Screen {
 
         int y = height - 30;
         button("Back", width - MARGIN - 82, y, 82, this::close);
+        command = null;
+        if (guide != null) {
+            button(guide == GuideStep.DONE ? "Done" : "Skip guide", MARGIN, y, 93, this::endGuide);
+            BotTracker.refresh();
+            return;
+        }
         switch (tab) {
             case FLEET -> {
                 controls(0, "Recall", () -> BotTracker.manageSelected("recall"),
@@ -123,6 +151,16 @@ final class BotRosterScreen extends Screen {
         tab = next;
         filter = "";
         offset = detailOffset = 0;
+        if (guide != null && guide != GuideStep.PICK && guide.target == next) advanceGuide();
+        rebuild();
+    }
+
+    private void advanceGuide() {
+        guide = GuideStep.values()[guide.ordinal() + 1];
+    }
+
+    private void endGuide() {
+        guide = null;
         rebuild();
     }
 
@@ -164,7 +202,7 @@ final class BotRosterScreen extends Screen {
 
     @Override public void tick() {
         search.tick();
-        if (tab == Tab.ACTIVITY) command.tick();
+        if (command != null) command.tick();
         if (tab != Tab.PROJECTS && tab != Tab.CHESTS) return;
         var here = LocalFormation.here();
         if (here == null) {
@@ -239,6 +277,7 @@ final class BotRosterScreen extends Screen {
         selection.put(tab, row.key);
         detailOffset = 0;
         if (tab == Tab.FLEET) BotTracker.select(Integer.parseInt(row.key));
+        if (tab == Tab.FLEET && guide == GuideStep.PICK) advanceGuide();
         BotUiSound.hover();
     }
 
@@ -263,12 +302,38 @@ final class BotRosterScreen extends Screen {
         }
         if (rows.isEmpty()) line(draw, error.isEmpty() ? emptyLabel() : error, MARGIN + 3, ROW_TOP + 5, listWidth() - 6,
                 error.isEmpty() ? MUTED : RED);
-        drawDetails(draw, selected);
-        if (tab == Tab.FLEET || tab == Tab.PROJECTS) {
+        if (guide == null) drawDetails(draw, selected);
+        else drawGuide(draw, rows.size());
+        if (guide == null && (tab == Tab.FLEET || tab == Tab.PROJECTS)) {
             line(draw, BotEvents.last, MARGIN + 2, height - (tab == Tab.FLEET ? 42 : 23),
                     tab == Tab.FLEET ? listWidth() : width - 2 * MARGIN - 90, BotEvents.lastLevel.equals("info") ? MUTED : RED);
         }
         super.render(draw, mouseX, mouseY, delta);
+    }
+
+    private void drawGuide(DrawContext draw, int rowCount) {
+        int cell = (width - 2 * MARGIN - 12) / 4;
+        if (guide == GuideStep.PICK && tab == Tab.FLEET && rowCount != 0) {
+            draw.drawBorder(MARGIN - 2, ROW_TOP - 2, listWidth() + 4, ROW_HEIGHT + 2, ACCENT);
+        } else if (guide.target != null) {
+            int x = MARGIN + guide.target.ordinal() * (cell + 4);
+            draw.drawBorder(x - 2, 12, cell + 4, 25, ACCENT);
+        }
+        int x = detailLeft(), right = width - MARGIN;
+        int y = 49;
+        draw.fill(x, y, right, y + 104, BotUiTheme.CARD);
+        line(draw, guide == GuideStep.DONE ? "Fleet guide complete" : "Fleet guide · " + (guide.ordinal() + 1) + " / 4",
+                x + 8, y + 8, right - x - 16, ACCENT);
+        int textY = y + 26;
+        for (var row : textRenderer.wrapLines(Text.literal(guide.heading), right - x - 16)) {
+            draw.drawText(textRenderer, row, x + 8, textY, TEXT, false);
+            textY += 11;
+        }
+        textY += 4;
+        for (var row : textRenderer.wrapLines(Text.literal(guide.detail), right - x - 16)) {
+            draw.drawText(textRenderer, row, x + 8, textY, MUTED, false);
+            textY += 11;
+        }
     }
 
     private String emptyLabel() {
@@ -394,7 +459,7 @@ final class BotRosterScreen extends Screen {
     }
 
     @Override public boolean keyPressed(int key, int scanCode, int modifiers) {
-        if (tab == Tab.ACTIVITY && command.isFocused() && (key == GLFW.GLFW_KEY_ENTER || key == GLFW.GLFW_KEY_KP_ENTER)) {
+        if (command != null && command.isFocused() && (key == GLFW.GLFW_KEY_ENTER || key == GLFW.GLFW_KEY_KP_ENTER)) {
             sendCommand();
             return true;
         }

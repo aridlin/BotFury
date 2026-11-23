@@ -1,9 +1,12 @@
 package com.botfury;
 
 import com.google.gson.Gson;
+import net.minecraft.block.Blocks;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
@@ -31,15 +34,25 @@ final class StructureSupply {
     private StructureSupply() {}
 
     static Supplied compile(MinecraftClient client, StructureProject.Plan plan) {
-        var selected = ProjectChest.aimedStorage(client, client.crosshairTarget);
-        var chest = selected.key();
         var area = plan.area();
-        if (area.contains(chest) || selected.other() != null && area.contains(selected.other())) {
-            throw new IllegalArgumentException("Supply chest must be outside the work area");
+        boolean newStorage = !(client.crosshairTarget instanceof BlockHitResult hit)
+                || hit.getType() != HitResult.Type.BLOCK
+                || !client.world.getBlockState(hit.getBlockPos()).isOf(Blocks.CHEST);
+        ProjectChest.Storage selected;
+        ProjectBlock storage;
+        if (newStorage) {
+            storage = ProjectWorkstations.chooseSite(client, client.player.getBlockPos(), area, mc("chest"));
+            selected = new ProjectChest.Storage(storage.target(), null);
+        } else {
+            selected = ProjectChest.aimedStorage(client, client.crosshairTarget);
+            if (area.contains(selected.key()) || selected.other() != null && area.contains(selected.other())) {
+                throw new IllegalArgumentException("Supply chest must be outside the work area");
+            }
+            storage = selected.approach(client, stand -> !area.contains(stand) && !area.contains(stand.down())
+                    && !area.contains(stand.up()));
+            if (storage == null) throw new IllegalArgumentException("Supply chest needs a reachable stand outside the work area");
         }
-        var storage = selected.approach(client, stand -> !area.contains(stand) && !area.contains(stand.down())
-                && !area.contains(stand.up()));
-        if (storage == null) throw new IllegalArgumentException("Supply chest needs a reachable stand outside the work area");
+        var chest = selected.key();
         var furnace = findStation(client, chest, mc("furnace"), area);
         var table = findStation(client, chest, mc("crafting_table"), area);
         var protectedArea = union(selected.include(area), storage, furnace, table);
@@ -67,9 +80,10 @@ final class StructureSupply {
         var productionPlans = lanes.values().stream().flatMap(lane -> lane.batches.stream())
                 .map(MaterialRecipe.Batch::plan).toList();
         var stations = ProjectWorkstations.prepare(client, chest, protectedArea, table, furnace,
-                productionPlans.stream().anyMatch(MaterialRecipe.Plan::needsTable),
+                newStorage || productionPlans.stream().anyMatch(MaterialRecipe.Plan::needsTable),
                 productionPlans.stream().anyMatch(MaterialRecipe.Plan::needsFurnace));
         var jobs = new ArrayList<>(stations.jobs());
+        if (newStorage) jobs.addAll(stations.storageJobs(client, storage));
         required += jobs.size();
         if (required > ProjectQueue.MAX_JOBS) {
             throw new IllegalArgumentException("Supplied build needs more than " + ProjectQueue.MAX_JOBS + " jobs");
@@ -93,6 +107,7 @@ final class StructureSupply {
                 // Reuse the same chest stock only after the preceding consumers placed their blocks.
                 var dependencies = new ArrayList<>(lane.consumers);
                 dependencies.addAll(stations.prerequisites(batch.plan()));
+                if (newStorage) dependencies.add("setup-storage");
                 var production = batch.plan().jobs(prefix + "produce-", stations.protectedArea(),
                         batch.plan().needsTable() ? stations.table() : null, stations.furnace(), List.copyOf(dependencies));
                 lane.consumers.clear();

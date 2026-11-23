@@ -573,10 +573,11 @@ Other block entities and entities are rejected.
 Vanilla chest jobs and explicit project jobs
 remain available through the local API.
 
-To gather and produce materials automatically, look at a dedicated single or
-double chest outside the work area and run
-`/bf project build example.nbt 100 64 100 supplied`. Workers set up a shared
-crafting table and furnace when recipes need them. Material gathering plans
+To gather and produce materials automatically, run
+`/bf project build example.nbt 100 64 100 supplied`. Look at a dedicated single
+or double chest outside the work area to use it for supplies. When no chest
+is selected, workers craft and place one near you. Workers also set up a
+shared crafting table and furnace when recipes need them. Material gathering plans
 include the pickaxes needed to harvest their ingredients. Workers gather,
 produce, and deposit the required blocks, then builders collect them from
 the chest. When multiple selected bots are online, the planner divides each

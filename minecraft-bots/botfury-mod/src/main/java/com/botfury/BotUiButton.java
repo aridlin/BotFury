@@ -19,6 +19,10 @@ final class BotUiButton extends ButtonWidget {
         active = !selected;
     }
 
+    void emphasize() {
+        highlighted = true;
+    }
+
     @Override protected void renderButton(DrawContext draw, int mouseX, int mouseY, float delta) {
         int x = getX(), y = getY(), right = x + getWidth(), bottom = y + getHeight();
         boolean focus = active && (isHovered() || isFocused());

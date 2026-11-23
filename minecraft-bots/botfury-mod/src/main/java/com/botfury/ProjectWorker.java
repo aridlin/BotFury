@@ -1,6 +1,7 @@
 package com.botfury;
 
 import com.google.gson.Gson;
+import net.minecraft.block.LeavesBlock;
 import net.minecraft.client.MinecraftClient;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.registry.Registries;
@@ -44,6 +45,9 @@ final class ProjectWorker {
     private static boolean pickupShortfall;
     private static BaritoneSettings approach;
     private static BlockPos recoveryOrigin;
+    private static BlockPos excavationStand;
+    private static final Set<BlockPos> rejectedExcavationStands = new HashSet<>();
+    private static long nextExcavationStandSearch;
     private static final StallRecovery approachRecovery = new StallRecovery();
     private static Vec3d approachProgress;
     private static long retryApproach;
@@ -149,6 +153,9 @@ final class ProjectWorker {
         halt(client);
         assignment = null;
         block = null;
+        excavationStand = null;
+        rejectedExcavationStands.clear();
+        nextExcavationStandSearch = 0;
         inspection = null;
         fill = null;
         chest = null;
@@ -257,30 +264,53 @@ final class ProjectWorker {
             finish(client, false, "Project block or stand outside world border");
             return;
         }
-        Vec3d feet = Vec3d.ofBottomCenter(block.stand());
         var work = assignment.job().work();
         var kind = work.kind();
+        boolean excavate = kind == ProjectQueue.Kind.EXCAVATE;
         if ((kind == ProjectQueue.Kind.EXCAVATE || kind == ProjectQueue.Kind.BUILD || kind == ProjectQueue.Kind.FILL_BUCKETS)
                 && BuildProtection.blocked(assignment.world(), target, assignment.project())) {
             finish(client, false, "Block is in an exclusion zone at " + target.toShortString());
             return;
         }
         boolean targetLoaded = client.world.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4);
+        if (excavate && targetLoaded && client.world.getBlockState(target).isAir()) {
+            if (approach != null || breaking) halt(client);
+            if (stableSince == 0) stableSince = now;
+            if (now - stableSince >= seconds(1)) finish(client, true, "Observed minecraft:air at " + target.toShortString());
+            return;
+        }
+        BlockPos stand = excavationStand == null ? block.stand() : excavationStand;
+        boolean canExcavateHere = excavate && targetLoaded && player.isOnGround() && !centering
+                && !player.getBlockPos().down().equals(target) && excavationHit(client, target) != null;
+        if (excavate && targetLoaded && !canExcavateHere && now >= nextExcavationStandSearch
+                && client.world.isChunkLoaded(stand.getX() >> 4, stand.getZ() >> 4)
+                && (!usableExcavationStand(client, stand, target) || !centering && player.getBlockPos().equals(stand)
+                    || approach != null && now >= retryApproach && !BaritoneClient.pursuing(stand))) {
+            nextExcavationStandSearch = now + seconds(1);
+            var alternate = nextExcavationStand(client, target, stand);
+            if (alternate != null) {
+                rejectedExcavationStands.add(stand);
+                halt(client);
+                excavationStand = stand = alternate;
+                status = assignment.project() + "/" + work.id() + ": Approaching from another side";
+            }
+        }
+        Vec3d feet = Vec3d.ofBottomCenter(stand);
         boolean inspectNearby = kind == ProjectQueue.Kind.VERIFY && targetLoaded
                 && player.getPos().squaredDistanceTo(Vec3d.ofBottomCenter(target)) <= 16;
-        boolean exactFooting = kind == ProjectQueue.Kind.EXCAVATE || kind == ProjectQueue.Kind.BUILD;
+        boolean exactFooting = excavate || kind == ProjectQueue.Kind.BUILD;
         boolean edge = kind == ProjectQueue.Kind.BUILD && block.edgePlacement();
         boolean nearStand = player.getPos().squaredDistanceTo(feet) <= 1.21;
         boolean canCleanFromHere = nearStand && work.cleanup() != null && targetLoaded
                 && (client.world.getBlockState(target).isAir() || excavationHit(client, target) != null);
-        boolean atStand = nearStand && (!exactFooting || player.getBlockPos().equals(block.stand()) || canCleanFromHere
+        boolean atStand = nearStand && (!exactFooting || player.getBlockPos().equals(stand) || canCleanFromHere
                 || edge && centering && player.getBlockPos().equals(target.up()));
         // A leased station can be used from the first safe position with a clear interaction ray.
         boolean workstationNearby = production != null && targetLoaded && production.reachableFromHere(client);
-        if (!player.isOnGround() || !atStand && !inspectNearby && !workstationNearby) {
+        if (!player.isOnGround() || !atStand && !inspectNearby && !workstationNearby && !canExcavateHere) {
             releaseCentering(client);
             stableSince = 0;
-            var recovery = approachRecovery.tick(client, block.stand(),
+            var recovery = approachRecovery.tick(client, stand,
                     pos -> !pos.equals(target) && !pos.up().equals(target));
             if (recovery == StallRecovery.State.DETOUR) {
                 status = assignment.project() + "/" + assignment.job().work().id() + ": Clearing a stalled route";
@@ -297,7 +327,7 @@ final class ProjectWorker {
             }
             if (approach == null || now >= retryApproach) {
                 try {
-                    var pos = block.stand();
+                    var pos = stand;
                     var feetBlock = player.getBlockPos();
                     if (approach != null && recoveryOrigin == null && (chest != null || production != null)
                             && pos.getY() - feetBlock.getY() >= 2 && feetBlock.isWithinDistance(pos, 12)
@@ -377,7 +407,6 @@ final class ProjectWorker {
         }
         var state = client.world.getBlockState(target);
         var actual = Registries.BLOCK.getId(state.getBlock());
-        boolean excavate = kind == ProjectQueue.Kind.EXCAVATE;
         boolean matches = excavate ? state.isAir() : block.matches(state);
         if (matches) {
             if (edge && centerOnStand(client, feet)) return;
@@ -416,15 +445,20 @@ final class ProjectWorker {
             finish(client, false, "Expected " + expected + " but observed " + observed + " at " + target.toShortString());
             return;
         }
-        if (!excavate || !block.matches(state) || state.hasBlockEntity()
+        if (!excavate || !matchesExcavationState(state) || state.hasBlockEntity()
                 || state.getHardness(client.world, target) < 0) {
             finish(client, false, "Unexpected or protected block " + actual + " at " + target.toShortString());
+            return;
+        }
+        if (client.world.getPlayers().stream().anyMatch(other -> other.isAlive() && !other.isSpectator()
+                && other.getBlockPos().down().equals(target))) {
+            client.interactionManager.cancelBlockBreaking();
             return;
         }
         if (centering && centerOnStand(client, feet)) return;
         var ray = excavationHit(client, target);
         if (ray == null) {
-            if (player.getBlockPos().equals(block.stand()) && centerOnStand(client, feet)) return;
+            if (player.getBlockPos().equals(stand) && centerOnStand(client, feet)) return;
             finish(client, false, "Target obstructed or out of reach from the approved stand");
             return;
         }
@@ -454,8 +488,41 @@ final class ProjectWorker {
         breaking = true;
     }
 
+    private static boolean matchesExcavationState(net.minecraft.block.BlockState state) {
+        if (block.matches(state)) return true;
+        var expected = block.desired();
+        return expected.getBlock() instanceof LeavesBlock && state.isOf(expected.getBlock())
+                && expected.with(LeavesBlock.DISTANCE, state.get(LeavesBlock.DISTANCE)).equals(state);
+    }
+
+    private static BlockPos nextExcavationStand(MinecraftClient client, BlockPos target, BlockPos previous) {
+        BlockPos nearest = null;
+        double bestDistance = Double.POSITIVE_INFINITY;
+        for (var pos : BlockPos.iterateOutwards(target, 4, 4, 4)) {
+            if (pos.equals(previous) || rejectedExcavationStands.contains(pos)
+                    || !client.world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)
+                    || !usableExcavationStand(client, pos, target)) continue;
+            var feet = Vec3d.ofBottomCenter(pos);
+            double distance = client.player.squaredDistanceTo(feet);
+            if (distance >= bestDistance || excavationHit(client, target, feet.add(0, 1.62, 0)) == null) continue;
+            bestDistance = distance;
+            nearest = pos.toImmutable();
+        }
+        return nearest;
+    }
+
+    private static boolean usableExcavationStand(MinecraftClient client, BlockPos pos, BlockPos target) {
+        return !pos.equals(target) && !pos.up().equals(target) && !pos.down().equals(target)
+                && client.world.isInBuildLimit(pos.up()) && client.world.getWorldBorder().contains(pos)
+                && ProjectPlacement.flushFloor(client.world.getBlockState(pos.down()), client.world, pos.down())
+                && client.world.isAir(pos) && client.world.isAir(pos.up());
+    }
+
     private static BlockHitResult excavationHit(MinecraftClient client, BlockPos target) {
-        var eye = client.player.getEyePos();
+        return excavationHit(client, target, client.player.getEyePos());
+    }
+
+    private static BlockHitResult excavationHit(MinecraftClient client, BlockPos target, Vec3d eye) {
         var center = Vec3d.ofCenter(target);
         double reach = client.interactionManager.getReachDistance() - .1;
         if (eye.squaredDistanceTo(center) > reach * reach) return null;

@@ -18,6 +18,58 @@ class ProjectQueueTest {
         return new ProjectQueue.Work(id, kind, "", needs, Set.of(locks));
     }
 
+    @Test void retriesFailedExcavationWithoutReplayingCompletedWork() throws Exception {
+        var journal = directory.resolve("retry-excavation.json");
+        var board = new ProjectQueue(journal);
+        board.submit("house", WORLD, List.of(job("first", EXCAVATE, List.of()),
+                job("blocked", EXCAVATE, List.of("first")), job("place", BUILD, List.of("blocked"))));
+        var first = board.claim(WORLD, "worker", Set.of(EXCAVATE), 1).job();
+        assertTrue(board.finish("house", "first", first.lease(), true, "Already cleared", 2));
+        for (long now = 3; now <= 7; now += 2) {
+            var blocked = board.claim(WORLD, "worker", Set.of(EXCAVATE), now).job();
+            assertTrue(board.finish("house", "blocked", blocked.lease(), false, "Unreachable", now + 1));
+        }
+        assertEquals(1, board.retryExcavation(WORLD, "house"));
+        var restored = new ProjectQueue(journal);
+        assertEquals(ProjectQueue.State.DONE, restored.snapshot(9).get(0).jobs().get(0).state());
+        assertNull(restored.claim(WORLD, "builder", Set.of(BUILD), 9));
+        var retry = restored.claim(WORLD, "worker", Set.of(EXCAVATE), 9).job();
+        assertEquals("blocked", retry.work().id());
+        assertEquals(1, retry.attempts());
+        assertTrue(restored.finish("house", "blocked", retry.lease(), true, "Cleared", 10));
+        assertEquals("place", restored.claim(WORLD, "builder", Set.of(BUILD), 11).job().work().id());
+    }
+
+    @Test void unscopedWorkerFinishesItsReadyInventoryChainBeforeAnEarlierProject() throws Exception {
+        var queue = new ProjectQueue(directory.resolve("inventory-priority.json"));
+        queue.submit("stock", WORLD, List.of(job("gather", GATHER, List.of())));
+        queue.submitSupplied("house", WORLD, List.of(job("logs", GATHER, List.of()),
+                new ProjectQueue.Work("planks", CRAFT, "", List.of("logs"), Set.of(), "logs")), "block:2,64,0");
+        var logs = queue.claim(WORLD, "worker", Set.of(GATHER), "house", 1).job();
+        assertTrue(queue.finish("house", "logs", logs.lease(), true, "Collected logs", 2));
+        var next = queue.claim(WORLD, "worker", Set.of(GATHER, CRAFT), 3);
+        assertEquals("house", next.project());
+        assertEquals("planks", next.job().work().id());
+        assertEquals("stock", queue.claim(WORLD, "other", Set.of(GATHER), 4).project());
+    }
+
+    @Test void anotherProjectsRenewalsKeepAnUnscopedSupplierOnline() throws Exception {
+        var queue = new ProjectQueue(directory.resolve("cross-project-heartbeat.json"));
+        queue.submit("stock", WORLD, List.of(job("slow", GATHER, List.of())));
+        queue.submitSupplied("house", WORLD, List.of(job("logs", GATHER, List.of()),
+                new ProjectQueue.Work("planks", CRAFT, "", List.of("logs"), Set.of(), "logs")), "block:2,64,0");
+        var logs = queue.claim(WORLD, "worker", Set.of(GATHER), "house", 1).job();
+        assertTrue(queue.finish("house", "logs", logs.lease(), true, "Collected logs", 2));
+        var slow = queue.claim(WORLD, "worker", Set.of(GATHER), 3).job();
+        for (long now = 10_000; now <= 70_000; now += 10_000) {
+            assertNotNull(queue.renew("stock", "slow", slow.lease(), now));
+        }
+        assertNull(queue.claim(WORLD, "other", Set.of(GATHER, CRAFT), "house", 70_001));
+        var house = queue.snapshot(70_002).stream().filter(p -> p.id().equals("house")).findFirst().orElseThrow();
+        assertEquals(ProjectQueue.State.DONE, house.jobs().get(0).state());
+        assertTrue(house.supplyRecoveries().isEmpty());
+    }
+
     @Test void scopedWorkersSkipOtherProjectsAndKeepTheirScopeAcrossLeaseExpiry() throws Exception {
         var journal = directory.resolve("scoped-board.json");
         var board = new ProjectQueue(journal);

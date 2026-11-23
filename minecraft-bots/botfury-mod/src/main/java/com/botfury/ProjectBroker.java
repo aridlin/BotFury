@@ -57,6 +57,19 @@ final class ProjectBroker {
         queue().submitSupplied(id, here.server() + "|" + here.dimension(), jobs, chest);
     }
 
+    static int retryExcavation(net.minecraft.client.MinecraftClient client, String project) {
+        var here = LocalFormation.here();
+        if (here == null || Boolean.getBoolean("botfury.managedHttp")) return 0;
+        try {
+            int count = queue().retryExcavation(here.server() + "|" + here.dimension(), project);
+            ClientActions.message(client, "Reopened " + count + " failed excavation jobs");
+            return count;
+        } catch (IOException | IllegalArgumentException failure) {
+            ClientActions.message(client, "Could not retry excavation. " + failure.getMessage());
+            return 0;
+        }
+    }
+
     static void submitOutput(String id, LocalFormation.Peer here, OutputOrder.Plan plan) throws IOException {
         queue().submitOutput(id, here.server() + "|" + here.dimension(), plan.jobs(), plan.repeat());
     }

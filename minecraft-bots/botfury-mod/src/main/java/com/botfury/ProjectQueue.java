@@ -129,6 +129,7 @@ final class ProjectQueue {
     private final Path journal;
     private final Path archive;
     private final Map<String, Long> workerSeen = new HashMap<>();
+    private final Set<String> unscopedWorkers = new HashSet<>();
     private Map<String, Project> projects;
 
     ProjectQueue(Path journal) throws IOException {
@@ -299,6 +300,9 @@ final class ProjectQueue {
             throw new IllegalArgumentException("Invalid worker or world");
         }
         markSeen(world, worker, projectId, now);
+        var workerKey = workerKey(world, worker, null);
+        if (projectId == null) unscopedWorkers.add(workerKey);
+        else unscopedWorkers.remove(workerKey);
         expire(now);
         recoverMissingSuppliers(world, now);
         Set<String> reserved = new HashSet<>();
@@ -341,6 +345,8 @@ final class ProjectQueue {
                 break;
             }
         }
+        Project fallbackProject = null;
+        Job fallbackJob = null;
         for (Project project : projects.values()) {
             if (!world.equals(project.world) || cancelled(project) || (ownedOrder != null && ownedOrder != project)
                     || projectId != null && !projectId.equals(project.id)) continue;
@@ -361,13 +367,22 @@ final class ProjectQueue {
                         && !project.id.equals(projectReservations.get(key)))) continue;
                 if (job.work.sameWorkerAs != null
                         && !worker.equalsIgnoreCase(find(project, job.work.sameWorkerAs).worker)) continue;
-                Job assigned = new Job(job.work, State.LEASED, job.attempts + 1, worker,
-                        UUID.randomUUID(), now + LEASE_MS, null, job.chest, gatheringSite(project, job));
-                replace(project, assigned);
-                return new Assignment(project.id, project.world, assigned);
+                // Finish using inventory already gathered for a chain before starting unrelated work.
+                if (job.work.sameWorkerAs != null || ownedOrder != null) return assign(project, job, worker, now);
+                if (fallbackJob == null) {
+                    fallbackProject = project;
+                    fallbackJob = job;
+                }
             }
         }
-        return null;
+        return fallbackJob == null ? null : assign(fallbackProject, fallbackJob, worker, now);
+    }
+
+    private Assignment assign(Project project, Job job, String worker, long now) throws IOException {
+        var assigned = new Job(job.work, State.LEASED, job.attempts + 1, worker,
+                UUID.randomUUID(), now + LEASE_MS, null, job.chest, gatheringSite(project, job));
+        replace(project, assigned);
+        return new Assignment(project.id, project.world, assigned);
     }
 
     private static ResourceSite gatheringSite(Project project, Job job) {
@@ -430,7 +445,7 @@ final class ProjectQueue {
         Job renewed = new Job(job.work, State.LEASED, job.attempts, job.worker,
                 job.lease, now + LEASE_MS, null, job.chest, gatheringSite(job, site));
         replace(project, renewed);
-        markSeen(project.world, job.worker, project.id, now);
+        markAssignmentSeen(project, job.worker, now);
         return renewed;
     }
 
@@ -478,7 +493,7 @@ final class ProjectQueue {
                 throw new IllegalArgumentException("Pickup shortfall requires a failed transfer and chest observation");
             }
             if (recoverShortPickup(project, job, evidence, observation)) {
-                markSeen(project.world, job.worker, project.id, now);
+                markAssignmentSeen(project, job.worker, now);
                 return true;
             }
         }
@@ -496,7 +511,7 @@ final class ProjectQueue {
                             ? new Job(entry.work, State.WAITING, 0, null, null, 0, null, null, entry.resourceSite) : entry).toList();
             commit(new Project(project.id, project.world, reset, next, project.supplyChest, project.supplyRecoveries));
         } else replace(project, result);
-        markSeen(project.world, job.worker, project.id, now);
+        markAssignmentSeen(project, job.worker, now);
         return true;
     }
 
@@ -567,6 +582,13 @@ final class ProjectQueue {
 
     private void markSeen(String world, String worker, String project, long now) {
         workerSeen.put(workerKey(world, worker, project), now);
+    }
+
+    private void markAssignmentSeen(Project project, String worker, long now) {
+        markSeen(project.world, worker, project.id, now);
+        if (unscopedWorkers.contains(workerKey(project.world, worker, null))) {
+            markSeen(project.world, worker, null, now);
+        }
     }
 
     private boolean recoverShortPickup(Project project, Job pickup, String evidence, ChestObservation observation)
@@ -662,6 +684,29 @@ final class ProjectQueue {
     private static ResourceSite gatheringSite(Job job, ResourceSite site) {
         if (site != null && job.work.kind != Kind.GATHER) throw new IllegalArgumentException("Only gathering reports a resource site");
         return site == null ? job.resourceSite : site;
+    }
+
+    synchronized int retryExcavation(String world, String id) throws IOException {
+        var project = projects.get(id);
+        if (project == null || !project.world.equals(world) || cancelled(project)) {
+            throw new IllegalArgumentException("Unknown active project in this world");
+        }
+        var jobs = new ArrayList<>(project.jobs);
+        int reopened = 0;
+        for (int index = 0; index < jobs.size(); index++) {
+            var job = jobs.get(index);
+            if (job.state == State.FAILED && job.work.kind == Kind.EXCAVATE && job.work.cleanup == null) {
+                jobs.set(index, new Job(job.work, State.WAITING, 0, null, null, 0, job.evidence, job.chest, job.resourceSite));
+                reopened++;
+            }
+        }
+        if (reopened != 0) {
+            if (project.supplyChest != null && reservedStorage(project) == null) {
+                checkStorage(world, project.supplyChest);
+            }
+            commit(project.withJobs(jobs));
+        }
+        return reopened;
     }
 
     private static Job retry(Job job, String reason, ChestObservation chest, ResourceSite site) {

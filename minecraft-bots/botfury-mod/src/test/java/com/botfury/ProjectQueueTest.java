@@ -3,6 +3,7 @@ package com.botfury;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Executors;
@@ -83,6 +84,86 @@ class ProjectQueueTest {
         assertNull(board.claim(WORLD, "Another", Set.of(EXCAVATE), now++));
         assertTrue(board.finish("access", "remove-upper", top.lease(), true, "Observed restored air", now++));
         assertEquals("remove-lower", board.claim(WORLD, "Cleaner", Set.of(EXCAVATE), now).job().work().id());
+    }
+
+    @Test void sharedCleanupBarrierWaitsForUnrelatedWorkAfterFailureAndSurvivesReopen() throws Exception {
+        Path journal = directory.resolve("settlement-barrier.json");
+        var board = new ProjectQueue(journal);
+        String site = "block:3,64,0";
+        board.submit("structure", WORLD, List.of(
+                job("access", BUILD, List.of(), site),
+                job("construction", BUILD, List.of("access")),
+                job("unrelated", VERIFY, List.of("access")),
+                job("success-gate", BARRIER, List.of("construction")),
+                job("inspection", INSPECT, List.of("success-gate")),
+                job("before-cleanup", SETTLEMENT_BARRIER, List.of("inspection", "unrelated")),
+                new ProjectQueue.Work("remove", EXCAVATE, "", List.of("access"), Set.of(site), null,
+                        new ProjectQueue.Cleanup(site, "before-cleanup"))));
+        var access = board.claim(WORLD, "Builder", Set.of(BUILD), 1).job();
+        assertTrue(board.finish("structure", "access", access.lease(), true, "Observed cobblestone", 2));
+
+        long now = 3;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            var construction = board.claim(WORLD, "Builder", Set.of(BUILD), now).job();
+            assertTrue(board.finish("structure", "construction", construction.lease(), false, "Missing materials", now + 1));
+            now += 30_000;
+        }
+        board = new ProjectQueue(journal);
+        assertNull(board.claim(WORLD, "Cleaner", Set.of(SETTLEMENT_BARRIER, EXCAVATE), now++));
+        var other = board.claim(WORLD, "Verifier", Set.of(VERIFY), now++).job();
+        assertTrue(board.finish("structure", "unrelated", other.lease(), true, "Observed expected block", now++));
+        board = new ProjectQueue(journal);
+        var gate = board.snapshot(now).get(0).jobs().get(5);
+        assertEquals(ProjectQueue.State.DONE, gate.state());
+        assertNull(gate.worker());
+        assertEquals("remove", board.claim(WORLD, "Cleaner", Set.of(EXCAVATE), now).job().work().id());
+    }
+
+    @Test void finalLeaseExpiryReleasesCleanupWithoutAnotherWorkerCompletion() throws Exception {
+        Path journal = directory.resolve("expiry-barrier.json");
+        var board = new ProjectQueue(journal);
+        String site = "block:6,64,0";
+        board.submit("structure", WORLD, List.of(
+                job("access", BUILD, List.of(), site),
+                job("inspection", INSPECT, List.of("access")),
+                job("before-cleanup", SETTLEMENT_BARRIER, List.of("inspection")),
+                new ProjectQueue.Work("remove", EXCAVATE, "", List.of("access"), Set.of(site), null,
+                        new ProjectQueue.Cleanup(site, "before-cleanup"))));
+        var access = board.claim(WORLD, "Builder", Set.of(BUILD), 1).job();
+        assertTrue(board.finish("structure", "access", access.lease(), true, "Observed cobblestone", 2));
+
+        long now = 3;
+        for (int i = 0; i < 3; i++) {
+            now = board.claim(WORLD, "Inspector", Set.of(INSPECT), now).job().expiresAt();
+        }
+        board.snapshot(now);
+        board = new ProjectQueue(journal);
+        assertEquals("remove", board.claim(WORLD, "Cleaner", Set.of(EXCAVATE), now).job().work().id());
+    }
+
+    @Test void sharedBarrierFitsAPlanWithHundredsOfScaffoldRemovals() throws Exception {
+        var jobs = new ArrayList<ProjectQueue.Work>();
+        var checked = new ArrayList<String>();
+        for (int i = 0; i < 520; i++) {
+            String site = "block:" + i + ",64,0";
+            jobs.add(job("access-" + i, BUILD, List.of(), site));
+            String id = "check-" + i;
+            jobs.add(job(id, INSPECT, List.of("access-" + i)));
+            checked.add(id);
+        }
+        jobs.add(job("before-cleanup", SETTLEMENT_BARRIER, checked));
+        String previous = "before-cleanup";
+        for (int i = 519; i >= 0; i--) {
+            String site = "block:" + i + ",64,0";
+            String id = "remove-" + i;
+            jobs.add(new ProjectQueue.Work(id, EXCAVATE, "", List.of("access-" + i), Set.of(site), null,
+                    new ProjectQueue.Cleanup(site, previous, List.of("before-cleanup"))));
+            previous = id;
+        }
+        var board = new ProjectQueue(directory.resolve("wide-cleanup.json"));
+        board.submit("wide", WORLD, jobs);
+        assertEquals(1561, board.snapshot(1).get(0).jobs().size());
+        assertNull(board.claim(WORLD, "Cleaner", Set.of(EXCAVATE), 2));
     }
 
     @Test void pickupShortfallRestartsOnlyItsSupplyChainAndKeepsCompletedHandoffs() throws Exception {

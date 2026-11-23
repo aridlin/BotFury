@@ -43,6 +43,9 @@ final class ProjectWorker {
     private static ProjectProduction production;
     private static ProjectGather gather;
     private static ProjectQueue.ResourceSite gatherSite;
+    private static long lastGatherProgress;
+    private static int gatheredHighWater;
+    private static Vec3d gatherProgressPosition;
     private static DroppedItemSearch pickup;
     private static ProjectQueue.ChestReport chestReport;
     private static boolean pickupShortfall;
@@ -169,6 +172,9 @@ final class ProjectWorker {
         production = null;
         gather = null;
         gatherSite = null;
+        lastGatherProgress = 0;
+        gatheredHighWater = 0;
+        gatherProgressPosition = null;
         pickup = null;
         chestReport = null;
         pickupShortfall = false;
@@ -245,6 +251,8 @@ final class ProjectWorker {
             int held = gather.inventoryCount(client);
             if (held >= gather.count()) {
                 finish(client, true, "Observed " + held + " " + gather.item() + " in worker inventory");
+            } else if (!gatherProgress(client, held, now)) {
+                finish(client, false, ProjectQueue.GATHER_STALLED);
             } else if (pickup != null) {
                 var result = pickup.tick(client, gather.item()::matches, null);
                 if (result == DroppedItemSearch.State.UNAVAILABLE) finish(client, false, "Baritone unavailable for pickup");
@@ -264,6 +272,17 @@ final class ProjectWorker {
             var result = production.tick(client, now);
             if (result != null) finish(client, result.success(), result.detail());
         } else execute(client, now);
+    }
+
+    private static boolean gatherProgress(MinecraftClient client, int held, long now) {
+        var position = client.player.getPos();
+        if (gatherProgressPosition == null || held > gatheredHighWater
+                || position.squaredDistanceTo(gatherProgressPosition) >= 9) {
+            lastGatherProgress = now;
+            gatheredHighWater = Math.max(held, gatheredHighWater);
+            gatherProgressPosition = position;
+        }
+        return now - lastGatherProgress < seconds(90);
     }
 
     private static void execute(MinecraftClient client, long now) {

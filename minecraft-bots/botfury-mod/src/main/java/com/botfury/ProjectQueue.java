@@ -175,15 +175,51 @@ final class ProjectQueue {
     }
 
     synchronized boolean restoreOwnedStation(String world, String projectId, String jobId) throws IOException {
+        return restoreOwnedStation(world, projectId, jobId, List.of());
+    }
+
+    synchronized boolean restoreOwnedStation(String world, String projectId, String jobId, List<Work> footing) throws IOException {
         var project = projects.get(projectId);
         var station = find(project, jobId);
+        String key = station == null ? null : stationKey(station);
         if (project == null || !project.world.equals(world) || cancelled(project)
-                || station == null || station.state != State.DONE || stationKey(station) == null) return false;
+                || key == null || station.state != State.DONE || project.jobs.size() + footing.size() > MAX_JOBS) return false;
         var jobs = new HashMap<String, Job>();
         project.jobs.forEach(job -> jobs.put(job.work.id, job));
         var recipe = jobs.get(station.work.sameWorkerAs);
         if (recipe == null || recipe.state != State.DONE) return false;
-        return rewindSupply(project, station, recipe, jobs, "Owned station is missing", null);
+        var revised = new ArrayList<Job>();
+        for (var job : project.jobs) {
+            var work = job.work;
+            if (job == station && !footing.isEmpty()) {
+                for (var step : footing) {
+                    if (jobs.containsKey(step.id) || !jobs.keySet().containsAll(step.needs)) return false;
+                    var ready = new Job(step, State.WAITING, 0, null, null, 0, null, null);
+                    jobs.put(step.id, ready);
+                    revised.add(ready);
+                }
+                var needs = new ArrayList<>(work.needs);
+                needs.add(footing.get(footing.size() - 1).id);
+                var updated = new Work(work.id, work.kind, work.payload, needs, work.locks, work.sameWorkerAs,
+                        work.cleanup, work.constructionMaterial);
+                station = new Job(updated, job.state, job.attempts, job.worker, job.lease, job.expiresAt,
+                        job.evidence, job.chest, job.resourceSite);
+                job = station;
+            } else if (job.state == State.FAILED && work.locks.contains(key) && stationFailure(job)) {
+                job = new Job(work, State.WAITING, 0, null, null, 0, "Waiting for station repair", job.chest, job.resourceSite);
+            }
+            jobs.put(work.id, job);
+            revised.add(job);
+        }
+        return rewindSupply(project.withJobs(revised), station, recipe, jobs, "Owned station is missing", null);
+    }
+
+    private static boolean stationFailure(Job job) {
+        return switch (job.work.kind) {
+            case CRAFT, SMELT -> "Expected workstation is missing".equals(job.evidence);
+            case TRANSFER -> "Storage chest changed size or location".equals(job.evidence);
+            default -> false;
+        };
     }
 
     private static String stationKey(Job job) {

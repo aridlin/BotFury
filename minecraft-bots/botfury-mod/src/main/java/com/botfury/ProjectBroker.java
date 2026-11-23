@@ -73,10 +73,10 @@ final class ProjectBroker {
                 var target = block.target();
                 if (!client.world.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
                         || !client.world.isAir(target)) continue;
-                var support = block.support();
-                if (!ProjectPlacement.support(client.world.getBlockState(support), block.desired(), block.face(), client.world, support)
-                        || BuildProtection.blocked(world, target, station.project())) continue;
-                if (board.restoreOwnedStation(world, station.project(), station.job())) {
+                if (BuildProtection.blocked(world, target, station.project())) continue;
+                var footing = ProjectWorkstations.repairFooting(client, world, station, block);
+                if (footing == null) continue;
+                if (board.restoreOwnedStation(world, station.project(), station.job(), footing)) {
                     BotEvents.add("info", "projects", "Rebuilding missing station at " + target.toShortString());
                 }
             }

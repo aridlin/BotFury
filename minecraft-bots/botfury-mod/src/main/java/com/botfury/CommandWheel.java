@@ -20,6 +20,7 @@ final class CommandWheel extends Screen {
     private final long[] emphasisChangedAt = new long[8];
     private long lastHover;
     private long lastFrame = Util.getMeasuringTimeMs();
+    private double meshTime;
     private final WheelSoftBody[] bodies = new WheelSoftBody[8];
     private boolean gesture;
     private long pressedAt;
@@ -86,6 +87,7 @@ final class CommandWheel extends Screen {
 
     private void resetMesh() {
         for (int i = 0; i < bodies.length; i++) bodies[i].reset(i % 4);
+        meshTime = 0;
         lastFrame = Util.getMeasuringTimeMs();
     }
 
@@ -107,6 +109,14 @@ final class CommandWheel extends Screen {
             }
             selected = hovered;
         }
+        float turn = 0;
+        if (hovered >= 0) {
+            double direction = -Math.PI / 2 + hovered * Math.PI / 4;
+            double along = cursorX * Math.cos(direction) + cursorY * Math.sin(direction);
+            double across = -cursorX * Math.sin(direction) + cursorY * Math.cos(direction);
+            turn = (float)(Math.atan2(across, along) / (Math.PI / 8));
+        }
+        advanceMesh(elapsed, .23f + reach * .77f, turn);
 
         draw.fillGradient(0, 0, width, height, 0xC20A101E, 0xA8091020);
         String heading = switch (page) {
@@ -126,14 +136,7 @@ final class CommandWheel extends Screen {
             emphasis[index] = hover;
             float highlight = Math.max(0, Math.min(1, hover));
             double direction = -Math.PI / 2 + index * Math.PI / 4;
-            float turn = 0;
-            if (selected == index) {
-                double along = cursorX * Math.cos(direction) + cursorY * Math.sin(direction);
-                double across = -cursorX * Math.sin(direction) + cursorY * Math.cos(direction);
-                turn = (float)(Math.atan2(across, along) / (Math.PI / 8));
-            }
             var mesh = bodies[index];
-            mesh.advance(elapsed, selected == index ? .23f + reach * .77f : 0, turn);
             int body = enabled ? mix(0xE51B2A3E, 0xE92A685F, highlight) : 0x70202B3B;
             wedge(draw, cx, cy, baseRadius, index, body, mesh, false);
             if (highlight > .03f) {
@@ -178,6 +181,21 @@ final class CommandWheel extends Screen {
             y += 10;
         }
         draw.drawCenteredTextWithShadow(textRenderer, hint, cx, y + 2, 0xFFB9C8DC);
+    }
+
+    private void advanceMesh(double elapsed, float pull, float turn) {
+        meshTime += Math.min(elapsed, .05);
+        while (meshTime >= WheelSoftBody.STEP) {
+            for (int i = 0; i < bodies.length; i++) {
+                bodies[i].advance(WheelSoftBody.STEP, i == selected ? pull : 0, i == selected ? turn : 0);
+            }
+            for (int pass = 0; pass < 3; pass++) {
+                for (int i = 0; i < bodies.length; i++) {
+                    WheelSoftBody.collide(bodies[i], bodies[(i + 1) % bodies.length]);
+                }
+            }
+            meshTime -= WheelSoftBody.STEP;
+        }
     }
 
     private void retarget(int index, long now) {

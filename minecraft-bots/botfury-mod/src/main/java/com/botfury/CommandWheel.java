@@ -17,7 +17,8 @@ final class CommandWheel extends Screen {
     private boolean quantityChosen;
     private final float[] emphasis = new float[8];
     private long openedAt = Util.getMeasuringTimeMs();
-    private long lastFrame = openedAt;
+    private final float[] startEmphasis = new float[8];
+    private final long[] emphasisChangedAt = new long[8];
     private long lastHover;
     private int outputBatch = 10;
     private final net.minecraft.util.hit.HitResult aimedChest;
@@ -45,7 +46,7 @@ final class CommandWheel extends Screen {
         BotUiSound.open();
     }
     @Override public boolean shouldPause() { return false; }
-    private float radius() { return Math.min(112, Math.min(height * .32f, width * .37f)); }
+    private float radius() { return Math.min(108, Math.min(height * .31f, width * .37f)); }
 
     private int sectorAt(double x, double y) {
         double dx = x - width / 2, dy = y - height / 2;
@@ -59,6 +60,7 @@ final class CommandWheel extends Screen {
         page = next;
         selected = -1;
         Arrays.fill(emphasis, 0);
+        Arrays.fill(startEmphasis, 0);
         openedAt = Util.getMeasuringTimeMs();
     }
 
@@ -66,14 +68,16 @@ final class CommandWheel extends Screen {
         int cx = width / 2, cy = height / 2;
         float baseRadius = radius();
         long now = Util.getMeasuringTimeMs();
-        float speed = (float)(1 - Math.exp(-Math.max(1, now - lastFrame) / 57.0));
-        lastFrame = now;
         int hovered = sectorAt(mouseX, mouseY);
-        if (hovered != selected && hovered >= 0 && now - lastHover >= 90) {
-            BotUiSound.hover();
-            lastHover = now;
+        if (hovered != selected) {
+            retarget(selected, now);
+            retarget(hovered, now);
+            if (hovered >= 0 && now - lastHover >= 90) {
+                BotUiSound.hover();
+                lastHover = now;
+            }
+            selected = hovered;
         }
-        selected = hovered;
 
         draw.fillGradient(0, 0, width, height, 0xC20A101E, 0xA8091020);
         String heading = switch (page) {
@@ -87,28 +91,34 @@ final class CommandWheel extends Screen {
 
         for (int index = 0; index < 8; ++index) {
             boolean enabled = !LABELS[page][index].isEmpty();
-            float hover = emphasis[index] += ((selected == index ? 1 : 0) - emphasis[index]) * speed;
-            double time = Math.max(0, now - openedAt - (index % 4) * 12);
-            float spring = (float)(1 - .28 * Math.exp(-time / 76) * Math.cos(time / 36));
-            float radius = baseRadius * spring;
-            double angle = -Math.PI / 2 + index * Math.PI / 4;
-            float dx = (float)Math.cos(angle), dy = (float)Math.sin(angle);
-            float shift = hover * 3;
-            float x = cx + dx * shift, y = cy + dy * shift;
-            float edge = radius + hover * 6;
-            int outer = enabled ? mix(0xF5303858, 0xFF5BE4C9, hover * .77f) : 0x6F263149;
-            int inner = enabled ? mix(0xFA141C33, 0xFB1B5657, hover) : 0x70131B2B;
-            wedge(draw, x, y, radius * .36f, edge, index, inner, outer);
-            if (hover > .03f) {
-                wedge(draw, x, y, edge - 2.7f, edge, index,
-                        (Math.round(hover * 190) << 24) | 0x66E5CE,
-                        (Math.round(hover * 240) << 24) | 0xD8FFEF);
+            double hoverTime = Math.max(0, now - emphasisChangedAt[index]);
+            float target = selected == index ? 1 : 0;
+            float hover = target + (startEmphasis[index] - target) * spring(hoverTime, 112, 38);
+            emphasis[index] = hover;
+            float highlight = Math.max(0, Math.min(1, hover));
+            double time = Math.max(0, now - openedAt - (index % 4) * 14);
+            float opening = 1 - .28f * spring(time, 139, 43);
+            float openingWave = wave(time, 158, 43);
+            float hoverWave = (target - startEmphasis[index]) * wave(hoverTime, 130, 37);
+            float swell = .080f * hover + .10f * openingWave + .075f * hoverWave;
+            float twist = .11f * openingWave + .12f * hoverWave;
+            float inner = baseRadius * (.32f * opening - .013f * hover);
+            float outer = baseRadius * (opening + .037f * hover);
+            float bulge = baseRadius * swell;
+            int body = enabled ? mix(0xE51B2A3E, 0xE92A685F, highlight) : 0x70202B3B;
+            wedge(draw, cx, cy, inner, outer, index, body, bulge, twist);
+            if (highlight > .03f) {
+                int stroke = (Math.round(highlight * 255) << 24) | 0x5DE4D2;
+                wedge(draw, cx, cy, outer - 2, outer, index, stroke, bulge, twist);
             }
             if (!enabled) continue;
-            int ix = Math.round(x + dx * radius * .71f), iy = Math.round(y + dy * radius * .71f);
+            double angle = -Math.PI / 2 + index * Math.PI / 4 + twist * .52f;
+            float labelRadius = (inner + outer) * .5f + bulge * .52f + baseRadius * .02f;
+            int ix = cx + (int)Math.round(Math.cos(angle) * labelRadius);
+            int iy = cy + (int)Math.round(Math.sin(angle) * labelRadius);
             draw.drawItem(ICONS[page][index].getDefaultStack(), ix - 8, iy - 12);
             String label = page == 1 && index == 4 && !quantityChosen ? "Drop all" : LABELS[page][index];
-            draw.drawCenteredTextWithShadow(textRenderer, label, ix, iy + 8, mix(0xFFCCD8ED, 0xFFFFFFFF, hover));
+            draw.drawCenteredTextWithShadow(textRenderer, label, ix, iy + 8, mix(0xFFBDCCDC, 0xFFFFFFFF, highlight));
         }
 
         String center = switch (page) {
@@ -127,6 +137,22 @@ final class CommandWheel extends Screen {
                 cx, (int)(cy + baseRadius + 8), page == 1 && selected == 3 ? 0xFFFFCD90 : 0xFFB9C8DC);
     }
 
+    private void retarget(int index, long now) {
+        if (index < 0) return;
+        startEmphasis[index] = emphasis[index];
+        emphasisChangedAt[index] = now;
+    }
+
+    private static float spring(double elapsed, double damping, double period) {
+        double phase = elapsed / period;
+        return (float)(Math.exp(-elapsed / damping)
+                * (Math.cos(phase) + period / damping * Math.sin(phase)));
+    }
+
+    private static float wave(double elapsed, double damping, double period) {
+        return (float)(Math.exp(-elapsed / damping) * Math.sin(elapsed / period));
+    }
+
     private static int mix(int from, int to, float amount) {
         int color = 0;
         for (int shift = 0; shift <= 24; shift += 8) {
@@ -137,7 +163,7 @@ final class CommandWheel extends Screen {
     }
 
     private static void wedge(DrawContext draw, float cx, float cy, float inner, float outer,
-                              int sector, int innerColor, int outerColor) {
+                              int sector, int color, float bulge, float twist) {
         draw.draw();
         RenderSystem.enableBlend();
         RenderSystem.defaultBlendFunc();
@@ -145,15 +171,19 @@ final class CommandWheel extends Screen {
         var matrix = draw.getMatrices().peek().getPositionMatrix();
         var buffer = Tessellator.getInstance().getBuffer();
         buffer.begin(VertexFormat.DrawMode.TRIANGLE_STRIP, VertexFormats.POSITION_COLOR);
-        double start = -Math.PI / 2 + sector * Math.PI / 4 - Math.PI / 8 + .034;
+        double start = -Math.PI / 2 + sector * Math.PI / 4 - Math.PI / 8 + .015;
         for (int i = 0; i <= 24; ++i) {
             double t = i / 24.0;
-            double angle = start + (Math.PI / 4 - .068) * t;
-            float x = (float)Math.cos(angle), y = (float)Math.sin(angle);
-            float rounding = (float)Math.pow(Math.abs(2 * t - 1), 9);
-            float inset = (outer - inner) * .46f * rounding;
-            buffer.vertex(matrix, cx + x * (outer - inset), cy + y * (outer - inset), 0).color(outerColor).next();
-            buffer.vertex(matrix, cx + x * (inner + inset), cy + y * (inner + inset), 0).color(innerColor).next();
+            double angle = start + (Math.PI / 4 - .03) * t;
+            // Pin the sides to their angular boundaries so neighboring wedges keep their gaps.
+            double bend = Math.sin(Math.PI * t);
+            for (float radius : new float[]{outer, inner}) {
+                float weight = Math.max(0, Math.min(1, (radius - outer + 0.68f * outer) / (0.68f * outer)));
+                double warpedAngle = angle + twist * bend * weight;
+                float warpedRadius = radius + (float)(bulge * bend * weight);
+                buffer.vertex(matrix, cx + (float)Math.cos(warpedAngle) * warpedRadius,
+                        cy + (float)Math.sin(warpedAngle) * warpedRadius, 0).color(color).next();
+            }
         }
         BufferRenderer.drawWithGlobalProgram(buffer.end());
         RenderSystem.disableBlend();

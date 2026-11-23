@@ -147,17 +147,24 @@ final class MaterialRecipe {
 
     private Plan prepareTools(Plan plan) {
         int highest = -1;
+        int miningUses = 0;
         for (var quantity : plan.quantities) {
             var source = quantity.step.resource;
             if (source == null || source.equals("dropped")) continue;
-            highest = Math.max(highest, requiredPickaxe(source));
+            int tier = requiredPickaxe(source);
+            if (tier < 0) continue;
+            highest = Math.max(highest, tier);
+            // One use per requested drop is conservative for multi-drop blocks and harvesting enchantments.
+            miningUses = Math.addExact(miningUses, quantity.count);
         }
         if (highest < 0) return plan;
         var stages = new ArrayList<Quantity>();
         for (int tier = 0; tier <= highest; tier++) {
-            var item = Registries.ITEM.getId(PICKAXES.get(tier));
-            // Resolve the recipe alone. Earlier stages already provide its mining tools.
-            stages.addAll(quantities(item, 1, false, resolveSteps(item, false)).quantities);
+            var pickaxe = PICKAXES.get(tier);
+            var item = Registries.ITEM.getId(pickaxe);
+            int copies = tier == highest ? 1 + (miningUses - 1) / pickaxe.getMaxDamage() : 1;
+            // Earlier stages provide the tools for this recipe before the production batch begins.
+            stages.addAll(quantities(item, copies, false, resolveSteps(item, false)).quantities);
         }
         stages.addAll(plan.quantities);
         return new Plan(stages);

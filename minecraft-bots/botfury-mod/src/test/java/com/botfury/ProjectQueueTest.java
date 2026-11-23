@@ -520,6 +520,30 @@ class ProjectQueueTest {
         assertEquals(source, recovered.snapshot(renewal.expiresAt() + 1).get(0).jobs().get(0).resourceSite());
     }
 
+    @Test void differentWorkerReusesMatchingGatheringSiteWithinProjectAfterRestart() throws Exception {
+        var journal = directory.resolve("board.json");
+        var board = new ProjectQueue(journal);
+        String both = """
+                {"resource":"iron","variant":"both","item":"minecraft:raw_iron","count":2}
+                """;
+        String different = both.replace("both", "deepslate");
+        var source = new ProjectQueue.ResourceSite(240, -20, -400);
+        board.submit("house", WORLD, List.of(
+                new ProjectQueue.Work("first", GATHER, both, List.of(), Set.of()),
+                new ProjectQueue.Work("different", GATHER, different, List.of("first"), Set.of()),
+                new ProjectQueue.Work("next", GATHER, both.replace(":2", ":8"), List.of("first"), Set.of())));
+        board.submit("other", WORLD, List.of(new ProjectQueue.Work("first", GATHER, both, List.of(), Set.of())));
+        var first = board.claim(WORLD, "Miner", Set.of(GATHER), "house", 1).job();
+        assertTrue(board.finish("house", "first", first.lease(), true, "Observed raw iron", null, source, 2));
+
+        var recovered = new ProjectQueue(journal);
+        assertNull(recovered.claim(WORLD, "OtherWorker", Set.of(GATHER), "other", 3).job().resourceSite());
+        assertNull(recovered.claim(WORLD, "VariantWorker", Set.of(GATHER), "house", 4).job().resourceSite());
+        var next = recovered.claim(WORLD, "NewWorker", Set.of(GATHER), "house", 5).job();
+        assertEquals("next", next.work().id());
+        assertEquals(source, next.resourceSite());
+    }
+
     @Test void producersWorkInParallelButDepositFromDistinctStockObservations() throws Exception {
         Path journal = directory.resolve("board.json");
         String key = "block:5,64,0";

@@ -99,7 +99,7 @@ final class MaterialRecipe {
             Map.entry("diamond", "diamond"), Map.entry("emerald", "emerald"), Map.entry("quartz", "quartz"),
             Map.entry("gold_nugget", "nether_gold"), Map.entry("ancient_debris", "ancient_debris"),
             Map.entry("cobblestone", "stone"), Map.entry("cobbled_deepslate", "deepslate"),
-            Map.entry("clay_ball", "block:minecraft:clay"));
+            Map.entry("clay_ball", "block:minecraft:clay"), Map.entry("dirt", "dirt"));
     private final Map<Identifier, List<Recipe<?>>> recipes = new HashMap<>();
     private final MinecraftClient client;
 

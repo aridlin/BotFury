@@ -20,6 +20,10 @@ final class ResourceCatalog {
             list.add(0, new Resource("any_" + category.toLowerCase(Locale.ROOT), "Any " + category.toLowerCase(Locale.ROOT),
                     category, members, List.of()));
         }
+        list.add(new Resource("any_logs", "Any logs", "Wood", list.stream()
+                .filter(resource -> resource.id.equals("any_wood")).flatMap(resource -> resource.normal.stream())
+                .filter(id -> id.endsWith("_log")).toList(), List.of()));
+        list.add(new Resource("dirt", "Dirt", "Stone", List.of("minecraft:dirt", "minecraft:grass_block"), List.of()));
         RESOURCES=List.copyOf(list);
     }
     static String title(String id){String text=id.replace('_',' ');return Character.toUpperCase(text.charAt(0))+text.substring(1);}

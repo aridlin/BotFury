@@ -217,12 +217,12 @@ final class ProjectWorker {
             if (held >= gather.count()) {
                 finish(client, true, "Observed " + held + " " + gather.item() + " in worker inventory");
             } else if (pickup != null) {
-                var result = pickup.tick(client, Registries.ITEM.get(gather.item()));
+                var result = pickup.tick(client, gather.item()::matches, null);
                 if (result == DroppedItemSearch.State.UNAVAILABLE) finish(client, false, "Baritone unavailable for pickup");
                 else status = (result == DroppedItemSearch.State.SEARCHING ? "Looking for dropped " : "Collecting ")
                         + gather.item() + " (" + held + "/" + gather.count() + ")";
             } else if (!MiningTask.active()) {
-                MiningTask.startProject(client, gather.mining(port), gather.exclude(), gatherSite, Registries.ITEM.get(gather.item()));
+                MiningTask.startProject(client, gather.mining(port), gather.exclude(), gatherSite, gather.item());
                 if (!MiningTask.active()) finish(client, false, MiningTask.lastStatus());
             } else {
                 status = assignment.project() + "/" + assignment.job().work().id() + " (" + held + "/" + gather.count()

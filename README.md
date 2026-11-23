@@ -658,3 +658,10 @@ with modern depth, diamond jobs search at Y -54 when they run out of
 local candidates. Completion depends on reachable ore and tool condition.
 Regular Stop disables worker mode. Look at the marked chest and run
 `/bf output cancel` to cancel its persistent order.
+
+For one shared stock target, use
+`/bf output manifest dirt=320 cobblestone=192 diamond=128 any_logs=128`.
+Aim at a single or double chest to use it, or look away from chests to have
+workers craft and place one. Each material can run alongside the others.
+`any_logs` counts standard Overworld log species together. The final chest
+checks finish the order once all totals are present.

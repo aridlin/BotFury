@@ -101,6 +101,10 @@ final class FormationClient {
                                     context.getArgument("item", net.minecraft.util.Identifier.class),
                                     IntegerArgumentType.getInteger(context, "batch"))));
             root.then(ClientCommandManager.literal("output").then(outputItem)
+                    .then(ClientCommandManager.literal("manifest")
+                            .then(ClientCommandManager.argument("targets", StringArgumentType.greedyString())
+                                    .executes(context -> OutputManifest.submit(context.getSource().getClient(),
+                                            StringArgumentType.getString(context, "targets")))))
                     .then(ClientCommandManager.literal("cancel").executes(context -> OutputOrder.cancel(context.getSource().getClient()))));
             var allow = ClientCommandManager.literal("allow");
             for (String choice : new String[]{"packets", "movement", "off"}) allow.then(ClientCommandManager.literal(choice).executes(context -> {

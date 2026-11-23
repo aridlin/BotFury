@@ -53,6 +53,10 @@ final class ProjectBroker {
         }
     }
 
+    static void submitManifest(String id, LocalFormation.Peer here, List<ProjectQueue.Work> jobs, String chest) throws IOException {
+        queue().submitSupplied(id, here.server() + "|" + here.dimension(), jobs, chest);
+    }
+
     static void submitOutput(String id, LocalFormation.Peer here, OutputOrder.Plan plan) throws IOException {
         queue().submitOutput(id, here.server() + "|" + here.dimension(), plan.jobs(), plan.repeat());
     }

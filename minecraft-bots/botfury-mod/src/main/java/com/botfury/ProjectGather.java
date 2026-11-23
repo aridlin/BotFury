@@ -2,12 +2,9 @@ package com.botfury;
 
 import com.google.gson.Gson;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.item.Item;
-import net.minecraft.registry.Registries;
-import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 
-record ProjectGather(String resource, String variant, Identifier item, int count, Area exclude) {
+record ProjectGather(String resource, String variant, ProjectItem item, int count, Area exclude) {
     private record Payload(String resource, String variant, String item, Integer count, Bounds exclude) {}
 
     record Bounds(ProjectBlock.Position min, ProjectBlock.Position max) {
@@ -36,22 +33,18 @@ record ProjectGather(String resource, String variant, Identifier item, int count
             throw new IllegalArgumentException("Provide mining resource, variant, item and count (1–576)");
         }
         if (!payload.resource.equals("dropped")) ResourceCatalog.blocks(payload.resource, payload.variant);
-        Identifier item = Identifier.tryParse(payload.item);
-        if (item == null || !Registries.ITEM.containsId(item) || item.equals(Identifier.of("minecraft", "air"))) {
-            throw new IllegalArgumentException("Unknown gathering item");
-        }
+        var item = ProjectItem.parse(payload.item);
         String resource = payload.resource;
-        String flower = resource.equals("dropped") ? MaterialRecipe.flowerSource(item) : null;
+        String flower = resource.equals("dropped") && !item.grouped() ? MaterialRecipe.flowerSource(item.ids().get(0)) : null;
         if (flower != null) resource = flower;
         return new ProjectGather(resource, payload.variant, item, payload.count, payload.exclude == null ? null : payload.exclude.checked());
     }
 
     int inventoryCount(MinecraftClient client) {
-        Item expected = Registries.ITEM.get(item);
         int total = 0;
         for (int i = 0; i < 36; i++) {
             var stack = client.player.getInventory().getStack(i);
-            if (stack.isOf(expected)) total += stack.getCount();
+            if (item.matches(stack)) total += stack.getCount();
         }
         return total;
     }

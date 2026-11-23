@@ -49,7 +49,7 @@ final class MiningTask {
     private static BlockPos target;
     private static Vec3d stand,origin,pickup;
     private static int pickupUntil;
-    private static net.minecraft.item.Item projectDrop;
+    private static ProjectItem projectDrop;
     private static final DroppedItemSearch minedDrops = new DroppedItemSearch();
     private static BlockPos rememberedSite;
     private static int rememberedUntil;
@@ -81,7 +81,7 @@ final class MiningTask {
     }
 
     static void startProject(MinecraftClient client, Job next, ProjectGather.Area exclude, ProjectQueue.ResourceSite site,
-                             net.minecraft.item.Item drop) {
+                             ProjectItem drop) {
         stop();
         startMining(client, next, true, exclude);
         if (job == null) return;
@@ -194,7 +194,7 @@ final class MiningTask {
         }
         if(pickup!=null){
             if (projectDrop != null) {
-                var state = minedDrops.tick(client, projectDrop, pickup);
+                var state = minedDrops.tick(client, projectDrop::matches, pickup);
                 if (age >= pickupUntil || state == DroppedItemSearch.State.UNAVAILABLE
                         || state == DroppedItemSearch.State.SEARCHING && age >= nextSearch) {
                     minedDrops.reset();

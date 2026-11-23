@@ -36,7 +36,7 @@ final class CommandWheel extends Screen {
             {"Set output", "Cancel output", "Spread", "", "", "", "Item…", "Back"}};
     private static final String[][] DESCRIPTIONS = {
             {"Orbit you in Saturn formation.", "Strike the target you aimed at.", "Spread the bots out around you.",
-                    "Call the bots back to you.", "Bring, collect, keep, drop, or share items.", "View the fleet and select one bot.",
+                    "Call the bots back to you.", "Bring, collect, keep, drop, or share items.", "Manage bots, builds, chest stock, and activity.",
                     "Open mining and movement controls.", "Stop the bots' current movement and tasks."},
             {"Drop the chosen item toward you.", "Pick up the chosen item from the ground.", "Keep the chosen count and share any excess.",
                     "Keep only the chosen item and drop other items.", "Drop the chosen item. Scroll to set a count.",
@@ -118,7 +118,7 @@ final class CommandWheel extends Screen {
         }
         advanceMesh(elapsed, .23f + reach * .77f, turn);
 
-        draw.fillGradient(0, 0, width, height, 0xC20A101E, 0xA8091020);
+        draw.fillGradient(0, 0, width, height, 0xC2181016, 0xA823151C);
         String heading = switch (page) {
             case 1 -> "Inventory";
             case 2 -> "Friends";
@@ -126,7 +126,7 @@ final class CommandWheel extends Screen {
             case 4 -> "Output chest";
             default -> "BotFury";
         };
-        draw.drawCenteredTextWithShadow(textRenderer, heading, cx, Math.max(6, (int)(cy - baseRadius - 31)), 0xFFF1F6FF);
+        draw.drawCenteredTextWithShadow(textRenderer, heading, cx, Math.max(6, (int)(cy - baseRadius - 31)), BotUiTheme.TEXT);
 
         for (int index = 0; index < 8; ++index) {
             boolean enabled = !LABELS[page][index].isEmpty();
@@ -137,10 +137,10 @@ final class CommandWheel extends Screen {
             float highlight = Math.max(0, Math.min(1, hover));
             double direction = -Math.PI / 2 + index * Math.PI / 4;
             var mesh = bodies[index];
-            int body = enabled ? mix(0xE51B2A3E, 0xE92A685F, highlight) : 0x70202B3B;
+            int body = enabled ? mix(0xE5412630, 0xF473303D, highlight) : 0x70321C24;
             wedge(draw, cx, cy, baseRadius, index, body, mesh, false);
             if (highlight > .03f) {
-                int stroke = (Math.round(highlight * 255) << 24) | 0x5DE4D2;
+                int stroke = (Math.round(highlight * 255) << 24) | BotUiTheme.ACCENT_RGB;
                 wedge(draw, cx, cy, baseRadius, index, stroke, mesh, true);
             }
             if (!enabled) continue;
@@ -152,7 +152,7 @@ final class CommandWheel extends Screen {
             int iy = cy + (int)Math.round(Math.sin(angle) * labelRadius);
             draw.drawItem(ICONS[page][index].getDefaultStack(), ix - 8, iy - 12);
             String label = page == 1 && index == 4 && !quantityChosen ? "Drop all" : LABELS[page][index];
-            draw.drawCenteredTextWithShadow(textRenderer, label, ix, iy + 8, mix(0xFFBDCCDC, 0xFFFFFFFF, highlight));
+            draw.drawCenteredTextWithShadow(textRenderer, label, ix, iy + 8, mix(BotUiTheme.MUTED, 0xFFFFFFFF, highlight));
         }
 
         String center = switch (page) {
@@ -160,7 +160,7 @@ final class CommandWheel extends Screen {
             case 4 -> "×" + outputBatch;
             default -> BotTracker.selected() < 0 ? "Fleet" : "1 bot";
         };
-        draw.drawCenteredTextWithShadow(textRenderer, center, cx, cy - 4, 0xFFC5FAEF);
+        draw.drawCenteredTextWithShadow(textRenderer, center, cx, cy - 4, BotUiTheme.ACCENT);
         String hint;
         if (page == 1 || page == 4) hint = net.minecraft.registry.Registries.ITEM.get(new net.minecraft.util.Identifier(item))
                 .getName().getString() + "  ·  Scroll to set count";
@@ -175,12 +175,12 @@ final class CommandWheel extends Screen {
         int panelWidth = textRenderer.getWidth(hint);
         for (var line : lines) panelWidth = Math.max(panelWidth, textRenderer.getWidth(line));
         int y = height - 17 - lines.size() * 10;
-        draw.fill(cx - panelWidth / 2 - 6, y - 4, cx + (panelWidth + 1) / 2 + 6, height - 3, 0xF20B1322);
+        draw.fill(cx - panelWidth / 2 - 6, y - 4, cx + (panelWidth + 1) / 2 + 6, height - 3, 0xF224151D);
         for (var line : lines) {
-            draw.drawCenteredTextWithShadow(textRenderer, line, cx, y, 0xFFF1F6FF);
+            draw.drawCenteredTextWithShadow(textRenderer, line, cx, y, BotUiTheme.TEXT);
             y += 10;
         }
-        draw.drawCenteredTextWithShadow(textRenderer, hint, cx, y + 2, 0xFFB9C8DC);
+        draw.drawCenteredTextWithShadow(textRenderer, hint, cx, y + 2, BotUiTheme.MUTED);
     }
 
     private void advanceMesh(double elapsed, float pull, float turn) {

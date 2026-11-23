@@ -55,11 +55,15 @@ final class StructureProject {
     private StructureProject() {}
 
     static int submit(MinecraftClient client, String file, BlockPos origin, boolean supplied) {
+        return submitProject(client, file, origin, supplied) == null ? 0 : 1;
+    }
+
+    static String submitProject(MinecraftClient client, String file, BlockPos origin, boolean supplied) {
         var here = LocalFormation.here();
         int port = BotFuryMod.controlPort();
         if (here == null || client.world == null || port < 1024 || Boolean.getBoolean("botfury.managedHttp")) {
             ClientActions.message(client, "Join the build site on the controller first");
-            return 0;
+            return null;
         }
         try {
             Plan plan = plan(client, file, origin);
@@ -70,10 +74,10 @@ final class StructureProject {
             int workers = BotTracker.sendSelected("project:worker " + port);
             ClientActions.message(client, "Queued " + id + " (" + jobCount + " jobs, " + workers + " bots requested)");
             if (!plan.materials().isEmpty()) ClientActions.message(client, "Building materials: " + plan.materials());
-            return 1;
+            return id;
         } catch (IOException | RuntimeException error) {
             ClientActions.message(client, "Could not queue structure: " + error.getMessage());
-            return 0;
+            return null;
         }
     }
 

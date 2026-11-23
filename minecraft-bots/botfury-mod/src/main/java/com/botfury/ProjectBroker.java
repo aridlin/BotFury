@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpExchange;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -14,6 +15,7 @@ final class ProjectBroker {
     private static final Gson JSON = new Gson();
     private static final int MAX_BODY = 512 * 1024;
     private static ProjectQueue queue;
+    record Overview(List<ProjectQueue.Project> projects, Map<String, ProjectQueue.ChestObservation> stock) {}
 
     private record Request(String action, String project, String worker, Set<ProjectQueue.Kind> kinds,
                            List<ProjectQueue.Work> work, String job, UUID token, Boolean success,
@@ -24,6 +26,13 @@ final class ProjectBroker {
             queue = new ProjectQueue(net.fabricmc.loader.api.FabricLoader.getInstance().getConfigDir().resolve("botfury-projects.json"));
         }
         return queue;
+    }
+
+    static Overview overview(String world) throws IOException {
+        var board = queue();
+        var projects = board.snapshot(System.currentTimeMillis()).stream()
+                .filter(project -> project.world().equals(world)).toList();
+        return new Overview(projects, board.chestStock(world));
     }
 
     static void submitStructure(String id, LocalFormation.Peer here, StructureProject.Plan plan,

@@ -22,15 +22,15 @@ final class BotUiButton extends ButtonWidget {
     @Override protected void renderButton(DrawContext draw, int mouseX, int mouseY, float delta) {
         int x = getX(), y = getY(), right = x + getWidth(), bottom = y + getHeight();
         boolean focus = active && (isHovered() || isFocused());
-        int fill = highlighted ? 0xFF286358 : focus ? 0xFF273D58 : active ? 0xFF1B283F : 0xFF192335;
-        int edge = highlighted || focus ? 0xFF71E4CB : 0xFF31415B;
+        int fill = highlighted ? BotUiTheme.SELECTED : focus ? BotUiTheme.CARD_HOVER : active ? BotUiTheme.CARD : 0xFF2B1A22;
+        int edge = highlighted || focus ? BotUiTheme.ACCENT : BotUiTheme.EDGE;
         draw.fill(x, y + 1, right, bottom - 1, fill);
         draw.fill(x + 1, y, right - 1, y + 1, edge);
-        draw.fill(x + 1, bottom - 1, right - 1, bottom, 0xFF344861);
+        draw.fill(x + 1, bottom - 1, right - 1, bottom, 0xFF50313B);
         var font = MinecraftClient.getInstance().textRenderer;
         draw.drawCenteredTextWithShadow(font, font.trimToWidth(getMessage().getString(), getWidth() - 5),
                 x + getWidth() / 2, y + (getHeight() - 8) / 2,
-                active || highlighted ? 0xFFF0F8FF : 0xFF899CB2);
+                active || highlighted ? BotUiTheme.TEXT : 0xFFAF8C90);
     }
 
     @Override public void playDownSound(SoundManager sounds) {}

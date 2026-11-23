@@ -3,6 +3,7 @@ package com.botfury;
 import com.google.gson.Gson;
 import java.time.Instant;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -29,6 +30,12 @@ final class BotEvents {
     static synchronized String tailJson() {
         var selected = events.stream().skip(Math.max(0, events.size() - 40)).toList();
         return new Gson().toJson(Map.of("cursor", next, "latestCursor", next, "events", selected));
+    }
+    static synchronized List<Event> recent() {
+        var recent = new ArrayList<Event>();
+        var newest = events.descendingIterator();
+        while (newest.hasNext() && recent.size() < 100) recent.add(newest.next());
+        return List.copyOf(recent);
     }
     static synchronized String json(long after) {
         List<Event> selected = events.stream().filter(event -> event.id > after).limit(100).toList();

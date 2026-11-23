@@ -87,10 +87,10 @@ final class MiningScreen extends Screen {
     }
 
     @Override public void render(DrawContext draw, int x, int y, float delta) {
-        draw.fillGradient(0, 0, width, height, 0xF0121A2D, 0xEA0C1220);
-        draw.drawCenteredTextWithShadow(textRenderer, title, width / 2, 16, 0xFFE9F6FF);
+        draw.fillGradient(0, 0, width, height, BotUiTheme.PANEL_BOTTOM, BotUiTheme.PANEL_TOP);
+        draw.drawCenteredTextWithShadow(textRenderer, title, width / 2, 16, BotUiTheme.TEXT);
         draw.drawCenteredTextWithShadow(textRenderer, error.isEmpty() ? BotTracker.targetLabel() : error,
-                width / 2, 32, error.isEmpty() ? 0xFFB5C8D8 : 0xFFFFCB7F);
+                width / 2, 32, error.isEmpty() ? BotUiTheme.MUTED : BotUiTheme.ACCENT);
         super.render(draw, x, y, delta);
     }
 

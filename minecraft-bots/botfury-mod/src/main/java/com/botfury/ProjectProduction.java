@@ -7,6 +7,7 @@ import net.minecraft.recipe.CraftingRecipe;
 import net.minecraft.recipe.RecipeMatcher;
 import net.minecraft.recipe.SmeltingRecipe;
 import net.minecraft.registry.Registries;
+import net.minecraft.screen.AbstractRecipeScreenHandler;
 import net.minecraft.screen.CraftingScreenHandler;
 import net.minecraft.screen.FurnaceScreenHandler;
 import net.minecraft.screen.ScreenHandler;
@@ -23,7 +24,7 @@ final class ProjectProduction {
     record Spec(ProjectBlock station, ProjectQueue.Kind kind, Identifier recipe, Identifier input,
                 Identifier fuel, int count) {}
     record Result(boolean success, String detail) {}
-    private record Payload(String recipe, String input, String fuel, Integer count) {}
+    private record Payload(String recipe, String input, String fuel, Integer count, boolean inventory) {}
     private static final long SETTLE = Duration.ofMillis(750).toNanos();
     private final Spec spec;
     private ScreenHandler screen;
@@ -33,10 +34,11 @@ final class ProjectProduction {
     ProjectProduction(Spec spec) { this.spec = spec; }
 
     static Spec parse(String json, ProjectQueue.Kind kind) {
-        var station = ProjectBlock.parse(json);
         var payload = new Gson().fromJson(json, Payload.class);
         boolean smelt = kind == ProjectQueue.Kind.SMELT;
-        if (!station.block().equals(Identifier.of("minecraft", smelt ? "furnace" : "crafting_table"))
+        var station = payload.inventory ? null : ProjectBlock.parse(json);
+        if (payload.inventory && smelt || station != null
+                && !station.block().equals(Identifier.of("minecraft", smelt ? "furnace" : "crafting_table"))
                 || payload.count == null || payload.count < 1 || payload.count > 256) {
             throw new IllegalArgumentException("Provide a matching workstation and output count (1–256)");
         }
@@ -68,14 +70,15 @@ final class ProjectProduction {
 
     Result tick(MinecraftClient client, long now) {
         if (now < nextAction) return null;
-        var target = spec.station.target();
-        if (!Registries.BLOCK.getId(client.world.getBlockState(target).getBlock()).equals(spec.station.block())) {
+        var target = spec.station == null ? null : spec.station.target();
+        if (target != null && !Registries.BLOCK.getId(client.world.getBlockState(target).getBlock()).equals(spec.station.block())) {
             return failure("Expected workstation is missing");
         }
         var recipe = client.world.getRecipeManager().get(spec.recipe).orElse(null);
         if (!(spec.kind == ProjectQueue.Kind.CRAFT ? recipe instanceof CraftingRecipe : recipe instanceof SmeltingRecipe)) {
             return failure("Server has no matching recipe " + spec.recipe);
         }
+        if (target == null && !recipe.fits(2, 2)) return failure("Recipe does not fit the inventory crafting grid");
         var output = recipe.getOutput(client.world.getRegistryManager());
         if (output.isEmpty()) return failure("Recipe does not declare an output");
         int held = 0;
@@ -85,7 +88,9 @@ final class ProjectProduction {
         }
         if (held >= spec.count) return new Result(true, "Observed " + held + " " + Registries.ITEM.getId(output.getItem()) + " in worker inventory");
         var player = client.player;
-        if (screen == null && opening && matching(player.currentScreenHandler)) {
+        if (target == null) {
+            screen = player.playerScreenHandler;
+        } else if (screen == null && opening && matching(player.currentScreenHandler)) {
             screen = player.currentScreenHandler;
             opening = false;
         } else if (screen == null) {
@@ -107,12 +112,16 @@ final class ProjectProduction {
             return failure("Workstation screen changed or inventory cursor is occupied");
         }
         nextAction = now + SETTLE;
-        if (recipe instanceof CraftingRecipe craft) return craft(client, craft, output);
+        if (recipe instanceof CraftingRecipe craft) {
+            return spec.station == null ? craft(client, player.playerScreenHandler, craft, output)
+                    : craft(client, (CraftingScreenHandler) screen, craft, output);
+        }
         return smelt(client, (SmeltingRecipe) recipe, output, spec.count - held);
     }
 
-    private Result craft(MinecraftClient client, CraftingRecipe recipe, ItemStack output) {
-        var table = (CraftingScreenHandler) screen;
+    private Result craft(MinecraftClient client,
+                         AbstractRecipeScreenHandler<net.minecraft.inventory.RecipeInputInventory> table,
+                         CraftingRecipe recipe, ItemStack output) {
         var result = table.getSlot(0).getStack();
         if (!result.isEmpty()) {
             if (!ItemStack.canCombine(result, output) || !table.matches(recipe)) return failure("Unexpected crafting output");

@@ -231,6 +231,9 @@ final class ProjectWorker {
                 var observation = MiningTask.observedSite();
                 if (observation != null) gatherSite = observation;
             }
+        } else if (production != null && block == null) {
+            var result = production.tick(client, now);
+            if (result != null) finish(client, result.success(), result.detail());
         } else execute(client, now);
     }
 

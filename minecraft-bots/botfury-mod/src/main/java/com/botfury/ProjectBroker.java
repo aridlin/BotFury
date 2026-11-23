@@ -150,7 +150,8 @@ final class ProjectBroker {
                             return ProjectChest.parse(item.payload()).reserve(item);
                         }
                         if (item.kind() == ProjectQueue.Kind.CRAFT || item.kind() == ProjectQueue.Kind.SMELT) {
-                            return ProjectProduction.parse(item.payload(), item.kind()).station().reserve(item);
+                            var station = ProjectProduction.parse(item.payload(), item.kind()).station();
+                            return station == null ? item : station.reserve(item);
                         }
                         return ProjectWorker.supports(item.kind()) ? ProjectBlock.parse(item.payload()).reserve(item) : item;
                     }).toList();

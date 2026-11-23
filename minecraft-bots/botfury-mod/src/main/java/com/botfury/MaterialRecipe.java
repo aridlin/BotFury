@@ -15,7 +15,7 @@ import java.util.*;
 final class MaterialRecipe {
     private static final Gson JSON = new Gson();
     private record Step(ProjectQueue.Kind kind, String resource, Identifier recipe, int yield,
-                Map<Identifier, Integer> ingredients, int cookTime) {}
+                Map<Identifier, Integer> ingredients, int cookTime, boolean inventoryCraft) {}
 
     private record Quantity(Identifier item, Step step, int count) {}
     record Batch(Plan plan, int count) {}
@@ -54,11 +54,12 @@ final class MaterialRecipe {
                 } else {
                     boolean smelting = step.kind == ProjectQueue.Kind.SMELT;
                     station = smelting ? furnace : table;
-                    if (station == null) {
+                    if (station == null && !step.inventoryCraft) {
                         throw new IllegalArgumentException("Place a reachable " + (smelting ? "furnace" : "crafting table")
                                 + " near the chest for " + quantity.item);
                     }
-                    payload = stationPayload(station);
+                    payload = station == null ? new JsonObject() : stationPayload(station);
+                    if (station == null) payload.addProperty("inventory", true);
                     payload.addProperty("recipe", step.recipe.toString());
                     if (smelting) {
                         payload.addProperty("input", step.ingredients.keySet().iterator().next().toString());
@@ -97,7 +98,8 @@ final class MaterialRecipe {
     MaterialRecipe(MinecraftClient client, boolean canCraft, boolean canSmelt) {
         this.client = client;
         client.world.getRecipeManager().values().stream()
-                .filter(recipe -> canCraft && recipe instanceof CraftingRecipe || canSmelt && recipe instanceof SmeltingRecipe)
+                .filter(recipe -> recipe instanceof CraftingRecipe && (canCraft || recipe.fits(2, 2))
+                        || canSmelt && recipe instanceof SmeltingRecipe)
                 .sorted(Comparator.comparing(recipe -> recipe.getId().toString()))
                 .forEach(recipe -> {
                     var output = recipe.getOutput(client.world.getRegistryManager());
@@ -194,7 +196,7 @@ final class MaterialRecipe {
                 var kind = cookTime > 0 ? ProjectQueue.Kind.SMELT : ProjectQueue.Kind.CRAFT;
                 int yield = recipe.getOutput(client.world.getRegistryManager()).getCount();
                 candidate.put(item, new Step(kind, null, recipe.getId(), yield,
-                        Collections.unmodifiableMap(inputs), cookTime));
+                        Collections.unmodifiableMap(inputs), cookTime, recipe instanceof CraftingRecipe && recipe.fits(2, 2)));
                 steps.putAll(candidate);
                 return true;
             }
@@ -205,7 +207,7 @@ final class MaterialRecipe {
     }
 
     private static Step gather(String source) {
-        return new Step(ProjectQueue.Kind.GATHER, source, null, 1, Map.of(), 0);
+        return new Step(ProjectQueue.Kind.GATHER, source, null, 1, Map.of(), 0, false);
     }
 
     private static String naturalSource(Identifier item) {

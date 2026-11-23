@@ -40,6 +40,24 @@ class ProjectQueueTest {
         assertEquals("place", restored.claim(WORLD, "builder", Set.of(BUILD), 11).job().work().id());
     }
 
+    @Test void retriesDepositsWithoutReopeningFailedWithdrawals() throws Exception {
+        var journal = directory.resolve("retry-deliveries.json");
+        var board = new ProjectQueue(journal);
+        board.submit("house", WORLD, List.of(
+                new ProjectQueue.Work("deposit", TRANSFER, "{\"direction\":\"DEPOSIT\"}", List.of(), Set.of()),
+                new ProjectQueue.Work("withdraw", TRANSFER, "{\"direction\":\"TAKE\"}", List.of(), Set.of())));
+        for (long now = 1; now <= 11; now += 2) {
+            var lease = board.claim(WORLD, "worker", Set.of(TRANSFER), now).job();
+            assertTrue(board.finish("house", lease.work().id(), lease.lease(), false, "Out of reach", now + 1));
+        }
+        assertEquals(1, board.retryDeliveries(WORLD, "house"));
+        var recovered = new ProjectQueue(journal);
+        var snapshot = recovered.snapshot(13).get(0).jobs();
+        assertEquals(ProjectQueue.State.WAITING, snapshot.get(0).state());
+        assertEquals(ProjectQueue.State.FAILED, snapshot.get(1).state());
+        assertEquals("deposit", recovered.claim(WORLD, "worker", Set.of(TRANSFER), 13).job().work().id());
+    }
+
     @Test void unscopedWorkerFinishesItsReadyInventoryChainBeforeAnEarlierProject() throws Exception {
         var queue = new ProjectQueue(directory.resolve("inventory-priority.json"));
         queue.submit("stock", WORLD, List.of(job("gather", GATHER, List.of())));

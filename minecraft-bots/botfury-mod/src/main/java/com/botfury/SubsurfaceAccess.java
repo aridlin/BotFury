@@ -18,6 +18,14 @@ final class SubsurfaceAccess {
     boolean active() { return settings != null; }
 
     boolean advance(MinecraftClient client, int age, int depth, ProjectGather.Area area) {
+        return advance(client, age, depth, area, null);
+    }
+
+    boolean advanceToward(MinecraftClient client, int age, BlockPos destination, ProjectGather.Area area) {
+        return advance(client, age, destination.getY(), area, destination);
+    }
+
+    private boolean advance(MinecraftClient client, int age, int height, ProjectGather.Area area, BlockPos destinationHint) {
         var position = client.player.getBlockPos();
         if (active()) {
             if (!position.equals(goal) && age - started < 600
@@ -29,15 +37,18 @@ final class SubsurfaceAccess {
         if (!client.player.isOnGround()) return false;
         if (area != null && (area.contains(position) || area.contains(position.down()))) return false;
 
-        int initial = Math.floorMod(client.player.getUuid().hashCode(), HEADINGS.length);
+        int initial = destinationHint == null ? Math.floorMod(client.player.getUuid().hashCode(), HEADINGS.length)
+                : headingToward(position, destinationHint);
+        int segmentY = position.getY() + Math.max(-4, Math.min(4, height - position.getY()));
         for (int attempt = 0; attempt < HEADINGS.length; attempt++) {
             var direction = HEADINGS[Math.floorMod(initial + heading + attempt, HEADINGS.length)];
-            var destination = position.offset(direction, 7).withY(Math.min(position.getY(), Math.max(depth, position.getY() - 4)));
+            var destination = position.offset(direction, 7).withY(segmentY);
             if (!client.world.isInBuildLimit(destination.down()) || !client.world.getWorldBorder().contains(destination)
                     || !client.world.isChunkLoaded(destination.getX() >> 4, destination.getZ() >> 4)
                     || area != null && (area.contains(destination) || area.contains(destination.up()))
                     || BuildProtection.blocked(destination) || BuildProtection.blocked(destination.up())) continue;
-            if (!equipDiggingTool(client)) return false;
+            boolean returning = destinationHint != null;
+            if (!equipDiggingTool(client, returning) && !returning) return false;
             try {
                 settings = BaritoneSettings.prospecting();
             } catch (ReflectiveOperationException | LinkageError error) {
@@ -56,6 +67,13 @@ final class SubsurfaceAccess {
         return false;
     }
 
+    private int headingToward(BlockPos from, BlockPos destination) {
+        int x = destination.getX() - from.getX();
+        int z = destination.getZ() - from.getZ();
+        if (Math.abs(x) > Math.abs(z)) return x > 0 ? 1 : 3;
+        return z > 0 ? 2 : 0;
+    }
+
     boolean blocksBreaking(MinecraftClient client, BlockPos pos) {
         if (!active()) return false;
         if (client.world == null || !pos.isWithinDistance(origin, REACH)
@@ -65,14 +83,15 @@ final class SubsurfaceAccess {
                 && player.getBlockPos().down().equals(pos));
     }
 
-    private boolean equipDiggingTool(MinecraftClient client) {
+    private boolean equipDiggingTool(MinecraftClient client, boolean returning) {
         var player = client.player;
         var inventory = player.getInventory();
         int best = -1;
         int level = Integer.MAX_VALUE;
         for (int index = 0; index < 36; index++) {
             var stack = inventory.getStack(index);
-            if (stack.getItem() instanceof PickaxeItem pickaxe && stack.getMaxDamage() - stack.getDamage() > 20
+            if (stack.getItem() instanceof PickaxeItem pickaxe
+                    && stack.getMaxDamage() - stack.getDamage() > (returning ? 0 : 20)
                     && pickaxe.getMaterial().getMiningLevel() < level) {
                 best = index;
                 level = pickaxe.getMaterial().getMiningLevel();

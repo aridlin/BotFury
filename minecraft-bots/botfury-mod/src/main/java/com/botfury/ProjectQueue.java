@@ -687,6 +687,18 @@ final class ProjectQueue {
     }
 
     synchronized int retryExcavation(String world, String id) throws IOException {
+        return retryFailures(world, id, job -> job.work.kind == Kind.EXCAVATE && job.work.cleanup == null);
+    }
+
+    synchronized int retryDeliveries(String world, String id) throws IOException {
+        return retryFailures(world, id, job -> {
+            if (job.work.kind != Kind.TRANSFER) return false;
+            var transfer = JSON.fromJson(job.work.payload, PickupTarget.class);
+            return transfer != null && "DEPOSIT".equals(transfer.direction);
+        });
+    }
+
+    private int retryFailures(String world, String id, java.util.function.Predicate<Job> applicable) throws IOException {
         var project = projects.get(id);
         if (project == null || !project.world.equals(world) || cancelled(project)) {
             throw new IllegalArgumentException("Unknown active project in this world");
@@ -695,7 +707,7 @@ final class ProjectQueue {
         int reopened = 0;
         for (int index = 0; index < jobs.size(); index++) {
             var job = jobs.get(index);
-            if (job.state == State.FAILED && job.work.kind == Kind.EXCAVATE && job.work.cleanup == null) {
+            if (job.state == State.FAILED && applicable.test(job)) {
                 jobs.set(index, new Job(job.work, State.WAITING, 0, null, null, 0, job.evidence, job.chest, job.resourceSite));
                 reopened++;
             }

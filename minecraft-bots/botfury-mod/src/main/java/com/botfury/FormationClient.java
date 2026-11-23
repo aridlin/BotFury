@@ -87,6 +87,10 @@ final class FormationClient {
                             .then(ClientCommandManager.argument("id", StringArgumentType.word())
                                     .executes(context -> ProjectBroker.retryExcavation(context.getSource().getClient(),
                                             StringArgumentType.getString(context, "id")))))
+                    .then(ClientCommandManager.literal("retry-deliveries")
+                            .then(ClientCommandManager.argument("id", StringArgumentType.word())
+                                    .executes(context -> ProjectBroker.retryDeliveries(context.getSource().getClient(),
+                                            StringArgumentType.getString(context, "id")))))
                     .then(ClientCommandManager.literal("workers").executes(context -> {
                         int port = BotFuryMod.controlPort();
                         if (port < 1024 || Boolean.getBoolean("botfury.managedHttp")) return 0;

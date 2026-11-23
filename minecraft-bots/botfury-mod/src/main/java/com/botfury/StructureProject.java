@@ -314,7 +314,8 @@ final class StructureProject {
             excavationFrontier = List.copyOf(wave);
         }
 
-        var exposedPlacements = new ArrayList<String>();
+        String lastExposedPlacement = null;
+        int scaffoldFrontier = 0;
         var scaffolds = new ArrayList<Scaffold>();
         boolean allowTemporarySupport = false;
         while (!pending.isEmpty()) {
@@ -330,7 +331,8 @@ final class StructureProject {
                 if (temporary != null) pose = temporary.pillar;
                 if (pose == null) continue;
                 var approachNeeds = new ArrayList<>(excavationFrontier);
-                approachNeeds.addAll(exposedPlacements);
+                // Each exposed placement already depends on the previous one.
+                if (lastExposedPlacement != null) approachNeeds.add(lastExposedPlacement);
                 if (!scaffolds.isEmpty()) approachNeeds.add(scaffolds.get(scaffolds.size() - 1).lastPlacement());
                 var needs = new LinkedHashSet<>(approachNeeds);
                 if (placed.containsKey(pose.support)) needs.add(placed.get(pose.support));
@@ -371,7 +373,7 @@ final class StructureProject {
                     placement = new ProjectQueue.Work(id, placement.kind(), placement.payload(), placement.needs(), locks);
                 }
                 jobs.add(placement);
-                if (pose.exposedBeforeBuild) exposedPlacements.add(id);
+                if (pose.exposedBeforeBuild) lastExposedPlacement = id;
                 materials.merge(Registries.ITEM.getId(cell.desired.getBlock().asItem()), 1, Integer::sum);
                 area = StructureSupply.union(area, new ProjectBlock(pose.support, pose.stand, AIR));
                 iterator.remove();
@@ -387,13 +389,15 @@ final class StructureProject {
                 int room = ProjectQueue.MAX_JOBS - jobs.size() - cleanupJobs - pending.size()
                         - verificationJobs - wetJobs - cleanupGates;
                 var scaffold = scaffold(client, cell, pending.values(), layout, cleared, ready, placed,
-                        List.copyOf(changes), scaffolds.size(), room);
+                        List.copyOf(changes.subList(scaffoldFrontier, changes.size())), scaffolds.size(), room);
                 if (scaffold != null) {
                     scaffolds.add(scaffold);
                     jobs.addAll(scaffold.jobs);
                     layout.putAll(scaffold.layout);
                     ready.putAll(scaffold.layout);
                     placed.putAll(scaffold.placed);
+                    // The new scaffold gates earlier work, so future scaffolds can depend on this tail.
+                    scaffoldFrontier = changes.size();
                     changes.add(scaffold.lastPlacement());
                     materials.merge(Registries.ITEM.getId(Blocks.COBBLESTONE.asItem()), scaffold.blocks.size(), Integer::sum);
                     for (var step : scaffold.blocks) {

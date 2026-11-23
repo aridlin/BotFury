@@ -54,6 +54,9 @@ final class MiningTask {
     private static BaritoneSettings settings;
     private static final StallRecovery routeRecovery = new StallRecovery();
     private static final Map<BlockPos,Integer> rejected=new HashMap<>();
+    private static final Map<BlockPos,Integer> rejectedStands = new HashMap<>();
+    private static int approachProgress;
+    private static double approachDistance;
     private static volatile String status="";
     static boolean active(){return job!=null;}
     static boolean working(){return job!=null&&!paused&&!dead;}
@@ -103,6 +106,7 @@ final class MiningTask {
         var here=LocalFormation.here();world=here.server()+"|"+here.dimension();
         paused=false;
         age=nextSearch=nextPath=nextRenew=exploration=0;requesting=dead=false;target=null;stand=null;pickup=null;leaseToken=null;origin=client.player.getPos();rejected.clear();
+        rejectedStands.clear();
         status="Searching: "+next.resource+" ("+next.variant+")";BotEvents.add("info","mining",status);
     }
     private static void fail(String reason){status=reason;BotEvents.add("warn","mining",reason);}
@@ -140,6 +144,7 @@ final class MiningTask {
             double reach=Math.min(4.3,client.interactionManager.getReachDistance()-.1);
             var ray = miningHit(client, target, client.player.getEyePos(), reach);
             if(client.player.squaredDistanceTo(stand)<=1.44&&ray!=null){
+                approachProgress = age;
                 stopPath();
                 if(!equip(client,target)){status="Need a suitable tool";return;}
                 if (projectMining) {
@@ -154,6 +159,20 @@ final class MiningTask {
                 status="Mining "+blockName;
             } else {
                 var p = BlockPos.ofFloored(stand);
+                double distance = client.player.getPos().distanceTo(stand);
+                if (approachDistance - distance >= .6) {
+                    approachDistance = distance;
+                    approachProgress = age;
+                }
+                if (age - approachProgress >= 250) {
+                    rejectedStands.put(p, age + 600);
+                    stopPath();
+                    clearReservation();
+                    client.interactionManager.cancelBlockBreaking();
+                    status = "Trying another approach to " + job.resource;
+                    nextSearch = age + 1;
+                    return;
+                }
                 if (recoverRoute(client, p)) return;
                 if (age >= nextPath) {
                     nextPath = age + 20;
@@ -185,6 +204,7 @@ final class MiningTask {
         if (pathActive && recoverRoute(client, rememberedSite)) return;
         if(requesting||age<nextSearch)return;
         nextSearch=age+20;
+        rejectedStands.values().removeIf(until -> until <= age);
         var position=client.player.getBlockPos();
         var candidates=new ArrayList<BlockPos>();boolean needsTool=false;
         for(int x=-12;x<=12;x++)for(int z=-12;z<=12;z++)for(int y=-10;y<=10;y++){
@@ -309,13 +329,15 @@ final class MiningTask {
         boolean thin = c.world.getBlockState(ore).getCollisionShape(c.world, ore).isEmpty();
         for(int dx=-1;dx<=1;dx++)for(int dz=-1;dz<=1;dz++)for(int dy=-1;dy<=1;dy++){
             if(dx==0&&dz==0)continue;BlockPos feet=ore.add(dx,dy,dz),below=feet.down();
+            if (rejectedStands.containsKey(feet)) continue;
             if(!c.world.isChunkLoaded(feet.getX()>>4,feet.getZ()>>4)||c.world.getBlockState(below).getCollisionShape(c.world,below).isEmpty()
                     ||!c.world.getFluidState(feet).isEmpty()||!c.world.getFluidState(feet.up()).isEmpty()
                     ||c.world.getBlockState(feet).getHardness(c.world,feet)<0||c.world.getBlockState(feet.up()).getHardness(c.world,feet.up())<0)continue;
             Vec3d point=Vec3d.ofBottomCenter(feet);var box=c.player.getBoundingBox().offset(point.subtract(c.player.getPos())).expand(.35,0,.35);
             if (thin && miningHit(c, ore, point.add(0, 1.62, 0), 4.3) == null) continue;
             if(!c.world.getOtherEntities(c.player,box,e->e instanceof PlayerEntity&&e.isAlive()).isEmpty())continue;
-            double distance=c.player.squaredDistanceTo(point)+(c.world.isSpaceEmpty(c.player,box)?0:16);
+            double climb = Math.max(0, point.y - c.player.getY());
+            double distance=c.player.squaredDistanceTo(point) + climb * 6 + (c.world.isSpaceEmpty(c.player,box)?0:16);
             if(distance<score){score=distance;best=point;}
         }
         return best;
@@ -331,6 +353,10 @@ final class MiningTask {
             if(error!=null||response.statusCode()!=200){status="Mining coordinator unavailable";nextSearch=age+40;leaseUntil=0;stopPath();if(client.interactionManager!=null)client.interactionManager.cancelBlockBreaking();return;}
             try{var reply=JSON.fromJson(response.body(),MiningClaims.Reply.class);
                 if(!reply.granted()){status=reply.reason();rejected.put(ore,age+160);if(target!=null)stopPath();clearReservation();client.interactionManager.cancelBlockBreaking();nextSearch=age+1;return;}
+                if (!action.equals("renew")) {
+                    approachProgress = age;
+                    approachDistance = client.player.getPos().distanceTo(place);
+                }
                 target=ore;stand=place;leaseToken=token;leaseUntil=System.currentTimeMillis()+Math.min(10000,reply.leaseMillis());nextRenew=age+40;nextPath=age;
             }catch(RuntimeException e){status="Invalid mining coordinator reply";}
         }));

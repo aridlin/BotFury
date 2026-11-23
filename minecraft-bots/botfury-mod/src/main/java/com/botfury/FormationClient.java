@@ -138,7 +138,7 @@ final class FormationClient {
             if (client.player == null) pendingWheel = false;
             else if (pendingWheel && client.currentScreen == null) {
                 pendingWheel = false;
-                client.setScreen(new CommandWheel());
+                client.setScreen(new CommandWheel(wheel.isPressed()));
             }
         });
     }

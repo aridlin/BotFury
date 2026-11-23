@@ -126,6 +126,12 @@ final class ProjectChest {
         opening = false;
     }
 
+    boolean reachableFromHere(MinecraftClient client) {
+        if (screen != null && client.player.currentScreenHandler == screen) return true;
+        return !client.player.isTouchingWater() && !client.player.isClimbing()
+                && ProjectProduction.workstationHit(client, spec.location.target(), client.player.getEyePos()) != null;
+    }
+
     Result tick(MinecraftClient client, long now) {
         if (now < nextAction) return null;
         var target = spec.location.target();
@@ -141,13 +147,9 @@ final class ProjectChest {
             opening = false;
         } else if (screen == null) {
             if (player.currentScreenHandler != player.playerScreenHandler) return failure("Another container is open");
-            var eye = player.getEyePos();
             var center = Vec3d.ofCenter(target);
-            var hit = client.world.raycast(new RaycastContext(eye, center, RaycastContext.ShapeType.OUTLINE,
-                    RaycastContext.FluidHandling.NONE, player));
-            double reach = client.interactionManager.getReachDistance() - .1;
-            if (eye.squaredDistanceTo(center) > reach * reach || hit.getType() != HitResult.Type.BLOCK
-                    || !target.equals(hit.getBlockPos())) return failure("Chest obstructed or out of reach");
+            var hit = ProjectProduction.workstationHit(client, target, player.getEyePos());
+            if (hit == null) return failure("Chest obstructed or out of reach");
             opening = true;
             player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, center);
             client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);

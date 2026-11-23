@@ -83,6 +83,10 @@ final class FormationClient {
                                     .then(ClientCommandManager.argument("y", IntegerArgumentType.integer())
                                             .then(projectCoordinates))));
             root.then(ClientCommandManager.literal("project").then(projectBuild)
+                    .then(ClientCommandManager.literal("retry-placement")
+                            .then(ClientCommandManager.argument("id", StringArgumentType.word())
+                                    .executes(context -> ProjectBroker.retryPlacementApproaches(context.getSource().getClient(),
+                                            StringArgumentType.getString(context, "id")))))
                     .then(ClientCommandManager.literal("retry-excavation")
                             .then(ClientCommandManager.argument("id", StringArgumentType.word())
                                     .executes(context -> ProjectBroker.retryExcavation(context.getSource().getClient(),

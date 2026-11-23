@@ -125,17 +125,41 @@ final class ProjectPlacement {
     }
 
     static BlockHitResult supportHit(MinecraftClient client, ProjectBlock block) {
+        return supportHit(client, block, client.player.getEyePos());
+    }
+
+    static BlockHitResult supportHit(MinecraftClient client, ProjectBlock block, Vec3d eye) {
         var support = block.support();
         var desired = block.desired();
         var state = client.world.getBlockState(support);
-        var eye = client.player.getEyePos();
+        if (!support(state, desired, block.face(), client.world, support)) return null;
         var point = facePoint(support, block.face(), state, desired);
         double reach = client.interactionManager.getReachDistance() - .1;
-        if (!support(state, desired, block.face(), client.world, support)
-                || eye.squaredDistanceTo(point) > reach * reach) return null;
+        var hit = traceSupport(client, block, eye, point, reach);
+        if (hit != null || ProjectWater.source(desired) || !state.isFullCube(client.world, support)
+                || !desired.isFullCube(client.world, block.target())) return hit;
+        // Use the same leased face when foliage or uneven ground blocks its midpoint.
+        for (double first : new double[]{-.3, 0, .3}) {
+            for (double second : new double[]{-.3, 0, .3}) {
+                if (first == 0 && second == 0) continue;
+                var alternate = switch (block.face().getAxis()) {
+                    case X -> point.add(0, first, second);
+                    case Y -> point.add(first, 0, second);
+                    case Z -> point.add(first, second, 0);
+                };
+                hit = traceSupport(client, block, eye, alternate, reach);
+                if (hit != null) return hit;
+            }
+        }
+        return null;
+    }
+
+    private static BlockHitResult traceSupport(MinecraftClient client, ProjectBlock block, Vec3d eye,
+                                               Vec3d point, double reach) {
+        if (eye.squaredDistanceTo(point) > reach * reach) return null;
         var hit = client.world.raycast(new RaycastContext(eye, point, RaycastContext.ShapeType.OUTLINE,
                 RaycastContext.FluidHandling.NONE, client.player));
-        return hit.getType() == HitResult.Type.BLOCK && support.equals(hit.getBlockPos())
+        return hit.getType() == HitResult.Type.BLOCK && block.support().equals(hit.getBlockPos())
                 && hit.getSide() == block.face() ? hit : null;
     }
 

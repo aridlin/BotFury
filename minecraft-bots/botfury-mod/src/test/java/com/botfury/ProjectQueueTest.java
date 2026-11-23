@@ -58,6 +58,38 @@ class ProjectQueueTest {
         assertEquals("deposit", recovered.claim(WORLD, "worker", Set.of(TRANSFER), 13).job().work().id());
     }
 
+    @Test void coordinatorRestartDoesNotSpendTheLastAttemptOnAnInterruptedLease() throws Exception {
+        var journal = directory.resolve("restarted-attempt.json");
+        var board = new ProjectQueue(journal);
+        board.submit("ore", WORLD, List.of(job("gather", GATHER, List.of())));
+        for (long now = 1; now <= 3; now += 2) {
+            var failed = board.claim(WORLD, "miner", Set.of(GATHER), now).job();
+            assertTrue(board.finish("ore", "gather", failed.lease(), false, "Explicit failure", now + 1));
+        }
+        var interrupted = board.claim(WORLD, "miner", Set.of(GATHER), 5).job();
+        var reopened = new ProjectQueue(journal);
+        var retry = reopened.claim(WORLD, "miner", Set.of(GATHER), interrupted.expiresAt()).job();
+        assertEquals(3, retry.attempts());
+        assertNotEquals(interrupted.lease(), retry.lease());
+        var state = reopened.snapshot(retry.expiresAt()).get(0).jobs().get(0);
+        assertEquals(ProjectQueue.State.FAILED, state.state());
+        assertEquals(1, reopened.retryInterruptedGathering(WORLD, "ore"));
+    }
+
+    @Test void workerHoldsCargoWhileAnotherDeliveryHasTheChest() throws Exception {
+        var queue = new ProjectQueue(directory.resolve("chest-contention.json"));
+        queue.submit("house", WORLD, List.of(job("collect", GATHER, List.of()),
+                job("other-delivery", TRANSFER, List.of(), "chest"),
+                new ProjectQueue.Work("deliver", TRANSFER, "", List.of("collect"), Set.of("chest"), "collect"),
+                job("unrelated", CRAFT, List.of())));
+        var gather = queue.claim(WORLD, "miner", Set.of(GATHER), 1).job();
+        assertTrue(queue.finish("house", "collect", gather.lease(), true, "Collected the cargo", 2));
+        var blocker = queue.claim(WORLD, "other", Set.of(TRANSFER), 3).job();
+        assertNull(queue.claim(WORLD, "miner", Set.of(TRANSFER, CRAFT), 4));
+        assertTrue(queue.finish("house", "other-delivery", blocker.lease(), false, "Temporary problem", 5));
+        assertEquals("deliver", queue.claim(WORLD, "miner", Set.of(TRANSFER, CRAFT), 6).job().work().id());
+    }
+
     @Test void unscopedWorkerFinishesItsReadyInventoryChainBeforeAnEarlierProject() throws Exception {
         var queue = new ProjectQueue(directory.resolve("inventory-priority.json"));
         queue.submit("stock", WORLD, List.of(job("gather", GATHER, List.of())));

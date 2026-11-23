@@ -126,10 +126,12 @@ final class ProjectQueue {
     private static final int MAX_SUPPLY_RECOVERIES = 2;
     private static final int MAX_PROJECTS = 32;
     private static final int MAX_DEPENDENCIES = 250_000;
+    private static final String LEASE_EXPIRED = "Worker lease expired";
     private final Path journal;
     private final Path archive;
     private final Map<String, Long> workerSeen = new HashMap<>();
     private final Set<String> unscopedWorkers = new HashSet<>();
+    private final Set<UUID> restoredLeases = new HashSet<>();
     private Map<String, Project> projects;
 
     ProjectQueue(Path journal) throws IOException {
@@ -141,6 +143,9 @@ final class ProjectQueue {
                 throw new IOException("Invalid project journal schema");
             }
             projects = new LinkedHashMap<>(board.projects);
+            for (var project : projects.values()) for (var job : project.jobs) {
+                if (job.state == State.LEASED && job.lease != null) restoredLeases.add(job.lease);
+            }
         } catch (NoSuchFileException ignored) {
             projects = new LinkedHashMap<>();
         } catch (JsonParseException | IllegalArgumentException error) {
@@ -347,6 +352,7 @@ final class ProjectQueue {
         }
         Project fallbackProject = null;
         Job fallbackJob = null;
+        boolean waitingWithCargo = false;
         for (Project project : projects.values()) {
             if (!world.equals(project.world) || cancelled(project) || (ownedOrder != null && ownedOrder != project)
                     || projectId != null && !projectId.equals(project.id)) continue;
@@ -360,13 +366,17 @@ final class ProjectQueue {
                 if (deposit != null && job.work.kind == Kind.TRANSFER && !deposit.equals(job.work.id)) continue;
                 if (job.state != State.WAITING || job.work.kind.coordinatorOnly()
                         || job.expiresAt > now || !kinds.contains(job.work.kind)
-                        || !done.containsAll(job.work.needs) || !Collections.disjoint(reserved, job.work.locks)) continue;
+                        || !done.containsAll(job.work.needs)) continue;
                 if (job.work.cleanup != null && (!settled(job.work.cleanup.afterSettled, done, blocked)
                         || job.work.cleanup.alsoSettled.stream().anyMatch(id -> !settled(id, done, blocked)))) continue;
-                if (job.work.locks.stream().anyMatch(key -> projectReservations.containsKey(key)
-                        && !project.id.equals(projectReservations.get(key)))) continue;
-                if (job.work.sameWorkerAs != null
+                boolean pinned = job.work.sameWorkerAs != null;
+                if (pinned
                         && !worker.equalsIgnoreCase(find(project, job.work.sameWorkerAs).worker)) continue;
+                if (!Collections.disjoint(reserved, job.work.locks) || job.work.locks.stream().anyMatch(key ->
+                        projectReservations.containsKey(key) && !project.id.equals(projectReservations.get(key)))) {
+                    waitingWithCargo |= pinned;
+                    continue;
+                }
                 // Finish using inventory already gathered for a chain before starting unrelated work.
                 if (job.work.sameWorkerAs != null || ownedOrder != null) return assign(project, job, worker, now);
                 if (fallbackJob == null) {
@@ -375,7 +385,7 @@ final class ProjectQueue {
                 }
             }
         }
-        return fallbackJob == null ? null : assign(fallbackProject, fallbackJob, worker, now);
+        return fallbackJob == null || waitingWithCargo ? null : assign(fallbackProject, fallbackJob, worker, now);
     }
 
     private Assignment assign(Project project, Job job, String worker, long now) throws IOException {
@@ -445,6 +455,7 @@ final class ProjectQueue {
         Job renewed = new Job(job.work, State.LEASED, job.attempts, job.worker,
                 job.lease, now + LEASE_MS, null, job.chest, gatheringSite(job, site));
         replace(project, renewed);
+        restoredLeases.remove(token);
         markAssignmentSeen(project, job.worker, now);
         return renewed;
     }
@@ -494,6 +505,7 @@ final class ProjectQueue {
             }
             if (recoverShortPickup(project, job, evidence, observation)) {
                 markAssignmentSeen(project, job.worker, now);
+                restoredLeases.remove(token);
                 return true;
             }
         }
@@ -512,6 +524,7 @@ final class ProjectQueue {
             commit(new Project(project.id, project.world, reset, next, project.supplyChest, project.supplyRecoveries));
         } else replace(project, result);
         markAssignmentSeen(project, job.worker, now);
+        restoredLeases.remove(token);
         return true;
     }
 
@@ -663,6 +676,7 @@ final class ProjectQueue {
 
     private void expire(long now) throws IOException {
         var next = new LinkedHashMap<>(projects);
+        var interrupted = new HashSet<UUID>();
         boolean changed = false;
         for (Project project : projects.values()) {
             List<Job> jobs = null;
@@ -670,7 +684,13 @@ final class ProjectQueue {
                 Job job = project.jobs.get(i);
                 if (job.state == State.LEASED && job.expiresAt <= now) {
                     if (jobs == null) jobs = new ArrayList<>(project.jobs);
-                    jobs.set(i, retry(job, "Worker lease expired", job.chest, job.resourceSite));
+                    if (restoredLeases.contains(job.lease)) {
+                        interrupted.add(job.lease);
+                        jobs.set(i, new Job(job.work, State.WAITING, Math.max(0, job.attempts - 1), null, null, 0,
+                                "Coordinator restarted during work", job.chest, job.resourceSite));
+                    } else {
+                        jobs.set(i, retry(job, LEASE_EXPIRED, job.chest, job.resourceSite));
+                    }
                 }
             }
             if (jobs != null) {
@@ -678,7 +698,10 @@ final class ProjectQueue {
                 changed = true;
             }
         }
-        if (changed) persist(next);
+        if (changed) {
+            persist(next);
+            restoredLeases.removeAll(interrupted);
+        }
     }
 
     private static ResourceSite gatheringSite(Job job, ResourceSite site) {
@@ -696,6 +719,10 @@ final class ProjectQueue {
             var transfer = JSON.fromJson(job.work.payload, PickupTarget.class);
             return transfer != null && "DEPOSIT".equals(transfer.direction);
         });
+    }
+
+    synchronized int retryInterruptedGathering(String world, String id) throws IOException {
+        return retryFailures(world, id, job -> job.work.kind == Kind.GATHER && LEASE_EXPIRED.equals(job.evidence));
     }
 
     private int retryFailures(String world, String id, java.util.function.Predicate<Job> applicable) throws IOException {

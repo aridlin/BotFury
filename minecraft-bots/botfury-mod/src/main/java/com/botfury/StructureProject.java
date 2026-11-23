@@ -237,6 +237,8 @@ final class StructureProject {
         }
         var cleanup = new ArrayList<ProjectQueue.Work>();
         var layout = new HashMap<>(desired);
+        var deferredWater = dryWaterCells(cells);
+        for (var pos : deferredWater) layout.put(pos, Blocks.AIR.getDefaultState());
         var origin = cells.get(0).pos;
         var area = new ProjectGather.Area(origin, origin);
         var footprint = area;
@@ -328,6 +330,7 @@ final class StructureProject {
                 var pose = buildPose(client, cell, layout, ready, cleared, placed, !scaffolds.isEmpty());
                 var temporary = pose == null && allowTemporarySupport
                         ? temporarySupport(client, new Cell(cell.pos, placementState, cell.observed), layout, cleared) : null;
+                if (temporary != null && deferredWater.contains(temporary.pillar.support)) temporary = null;
                 if (temporary != null) pose = temporary.pillar;
                 if (pose == null) continue;
                 var approachNeeds = new ArrayList<>(excavationFrontier);
@@ -388,7 +391,7 @@ final class StructureProject {
                 int cleanupGates = cleanup.isEmpty() ? 1 : 2;
                 int room = ProjectQueue.MAX_JOBS - jobs.size() - cleanupJobs - pending.size()
                         - verificationJobs - wetJobs - cleanupGates;
-                var scaffold = scaffold(client, cell, pending.values(), layout, cleared, ready, placed,
+                var scaffold = scaffold(client, cell, pending.values(), layout, cleared, ready, placed, deferredWater,
                         List.copyOf(changes.subList(scaffoldFrontier, changes.size())), scaffolds.size(), room);
                 if (scaffold != null) {
                     scaffolds.add(scaffold);
@@ -423,6 +426,7 @@ final class StructureProject {
             }
         }
         if (!waterSources.isEmpty()) {
+            for (var pos : deferredWater) layout.put(pos, desired.get(pos));
             String dryBarrier = "before-water";
             jobs.add(new ProjectQueue.Work(dryBarrier, ProjectQueue.Kind.BARRIER, "", List.copyOf(changes), Set.of()));
             for (var entry : waterSources.entrySet()) {
@@ -504,9 +508,29 @@ final class StructureProject {
         }
     }
 
+    /** Reserve future water cells while allowing dry work to cross channels that have no water yet. */
+    private static Set<BlockPos> dryWaterCells(List<Cell> cells) {
+        var dry = new HashSet<BlockPos>();
+        var wet = new ArrayDeque<BlockPos>();
+        for (var cell : cells) {
+            if (!ProjectWater.water(cell.desired)) continue;
+            if (ProjectWater.water(cell.observed)) wet.addLast(cell.pos);
+            else dry.add(cell.pos);
+        }
+        // A channel connected to existing water can refill as soon as an obstruction is removed.
+        while (!wet.isEmpty()) {
+            var pos = wet.removeFirst();
+            for (var direction : Direction.values()) {
+                var adjacent = pos.offset(direction);
+                if (dry.remove(adjacent)) wet.addLast(adjacent);
+            }
+        }
+        return dry;
+    }
+
     private static Scaffold scaffold(MinecraftClient client, Cell first, Collection<Cell> pending,
                                      Map<BlockPos, BlockState> layout, Map<BlockPos, BlockState> cleared,
-                                     Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed,
+                                     Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed, Set<BlockPos> deferredWater,
                                      List<String> prerequisites, int index, int room) {
         if (room < 3) return null;
         // A staircase is useful only around the work that can be reached from its upper steps.
@@ -517,7 +541,7 @@ final class StructureProject {
                 .max(Comparator.comparingInt(cell -> cell.pos.getY())).orElseThrow().pos;
         String suffix = index == 0 ? "" : index + "-";
         var anchor = scaffoldAnchor(client, first, nearby, layout, cleared, ready, placed,
-                prerequisites, suffix, room);
+                deferredWater, prerequisites, suffix, room);
         if (anchor != null) return anchor;
         var current = new HashMap<>(cleared);
         current.putAll(ready);
@@ -535,7 +559,7 @@ final class StructureProject {
                                 var bottom = top.down(rise - 1).offset(ascent.getOpposite(), rise - 1);
                                 if (!stairs.add(List.of(bottom, top))) continue;
                                 var trial = planScaffold(client, top, ascent, rise, layout, cleared, current,
-                                        ready, placed, prerequisites, suffix);
+                                        ready, placed, deferredWater, prerequisites, suffix);
                                 if (trial == null) continue;
                                 var expanded = new HashMap<>(layout);
                                 expanded.putAll(trial.layout);
@@ -561,7 +585,7 @@ final class StructureProject {
 
     private static Scaffold scaffoldAnchor(MinecraftClient client, Cell first, Collection<Cell> nearby,
                                            Map<BlockPos, BlockState> layout, Map<BlockPos, BlockState> cleared,
-                                           Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed,
+                                           Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed, Set<BlockPos> deferredWater,
                                            List<String> prerequisites, String suffix, int room) {
         var current = new HashMap<>(cleared);
         current.putAll(ready);
@@ -572,6 +596,7 @@ final class StructureProject {
                     || cell.desired.getBlock() instanceof FallingBlock) continue;
             for (var face : ProjectPlacement.faces(cell.desired)) {
                 var top = cell.pos.offset(face.getOpposite());
+                if (deferredWater.contains(top)) continue;
                 Scaffold trial;
                 if (face == Direction.DOWN) {
                     // A slab or trapdoor can take its orientation from the underside of a temporary block.
@@ -588,7 +613,7 @@ final class StructureProject {
                     int maxHeight = Math.min(4, room / 3);
                     while (top.getY() - base.getY() < maxHeight && loaded(client, base)
                             && airAt(client, base, layout) && airAt(client, base, current)
-                            && !BuildProtection.blocked(base)) {
+                            && !deferredWater.contains(base) && !BuildProtection.blocked(base)) {
                         base = base.down();
                     }
                     if (!loaded(client, base) || !current.getOrDefault(base, client.world.getBlockState(base))
@@ -638,7 +663,8 @@ final class StructureProject {
     private static Scaffold planScaffold(MinecraftClient client, BlockPos top, Direction ascent, int rise,
                                          Map<BlockPos, BlockState> layout, Map<BlockPos, BlockState> cleared,
                                          Map<BlockPos, BlockState> current, Map<BlockPos, BlockState> ready,
-                                         Map<BlockPos, String> placed, List<String> prerequisites, String suffix) {
+                                         Map<BlockPos, String> placed, Set<BlockPos> deferredWater,
+                                         List<String> prerequisites, String suffix) {
         var scaffold = new LinkedHashMap<BlockPos, BlockState>();
         int baseY = top.getY() - rise + 1;
         for (int height = 1; height <= rise; height++) {
@@ -646,7 +672,7 @@ final class StructureProject {
             if (!safeStand(client, column, current) || !safeStand(client, column, layout)) return null;
             for (int layer = 0; layer < height; layer++) {
                 var pos = column.up(layer);
-                if (!loaded(client, pos) || BuildProtection.blocked(pos)
+                if (!loaded(client, pos) || deferredWater.contains(pos) || BuildProtection.blocked(pos)
                         || !airAt(client, pos, layout) || !airAt(client, pos, current)) return null;
                 scaffold.put(pos, SCAFFOLD);
             }

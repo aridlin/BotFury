@@ -351,7 +351,14 @@ final class ProjectWorker {
                 finish(client, false, "Edge placement needs a solid floor and clear space");
                 return;
             }
-            if (centerOnStand(client, edge ? ProjectBlock.edgePosition(block.stand(), block.face()) : feet, edge)) return;
+            var placementFeet = edge ? ProjectBlock.edgePosition(block.stand(), block.face()) : feet;
+            // A bucket only needs the approved face in reach. Avoid micro-adjustments on narrow banks.
+            if (!edge && ProjectWater.source(block.desired()) && ProjectPlacement.supportHit(client, block) != null) {
+                if (centering) {
+                    releaseCentering(client);
+                    return;
+                }
+            } else if (centerOnStand(client, placementFeet, edge)) return;
             if (now >= nextPlacement) {
                 var failure = BuildProtection.projectAction(assignment.project(), () -> ProjectPlacement.attempt(client, block));
                 nextPlacement = now + seconds(1);

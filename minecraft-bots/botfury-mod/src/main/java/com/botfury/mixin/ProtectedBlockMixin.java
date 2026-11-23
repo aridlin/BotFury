@@ -30,7 +30,7 @@ abstract class ProtectedBlockMixin {
 
     @Inject(method = {"attackBlock", "updateBlockBreakingProgress"}, at = @At("HEAD"), cancellable = true)
     private void botfury$preventProtectedBreaking(BlockPos pos, Direction side, CallbackInfoReturnable<Boolean> result) {
-        if (BuildProtection.blocksWorkerInteraction(pos)) {
+        if (BuildProtection.blocksWorkerBreaking(pos)) {
             cancelBlockBreaking();
             result.setReturnValue(false);
         }

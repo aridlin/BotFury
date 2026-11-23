@@ -73,7 +73,7 @@ final class OutputOrder {
         }
     }
 
-    private static ProjectBlock findStation(MinecraftClient client, BlockPos chest, Identifier id) {
+    static ProjectBlock findStation(MinecraftClient client, BlockPos chest, Identifier id) {
         var block = Registries.BLOCK.get(id);
         for (var position : BlockPos.iterateOutwards(chest, 12, 3, 12)) {
             if (!client.world.isChunkLoaded(position.getX() >> 4, position.getZ() >> 4)

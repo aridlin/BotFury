@@ -49,7 +49,7 @@ final class MiningTask {
     private static BlockPos target;
     private static Vec3d stand,origin,pickup;
     private static int pickupUntil;
-    private static net.minecraft.item.Item projectDrop;
+    private static ProjectItem projectDrop;
     private static final DroppedItemSearch minedDrops = new DroppedItemSearch();
     private static BlockPos rememberedSite;
     private static int rememberedUntil;
@@ -81,7 +81,7 @@ final class MiningTask {
     }
 
     static void startProject(MinecraftClient client, Job next, ProjectGather.Area exclude, ProjectQueue.ResourceSite site,
-                             net.minecraft.item.Item drop) {
+                             ProjectItem drop) {
         stop();
         startMining(client, next, true, exclude);
         if (job == null) return;
@@ -146,11 +146,20 @@ final class MiningTask {
                 else stopPath();
                 return;
             }
+            if (supportsAnotherPlayer(client, target)) {
+                rejected.put(target, age + 60);
+                stopPath();
+                clearReservation();
+                client.interactionManager.cancelBlockBreaking();
+                nextSearch = age + 1;
+                return;
+            }
             if(age>=nextRenew&&!requesting){request(client,target,stand,"renew");nextRenew=age+40;}
             if(System.currentTimeMillis()>=leaseUntil){stopPath();client.interactionManager.cancelBlockBreaking();status="Waiting for mining reservation";return;}
             double reach=Math.min(4.3,client.interactionManager.getReachDistance()-.1);
             var ray = miningHit(client, target, client.player.getEyePos(), reach);
-            if(client.player.squaredDistanceTo(stand)<=1.44&&ray!=null){
+            if(client.player.squaredDistanceTo(stand)<=1.44&&ray!=null
+                    && !client.player.getBlockPos().down().equals(target)){
                 approachProgress = age;
                 stopPath();
                 if(!equip(client,target)){status="Need a suitable tool";return;}
@@ -194,7 +203,7 @@ final class MiningTask {
         }
         if(pickup!=null){
             if (projectDrop != null) {
-                var state = minedDrops.tick(client, projectDrop, pickup);
+                var state = minedDrops.tick(client, projectDrop::matches, pickup);
                 if (age >= pickupUntil || state == DroppedItemSearch.State.UNAVAILABLE
                         || state == DroppedItemSearch.State.SEARCHING && age >= nextSearch) {
                     minedDrops.reset();
@@ -222,7 +231,7 @@ final class MiningTask {
                 scanNeedsTool = true;
                 continue;
             }
-            var place = standing(client, candidate);
+            var place = supportsAnotherPlayer(client, candidate) ? null : standing(client, candidate);
             if (place != null) {
                 pendingCandidates.clear();
                 nextSearch = age + 20;
@@ -357,6 +366,14 @@ final class MiningTask {
                 && (BuildProtection.blocked(upper) || excluded != null && excluded.contains(upper));
     }
 
+    private static boolean supportsAnotherPlayer(MinecraftClient client, BlockPos pos) {
+        for (var player : client.world.getPlayers()) {
+            if (player != client.player && player.isAlive() && !player.isSpectator()
+                    && player.getBlockPos().down().equals(pos)) return true;
+        }
+        return false;
+    }
+
     private static BlockHitResult miningHit(MinecraftClient client, BlockPos target, Vec3d eye, double reach) {
         var state = client.world.getBlockState(target);
         if (state.getCollisionShape(client.world, target).isEmpty()) {
@@ -426,6 +443,7 @@ final class MiningTask {
         // Reach comes from the eyes, so useful poses can be several blocks below the target.
         for (var offset : BlockPos.iterateOutwards(target, 2, 5, 2)) {
             if (offset.getY() > target.getY() + 2 || offset.equals(target) || offset.up().equals(target)
+                    || offset.down().equals(target)
                     || rejectedStands.containsKey(offset)
                     || !world.isChunkLoaded(offset.getX() >> 4, offset.getZ() >> 4)) continue;
             var below = offset.down();

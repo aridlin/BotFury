@@ -43,6 +43,7 @@ final class ProjectWorker {
     private static ProjectQueue.ChestReport chestReport;
     private static boolean pickupShortfall;
     private static BaritoneSettings approach;
+    private static BlockPos recoveryOrigin;
     private static final StallRecovery approachRecovery = new StallRecovery();
     private static Vec3d approachProgress;
     private static long retryApproach;
@@ -178,6 +179,18 @@ final class ProjectWorker {
             approach = null;
             approachProgress = null;
         }
+        recoveryOrigin = null;
+    }
+
+    static boolean blocksRecoveryBreak(BlockPos pos) {
+        if (recoveryOrigin == null) return false;
+        var client = MinecraftClient.getInstance();
+        if (client.world == null || block == null || !pos.isWithinDistance(recoveryOrigin, 9)
+                || pos.getY() < recoveryOrigin.getY() || pos.getY() > block.stand().getY() + 1
+                || pos.equals(block.target()) || pos.equals(block.target().down()) || pos.equals(block.stand().down())
+                || !BaritoneSettings.recoverableTerrain(client.world.getBlockState(pos).getBlock())) return true;
+        return client.world.getPlayers().stream().anyMatch(player -> player.isAlive() && !player.isSpectator()
+                && player.getBlockPos().down().equals(pos));
     }
 
     static void tick(MinecraftClient client, LocalFormation.Peer here) {
@@ -217,12 +230,12 @@ final class ProjectWorker {
             if (held >= gather.count()) {
                 finish(client, true, "Observed " + held + " " + gather.item() + " in worker inventory");
             } else if (pickup != null) {
-                var result = pickup.tick(client, Registries.ITEM.get(gather.item()));
+                var result = pickup.tick(client, gather.item()::matches, null);
                 if (result == DroppedItemSearch.State.UNAVAILABLE) finish(client, false, "Baritone unavailable for pickup");
                 else status = (result == DroppedItemSearch.State.SEARCHING ? "Looking for dropped " : "Collecting ")
                         + gather.item() + " (" + held + "/" + gather.count() + ")";
             } else if (!MiningTask.active()) {
-                MiningTask.startProject(client, gather.mining(port), gather.exclude(), gatherSite, Registries.ITEM.get(gather.item()));
+                MiningTask.startProject(client, gather.mining(port), gather.exclude(), gatherSite, gather.item());
                 if (!MiningTask.active()) finish(client, false, MiningTask.lastStatus());
             } else {
                 status = assignment.project() + "/" + assignment.job().work().id() + " (" + held + "/" + gather.count()
@@ -284,10 +297,21 @@ final class ProjectWorker {
             }
             if (approach == null || now >= retryApproach) {
                 try {
+                    var pos = block.stand();
+                    var feetBlock = player.getBlockPos();
+                    if (approach != null && recoveryOrigin == null && (chest != null || production != null)
+                            && pos.getY() - feetBlock.getY() >= 2 && feetBlock.isWithinDistance(pos, 12)
+                            && !BaritoneClient.pursuing(pos)) {
+                        BaritoneClient.execute("stop");
+                        approach.close();
+                        approach = null;
+                        approach = new BaritoneSettings(true, true, true);
+                        recoveryOrigin = feetBlock;
+                        BotEvents.add("info", "movement", "Opening a short return route through natural terrain");
+                    }
                     if (approach == null) approach = new BaritoneSettings(false, true);
                     approachProgress = current;
                     retryApproach = now + seconds(5);
-                    BlockPos pos = block.stand();
                     if (!BaritoneClient.pursuing(pos) && !BaritoneClient.goTo(pos)) {
                         finish(client, false, "Baritone could not start project approach");
                     }

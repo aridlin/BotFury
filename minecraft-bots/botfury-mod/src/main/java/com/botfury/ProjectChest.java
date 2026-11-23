@@ -71,8 +71,8 @@ final class ProjectChest {
         return type == ChestType.LEFT ? new Storage(pos, next) : new Storage(next, pos);
     }
 
-    enum Direction { DEPOSIT, WITHDRAW, TAKE, INSPECT }
-    record Spec(ProjectBlock location, Direction direction, Identifier item, int stock, BlockPos partner) {
+    enum Direction { DEPOSIT, WITHDRAW, TAKE, INSPECT, VERIFY_STOCK }
+    record Spec(ProjectBlock location, Direction direction, ProjectItem item, int stock, BlockPos partner) {
         ProjectQueue.Work reserve(ProjectQueue.Work work) {
             var reserved = location.reserve(work);
             if (partner == null) return reserved;
@@ -106,16 +106,15 @@ final class ProjectChest {
                 || partner.getManhattanDistance(location.target()) != 1)) {
             throw new IllegalArgumentException("Invalid double chest position");
         }
-        Identifier id = payload.item == null ? null : Identifier.tryParse(payload.item);
         if (payload.direction == Direction.INSPECT && payload.item == null) {
             return new Spec(location, payload.direction, null, 0, partner);
         }
-        if (id == null || !Registries.ITEM.containsId(id) || id.equals(Identifier.of("minecraft", "air"))
-                || payload.direction != Direction.INSPECT
+        var item = ProjectItem.parse(payload.item);
+        if (payload.direction != Direction.INSPECT
                 && (payload.stock == null || payload.stock < 0 || payload.stock > (partner == null ? 1728 : 3456))) {
             throw new IllegalArgumentException("Invalid chest item or stock target");
         }
-        return new Spec(location, payload.direction, id, payload.stock == null ? 0 : payload.stock, partner);
+        return new Spec(location, payload.direction, item, payload.stock == null ? 0 : payload.stock, partner);
     }
 
     void close(MinecraftClient client) {
@@ -161,14 +160,17 @@ final class ProjectChest {
 
         Map<String, Integer> stock = stock();
         if (spec.direction == Direction.INSPECT) return new Result(true, "Observed chest stock", stock, freeSlots(), false);
-        int held = stock.getOrDefault(spec.item.toString(), 0);
+        int held = spec.item.count(stock);
+        if (spec.direction == Direction.VERIFY_STOCK) {
+            return new Result(held >= spec.stock, "Observed " + held + "/" + spec.stock + " " + spec.item + " in chest", stock);
+        }
         boolean deposit = spec.direction == Direction.DEPOSIT;
         int containerSize = screen.getRows() * 9;
         int carried = 0;
         if (spec.direction == Direction.TAKE) {
             for (int i = containerSize; i < screen.slots.size(); i++) {
                 var stack = screen.getSlot(i).getStack();
-                if (!stack.isEmpty() && Registries.ITEM.getId(stack.getItem()).equals(spec.item)) carried += stack.getCount();
+                if (spec.item.matches(stack)) carried += stack.getCount();
             }
         }
         int remaining = switch (spec.direction) {
@@ -187,7 +189,7 @@ final class ProjectChest {
         for (int from = fromStart; from < fromEnd; from++) {
             var source = screen.getSlot(from);
             ItemStack stack = source.getStack();
-            if (stack.isEmpty() || !Registries.ITEM.getId(stack.getItem()).equals(spec.item)
+            if (!spec.item.matches(stack)
                     || !source.canTakeItems(player)) continue;
             for (int to = deposit ? 0 : containerSize; to < (deposit ? containerSize : screen.slots.size()); to++) {
                 var destination = screen.getSlot(to);
@@ -218,8 +220,8 @@ final class ProjectChest {
     }
 
     private Integer freeSlots() {
-        if (spec.item == null) return null;
-        var sample = Registries.ITEM.get(spec.item).getDefaultStack();
+        if (spec.item == null || spec.item.grouped()) return null;
+        var sample = spec.item.sample().getDefaultStack();
         int remaining = 0;
         for (int i = 0; i < screen.getRows() * 9; i++) {
             var slot = screen.getSlot(i);

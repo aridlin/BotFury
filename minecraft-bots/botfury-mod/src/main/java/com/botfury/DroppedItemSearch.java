@@ -3,6 +3,8 @@ package com.botfury;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.ItemEntity;
 import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
+import java.util.function.Predicate;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 
@@ -24,14 +26,14 @@ final class DroppedItemSearch {
     private BaritoneSettings settings;
 
     State tick(MinecraftClient client, Item item) {
-        return tick(client, item, null);
+        return tick(client, stack -> stack.isOf(item), null);
     }
 
-    State tick(MinecraftClient client, Item item, Vec3d minedAt) {
+    State tick(MinecraftClient client, Predicate<ItemStack> matches, Vec3d minedAt) {
         age++;
         var player = client.player;
         if (target != null) {
-            if (!target.isAlive() || !target.getStack().isOf(item) || player.squaredDistanceTo(target) > RADIUS * RADIUS) {
+            if (!target.isAlive() || !matches.test(target.getStack()) || player.squaredDistanceTo(target) > RADIUS * RADIUS) {
                 stop();
             } else if (age - started >= 400 || age - lastProgress >= 120) {
                 retry.put(target.getUuid(), age + 200);
@@ -45,7 +47,7 @@ final class DroppedItemSearch {
             retry.values().removeIf(retryAt -> retryAt <= age);
             nextScan = age + 5;
             target = client.world.getEntitiesByClass(ItemEntity.class, player.getBoundingBox().expand(RADIUS),
-                    entity -> entity.isAlive() && entity.getStack().isOf(item)
+                    entity -> entity.isAlive() && matches.test(entity.getStack())
                             && player.squaredDistanceTo(entity) <= RADIUS * RADIUS
                             && !retry.containsKey(entity.getUuid())
                             && (minedAt == null || Math.abs(entity.getX() - minedAt.x) <= 5
@@ -67,7 +69,7 @@ final class DroppedItemSearch {
         var next = target.getBlockPos();
         if (next.equals(goal) || (goal != null && age % 5 != 0)) return State.APPROACHING;
         goal = next;
-        if (BaritoneClient.execute("goto " + goal.getX() + " " + goal.getY() + " " + goal.getZ())) return State.APPROACHING;
+        if (BaritoneClient.goTo(goal)) return State.APPROACHING;
         stop();
         return State.UNAVAILABLE;
     }

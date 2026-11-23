@@ -725,6 +725,11 @@ final class ProjectQueue {
         return retryFailures(world, id, job -> job.work.kind == Kind.GATHER && LEASE_EXPIRED.equals(job.evidence));
     }
 
+    synchronized int retryPlacementApproaches(String world, String id) throws IOException {
+        return retryFailures(world, id, job -> job.work.kind == Kind.BUILD && job.evidence != null
+                && job.evidence.startsWith("No reachable solid support face for "));
+    }
+
     private int retryFailures(String world, String id, java.util.function.Predicate<Job> applicable) throws IOException {
         var project = projects.get(id);
         if (project == null || !project.world.equals(world) || cancelled(project)) {

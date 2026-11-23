@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.BlockItem;
+import net.minecraft.item.Items;
 import net.minecraft.recipe.CraftingRecipe;
 import net.minecraft.recipe.Recipe;
 import net.minecraft.recipe.SmeltingRecipe;
@@ -34,6 +35,10 @@ final class MaterialRecipe {
             return quantities.stream().anyMatch(quantity -> quantity.step.kind == ProjectQueue.Kind.CRAFT
                     && !quantity.step.inventoryCraft);
         }
+        boolean needsFurnace() {
+            return quantities.stream().anyMatch(quantity -> quantity.step.kind == ProjectQueue.Kind.SMELT);
+        }
+
         boolean usesDroppedItems() { return "dropped".equals(quantities.get(0).step.resource); }
 
         List<ProjectQueue.Work> jobs(String prefix, ProjectGather.Area protectedArea,
@@ -114,7 +119,7 @@ final class MaterialRecipe {
     }
 
     Plan plan(Identifier item, int count, boolean allowDrops) {
-        return quantities(item, count, allowDrops, resolveSteps(item, allowDrops));
+        return prepareTools(quantities(item, count, allowDrops, resolveSteps(item, allowDrops)));
     }
 
     List<Batch> batches(Identifier item, int count, int maxPerBatch) {
@@ -130,11 +135,45 @@ final class MaterialRecipe {
                 upper = candidate - 1;
             }
         }
-        var fullBatch = new Batch(quantities(item, lower, false, steps), lower);
+        var fullBatch = new Batch(prepareTools(quantities(item, lower, false, steps)), lower);
         var batches = new ArrayList<Batch>();
         for (; count >= lower; count -= lower) batches.add(fullBatch);
-        if (count > 0) batches.add(new Batch(quantities(item, count, false, steps), count));
+        if (count > 0) batches.add(new Batch(prepareTools(quantities(item, count, false, steps)), count));
         return List.copyOf(batches);
+    }
+
+    private static final List<net.minecraft.item.Item> PICKAXES = List.of(Items.WOODEN_PICKAXE,
+            Items.STONE_PICKAXE, Items.IRON_PICKAXE, Items.DIAMOND_PICKAXE);
+
+    private Plan prepareTools(Plan plan) {
+        int highest = -1;
+        for (var quantity : plan.quantities) {
+            var source = quantity.step.resource;
+            if (source == null || source.equals("dropped")) continue;
+            highest = Math.max(highest, requiredPickaxe(source));
+        }
+        if (highest < 0) return plan;
+        var stages = new ArrayList<Quantity>();
+        for (int tier = 0; tier <= highest; tier++) {
+            var item = Registries.ITEM.getId(PICKAXES.get(tier));
+            // Resolve the recipe alone. Earlier stages already provide its mining tools.
+            stages.addAll(quantities(item, 1, false, resolveSteps(item, false)).quantities);
+        }
+        stages.addAll(plan.quantities);
+        return new Plan(stages);
+    }
+
+    private static int requiredPickaxe(String source) {
+        int required = -1;
+        for (String id : ResourceCatalog.blocks(source, "both")) {
+            var state = Registries.BLOCK.get(new Identifier(id)).getDefaultState();
+            if (!state.isToolRequired()) continue;
+            int tier = 0;
+            while (tier < PICKAXES.size() && !PICKAXES.get(tier).getDefaultStack().isSuitableFor(state)) tier++;
+            if (tier == PICKAXES.size()) throw new IllegalArgumentException("No automatic mining tool for " + id);
+            required = Math.max(required, tier);
+        }
+        return required;
     }
 
     private LinkedHashMap<Identifier, Step> resolveSteps(Identifier item, boolean allowDrops) {

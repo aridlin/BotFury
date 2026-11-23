@@ -576,8 +576,8 @@ remain available through the local API.
 To gather and produce materials automatically, look at a dedicated single or
 double chest outside the work area and run
 `/bf project build example.nbt 100 64 100 supplied`. Workers set up a shared
-crafting table when a recipe needs one. Provide a reachable furnace for smelting,
-suitable tools for mining, and access to the crafting recipes. Workers gather,
+crafting table and furnace when recipes need them. Material gathering plans
+include the pickaxes needed to harvest their ingredients. Workers gather,
 produce, and deposit the required blocks, then builders collect them from
 the chest. When multiple selected bots are online, the planner divides each
 material into pickup batches. Each batch goes to the bot that collects it,

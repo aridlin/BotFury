@@ -21,11 +21,20 @@ import java.util.concurrent.CompletionException;
 final class BotRosterScreen extends Screen {
     private enum Tab { FLEET, PROJECTS, CHESTS, ACTIVITY }
     private enum GuideStep {
-        PICK(Tab.FLEET, "Choose who gets orders", "Select All bots or an individual bot. This sets the target for fleet actions."),
-        BUILDS(Tab.PROJECTS, "Find your builds", "Open Projects to queue schematics and see what each worker is doing."),
-        STOCK(Tab.CHESTS, "Check shared stock", "Open Chests to see which items workers last counted and when they checked."),
-        LOG(Tab.ACTIVITY, "Find out what happened", "Open Activity to read recent commands and errors, or enter a Baritone command."),
-        DONE(null, "Ready to manage the fleet", "Use Bots on the pie menu to return here. Run /bf tutorial to replay this guide.");
+        PICK(Tab.FLEET, "Choose who gets orders",
+                "Select All bots or a bot by name. Use the search box to narrow the roster. Outside the guide, the selection also applies to the pie menu."),
+        HOLD(null, "Pause work",
+                "Try Practice Hold / Stop. The real button stops the selected bots and cancels their current Baritone movement. Recall instead sends them back to you."),
+        RESUME(null, "Hand control back",
+                "Try Practice Resume. The real button clears a manual hold so those bots can take work again. If a bot is offline, check its status and use Join my world."),
+        BUILDS(Tab.PROJECTS, "Queue a build and follow its progress",
+                "Open Projects. New build opens the schematic picker. Assign workers enrolls the selected bots. Select a project to see its completed jobs, current workers, and any failures."),
+        STOCK(Tab.CHESTS, "Check shared supplies",
+                "Open Chests. Select a chest by its coordinates to see the last counted items and when a worker checked them. Check the age before relying on the count."),
+        LOG(Tab.ACTIVITY, "Find out why work stopped",
+                "Open Activity. Use its filter to find an error and select the row to read it in full. The command field can send Baritone commands like #stop to your selected bots."),
+        DONE(null, "Ready to manage the fleet",
+                "Use Bots on the pie menu to return here. Run /bf tutorial to practice again.");
 
         final Tab target;
         final String heading, detail;
@@ -93,6 +102,12 @@ final class BotRosterScreen extends Screen {
         command = null;
         if (guide != null) {
             button(guide == GuideStep.DONE ? "Done" : "Skip guide", MARGIN, y, 93, this::endGuide);
+            if (tab == Tab.FLEET && (guide == GuideStep.HOLD || guide == GuideStep.RESUME)) {
+                String action = guide == GuideStep.HOLD ? "Practice Hold / Stop" : "Practice Resume";
+                guideButton(action, y);
+            } else if (guide != GuideStep.PICK && guide.target == tab) {
+                guideButton("Continue", y);
+            }
             BotTracker.refresh();
             return;
         }
@@ -142,25 +157,32 @@ final class BotRosterScreen extends Screen {
         button(second, detailLeft() + w + 5, y, w, secondAction);
     }
 
+    private void guideButton(String label, int y) {
+        int x = MARGIN + 98;
+        button(label, x, y, width - x - MARGIN - 87, this::advanceGuide).highlight(true);
+    }
+
     private void rebuild() {
         clearChildren();
         init();
     }
 
     private void changeTab(Tab next) {
+        if (guide != null && guide != GuideStep.DONE && guide.target != next) return;
         tab = next;
         filter = "";
         offset = detailOffset = 0;
-        if (guide != null && guide != GuideStep.PICK && guide.target == next) advanceGuide();
         rebuild();
     }
 
     private void advanceGuide() {
         guide = GuideStep.values()[guide.ordinal() + 1];
+        rebuild();
     }
 
     private void endGuide() {
         guide = null;
+        selection.put(Tab.FLEET, Integer.toString(BotTracker.selected()));
         rebuild();
     }
 
@@ -276,8 +298,10 @@ final class BotRosterScreen extends Screen {
     private void select(Row row) {
         selection.put(tab, row.key);
         detailOffset = 0;
-        if (tab == Tab.FLEET) BotTracker.select(Integer.parseInt(row.key));
-        if (tab == Tab.FLEET && guide == GuideStep.PICK) advanceGuide();
+        if (tab == Tab.FLEET) {
+            if (guide == null) BotTracker.select(Integer.parseInt(row.key));
+            if (guide == GuideStep.PICK) advanceGuide();
+        }
         BotUiSound.hover();
     }
 
@@ -302,8 +326,13 @@ final class BotRosterScreen extends Screen {
         }
         if (rows.isEmpty()) line(draw, error.isEmpty() ? emptyLabel() : error, MARGIN + 3, ROW_TOP + 5, listWidth() - 6,
                 error.isEmpty() ? MUTED : RED);
-        if (guide == null) drawDetails(draw, selected);
-        else drawGuide(draw, rows.size());
+        if (guide == null) drawDetails(draw, selected, 49);
+        else {
+            int nextY = drawGuide(draw) + 10;
+            if (tab != Tab.FLEET && selected != null && nextY + 35 < height - 34) {
+                drawDetails(draw, selected, nextY);
+            }
+        }
         if (guide == null && (tab == Tab.FLEET || tab == Tab.PROJECTS)) {
             line(draw, BotEvents.last, MARGIN + 2, height - (tab == Tab.FLEET ? 42 : 23),
                     tab == Tab.FLEET ? listWidth() : width - 2 * MARGIN - 90, BotEvents.lastLevel.equals("info") ? MUTED : RED);
@@ -311,29 +340,44 @@ final class BotRosterScreen extends Screen {
         super.render(draw, mouseX, mouseY, delta);
     }
 
-    private void drawGuide(DrawContext draw, int rowCount) {
+    private int drawGuide(DrawContext draw) {
         int cell = (width - 2 * MARGIN - 12) / 4;
-        if (guide == GuideStep.PICK && tab == Tab.FLEET && rowCount != 0) {
+        if (guide == GuideStep.PICK && tab == Tab.FLEET && filter.isBlank()) {
             draw.drawBorder(MARGIN - 2, ROW_TOP - 2, listWidth() + 4, ROW_HEIGHT + 2, ACCENT);
-        } else if (guide.target != null) {
+        } else if (guide.target != null && tab != guide.target) {
             int x = MARGIN + guide.target.ordinal() * (cell + 4);
             draw.drawBorder(x - 2, 12, cell + 4, 25, ACCENT);
         }
         int x = detailLeft(), right = width - MARGIN;
         int y = 49;
-        draw.fill(x, y, right, y + 104, BotUiTheme.CARD);
-        line(draw, guide == GuideStep.DONE ? "Fleet guide complete" : "Fleet guide · " + (guide.ordinal() + 1) + " / 4",
+        int textWidth = Math.max(1, right - x - 16);
+        var heading = textRenderer.wrapLines(Text.literal(guide.heading), textWidth);
+        var detail = textRenderer.wrapLines(Text.literal(guide.detail), textWidth);
+        int bottom = Math.min(height - 35, y + 46 + 11 * (heading.size() + detail.size()));
+        draw.fill(x, y, right, bottom, BotUiTheme.CARD);
+        line(draw, guide == GuideStep.DONE ? "Fleet guide complete"
+                        : "Fleet guide · " + (guide.ordinal() + 1) + " / " + GuideStep.DONE.ordinal(),
                 x + 8, y + 8, right - x - 16, ACCENT);
+        draw.enableScissor(x, y + 22, right, bottom);
         int textY = y + 26;
-        for (var row : textRenderer.wrapLines(Text.literal(guide.heading), right - x - 16)) {
+        if (guide == GuideStep.HOLD || guide == GuideStep.RESUME) {
+            String target = selection.get(Tab.FLEET);
+            var bot = BotTracker.get(Integer.parseInt(target));
+            line(draw, "Practice target · " + (bot == null ? "All bots" : bot.name()),
+                    x + 8, textY, textWidth, ACCENT);
+            textY += 14;
+        }
+        for (var row : heading) {
             draw.drawText(textRenderer, row, x + 8, textY, TEXT, false);
             textY += 11;
         }
         textY += 4;
-        for (var row : textRenderer.wrapLines(Text.literal(guide.detail), right - x - 16)) {
+        for (var row : detail) {
             draw.drawText(textRenderer, row, x + 8, textY, MUTED, false);
             textY += 11;
         }
+        draw.disableScissor();
+        return bottom;
     }
 
     private String emptyLabel() {
@@ -346,11 +390,10 @@ final class BotRosterScreen extends Screen {
         };
     }
 
-    private void drawDetails(DrawContext draw, Row selected) {
+    private void drawDetails(DrawContext draw, Row selected, int y) {
         int x = detailLeft();
-        int detailBottom = height - (tab == Tab.FLEET ? 120 : tab == Tab.PROJECTS ? 70 : 34);
+        int detailBottom = height - (guide != null ? 34 : tab == Tab.FLEET ? 120 : tab == Tab.PROJECTS ? 70 : 34);
         int w = width - x - MARGIN;
-        int y = 49;
         var lines = new ArrayList<String>();
         String heading = selected == null ? switch (tab) {
             case FLEET -> BotTracker.targetLabel();

@@ -39,7 +39,7 @@ final class OutputOrder {
             if (chest == null) throw new IllegalArgumentException("No clear stand next to the chest");
             var table = findStation(client, storage.key(), Identifier.of("minecraft", "crafting_table"));
             var furnace = findStation(client, storage.key(), Identifier.of("minecraft", "furnace"));
-            var steps = new MaterialRecipe(client, true, furnace != null).plan(item, batch, true);
+            var steps = new MaterialRecipe(client, true, true).plan(item, batch, true);
             int selected = (int) BotTracker.targets().stream()
                     .filter(bot -> bot.fresh() && bot.connected() && bot.alive()).count();
             var plan = plan(client, storage, chest, table, furnace, item, batch, stackSize, Math.max(1, selected), steps);
@@ -89,19 +89,14 @@ final class OutputOrder {
         int capacity = stackSize * storage.slots();
         var jobs = new ArrayList<ProjectQueue.Work>();
         var protectedArea = StructureSupply.union(storage.include(new ProjectGather.Area(chest.target(), chest.target())), chest, table, furnace);
-        List<String> ready = List.of();
-        if (table == null && steps.needsTable()) {
-            var workbench = WorkbenchBootstrap.plan(client, storage.key(), protectedArea);
-            table = workbench.station();
-            protectedArea = workbench.protectedArea();
-            jobs.addAll(workbench.jobs());
-            ready = workbench.ready();
-        }
+        var stations = ProjectWorkstations.prepare(client, storage.key(), protectedArea, table, furnace,
+                steps.needsTable(), steps.needsFurnace());
+        jobs.addAll(stations.jobs());
         int lanes = Math.min(workers, Math.min(Math.max(1, capacity / batch), (JOB_LIMIT - jobs.size()) / (steps.size() + 2)));
         if (lanes == 0) throw new IllegalArgumentException("This recipe requires too many jobs");
         for (int lane = 0; lane < lanes; lane++) {
             String prefix = "lane-" + lane + "-";
-            var production = steps.jobs(prefix + "produce-", protectedArea, table, furnace, ready);
+            var production = steps.jobs(prefix + "produce-", stations.protectedArea(), steps.needsTable() ? stations.table() : null, stations.furnace(), stations.prerequisites(steps));
             jobs.addAll(production);
             String previous = production.get(production.size() - 1).id();
             var inspect = MaterialRecipe.stationPayload(chest);

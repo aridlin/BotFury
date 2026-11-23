@@ -1,5 +1,6 @@
 package com.botfury;
 
+import net.minecraft.block.AbstractFurnaceBlock;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.ChestBlock;
@@ -46,7 +47,7 @@ final class ProjectPlacement {
     }
 
     static boolean container(BlockState state) {
-        return state.isOf(Blocks.CHEST) || state.isOf(Blocks.HOPPER);
+        return state.isOf(Blocks.CHEST) || state.isOf(Blocks.HOPPER) || state.getBlock() instanceof AbstractFurnaceBlock;
     }
 
     static BlockPos chestPartner(BlockPos pos, BlockState state) {

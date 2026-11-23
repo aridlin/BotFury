@@ -1,5 +1,6 @@
 package com.botfury;
 
+import net.minecraft.block.AbstractFurnaceBlock;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.FenceGateBlock;
@@ -19,7 +20,7 @@ final class ProjectShapedBlock {
     static boolean recognized(BlockState state) {
         return state.getBlock() instanceof SlabBlock || state.getBlock() instanceof LadderBlock
                 || state.getBlock() instanceof TrapdoorBlock || state.getBlock() instanceof FenceGateBlock
-                || state.isOf(Blocks.TORCH);
+                || state.getBlock() instanceof AbstractFurnaceBlock || state.isOf(Blocks.TORCH);
     }
 
     static boolean supported(BlockState state) {
@@ -34,6 +35,7 @@ final class ProjectShapedBlock {
         if (state.getBlock() instanceof FenceGateBlock) {
             return !state.get(FenceGateBlock.POWERED) && !state.get(FenceGateBlock.IN_WALL);
         }
+        if (state.getBlock() instanceof AbstractFurnaceBlock) return !state.get(AbstractFurnaceBlock.LIT);
         return state.isOf(Blocks.TORCH);
     }
 
@@ -52,6 +54,7 @@ final class ProjectShapedBlock {
         if (state.getBlock() instanceof LadderBlock) return state.get(LadderBlock.FACING).getOpposite();
         if (state.getBlock() instanceof TrapdoorBlock) return state.get(TrapdoorBlock.FACING).getOpposite();
         if (state.getBlock() instanceof FenceGateBlock) return state.get(FenceGateBlock.FACING);
+        if (state.getBlock() instanceof AbstractFurnaceBlock) return state.get(AbstractFurnaceBlock.FACING).getOpposite();
         return null;
     }
 

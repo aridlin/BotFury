@@ -1,0 +1,85 @@
+package com.botfury;
+
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.registry.Registries;
+import net.minecraft.util.Identifier;
+import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.RaycastContext;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/** Sets up only the shared stations required by the selected production plans. */
+record ProjectWorkstations(ProjectBlock table, ProjectBlock furnace, ProjectGather.Area protectedArea,
+                           List<ProjectQueue.Work> jobs, boolean buildsTable, boolean buildsFurnace) {
+    private static final Identifier TABLE = Identifier.of("minecraft", "crafting_table");
+    private static final Identifier FURNACE = Identifier.of("minecraft", "furnace");
+
+    static ProjectWorkstations prepare(MinecraftClient client, BlockPos center, ProjectGather.Area area,
+                                       ProjectBlock table, ProjectBlock furnace, boolean needTable, boolean needFurnace) {
+        boolean placeFurnace = needFurnace && furnace == null;
+        boolean placeTable = table == null && (needTable || placeFurnace);
+        if (placeTable) {
+            table = chooseSite(client, center, area, TABLE);
+            area = StructureSupply.union(area, table);
+        }
+        if (placeFurnace) {
+            furnace = chooseSite(client, center, area, FURNACE);
+            area = StructureSupply.union(area, furnace);
+        }
+        var jobs = new ArrayList<ProjectQueue.Work>();
+        var tableReady = List.<String>of();
+        if (placeTable) tableReady = List.of(addStation(client, table, area, null, List.of(), jobs, "setup-workbench"));
+        if (placeFurnace) addStation(client, furnace, area, table, tableReady, jobs, "setup-furnace");
+        return new ProjectWorkstations(table, furnace, area, List.copyOf(jobs), placeTable, placeFurnace);
+    }
+
+    List<String> prerequisites(MaterialRecipe.Plan plan) {
+        var needs = new ArrayList<String>(2);
+        if (buildsTable && plan.needsTable()) needs.add("setup-workbench");
+        if (buildsFurnace && plan.needsFurnace()) needs.add("setup-furnace");
+        return List.copyOf(needs);
+    }
+
+    private static String addStation(MinecraftClient client, ProjectBlock station, ProjectGather.Area area,
+                                     ProjectBlock table, List<String> needs, List<ProjectQueue.Work> jobs, String id) {
+        var recipe = new MaterialRecipe(client, table != null, false).plan(station.block(), 1, false);
+        var production = recipe.jobs(id + "-produce-", area, table, null, needs);
+        jobs.addAll(production);
+        String last = production.get(production.size() - 1).id();
+        String payload = MaterialRecipe.stationPayload(station).toString();
+        jobs.add(station.reserve(new ProjectQueue.Work(id, ProjectQueue.Kind.BUILD, payload,
+                List.of(last), Set.of(), last)));
+        return id;
+    }
+
+    private static ProjectBlock chooseSite(MinecraftClient client, BlockPos center, ProjectGather.Area protectedArea,
+                                           Identifier station) {
+        var world = client.world;
+        var desired = Registries.BLOCK.get(station).getDefaultState();
+        for (var pos : BlockPos.iterateOutwards(center, 8, 2, 8)) {
+            if (protectedArea.contains(pos) || BuildProtection.blocked(pos) || !world.isInBuildLimit(pos)
+                    || !world.getWorldBorder().contains(pos) || !world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)
+                    || !world.getBlockState(pos).isAir() || !world.getBlockState(pos.up()).isAir()) continue;
+            var floor = pos.down();
+            var support = world.getBlockState(floor);
+            if (!ProjectPlacement.support(support, desired, Direction.UP, world, floor)) continue;
+            var click = ProjectPlacement.facePoint(floor, Direction.UP, support, desired);
+            var stand = StructureProject.chooseStand(client, pos, Map.of(), Direction.UP, candidate -> {
+                if (protectedArea.contains(candidate) || BuildProtection.blocked(candidate)) return false;
+                var eye = Vec3d.ofBottomCenter(candidate).add(0, 1.62, 0);
+                if (eye.squaredDistanceTo(click) > 4.3 * 4.3) return false;
+                var hit = world.raycast(new RaycastContext(eye, click, RaycastContext.ShapeType.OUTLINE,
+                        RaycastContext.FluidHandling.NONE, client.player));
+                return hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(floor) && hit.getSide() == Direction.UP;
+            });
+            if (stand != null) return new ProjectBlock(pos.toImmutable(), stand, station);
+        }
+        throw new IllegalArgumentException("No clear site for " + station + " near the supply chest");
+    }
+}

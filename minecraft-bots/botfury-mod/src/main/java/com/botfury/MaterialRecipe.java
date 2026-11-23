@@ -29,6 +29,11 @@ final class MaterialRecipe {
         private Plan(List<Quantity> quantities) { this.quantities = List.copyOf(quantities); }
 
         int size() { return quantities.size(); }
+
+        boolean needsTable() {
+            return quantities.stream().anyMatch(quantity -> quantity.step.kind == ProjectQueue.Kind.CRAFT
+                    && !quantity.step.inventoryCraft);
+        }
         boolean usesDroppedItems() { return "dropped".equals(quantities.get(0).step.resource); }
 
         List<ProjectQueue.Work> jobs(String prefix, ProjectGather.Area protectedArea,

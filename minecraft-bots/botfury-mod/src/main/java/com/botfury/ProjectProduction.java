@@ -1,9 +1,11 @@
 package com.botfury;
 
 import com.google.gson.Gson;
+import it.unimi.dsi.fastutil.ints.IntArrayList;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.ItemStack;
 import net.minecraft.recipe.CraftingRecipe;
+import net.minecraft.recipe.RecipeGridAligner;
 import net.minecraft.recipe.RecipeMatcher;
 import net.minecraft.recipe.SmeltingRecipe;
 import net.minecraft.registry.Registries;
@@ -20,6 +22,8 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
 import java.time.Duration;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /** A workstation job with a bounded inventory target. Uses the server's own recipe and slot rules. */
 final class ProjectProduction {
@@ -32,6 +36,7 @@ final class ProjectProduction {
     private ScreenHandler screen;
     private boolean opening;
     private long nextAction;
+    private Map<Integer, ItemStack> craftingInputs;
 
     ProjectProduction(Spec spec) { this.spec = spec; }
 
@@ -63,6 +68,7 @@ final class ProjectProduction {
                 || opening && matching(client.player.currentScreenHandler))) client.player.closeHandledScreen();
         screen = null;
         opening = false;
+        craftingInputs = null;
     }
 
     private boolean matching(ScreenHandler handler) {
@@ -137,18 +143,60 @@ final class ProjectProduction {
     private Result craft(MinecraftClient client,
                          AbstractRecipeScreenHandler<net.minecraft.inventory.RecipeInputInventory> table,
                          CraftingRecipe recipe, ItemStack output) {
+        if (craftingInputs != null) return fillCraftingGrid(client, table, recipe, output);
         var result = table.getSlot(0).getStack();
         if (!result.isEmpty()) {
             if (!ItemStack.canCombine(result, output) || !table.matches(recipe)) return failure("Unexpected crafting output");
             click(client, 0, 0, SlotActionType.QUICK_MOVE);
             return null;
         }
-        if (!client.player.getRecipeBook().contains(recipe)) return failure("Unlock recipe " + spec.recipe + " on this worker");
+        if (!client.player.getRecipeBook().contains(recipe)) {
+            return fillCraftingGrid(client, table, recipe, output);
+        }
         var matcher = new RecipeMatcher();
         client.player.getInventory().populateRecipeFinder(matcher);
         table.populateRecipeFinder(matcher);
         if (!matcher.match(recipe, null)) return failure("Missing ingredients for " + spec.recipe);
         client.interactionManager.clickRecipe(screen.syncId, recipe, false);
+        return null;
+    }
+
+    private Result fillCraftingGrid(MinecraftClient client,
+                                    AbstractRecipeScreenHandler<net.minecraft.inventory.RecipeInputInventory> table,
+                                    CraftingRecipe recipe, ItemStack output) {
+        int resultSlot = table.getCraftingResultSlotIndex();
+        if (craftingInputs == null) {
+            int slots = table.getCraftingWidth() * table.getCraftingHeight();
+            for (int slot = 0; slot <= slots; slot++) {
+                if (slot != resultSlot && table.getSlot(slot).hasStack()) {
+                    return failure("Clear the crafting grid before automatic crafting");
+                }
+            }
+            var matcher = new RecipeMatcher();
+            client.player.getInventory().populateRecipeFinder(matcher);
+            var ingredients = new IntArrayList();
+            if (!matcher.match(recipe, ingredients)) return failure("Missing ingredients for " + spec.recipe);
+            craftingInputs = new LinkedHashMap<>();
+            RecipeGridAligner<Integer> aligner = (input, slot, count, row, column) -> {
+                var item = RecipeMatcher.getStackFromId(input.next());
+                if (!item.isEmpty()) craftingInputs.put(slot, item);
+            };
+            aligner.alignRecipeToGrid(table.getCraftingWidth(), table.getCraftingHeight(), resultSlot,
+                    recipe, ingredients.iterator(), 1);
+        }
+        for (var input : craftingInputs.entrySet()) {
+            var slot = table.getSlot(input.getKey());
+            if (ItemStack.canCombine(slot.getStack(), input.getValue())) continue;
+            if (slot.hasStack() || !slot.canInsert(input.getValue())) return failure("Crafting grid changed");
+            return feed(client, input.getKey(), input.getValue(), 1) ? null
+                    : failure("Missing ingredients for " + spec.recipe);
+        }
+        // A partial layout can momentarily match a different recipe.
+        if (!ItemStack.canCombine(table.getSlot(resultSlot).getStack(), output) || !table.matches(recipe)) {
+            return failure("Server did not produce " + spec.recipe + " from the crafting grid");
+        }
+        click(client, resultSlot, 0, SlotActionType.QUICK_MOVE);
+        craftingInputs = null;
         return null;
     }
 
@@ -185,8 +233,10 @@ final class ProjectProduction {
     }
 
     private boolean feed(MinecraftClient client, int destination, ItemStack wanted, int count) {
-        for (int i = 3; i < screen.slots.size(); i++) {
-            ItemStack source = screen.getSlot(i).getStack();
+        for (var sourceSlot : screen.slots) {
+            if (sourceSlot.inventory != client.player.getInventory() || sourceSlot.getIndex() >= 36) continue;
+            int i = sourceSlot.id;
+            ItemStack source = sourceSlot.getStack();
             if (!ItemStack.canCombine(source, wanted)) continue;
             int available = source.getCount();
             click(client, i, 0, SlotActionType.PICKUP);

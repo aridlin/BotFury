@@ -1,5 +1,7 @@
 package com.botfury;
 
+import net.minecraft.block.BlockState;
+
 import com.google.gson.Gson;
 import net.minecraft.block.LeavesBlock;
 import net.minecraft.client.MinecraftClient;
@@ -274,22 +276,28 @@ final class ProjectWorker {
         var work = assignment.job().work();
         var kind = work.kind();
         boolean excavate = kind == ProjectQueue.Kind.EXCAVATE;
+        boolean build = kind == ProjectQueue.Kind.BUILD;
         if ((kind == ProjectQueue.Kind.EXCAVATE || kind == ProjectQueue.Kind.BUILD || kind == ProjectQueue.Kind.FILL_BUCKETS)
                 && BuildProtection.blocked(assignment.world(), target, assignment.project())) {
             finish(client, false, "Block is in an exclusion zone at " + target.toShortString());
             return;
         }
         boolean targetLoaded = client.world.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4);
-        if (excavate && targetLoaded && client.world.getBlockState(target).isAir()) {
-            if (approach != null || breaking) halt(client);
-            if (stableSince == 0) stableSince = now;
-            if (now - stableSince >= seconds(1)) finish(client, true, "Observed minecraft:air at " + target.toShortString());
-            return;
+        if ((excavate || build) && targetLoaded) {
+            var observed = client.world.getBlockState(target);
+            if (excavate ? observed.isAir() : block.matches(observed)) {
+                // The loaded block state proves completed work even when the old approach is gone.
+                if (approach != null || breaking || centering) halt(client);
+                if (stableSince == 0) stableSince = now;
+                if (now - stableSince >= seconds(1)) finish(client, true, blockObservation(observed));
+                return;
+            }
+            stableSince = 0;
         }
         BlockPos stand = interactionStand == null ? block.stand() : interactionStand;
         boolean canExcavateHere = excavate && targetLoaded && player.isOnGround() && !centering
                 && !player.getBlockPos().down().equals(target) && excavationHit(client, target) != null;
-        boolean ordinaryBuild = kind == ProjectQueue.Kind.BUILD && !block.edgePlacement();
+        boolean ordinaryBuild = build && !block.edgePlacement();
         boolean canBuildHere = ordinaryBuild && targetLoaded && player.isOnGround() && !centering
                 && !player.getBoundingBox().intersects(new net.minecraft.util.math.Box(target))
                 && ProjectPlacement.supportHit(client, block) != null;
@@ -424,13 +432,10 @@ final class ProjectWorker {
         }
         var state = client.world.getBlockState(target);
         var actual = Registries.BLOCK.getId(state.getBlock());
-        boolean matches = excavate ? state.isAir() : block.matches(state);
-        if (matches) {
-            if (edge && centerOnStand(client, feet)) return;
+        if (kind == ProjectQueue.Kind.VERIFY && targetLoaded && block.matches(state)) {
             halt(client);
             if (stableSince == 0) stableSince = now;
-            if (now - stableSince >= seconds(1)) finish(client, true, "Observed " + actual + (block.properties().isEmpty() ? "" : ProjectBlock.properties(state))
-                    + " at " + target.toShortString());
+            if (now - stableSince >= seconds(1)) finish(client, true, blockObservation(state));
             return;
         }
         stableSince = 0;
@@ -640,6 +645,11 @@ final class ProjectWorker {
         client.options.forwardKey.setPressed(false);
         client.options.sneakKey.setPressed(false);
         centering = false;
+    }
+
+    private static String blockObservation(BlockState observed) {
+        return "Observed " + Registries.BLOCK.getId(observed.getBlock())
+                + (block.properties().isEmpty() ? "" : ProjectBlock.properties(observed)) + " at " + block.target().toShortString();
     }
 
     private static void finish(MinecraftClient client, boolean result, String observation) {

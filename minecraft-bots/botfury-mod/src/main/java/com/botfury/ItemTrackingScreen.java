@@ -39,17 +39,17 @@ final class ItemTrackingScreen extends Screen {
     }
 
     @Override public void render(DrawContext draw, int x, int y, float delta) {
-        draw.fill(0, 0, width, height, 0xED101927);
-        draw.drawCenteredTextWithShadow(textRenderer, title, width / 2, 19, 0xFF5DE4D2);
+        draw.fill(0, 0, width, height, BotUiTheme.PANEL_TOP);
+        draw.drawCenteredTextWithShadow(textRenderer, title, width / 2, 19, BotUiTheme.ACCENT);
         if (BotUiConfig.trackedItems.isEmpty()) {
-            draw.drawCenteredTextWithShadow(textRenderer, "No items tracked", width / 2, FIRST_ROW + 5, 0xFF9DB1C7);
+            draw.drawCenteredTextWithShadow(textRenderer, "No items tracked", width / 2, FIRST_ROW + 5, BotUiTheme.MUTED);
         }
         for (int index = 0; index < BotUiConfig.trackedItems.size(); index++) {
             var item = Registries.ITEM.get(new Identifier(BotUiConfig.trackedItems.get(index)));
             int row = FIRST_ROW + index * ROW_HEIGHT;
             draw.drawItem(item.getDefaultStack(), width / 2 - 120, row + 1);
             draw.drawTextWithShadow(textRenderer, textRenderer.trimToWidth(item.getName().getString(), 154),
-                    width / 2 - 99, row + 5, 0xFFE7F0FA);
+                    width / 2 - 99, row + 5, BotUiTheme.TEXT);
         }
         super.render(draw, x, y, delta);
     }

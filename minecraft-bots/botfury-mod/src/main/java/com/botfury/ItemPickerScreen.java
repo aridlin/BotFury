@@ -131,10 +131,10 @@ final class ItemPickerScreen extends Screen {
     @Override public boolean shouldPause() { return false; }
 
     @Override public void render(DrawContext draw, int mouseX, int mouseY, float delta) {
-        draw.fillGradient(0, 0, width, height, 0xF0121A2D, 0xEA0C1220);
-        draw.drawTextWithShadow(textRenderer, title, left, 17, 0xFFE9F6FF);
+        draw.fillGradient(0, 0, width, height, BotUiTheme.PANEL_BOTTOM, BotUiTheme.PANEL_TOP);
+        draw.drawTextWithShadow(textRenderer, title, left, 17, BotUiTheme.TEXT);
         String count = filtered.size() + (filtered.size() == 1 ? " item" : " items");
-        draw.drawText(textRenderer, count, left + panelWidth - textRenderer.getWidth(count), 17, 0xFFB5C8D8, false);
+        draw.drawText(textRenderer, count, left + panelWidth - textRenderer.getWidth(count), 17, BotUiTheme.MUTED, false);
         super.render(draw, mouseX, mouseY, delta);
         int hover = indexAt(mouseX, mouseY);
         for (int row = 0; row < rows(); row++) for (int col = 0; col < columns; col++) {
@@ -142,26 +142,26 @@ final class ItemPickerScreen extends Screen {
             if (index >= filtered.size()) break;
             var entry = filtered.get(index);
             int x = left + col * cellWidth(), y = listTop + row * ROW_HEIGHT;
-            draw.fill(x, y, x + cellWidth() - 4, y + 25, hover == index ? 0xFF285754 : 0xDA1A273E);
-            if (cursor == index) draw.fill(x, y, x + 2, y + 25, 0xFF70E6CD);
+            draw.fill(x, y, x + cellWidth() - 4, y + 25, hover == index ? BotUiTheme.SELECTED : 0xDA37212A);
+            if (cursor == index) draw.fill(x, y, x + 2, y + 25, BotUiTheme.ACCENT);
             draw.drawItem(entry.item.getDefaultStack(), x + 7, y + 4);
             draw.drawText(textRenderer, textRenderer.trimToWidth(entry.name, cellWidth() - 34),
-                    x + 29, y + 4, 0xFFE7F0FA, false);
+                    x + 29, y + 4, BotUiTheme.TEXT, false);
             draw.drawText(textRenderer, textRenderer.trimToWidth(entry.id, cellWidth() - 34),
-                    x + 29, y + 15, 0xFFA5B9CE, false);
+                    x + 29, y + 15, BotUiTheme.MUTED, false);
         }
         if (filtered.isEmpty()) {
             draw.drawCenteredTextWithShadow(textRenderer, category == Category.Recent && query.isBlank()
-                    ? "No recent selections" : "No matching items", width / 2, listTop + 8, 0xFFADBCD0);
+                    ? "No recent selections" : "No matching items", width / 2, listTop + 8, BotUiTheme.MUTED);
         }
         draw.drawText(textRenderer, textRenderer.trimToWidth("Arrows to move  ·  Enter to select", panelWidth - 68),
-                left, height - 22, 0xFFA5B9CE, false);
+                left, height - 22, BotUiTheme.MUTED, false);
         if (totalRows() > rows()) {
             int h = rows() * ROW_HEIGHT - 3;
             int thumb = Math.max(8, h * rows() / totalRows());
             int y = listTop + firstRow * (h - thumb) / (totalRows() - rows());
-            draw.fill(left + panelWidth - 2, listTop, left + panelWidth, listTop + h, 0xFF25344B);
-            draw.fill(left + panelWidth - 2, y, left + panelWidth, y + thumb, 0xFF73CCBC);
+            draw.fill(left + panelWidth - 2, listTop, left + panelWidth, listTop + h, BotUiTheme.EDGE);
+            draw.fill(left + panelWidth - 2, y, left + panelWidth, y + thumb, BotUiTheme.ACCENT);
         }
     }
 

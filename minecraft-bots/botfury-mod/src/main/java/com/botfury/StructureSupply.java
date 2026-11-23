@@ -2,6 +2,7 @@ package com.botfury;
 
 import com.google.gson.Gson;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
@@ -13,6 +14,19 @@ import java.util.*;
 final class StructureSupply {
     private static final Gson JSON = new Gson();
     record Supplied(List<ProjectQueue.Work> jobs, String chest) {}
+
+    private static final class SupplyLane {
+        final String prefix;
+        final List<MaterialRecipe.Batch> batches;
+        final Deque<String> pickups = new ArrayDeque<>();
+        final List<String> consumers = new ArrayList<>();
+        int index;
+
+        SupplyLane(String prefix, List<MaterialRecipe.Batch> batches) {
+            this.prefix = prefix;
+            this.batches = batches;
+        }
+    }
 
     private StructureSupply() {}
 
@@ -38,62 +52,64 @@ final class StructureSupply {
                 protectedArea = include(protectedArea, water.target().offset(direction));
             }
         }
-        var jobs = new ArrayList<ProjectQueue.Work>();
-        var materialPrefixes = new TreeMap<Identifier, String>();
+        var lanes = new HashMap<Identifier, SupplyLane>();
         var recipes = new MaterialRecipe(client, true, true);
-        int material = 0;
+        int required = plan.jobs().size();
         for (var entry : new TreeMap<>(plan.materials()).entrySet()) {
             Identifier item = entry.getKey();
-            String prefix = "supply-" + material++ + "-";
-            int count = entry.getValue();
             boolean fillWater = item.equals(mc("water_bucket"));
-            var production = recipes.plan(fillWater ? mc("bucket") : item, count, false)
-                    .jobs(prefix + "produce-", protectedArea, table, furnace);
-            jobs.addAll(production);
-            String previous = production.get(production.size() - 1).id();
-            if (fillWater) {
-                var spec = MaterialRecipe.stationPayload(water);
-                spec.addProperty("count", count);
-                String payload = JSON.toJson(spec);
-                String id = prefix + "fill";
-                jobs.add(ProjectWater.Fill.parse(payload).reserve(new ProjectQueue.Work(
-                        id, ProjectQueue.Kind.FILL_BUCKETS, payload, List.of(previous), Set.of(), previous)));
-                previous = id;
-            }
-            jobs.add(transfer(prefix + "store", selected, storage, item, count, ProjectChest.Direction.DEPOSIT, previous));
-            materialPrefixes.put(item, prefix);
+            // Leave room for tools, fuel and ingredients in the worker's inventory.
+            int capacity = fillWater ? ProjectWater.MAX_BUCKETS : 16 * Registries.ITEM.get(item).getMaxCount();
+            var batches = recipes.batches(fillWater ? mc("bucket") : item, entry.getValue(), capacity);
+            for (var batch : batches) required += batch.plan().size() + (fillWater ? 3 : 2);
+            lanes.put(item, new SupplyLane("supply-" + lanes.size() + "-", batches));
         }
-
-        int available = ProjectQueue.MAX_JOBS - jobs.size() - plan.jobs().size();
-        if (available < materialPrefixes.size()) throw new IllegalArgumentException("Supplied build needs more than " + ProjectQueue.MAX_JOBS + " jobs");
-        int workers = (int) BotTracker.targets().stream()
-                .filter(bot -> bot.fresh() && bot.connected() && bot.alive()).count();
-        var pickups = new HashMap<Identifier, Deque<String>>();
-        int extra = available - materialPrefixes.size();
-        for (var entry : materialPrefixes.entrySet()) {
-            var item = entry.getKey();
-            int count = plan.materials().get(item);
-            int batches = Math.min(count, Math.min(Math.max(1, workers), extra + 1));
-            extra -= batches - 1;
-            var assignments = new ArrayDeque<String>();
-            for (int batch = 0; batch < batches; batch++) {
-                int quantity = count / batches + (batch < count % batches ? 1 : 0);
-                String prefix = entry.getValue();
-                String id = prefix + "take-" + batch;
-                jobs.add(transfer(id, selected, storage, item, quantity, ProjectChest.Direction.TAKE, prefix + "store"));
-                for (int i = 0; i < quantity; i++) assignments.addLast(id);
-            }
-            pickups.put(item, assignments);
+        if (required > ProjectQueue.MAX_JOBS) {
+            throw new IllegalArgumentException("Supplied build needs more than " + ProjectQueue.MAX_JOBS + " jobs");
         }
+        int workers = Math.max(1, (int) BotTracker.targets().stream()
+                .filter(bot -> bot.fresh() && bot.connected() && bot.alive()).count());
+        int extra = ProjectQueue.MAX_JOBS - required;
+        var jobs = new ArrayList<ProjectQueue.Work>();
         for (var job : plan.jobs()) {
             if (job.kind() != ProjectQueue.Kind.BUILD) {
                 jobs.add(job);
                 continue;
             }
             var block = ProjectBlock.parse(job.payload());
-            var item = net.minecraft.registry.Registries.ITEM.getId(
-                    ProjectPlacement.material(block.desired()));
-            String supplier = pickups.get(item).removeFirst();
+            var item = Registries.ITEM.getId(ProjectPlacement.material(block.desired()));
+            var lane = lanes.get(item);
+            if (lane.pickups.isEmpty()) {
+                var batch = lane.batches.get(lane.index);
+                int receivers = Math.min(batch.count(), Math.min(workers, extra + 1));
+                extra -= receivers - 1;
+                String prefix = lane.prefix + lane.index++ + "-";
+                // Reuse the same chest stock only after the preceding consumers placed their blocks.
+                var production = batch.plan().jobs(prefix + "produce-", protectedArea, table, furnace,
+                        List.copyOf(lane.consumers));
+                lane.consumers.clear();
+                jobs.addAll(production);
+                String previous = production.get(production.size() - 1).id();
+                if (item.equals(mc("water_bucket"))) {
+                    var spec = MaterialRecipe.stationPayload(water);
+                    spec.addProperty("count", batch.count());
+                    String payload = JSON.toJson(spec);
+                    String id = prefix + "fill";
+                    jobs.add(ProjectWater.Fill.parse(payload).reserve(new ProjectQueue.Work(
+                            id, ProjectQueue.Kind.FILL_BUCKETS, payload, List.of(previous), Set.of(), previous)));
+                    previous = id;
+                }
+                String store = prefix + "store";
+                jobs.add(transfer(store, selected, storage, item, batch.count(), ProjectChest.Direction.DEPOSIT, previous));
+                for (int receiver = 0; receiver < receivers; receiver++) {
+                    int quantity = batch.count() / receivers + (receiver < batch.count() % receivers ? 1 : 0);
+                    String pickup = prefix + "take-" + receiver;
+                    jobs.add(transfer(pickup, selected, storage, item, quantity, ProjectChest.Direction.TAKE, store));
+                    for (int i = 0; i < quantity; i++) lane.pickups.addLast(pickup);
+                }
+            }
+            String supplier = lane.pickups.removeFirst();
+            lane.consumers.add(job.id());
             var needs = new ArrayList<>(job.needs());
             needs.add(supplier);
             jobs.add(new ProjectQueue.Work(job.id(), job.kind(), job.payload(), needs, job.locks(), supplier));

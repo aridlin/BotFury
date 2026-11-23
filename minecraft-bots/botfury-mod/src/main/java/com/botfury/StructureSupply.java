@@ -64,13 +64,24 @@ final class StructureSupply {
             for (var batch : batches) required += batch.plan().size() + (fillWater ? 3 : 2);
             lanes.put(item, new SupplyLane("supply-" + lanes.size() + "-", batches));
         }
+        var jobs = new ArrayList<ProjectQueue.Work>();
+        List<String> workbenchReady = List.of();
+        boolean plannedWorkbench = table == null && lanes.values().stream().flatMap(lane -> lane.batches.stream())
+                .anyMatch(batch -> batch.plan().needsTable());
+        if (plannedWorkbench) {
+            var workbench = WorkbenchBootstrap.plan(client, chest, protectedArea);
+            table = workbench.station();
+            protectedArea = workbench.protectedArea();
+            jobs.addAll(workbench.jobs());
+            workbenchReady = workbench.ready();
+            required += workbench.jobs().size();
+        }
         if (required > ProjectQueue.MAX_JOBS) {
             throw new IllegalArgumentException("Supplied build needs more than " + ProjectQueue.MAX_JOBS + " jobs");
         }
         int workers = Math.max(1, (int) BotTracker.targets().stream()
                 .filter(bot -> bot.fresh() && bot.connected() && bot.alive()).count());
         int extra = ProjectQueue.MAX_JOBS - required;
-        var jobs = new ArrayList<ProjectQueue.Work>();
         for (var job : plan.jobs()) {
             if (job.kind() != ProjectQueue.Kind.BUILD) {
                 jobs.add(job);
@@ -85,8 +96,11 @@ final class StructureSupply {
                 extra -= receivers - 1;
                 String prefix = lane.prefix + lane.index++ + "-";
                 // Reuse the same chest stock only after the preceding consumers placed their blocks.
-                var production = batch.plan().jobs(prefix + "produce-", protectedArea, table, furnace,
-                        List.copyOf(lane.consumers));
+                var dependencies = new ArrayList<>(lane.consumers);
+                boolean useWorkbench = !plannedWorkbench || batch.plan().needsTable();
+                if (useWorkbench) dependencies.addAll(workbenchReady);
+                var production = batch.plan().jobs(prefix + "produce-", protectedArea, useWorkbench ? table : null, furnace,
+                        List.copyOf(dependencies));
                 lane.consumers.clear();
                 jobs.addAll(production);
                 String previous = production.get(production.size() - 1).id();

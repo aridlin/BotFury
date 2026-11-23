@@ -39,10 +39,10 @@ final class OutputOrder {
             if (chest == null) throw new IllegalArgumentException("No clear stand next to the chest");
             var table = findStation(client, storage.key(), Identifier.of("minecraft", "crafting_table"));
             var furnace = findStation(client, storage.key(), Identifier.of("minecraft", "furnace"));
-            var steps = new MaterialRecipe(client, table != null, furnace != null).plan(item, batch, true);
+            var steps = new MaterialRecipe(client, true, furnace != null).plan(item, batch, true);
             int selected = (int) BotTracker.targets().stream()
                     .filter(bot -> bot.fresh() && bot.connected() && bot.alive()).count();
-            var plan = plan(storage, chest, table, furnace, item, batch, stackSize, Math.max(1, selected), steps);
+            var plan = plan(client, storage, chest, table, furnace, item, batch, stackSize, Math.max(1, selected), steps);
             String id = "output-" + UUID.randomUUID().toString().substring(0, 8);
             ProjectBroker.submitOutput(id, here, plan);
             BotUiConfig.trackRequest(List.of(item.toString()));
@@ -84,16 +84,24 @@ final class OutputOrder {
         return null;
     }
 
-    private static Plan plan(ProjectChest.Storage storage, ProjectBlock chest, ProjectBlock table, ProjectBlock furnace,
+    private static Plan plan(MinecraftClient client, ProjectChest.Storage storage, ProjectBlock chest, ProjectBlock table, ProjectBlock furnace,
                              Identifier item, int batch, int stackSize, int workers, MaterialRecipe.Plan steps) {
         int capacity = stackSize * storage.slots();
-        int lanes = Math.min(workers, Math.min(Math.max(1, capacity / batch), JOB_LIMIT / (steps.size() + 2)));
-        if (lanes == 0) throw new IllegalArgumentException("This recipe requires too many jobs");
         var jobs = new ArrayList<ProjectQueue.Work>();
         var protectedArea = StructureSupply.union(storage.include(new ProjectGather.Area(chest.target(), chest.target())), chest, table, furnace);
+        List<String> ready = List.of();
+        if (table == null && steps.needsTable()) {
+            var workbench = WorkbenchBootstrap.plan(client, storage.key(), protectedArea);
+            table = workbench.station();
+            protectedArea = workbench.protectedArea();
+            jobs.addAll(workbench.jobs());
+            ready = workbench.ready();
+        }
+        int lanes = Math.min(workers, Math.min(Math.max(1, capacity / batch), (JOB_LIMIT - jobs.size()) / (steps.size() + 2)));
+        if (lanes == 0) throw new IllegalArgumentException("This recipe requires too many jobs");
         for (int lane = 0; lane < lanes; lane++) {
             String prefix = "lane-" + lane + "-";
-            var production = steps.jobs(prefix + "produce-", protectedArea, table, furnace);
+            var production = steps.jobs(prefix + "produce-", protectedArea, table, furnace, ready);
             jobs.addAll(production);
             String previous = production.get(production.size() - 1).id();
             var inspect = MaterialRecipe.stationPayload(chest);

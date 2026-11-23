@@ -299,8 +299,23 @@ final class MiningTask {
                     ? lower : outlineHit(client, upper, eye, reach);
         }
         Vec3d center = Vec3d.ofCenter(target);
-        if (eye.squaredDistanceTo(center) > reach * reach) return null;
-        var ray = client.world.raycast(new RaycastContext(eye, center, RaycastContext.ShapeType.COLLIDER,
+        var hit = visibleColliderHit(client, target, eye, center, reach);
+        if (hit != null) return hit;
+        // The center ray can cross an adjacent block even when a side of this block is exposed.
+        for (var side : Direction.values()) {
+            Vec3d normal = Vec3d.of(side.getVector());
+            Vec3d point = center.add(normal.multiply(.49));
+            if (eye.subtract(point).dotProduct(normal) <= 0) continue;
+            hit = visibleColliderHit(client, target, eye, point, reach);
+            if (hit != null) return hit;
+        }
+        return null;
+    }
+
+    private static BlockHitResult visibleColliderHit(MinecraftClient client, BlockPos target, Vec3d eye,
+                                                     Vec3d point, double reach) {
+        if (eye.squaredDistanceTo(point) > reach * reach) return null;
+        var ray = client.world.raycast(new RaycastContext(eye, point, RaycastContext.ShapeType.COLLIDER,
                 RaycastContext.FluidHandling.NONE, client.player));
         return ray.getType() == HitResult.Type.BLOCK && ray.getBlockPos().equals(target) ? ray : null;
     }
@@ -326,7 +341,8 @@ final class MiningTask {
     }
     private static Vec3d standing(MinecraftClient c,BlockPos ore){
         Vec3d best=null;double score=Double.POSITIVE_INFINITY;
-        boolean thin = c.world.getBlockState(ore).getCollisionShape(c.world, ore).isEmpty();
+        boolean preserveTerrain = projectMining && excluded != null
+                || c.world.getBlockState(ore).getCollisionShape(c.world, ore).isEmpty();
         for(int dx=-1;dx<=1;dx++)for(int dz=-1;dz<=1;dz++)for(int dy=-1;dy<=1;dy++){
             if(dx==0&&dz==0)continue;BlockPos feet=ore.add(dx,dy,dz),below=feet.down();
             if (rejectedStands.containsKey(feet)) continue;
@@ -335,7 +351,7 @@ final class MiningTask {
                     ||c.world.getBlockState(feet).getHardness(c.world,feet)<0||c.world.getBlockState(feet.up()).getHardness(c.world,feet.up())<0)continue;
             Vec3d point=Vec3d.ofBottomCenter(feet);var box=c.player.getBoundingBox().offset(point.subtract(c.player.getPos())).expand(.35,0,.35);
             boolean clear = c.world.isSpaceEmpty(c.player, c.player.getBoundingBox().offset(point.subtract(c.player.getPos())));
-            if (thin && (!clear || miningHit(c, ore, point.add(0, 1.62, 0), 4.3) == null)) continue;
+            if (preserveTerrain && (!clear || miningHit(c, ore, point.add(0, 1.62, 0), 4.3) == null)) continue;
             if(!c.world.getOtherEntities(c.player,box,e->e instanceof PlayerEntity&&e.isAlive()).isEmpty())continue;
             double climb = Math.max(0, point.y - c.player.getY());
             double distance=c.player.squaredDistanceTo(point) + climb * 6 + (c.world.isSpaceEmpty(c.player,box)?0:16);

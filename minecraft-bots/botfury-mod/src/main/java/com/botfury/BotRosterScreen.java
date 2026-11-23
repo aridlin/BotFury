@@ -159,7 +159,7 @@ final class BotRosterScreen extends Screen {
 
     private void guideButton(String label, int y) {
         int x = MARGIN + 98;
-        button(label, x, y, width - x - MARGIN - 87, this::advanceGuide).highlight(true);
+        button(label, x, y, width - x - MARGIN - 87, this::advanceGuide).emphasize();
     }
 
     private void rebuild() {

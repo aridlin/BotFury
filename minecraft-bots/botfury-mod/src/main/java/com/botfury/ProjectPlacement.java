@@ -31,9 +31,12 @@ import net.minecraft.world.BlockView;
 import net.minecraft.world.RaycastContext;
 
 import java.util.List;
+import java.util.function.Function;
 
 /** Places a simple block through the same interaction as a player using a block item. */
 final class ProjectPlacement {
+    private static final double[] FACE_OFFSETS = {-.32, 0, .32};
+
     private ProjectPlacement() {}
 
     static boolean supported(BlockState state) {
@@ -133,21 +136,27 @@ final class ProjectPlacement {
         var desired = block.desired();
         var state = client.world.getBlockState(support);
         if (!support(state, desired, block.face(), client.world, support)) return null;
-        var point = facePoint(support, block.face(), state, desired);
         double reach = client.interactionManager.getReachDistance() - .1;
-        var hit = traceSupport(client, block, eye, point, reach);
-        if (hit != null || ProjectWater.source(desired) || !state.isFullCube(client.world, support)
-                || !desired.isFullCube(client.world, block.target())) return hit;
-        // Use the same leased face when foliage or uneven ground blocks its midpoint.
-        for (double first : new double[]{-.3, 0, .3}) {
-            for (double second : new double[]{-.3, 0, .3}) {
+        return findSupportHit(client.world, support, block.face(), state, desired,
+                point -> traceSupport(client, block, eye, point, reach));
+    }
+
+    static <T> T findSupportHit(BlockView world, BlockPos support, Direction face, BlockState state, BlockState desired,
+                                Function<Vec3d, T> validate) {
+        var point = facePoint(support, face, state, desired);
+        var hit = validate.apply(point);
+        if (hit != null || ProjectWater.source(desired) || !state.isFullCube(world, support)) return hit;
+        // The side-face offsets stay in the intended top or bottom half for slabs and trapdoors.
+        double verticalScale = ProjectShapedBlock.clickHeight(desired) == .5 ? 1 : .5;
+        for (double first : FACE_OFFSETS) {
+            for (double second : FACE_OFFSETS) {
                 if (first == 0 && second == 0) continue;
-                var alternate = switch (block.face().getAxis()) {
-                    case X -> point.add(0, first, second);
+                var alternate = switch (face.getAxis()) {
+                    case X -> point.add(0, first * verticalScale, second);
                     case Y -> point.add(first, 0, second);
-                    case Z -> point.add(first, second, 0);
+                    case Z -> point.add(first, second * verticalScale, 0);
                 };
-                hit = traceSupport(client, block, eye, alternate, reach);
+                hit = validate.apply(alternate);
                 if (hit != null) return hit;
             }
         }

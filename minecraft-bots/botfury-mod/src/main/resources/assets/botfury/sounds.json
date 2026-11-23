@@ -1,0 +1,4 @@
+{
+  "ui.click": { "sounds": ["botfury:ui/click"] },
+  "ui.double_click": { "sounds": ["botfury:ui/double_click"] }
+}

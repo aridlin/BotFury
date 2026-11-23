@@ -1,6 +1,7 @@
 package com.botfury;
 
 import com.google.gson.Gson;
+import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.registry.Registries;
@@ -19,6 +20,7 @@ import java.util.concurrent.*;
 
 final class MiningTask {
     record Job(String resource,String variant,int broker) {}
+    private static final int STANDS_PER_TICK = 8;
     private static final Gson JSON=new Gson();
     private static final ExecutorService IO=Executors.newFixedThreadPool(2,r->{var t=new Thread(r,"BotFury-mining");t.setDaemon(true);return t;});
     private static final HttpClient HTTP=HttpClient.newBuilder().executor(IO).connectTimeout(Duration.ofMillis(300)).build();
@@ -30,9 +32,12 @@ final class MiningTask {
     private static int generation,age,nextSearch,nextPath,nextRenew,exploration;
     private static long leaseUntil;
     private static boolean requesting,dead,paused,pathActive,projectMining;
+    private static final Deque<BlockPos> pendingCandidates = new ArrayDeque<>();
+    private static boolean scanNeedsTool;
     static void pause(boolean value) {
         if (job == null || paused == value) return;
         paused = value;
+        pendingCandidates.clear();
         if (value) {
             stopPath();
             clearReservation();
@@ -107,6 +112,7 @@ final class MiningTask {
         paused=false;
         age=nextSearch=nextPath=nextRenew=exploration=0;requesting=dead=false;target=null;stand=null;pickup=null;leaseToken=null;origin=client.player.getPos();rejected.clear();
         rejectedStands.clear();
+        pendingCandidates.clear();
         status="Searching: "+next.resource+" ("+next.variant+")";BotEvents.add("info","mining",status);
     }
     private static void fail(String reason){status=reason;BotEvents.add("warn","mining",reason);}
@@ -114,11 +120,12 @@ final class MiningTask {
         if(job!=null){stopPath();var client=MinecraftClient.getInstance();if(client.interactionManager!=null)client.interactionManager.cancelBlockBreaking();release(job,leaseToken);}
         minedDrops.reset();
         projectDrop = null;
+        pendingCandidates.clear();
         job=null;generation++;target=null;stand=null;pickup=null;leaseToken=null;requesting=false;
         if(settings!=null){settings.close();settings=null;}
         if(!status.isEmpty())status="Mining stopped";
     }
-    static void onDeath(){if(job!=null&&!dead){dead=true;stopPath();clearReservation();minedDrops.reset();pickup=null;status="Mining waits for respawn";}}
+    static void onDeath(){if(job!=null&&!dead){dead=true;stopPath();clearReservation();minedDrops.reset();pendingCandidates.clear();pickup=null;status="Mining waits for respawn";}}
     static void tick(MinecraftClient client){
         if(job==null||paused)return;
         var here=LocalFormation.here();
@@ -202,22 +209,77 @@ final class MiningTask {
             status="Gathering mined drops";return;
         }
         if (pathActive && recoverRoute(client, rememberedSite)) return;
-        if(requesting||age<nextSearch)return;
-        nextSearch=age+20;
-        rejectedStands.values().removeIf(until -> until <= age);
-        var position=client.player.getBlockPos();
-        var candidates=new ArrayList<BlockPos>();boolean needsTool=false;
-        for(int x=-12;x<=12;x++)for(int z=-12;z<=12;z++)for(int y=-10;y<=10;y++){
-            BlockPos p=position.add(x,y,z);
-            if (excluded != null && excluded.contains(p)) continue;
-            if(rejected.getOrDefault(p,0)>age||!client.world.isChunkLoaded(p.getX()>>4,p.getZ()>>4)||!matches(client,p)||protectedTarget(client,p))continue;
-            if(!hasTool(client,p)){needsTool=true;continue;}candidates.add(p);
+        if (requesting) return;
+        if (pendingCandidates.isEmpty()) {
+            if (age < nextSearch) return;
+            scan(client);
         }
-        candidates.sort(Comparator.comparingDouble(p->p.getSquaredDistance(position)));
-        for(BlockPos ore:candidates){Vec3d place=standing(client,ore);if(place!=null){request(client,ore,place,"claim");return;}rejected.put(ore,age+100);}
-        if(needsTool){status="Need a suitable tool for "+job.resource;stopPath();return;}
+        for (int checked = 0; checked < STANDS_PER_TICK && !pendingCandidates.isEmpty(); checked++) {
+            var candidate = pendingCandidates.removeFirst();
+            if (!client.world.isChunkLoaded(candidate.getX() >> 4, candidate.getZ() >> 4)
+                    || !matches(client, candidate) || protectedTarget(client, candidate)) continue;
+            if (!hasTool(client, client.world.getBlockState(candidate))) {
+                scanNeedsTool = true;
+                continue;
+            }
+            var place = standing(client, candidate);
+            if (place != null) {
+                pendingCandidates.clear();
+                nextSearch = age + 20;
+                request(client, candidate, place, "claim");
+                return;
+            }
+            rejected.put(candidate, age + 100);
+        }
+        if (!pendingCandidates.isEmpty()) {
+            status = "Checking approaches to " + job.resource;
+            return;
+        }
+        nextSearch = age + 20;
+        if (scanNeedsTool) {
+            status = "Need a suitable tool for " + job.resource;
+            stopPath();
+            return;
+        }
+        explore(client);
+    }
+
+    private static void scan(MinecraftClient client) {
+        rejectedStands.values().removeIf(until -> until <= age);
+        rejected.values().removeIf(until -> until <= age);
+        var position = client.player.getBlockPos();
+        var world = client.world;
+        boolean preserveTerrain = projectMining && excluded != null;
+        var suitability = new HashMap<BlockState, Boolean>();
+        var candidates = new ArrayList<BlockPos>();
+        scanNeedsTool = false;
+        for (var pos : BlockPos.iterateOutwards(position, 12, 10, 12)) {
+            if (excluded != null && excluded.contains(pos) || rejected.containsKey(pos)
+                    || !world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)
+                    || !matches(client, pos) || protectedTarget(client, pos)) continue;
+            var state = world.getBlockState(pos);
+            if (preserveTerrain && state.isFullCube(world, pos) && completelyCovered(world, pos)) continue;
+            if (!suitability.computeIfAbsent(state, block -> hasTool(client, block))) {
+                scanNeedsTool = true;
+                continue;
+            }
+            candidates.add(pos.toImmutable());
+        }
+        candidates.sort(Comparator.comparingDouble(p -> p.getSquaredDistance(position)));
+        pendingCandidates.addAll(candidates);
+    }
+
+    private static boolean completelyCovered(net.minecraft.world.World world, BlockPos pos) {
+        for (Direction side : Direction.values()) {
+            var adjacent = pos.offset(side);
+            if (!world.getBlockState(adjacent).isFullCube(world, adjacent)) return false;
+        }
+        return true;
+    }
+
+    private static void explore(MinecraftClient client) {
         if (returnToResourceSite(client)) return;
-        status=candidates.isEmpty()?"Exploring for "+job.resource:"Nearby mining positions are occupied";
+        status = "Exploring for " + job.resource;
         if(age>=nextPath){
             nextPath = age + (projectMining ? 400 : 200);
             double angle = (client.player.getUuid().hashCode() & 1023) * Math.PI / 512
@@ -336,7 +398,13 @@ final class MiningTask {
         }
         return null;
     }
-    private static boolean hasTool(MinecraftClient c,BlockPos p){var state=c.world.getBlockState(p);if(!state.isToolRequired())return true;for(int i=0;i<36;i++)if(c.player.getInventory().getStack(i).isSuitableFor(state))return true;return false;}
+    private static boolean hasTool(MinecraftClient client, BlockState state) {
+        if (!state.isToolRequired()) return true;
+        for (int slot = 0; slot < 36; slot++) {
+            if (client.player.getInventory().getStack(slot).isSuitableFor(state)) return true;
+        }
+        return false;
+    }
     private static boolean equip(MinecraftClient c,BlockPos p){
         var state=c.world.getBlockState(p);int best=-1;float speed=-1;
         for(int i=0;i<36;i++){var stack=c.player.getInventory().getStack(i);if(state.isToolRequired()&&!stack.isSuitableFor(state))continue;float s=stack.getMiningSpeedMultiplier(state);if(s>speed){speed=s;best=i;}}

@@ -129,6 +129,8 @@ final class ProjectQueue {
     private static final int MAX_PROJECTS = 32;
     private static final int MAX_DEPENDENCIES = 250_000;
     private static final String LEASE_EXPIRED = "Worker lease expired";
+    static final String GATHER_STALLED = "Gathering stalled without item or route progress";
+    private static final long STALLED_WORKER_COOLDOWN_MS = 30_000;
     private final Path journal;
     private final Path archive;
     private final Map<String, Long> workerSeen = new HashMap<>();
@@ -452,7 +454,7 @@ final class ProjectQueue {
                 if (ownedLane != null && !ownedLane.equals(lane(job.work.id))) continue;
                 if (deposit != null && job.work.kind == Kind.TRANSFER && !deposit.equals(job.work.id)) continue;
                 if (job.state != State.WAITING || job.work.kind.coordinatorOnly()
-                        || job.expiresAt > now || !kinds.contains(job.work.kind)
+                        || retryDelayedFor(job, worker, now) || !kinds.contains(job.work.kind)
                         || !done.containsAll(job.work.needs)) continue;
                 if (job.work.cleanup != null && (!settled(job.work.cleanup.afterSettled, done, blocked)
                         || job.work.cleanup.alsoSettled.stream().anyMatch(id -> !settled(id, done, blocked)))) continue;
@@ -598,9 +600,14 @@ final class ProjectQueue {
                 return true;
             }
         }
-        Job result = success
-                ? new Job(job.work, State.DONE, job.attempts, job.worker, job.lease, 0, evidence, observation, location)
-                : retry(job, evidence, observation, location);
+        Job result;
+        if (success) {
+            result = new Job(job.work, State.DONE, job.attempts, job.worker, job.lease, 0, evidence, observation, location);
+        } else if (job.attempts < MAX_ATTEMPTS && job.work.kind == Kind.GATHER && job.work.sameWorkerAs == null
+                && GATHER_STALLED.equals(evidence)) {
+            result = new Job(job.work, State.WAITING, job.attempts, job.worker, null,
+                    now + STALLED_WORKER_COOLDOWN_MS, evidence, observation, location);
+        } else result = retry(job, evidence, observation, location);
         if (success && project.repeat != null && !project.repeat.cancelled && job.work.id.equals(lane(job.work.id) + "inspect")) {
             prepareOutputDeposit(project, result);
         } else if (success && project.repeat != null && job.work.id.equals(lane(job.work.id) + "deposit")) {
@@ -907,6 +914,11 @@ final class ProjectQueue {
     private static Job retry(Job job, String reason, ChestObservation chest, ResourceSite site) {
         State state = job.attempts < MAX_ATTEMPTS ? State.WAITING : State.FAILED;
         return new Job(job.work, state, job.attempts, null, null, 0, reason, chest, site);
+    }
+
+    private static boolean retryDelayedFor(Job job, String worker, long now) {
+        if (job.expiresAt <= now) return false;
+        return !GATHER_STALLED.equals(job.evidence) || worker.equalsIgnoreCase(job.worker);
     }
 
     private static boolean cancelled(Project project) {

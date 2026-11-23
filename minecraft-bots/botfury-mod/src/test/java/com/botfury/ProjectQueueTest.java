@@ -14,6 +14,23 @@ class ProjectQueueTest {
     @TempDir Path directory;
     private static final String WORLD = "test|overworld";
 
+    @Test void stationaryGathererYieldsClaimToAnotherWorkerAfterRestart() throws Exception {
+        var journal = directory.resolve("stalled-gather.json");
+        var queue = new ProjectQueue(journal);
+        queue.submit("gathering", WORLD, List.of(job("gather", GATHER, List.of()),
+                new ProjectQueue.Work("refine", CRAFT, "", List.of("gather"), Set.of(), "gather")));
+        var stalled = queue.claim(WORLD, "first", Set.of(GATHER), 1).job();
+        var site = new ProjectQueue.ResourceSite(5, 68, -3);
+        assertTrue(queue.finish("gathering", "gather", stalled.lease(), false, ProjectQueue.GATHER_STALLED, null, site, 2));
+        var restored = new ProjectQueue(journal);
+        assertNull(restored.claim(WORLD, "first", Set.of(GATHER), 3));
+        var retry = restored.claim(WORLD, "second", Set.of(GATHER), 4).job();
+        assertEquals(site, retry.resourceSite());
+        assertNull(restored.claim(WORLD, "first", Set.of(GATHER), 5));
+        assertTrue(restored.finish("gathering", "gather", retry.lease(), true, "Collected", null, site, 6));
+        assertEquals("refine", restored.claim(WORLD, "second", Set.of(CRAFT), 7).job().work().id());
+    }
+
     @Test void lostBuildInventoryRequestsOnlyUnplacedMaterialAfterRestart() throws Exception {
         var journal = directory.resolve("lost-construction-cargo.json");
         var queue = new ProjectQueue(journal);

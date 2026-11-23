@@ -20,6 +20,7 @@ record ProjectWorkstations(ProjectBlock table, ProjectBlock furnace, ProjectGath
                            List<ProjectQueue.Work> jobs, boolean buildsTable, boolean buildsFurnace) {
     private static final Identifier TABLE = Identifier.of("minecraft", "crafting_table");
     private static final Identifier FURNACE = Identifier.of("minecraft", "furnace");
+    private static final Identifier FOOTING = Identifier.of("minecraft", "dirt");
 
     static ProjectWorkstations prepare(MinecraftClient client, BlockPos center, ProjectGather.Area area,
                                        ProjectBlock table, ProjectBlock furnace, boolean needTable, boolean needFurnace) {
@@ -92,5 +93,49 @@ record ProjectWorkstations(ProjectBlock table, ProjectBlock furnace, ProjectGath
             if (stand != null) return new ProjectBlock(pos.toImmutable(), stand, station);
         }
         throw new IllegalArgumentException("No clear site for " + station + " near the supply chest");
+    }
+
+    /** Returns null when the original station cannot be restored without altering existing blocks. */
+    static List<ProjectQueue.Work> repairFooting(MinecraftClient client, String world, ProjectQueue.OwnedStation owner,
+                                                 ProjectBlock station) {
+        var level = client.world;
+        var floor = station.support();
+        if (ProjectPlacement.support(level.getBlockState(floor), station.desired(), station.face(), level, floor)) {
+            return List.of();
+        }
+        if (station.face() != Direction.UP) return null;
+        var footing = Registries.BLOCK.get(FOOTING).getDefaultState();
+        var column = new java.util.LinkedHashMap<BlockPos, net.minecraft.block.BlockState>();
+        column.put(station.target(), station.desired());
+        var anchor = floor;
+        while (column.size() <= 3 && level.isInBuildLimit(anchor) && level.isAir(anchor)
+                && !BuildProtection.blocked(world, anchor, owner.project())) {
+            column.put(anchor, footing);
+            anchor = anchor.down();
+        }
+        if (anchor.equals(floor) || !ProjectPlacement.support(level.getBlockState(anchor), footing, Direction.UP, level, anchor)
+                || !ProjectPlacement.support(footing, station.desired(), Direction.UP, level, floor)) return null;
+
+        var area = StructureSupply.union(new ProjectGather.Area(anchor, station.target()), station);
+        var placements = new ArrayList<ProjectBlock>();
+        for (var pos = anchor.up(); pos.getY() <= floor.getY(); pos = pos.up()) {
+            var stand = StructureProject.chooseStand(client, pos, column, Direction.UP,
+                    candidate -> !BuildProtection.blocked(world, candidate, owner.project()));
+            if (stand == null) return null;
+            var placement = new ProjectBlock(pos, stand, FOOTING);
+            placements.add(placement);
+            area = StructureSupply.union(area, placement);
+        }
+        String prefix = "footing-" + owner.job() + "-" + Long.toUnsignedString(System.nanoTime(), 36) + "-";
+        var recipe = new MaterialRecipe(client, false, false).plan(FOOTING, placements.size(), false);
+        var jobs = new ArrayList<>(recipe.jobs(prefix + "gather-", area, null, null));
+        String previous = jobs.get(jobs.size() - 1).id();
+        for (var placement : placements) {
+            String id = prefix + jobs.size();
+            jobs.add(placement.reserve(new ProjectQueue.Work(id, ProjectQueue.Kind.BUILD,
+                    MaterialRecipe.stationPayload(placement).toString(), List.of(previous), Set.of(), previous)));
+            previous = id;
+        }
+        return List.copyOf(jobs);
     }
 }

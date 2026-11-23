@@ -118,6 +118,43 @@ class ProjectQueueTest {
         assertEquals(ProjectQueue.State.FAILED, jobs.get(1).state());
     }
 
+    @Test void repairedFootingGatesStationAndReopensItsFailedConsumer() throws Exception {
+        var journal = directory.resolve("station-footing.json");
+        var queue = new ProjectQueue(journal);
+        String table = "block:3,64,0";
+        queue.submit("work", WORLD, List.of(job("logs", GATHER, List.of()),
+                new ProjectQueue.Work("craft-table", CRAFT, "", List.of("logs"), Set.of(), "logs"),
+                new ProjectQueue.Work("setup-workbench", BUILD,
+                        "{\"target\":{\"x\":3,\"y\":64,\"z\":0},\"block\":\"minecraft:crafting_table\"}",
+                        List.of("craft-table"), Set.of(table), "craft-table"),
+                job("craft-chest", CRAFT, List.of("setup-workbench"), table)));
+        long now = 1;
+        for (var kind : List.of(GATHER, CRAFT, BUILD)) {
+            var assigned = queue.claim(WORLD, "builder", Set.of(kind), now++).job();
+            assertTrue(queue.finish("work", assigned.work().id(), assigned.lease(), true, "Done", now++));
+        }
+        for (int attempt = 0; attempt < 3; attempt++) {
+            var assigned = queue.claim(WORLD, "crafter", Set.of(CRAFT), now++).job();
+            assertTrue(queue.finish("work", "craft-chest", assigned.lease(), false, "Expected workstation is missing", now++));
+        }
+        var anchor = job("replace-footing", BUILD, List.of(), "block:3,63,0");
+        assertTrue(queue.restoreOwnedStation(WORLD, "work", "setup-workbench", List.of(anchor)));
+        var restored = new ProjectQueue(journal);
+        for (var kind : List.of(GATHER, CRAFT)) {
+            var assigned = restored.claim(WORLD, "builder", Set.of(kind), now++).job();
+            assertTrue(restored.finish("work", assigned.work().id(), assigned.lease(), true, "Done", now++));
+        }
+        var repair = restored.claim(WORLD, "repairer", Set.of(BUILD), now++).job();
+        assertEquals("replace-footing", repair.work().id());
+        assertNull(restored.claim(WORLD, "builder", Set.of(BUILD), now++));
+        assertNull(restored.claim(WORLD, "crafter", Set.of(CRAFT), now++));
+        assertTrue(restored.finish("work", "replace-footing", repair.lease(), true, "Replaced", now++));
+        var station = restored.claim(WORLD, "builder", Set.of(BUILD), now++).job();
+        assertEquals("setup-workbench", station.work().id());
+        assertTrue(restored.finish("work", "setup-workbench", station.lease(), true, "Replaced", now++));
+        assertEquals("craft-chest", restored.claim(WORLD, "crafter", Set.of(CRAFT), now).job().work().id());
+    }
+
     private static ProjectQueue.Work job(String id, ProjectQueue.Kind kind, List<String> needs, String... locks) {
         return new ProjectQueue.Work(id, kind, "", needs, Set.of(locks));
     }

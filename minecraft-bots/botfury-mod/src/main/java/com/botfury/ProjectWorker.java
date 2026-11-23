@@ -238,10 +238,12 @@ final class ProjectWorker {
         boolean inspectNearby = kind == ProjectQueue.Kind.VERIFY && targetLoaded
                 && player.getPos().squaredDistanceTo(Vec3d.ofBottomCenter(target)) <= 16;
         boolean exactFooting = kind == ProjectQueue.Kind.EXCAVATE || kind == ProjectQueue.Kind.BUILD;
+        boolean edge = kind == ProjectQueue.Kind.BUILD && block.edgePlacement();
         boolean nearStand = player.getPos().squaredDistanceTo(feet) <= 1.21;
         boolean canCleanFromHere = nearStand && work.cleanup() != null && targetLoaded
                 && (client.world.getBlockState(target).isAir() || excavationHit(client, target) != null);
-        boolean atStand = nearStand && (!exactFooting || player.getBlockPos().equals(block.stand()) || canCleanFromHere);
+        boolean atStand = nearStand && (!exactFooting || player.getBlockPos().equals(block.stand()) || canCleanFromHere
+                || edge && centering && player.getBlockPos().equals(target.up()));
         if (!player.isOnGround() || !atStand && !inspectNearby) {
             releaseCentering(client);
             stableSince = 0;
@@ -334,6 +336,7 @@ final class ProjectWorker {
         boolean excavate = kind == ProjectQueue.Kind.EXCAVATE;
         boolean matches = excavate ? state.isAir() : block.matches(state);
         if (matches) {
+            if (edge && centerOnStand(client, feet)) return;
             halt(client);
             if (stableSince == 0) stableSince = now;
             if (now - stableSince >= seconds(1)) finish(client, true, "Observed " + actual + (block.properties().isEmpty() ? "" : ProjectBlock.properties(state))
@@ -342,7 +345,13 @@ final class ProjectWorker {
         }
         stableSince = 0;
         if (kind == ProjectQueue.Kind.BUILD) {
-            if (centerOnStand(client, feet)) return;
+            if (edge && (!client.world.getBlockState(block.support()).isFullCube(client.world, block.support())
+                    || !client.world.getBlockState(target.up()).isAir()
+                    || !client.world.getBlockState(target.up(2)).isAir())) {
+                finish(client, false, "Edge placement needs a solid floor and clear space");
+                return;
+            }
+            if (centerOnStand(client, edge ? ProjectBlock.edgePosition(block.stand(), block.face()) : feet, edge)) return;
             if (now >= nextPlacement) {
                 var failure = BuildProtection.projectAction(assignment.project(), () -> ProjectPlacement.attempt(client, block));
                 nextPlacement = now + seconds(1);
@@ -405,11 +414,22 @@ final class ProjectWorker {
     }
 
     private static boolean centerOnStand(MinecraftClient client, Vec3d stand) {
+        return centerOnStand(client, stand, false);
+    }
+
+    private static boolean centerOnStand(MinecraftClient client, Vec3d stand, boolean staySneaking) {
         var player = client.player;
         double dx = stand.x - player.getX();
         double dz = stand.z - player.getZ();
         // Match the eye position used to check reach in the planner.
-        if (dx * dx + dz * dz <= .075 * .075) {
+        double tolerance = staySneaking ? .04 : .075;
+        if (dx * dx + dz * dz <= tolerance * tolerance) {
+            if (staySneaking) {
+                client.options.forwardKey.setPressed(false);
+                client.options.sneakKey.setPressed(true);
+                centering = true;
+                return !player.isSneaking();
+            }
             releaseCentering(client);
             return player.isSneaking();
         }

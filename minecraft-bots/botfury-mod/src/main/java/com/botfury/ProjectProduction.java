@@ -14,7 +14,9 @@ import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
 import java.time.Duration;
@@ -68,6 +70,24 @@ final class ProjectProduction {
                 : handler instanceof FurnaceScreenHandler;
     }
 
+    boolean reachableFromHere(MinecraftClient client) {
+        if (spec.station == null) return false;
+        if (screen != null && client.player.currentScreenHandler == screen) return true;
+        if (client.player.isTouchingWater() || client.player.isClimbing()) return false;
+        return workstationHit(client, spec.station.target()) != null;
+    }
+
+    private static BlockHitResult workstationHit(MinecraftClient client, BlockPos target) {
+        var player = client.player;
+        var eye = player.getEyePos();
+        var center = Vec3d.ofCenter(target);
+        double reach = client.interactionManager.getReachDistance() - .1;
+        if (eye.squaredDistanceTo(center) > reach * reach) return null;
+        var hit = client.world.raycast(new RaycastContext(eye, center, RaycastContext.ShapeType.OUTLINE,
+                RaycastContext.FluidHandling.NONE, player));
+        return hit.getType() == HitResult.Type.BLOCK && target.equals(hit.getBlockPos()) ? hit : null;
+    }
+
     Result tick(MinecraftClient client, long now) {
         if (now < nextAction) return null;
         var target = spec.station == null ? null : spec.station.target();
@@ -95,15 +115,10 @@ final class ProjectProduction {
             opening = false;
         } else if (screen == null) {
             if (player.currentScreenHandler != player.playerScreenHandler) return failure("Another container is open");
-            Vec3d eye = player.getEyePos();
-            Vec3d center = Vec3d.ofCenter(target);
-            var hit = client.world.raycast(new RaycastContext(eye, center, RaycastContext.ShapeType.OUTLINE,
-                    RaycastContext.FluidHandling.NONE, player));
-            double reach = client.interactionManager.getReachDistance() - .1;
-            if (eye.squaredDistanceTo(center) > reach * reach || hit.getType() != HitResult.Type.BLOCK
-                    || !target.equals(hit.getBlockPos())) return failure("Workstation obstructed or out of reach");
+            var hit = workstationHit(client, target);
+            if (hit == null) return failure("Workstation obstructed or out of reach");
             opening = true;
-            player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, center);
+            player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, hit.getPos());
             client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
             nextAction = now + SETTLE;
             return null;

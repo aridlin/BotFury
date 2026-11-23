@@ -36,6 +36,7 @@ final class MiningTask {
         if (value) {
             stopPath();
             clearReservation();
+            minedDrops.reset();
             pickup = null;
             status = "Mining paused";
         } else nextSearch = 0;
@@ -43,6 +44,8 @@ final class MiningTask {
     private static BlockPos target;
     private static Vec3d stand,origin,pickup;
     private static int pickupUntil;
+    private static net.minecraft.item.Item projectDrop;
+    private static final DroppedItemSearch minedDrops = new DroppedItemSearch();
     private static BlockPos rememberedSite;
     private static int rememberedUntil;
     private static ProjectQueue.ResourceSite observedSite;
@@ -69,10 +72,13 @@ final class MiningTask {
         startMining(client, next, false, null);
     }
 
-    static void startProject(MinecraftClient client, Job next, ProjectGather.Area exclude, ProjectQueue.ResourceSite site) {
+    static void startProject(MinecraftClient client, Job next, ProjectGather.Area exclude, ProjectQueue.ResourceSite site,
+                             net.minecraft.item.Item drop) {
         stop();
         startMining(client, next, true, exclude);
-        if (job == null || site == null) return;
+        if (job == null) return;
+        projectDrop = drop;
+        if (site == null) return;
         var location = new BlockPos(site.x(), site.y(), site.z());
         if (client.world.isInBuildLimit(location) && client.world.getWorldBorder().contains(location)
                 && (exclude == null || !exclude.contains(location))) {
@@ -102,11 +108,13 @@ final class MiningTask {
     private static void fail(String reason){status=reason;BotEvents.add("warn","mining",reason);}
     static void stop(){
         if(job!=null){stopPath();var client=MinecraftClient.getInstance();if(client.interactionManager!=null)client.interactionManager.cancelBlockBreaking();release(job,leaseToken);}
+        minedDrops.reset();
+        projectDrop = null;
         job=null;generation++;target=null;stand=null;pickup=null;leaseToken=null;requesting=false;
         if(settings!=null){settings.close();settings=null;}
         if(!status.isEmpty())status="Mining stopped";
     }
-    static void onDeath(){if(job!=null&&!dead){dead=true;stopPath();clearReservation();pickup=null;status="Mining waits for respawn";}}
+    static void onDeath(){if(job!=null&&!dead){dead=true;stopPath();clearReservation();minedDrops.reset();pickup=null;status="Mining waits for respawn";}}
     static void tick(MinecraftClient client){
         if(job==null||paused)return;
         var here=LocalFormation.here();
@@ -121,9 +129,11 @@ final class MiningTask {
                 return;
             }
             if(!matches(client,target)){
-                pickup=Vec3d.ofBottomCenter(target);pickupUntil=age+60;
+                pickup=Vec3d.ofBottomCenter(target);pickupUntil=age+(projectDrop==null?60:100);
                 clearReservation();nextSearch=age+12;
-                pickupPath();return;
+                if (projectDrop == null) pickupPath();
+                else stopPath();
+                return;
             }
             if(age>=nextRenew&&!requesting){request(client,target,stand,"renew");nextRenew=age+40;}
             if(System.currentTimeMillis()>=leaseUntil){stopPath();client.interactionManager.cancelBlockBreaking();status="Waiting for mining reservation";return;}
@@ -158,6 +168,16 @@ final class MiningTask {
             return;
         }
         if(pickup!=null){
+            if (projectDrop != null) {
+                var state = minedDrops.tick(client, projectDrop, pickup);
+                if (age >= pickupUntil || state == DroppedItemSearch.State.UNAVAILABLE
+                        || state == DroppedItemSearch.State.SEARCHING && age >= nextSearch) {
+                    minedDrops.reset();
+                    pickup = null;
+                    nextSearch = age + 1;
+                } else status = "Gathering mined drops";
+                return;
+            }
             if(age>=pickupUntil||(age>=nextSearch&&client.player.squaredDistanceTo(pickup)<1)){
                 pickup=null;stopPath();nextSearch=age+1;
             }else if(age%20==0)pickupPath();

@@ -1,6 +1,8 @@
 package com.botfury;
 
 import com.google.gson.*;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Vec3d;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.*;
@@ -14,7 +16,7 @@ final class BotTracker {
     record Bot(int port, String name, boolean reachable, boolean connected, boolean alive,
                double x, double y, double z, float health, float maxHealth, String server, String dimension,
                String mode, String state, String inventory, String mining, String build, boolean baritone,boolean defenseCapable,
-               Map<String,Integer> items, long contactAt, long positionAt, String error) {
+               Map<String,Integer> items, List<BlockPos> route, boolean inventoryCoordinates, long contactAt, long positionAt, String error) {
         boolean fresh() { return reachable && System.currentTimeMillis() - contactAt < 3000; }
         boolean sameWorld() {
             var here = LocalFormation.here();
@@ -94,11 +96,44 @@ final class BotTracker {
             Bot value=new Bot(port,name,true,connected,bool(s,"alive",true),x,y,z,(float)number(s,"health",0),(float)number(s,"maxHealth",20),
                 position?text(p,"server",""):old==null?"":old.server,position?text(p,"dimension",""):old==null?"":old.dimension,
                 text(s,"formation","idle"),text(s,"movementState",""),text(s,"inventoryTask",""),text(s,"miningTask",""),text(s,"build","0.2"),
-                p!=null&&bool(p,"baritone",false),bool(s,"taskDefenseCapable",false),s.has("items")?itemCounts(s):connected?null:old==null?null:old.items,now,position?now:old==null?0:old.positionAt,text(s,"lastEventLevel","info").equals("info")?"":text(s,"lastEvent",""));
+                p!=null&&bool(p,"baritone",false),bool(s,"taskDefenseCapable",false),s.has("items")?itemCounts(s):connected?null:old==null?null:old.items,
+                position ? route(s) : List.of(),bool(s,"inventoryCoordinates",false),now,position?now:old==null?0:old.positionAt,text(s,"lastEventLevel","info").equals("info")?"":text(s,"lastEvent",""));
             bots.put(port,value);return null;
         }).whenComplete((ignored,error)->{if(error!=null)offline(port);inflight.remove(port);});
     }
-    private static void offline(int port){bots.computeIfPresent(port,(p,b)->new Bot(b.port,b.name,false,b.connected,b.alive,b.x,b.y,b.z,b.health,b.maxHealth,b.server,b.dimension,b.mode,b.state,b.inventory,b.mining,b.build,b.baritone,b.defenseCapable,b.items,b.contactAt,b.positionAt,"Unreachable"));}
+    private static List<BlockPos> route(JsonObject status) {
+        if (!(status.get("route") instanceof JsonArray array) || array.size() > BaritoneClient.PATH_LIMIT) return List.of();
+        var points = new ArrayList<BlockPos>(array.size());
+        for (var entry : array) {
+            try {
+                if (!entry.isJsonPrimitive() || !entry.getAsJsonPrimitive().isNumber()) return List.of();
+                points.add(BlockPos.fromLong(entry.getAsLong()));
+            } catch (NumberFormatException invalid) {
+                return List.of();
+            }
+        }
+        return List.copyOf(points);
+    }
+
+    static CompletableFuture<Vec3d> recipientLocation(BotInventory.Destination destination, String name) {
+        return HTTP.sendAsync(request(destination.controller(), "/status").GET().build(), HttpResponse.BodyHandlers.ofString())
+                .handle((response, failure) -> {
+                    if (failure != null || response.statusCode() != 200) return null;
+                    try {
+                        var status = JsonParser.parseString(response.body()).getAsJsonObject();
+                        if (!name.equalsIgnoreCase(text(status, "player", "")) || bool(status, "managed", true)
+                                || !bool(status, "connected", false) || !bool(status, "alive", false)
+                                || !destination.server().equals(text(status, "server", ""))
+                                || !destination.dimension().equals(text(status, "dimension", ""))) return null;
+                        var point = new Vec3d(number(status, "x", Double.NaN), number(status, "y", Double.NaN), number(status, "z", Double.NaN));
+                        return BotInventory.validLocation(point) ? point : null;
+                    } catch (RuntimeException invalid) {
+                        return null;
+                    }
+                });
+    }
+
+    private static void offline(int port){bots.computeIfPresent(port,(p,b)->new Bot(b.port,b.name,false,b.connected,b.alive,b.x,b.y,b.z,b.health,b.maxHealth,b.server,b.dimension,b.mode,b.state,b.inventory,b.mining,b.build,b.baritone,b.defenseCapable,b.items,List.of(),b.inventoryCoordinates,b.contactAt,b.positionAt,"Unreachable"));}
     static void command(int port,String command){command(port,command,true);}
     private static void command(int port,String command,boolean report){
         Bot bot=bots.get(port);if(bot==null||!bot.fresh()){if(report)BotEvents.add("warn","bots","Bot is offline");return;}
@@ -109,12 +144,15 @@ final class BotTracker {
                 .handle((response,error)->{if(report)BotEvents.add(error!=null||response.statusCode()!=200?"warn":"info","bots",bot.name+": "+(error==null?response.body():"Command delivery failed"));refresh();return null;});
         });
     }
-    static int sendSelected(String command){
+    static int sendSelected(String command){return sendSelected(command, "");}
+    static int sendSelected(String command,String recipientCoordinates){
         var targets=targets();if(targets.isEmpty()){BotEvents.add("warn","bots","No tracked bots selected; open Bots and wait for discovery");return 0;}
         int sent=0;
         for(Bot bot:targets())if(bot.fresh()&&bot.connected&&bot.alive){
             if(command.startsWith("mining:")&&!bot.build.startsWith("0.3")){BotEvents.add("warn","mining",bot.name+": update this bot for coordinated mining");continue;}
-            LocalFormation.manage(bot.port,"task");command(bot.port,command);sent++;
+            LocalFormation.manage(bot.port,"task");
+            command(bot.port,bot.inventoryCoordinates ? command + recipientCoordinates : command);
+            sent++;
         }
         return sent;
     }

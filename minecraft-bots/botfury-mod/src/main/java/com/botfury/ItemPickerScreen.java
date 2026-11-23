@@ -14,7 +14,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.function.Consumer;
 
-final class ItemPickerScreen extends Screen {
+final class ItemPickerScreen extends FleetPanel {
     private record Entry(Item item, String id, String name, String words) {}
     private enum Category { All, Recent, Tools, Wood, Stone, Ores, Food, Blocks }
 
@@ -44,7 +44,7 @@ final class ItemPickerScreen extends Screen {
                 .sorted(Comparator.comparing(Entry::name).thenComparing(Entry::id)).toList();
     }
 
-    @Override protected void init() {
+    @Override protected void initPanel() {
         panelWidth = Math.min(540, width - 24);
         left = (width - panelWidth) / 2;
         columns = panelWidth >= 340 ? 2 : 1;
@@ -130,12 +130,12 @@ final class ItemPickerScreen extends Screen {
 
     @Override public boolean shouldPause() { return false; }
 
-    @Override public void render(DrawContext draw, int mouseX, int mouseY, float delta) {
+    @Override protected void renderPanel(DrawContext draw, int mouseX, int mouseY, float delta) {
         draw.fillGradient(0, 0, width, height, BotUiTheme.PANEL_BOTTOM, BotUiTheme.PANEL_TOP);
         draw.drawTextWithShadow(textRenderer, title, left, 17, BotUiTheme.TEXT);
         String count = filtered.size() + (filtered.size() == 1 ? " item" : " items");
         draw.drawText(textRenderer, count, left + panelWidth - textRenderer.getWidth(count), 17, BotUiTheme.MUTED, false);
-        super.render(draw, mouseX, mouseY, delta);
+        super.renderPanel(draw, mouseX, mouseY, delta);
         int hover = indexAt(mouseX, mouseY);
         for (int row = 0; row < rows(); row++) for (int col = 0; col < columns; col++) {
             int index = (firstRow + row) * columns + col;
@@ -173,14 +173,14 @@ final class ItemPickerScreen extends Screen {
         selected.accept(id);
     }
 
-    @Override public boolean mouseClicked(double x, double y, int button) {
+    @Override protected boolean panelMouseClicked(double x, double y, int button) {
         if (FormationClient.wheel.matchesMouse(button)) { close(); return true; }
         int index = indexAt(x, y);
         if (button == 0 && index >= 0) { choose(filtered.get(index).id); return true; }
-        return super.mouseClicked(x, y, button);
+        return super.panelMouseClicked(x, y, button);
     }
 
-    @Override public boolean mouseScrolled(double x, double y, double amount) {
+    @Override protected boolean panelMouseScrolled(double x, double y, double amount) {
         if (amount == 0 || y < listTop || y >= listTop + rows() * ROW_HEIGHT
                 || x < left || x > left + panelWidth) return false;
         firstRow = Math.max(0, Math.min(Math.max(0, totalRows() - rows()), firstRow + (amount > 0 ? -2 : 2)));

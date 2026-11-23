@@ -7,7 +7,7 @@ import net.minecraft.registry.Registries;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 
-final class ItemTrackingScreen extends Screen {
+final class ItemTrackingScreen extends FleetPanel {
     private final Screen parent;
     private static final int FIRST_ROW = 44;
     private static final int ROW_HEIGHT = 21;
@@ -15,7 +15,7 @@ final class ItemTrackingScreen extends Screen {
     ItemTrackingScreen(Screen parent) { super(Text.literal("Track items")); this.parent = parent; }
     @Override public boolean shouldPause() { return false; }
 
-    @Override protected void init() {
+    @Override protected void initPanel() {
         int x = width / 2 - 120;
         for (int index = 0; index < BotUiConfig.trackedItems.size(); index++) {
             String id = BotUiConfig.trackedItems.get(index);
@@ -38,7 +38,7 @@ final class ItemTrackingScreen extends Screen {
                 .dimensions(x + 124, row, 116, 20).build());
     }
 
-    @Override public void render(DrawContext draw, int x, int y, float delta) {
+    @Override protected void renderPanel(DrawContext draw, int x, int y, float delta) {
         draw.fill(0, 0, width, height, BotUiTheme.PANEL_TOP);
         draw.drawCenteredTextWithShadow(textRenderer, title, width / 2, 19, BotUiTheme.ACCENT);
         if (BotUiConfig.trackedItems.isEmpty()) {
@@ -51,12 +51,12 @@ final class ItemTrackingScreen extends Screen {
             draw.drawTextWithShadow(textRenderer, textRenderer.trimToWidth(item.getName().getString(), 154),
                     width / 2 - 99, row + 5, BotUiTheme.TEXT);
         }
-        super.render(draw, x, y, delta);
+        super.renderPanel(draw, x, y, delta);
     }
 
-    @Override public boolean mouseClicked(double x, double y, int button) {
+    @Override protected boolean panelMouseClicked(double x, double y, int button) {
         if (FormationClient.wheel.matchesMouse(button)) { close(); return true; }
-        return super.mouseClicked(x, y, button);
+        return super.panelMouseClicked(x, y, button);
     }
     @Override public void close() { client.setScreen(parent); }
 }

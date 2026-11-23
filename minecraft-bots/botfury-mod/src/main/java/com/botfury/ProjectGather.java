@@ -40,7 +40,10 @@ record ProjectGather(String resource, String variant, Identifier item, int count
         if (item == null || !Registries.ITEM.containsId(item) || item.equals(Identifier.of("minecraft", "air"))) {
             throw new IllegalArgumentException("Unknown gathering item");
         }
-        return new ProjectGather(payload.resource, payload.variant, item, payload.count, payload.exclude == null ? null : payload.exclude.checked());
+        String resource = payload.resource;
+        String flower = resource.equals("dropped") ? MaterialRecipe.flowerSource(item) : null;
+        if (flower != null) resource = flower;
+        return new ProjectGather(resource, payload.variant, item, payload.count, payload.exclude == null ? null : payload.exclude.checked());
     }
 
     int inventoryCount(MinecraftClient client) {

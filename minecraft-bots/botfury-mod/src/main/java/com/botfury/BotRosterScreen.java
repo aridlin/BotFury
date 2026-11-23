@@ -18,7 +18,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
-final class BotRosterScreen extends Screen {
+final class BotRosterScreen extends FleetPanel {
     private enum Tab { FLEET, PROJECTS, CHESTS, ACTIVITY }
     private enum GuideStep {
         PICK(Tab.FLEET, "Choose who gets orders",
@@ -44,7 +44,10 @@ final class BotRosterScreen extends Screen {
             this.detail = detail;
         }
     }
-    private record Row(String key, String title, String subtitle, int color) {}
+    private record Meter(float done, float working, float failed) {}
+    private record Row(String key, String title, String subtitle, int color, Meter meter) {
+        Row(String key, String title, String subtitle, int color) { this(key, title, subtitle, color, null); }
+    }
     private static final int ACCENT = BotUiTheme.ACCENT, TEXT = BotUiTheme.TEXT, MUTED = BotUiTheme.MUTED, RED = BotUiTheme.DANGER;
     private static final int MARGIN = 14, ROW_TOP = 69, ROW_HEIGHT = 30;
     private final Screen parent;
@@ -71,7 +74,7 @@ final class BotRosterScreen extends Screen {
 
     @Override public boolean shouldPause() { return false; }
 
-    @Override protected void init() {
+    @Override protected void initPanel() {
         if (guide != null) BotUiConfig.markFleetGuideSeen();
         int cell = (width - 2 * MARGIN - 12) / 4;
         var tabs = Tab.values();
@@ -122,6 +125,10 @@ final class BotRosterScreen extends Screen {
                     BotUiConfig.defense = !BotUiConfig.defense;
                     BotUiConfig.save();
                     BotTracker.sendDefenses();
+                    rebuild();
+                });
+                button("Paths " + (BotUiConfig.paths ? "on" : "off"), MARGIN + 185, y, 72, () -> {
+                    BotUiConfig.togglePaths();
                     rebuild();
                 });
                 button("Markers " + (BotUiConfig.esp ? "on" : "off"), MARGIN + 98, y, 82, () -> {
@@ -270,8 +277,12 @@ final class BotRosterScreen extends Screen {
                 var bots = BotTracker.all();
                 long connected = bots.stream().filter(bot -> bot.fresh() && bot.connected()).count();
                 rows.add(new Row("-1", "All bots", connected + " in game / " + bots.size() + " tracked", ACCENT));
-                for (var bot : bots) rows.add(new Row(Integer.toString(bot.port()), bot.name(), bot.summary(),
-                        bot.fresh() ? bot.alive() ? ACCENT : RED : MUTED));
+                for (var bot : bots) {
+                    var health = bot.fresh() && bot.connected() && bot.maxHealth() > 0
+                            ? new Meter(Math.max(0, bot.health() / bot.maxHealth()), 0, 0) : null;
+                    rows.add(new Row(Integer.toString(bot.port()), bot.name(), bot.summary(),
+                            bot.fresh() ? bot.alive() ? 0xFF000000 | WorldOverlays.pathColor(bot.port()) : RED : MUTED, health));
+                }
             }
             case PROJECTS -> {
                 var projects = new ArrayList<>(overview.projects());
@@ -280,9 +291,14 @@ final class BotRosterScreen extends Screen {
                     long done = completed(project);
                     String progress = done + " / " + project.jobs().size() + " jobs complete";
                     if (project.repeat() != null) progress = project.repeat().completed() + " batches complete";
-                    boolean failed = project.jobs().stream().anyMatch(job -> job.state() == ProjectQueue.State.FAILED);
-                    rows.add(new Row(project.id(), project.id(), failed ? "Needs attention · " + progress : progress,
-                            failed ? RED : ACCENT));
+                    int failed = 0, working = 0;
+                    for (var job : project.jobs()) {
+                        if (job.state() == ProjectQueue.State.FAILED) failed++;
+                        if (job.state() == ProjectQueue.State.LEASED) working++;
+                    }
+                    float total = Math.max(1, project.jobs().size());
+                    rows.add(new Row(project.id(), project.id(), failed > 0 ? "Needs attention · " + progress : progress,
+                            failed > 0 ? RED : ACCENT, new Meter(done / total, working / total, failed / total)));
                 }
             }
             case CHESTS -> overview.stock().entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry ->
@@ -309,7 +325,7 @@ final class BotRosterScreen extends Screen {
     private int detailLeft() { return MARGIN + listWidth() + 12; }
     private int visibleRows() { return Math.max(1, (height - ROW_TOP - 36) / ROW_HEIGHT); }
 
-    @Override public void render(DrawContext draw, int mouseX, int mouseY, float delta) {
+    @Override protected void renderPanel(DrawContext draw, int mouseX, int mouseY, float delta) {
         draw.fillGradient(0, 0, width, height, BotUiTheme.PANEL_TOP, BotUiTheme.PANEL_BOTTOM);
         var rows = rows();
         offset = Math.min(offset, Math.max(0, rows.size() - visibleRows()));
@@ -323,6 +339,7 @@ final class BotRosterScreen extends Screen {
             draw.fill(MARGIN, y, MARGIN + listWidth(), y + ROW_HEIGHT - 2, fill);
             line(draw, row.title, MARGIN + 7, y + 5, listWidth() - 14, row.color);
             line(draw, row.subtitle, MARGIN + 7, y + 17, listWidth() - 14, MUTED);
+            if (row.meter != null) meter(draw, row.meter, MARGIN + 3, y + ROW_HEIGHT - 4, listWidth() - 6);
         }
         if (rows.isEmpty()) line(draw, error.isEmpty() ? emptyLabel() : error, MARGIN + 3, ROW_TOP + 5, listWidth() - 6,
                 error.isEmpty() ? MUTED : RED);
@@ -337,7 +354,7 @@ final class BotRosterScreen extends Screen {
             line(draw, BotEvents.last, MARGIN + 2, height - (tab == Tab.FLEET ? 42 : 23),
                     tab == Tab.FLEET ? listWidth() : width - 2 * MARGIN - 90, BotEvents.lastLevel.equals("info") ? MUTED : RED);
         }
-        super.render(draw, mouseX, mouseY, delta);
+        super.renderPanel(draw, mouseX, mouseY, delta);
     }
 
     private int drawGuide(DrawContext draw) {
@@ -358,7 +375,7 @@ final class BotRosterScreen extends Screen {
         line(draw, guide == GuideStep.DONE ? "Fleet guide complete"
                         : "Fleet guide · " + (guide.ordinal() + 1) + " / " + GuideStep.DONE.ordinal(),
                 x + 8, y + 8, right - x - 16, ACCENT);
-        draw.enableScissor(x, y + 22, right, bottom);
+        clipPanel(draw, x, y + 22, right, bottom);
         int textY = y + 26;
         if (guide == GuideStep.HOLD || guide == GuideStep.RESUME) {
             String target = selection.get(Tab.FLEET);
@@ -395,6 +412,7 @@ final class BotRosterScreen extends Screen {
         int detailBottom = height - (guide != null ? 34 : tab == Tab.FLEET ? 120 : tab == Tab.PROJECTS ? 70 : 34);
         int w = width - x - MARGIN;
         var lines = new ArrayList<String>();
+        Map<String, Integer> items = Map.of();
         String heading = selected == null ? switch (tab) {
             case FLEET -> BotTracker.targetLabel();
             case PROJECTS -> "Select a project";
@@ -409,16 +427,22 @@ final class BotRosterScreen extends Screen {
                     lines.add(Math.round(bot.health()) + " / " + Math.round(bot.maxHealth()) + " HP");
                     lines.add(Math.round(bot.x()) + ", " + Math.round(bot.y()) + ", " + Math.round(bot.z()) + " · " + bot.dimension().replace("minecraft:", ""));
                 }
-                lines.add("Control · " + LocalFormation.overrideLabel(bot.port()));
-                if (bot.items() != null && !bot.items().isEmpty()) {
-                    lines.add("Inventory");
-                    appendItems(lines, bot.items());
-                }
+                String control = LocalFormation.overrideLabel(bot.port());
+                if (!control.isBlank()) lines.add("Control · " + control);
+                if (bot.items() != null) items = bot.items();
             } else lines.add("Actions apply to the fleet. Select a bot to control it individually.");
         } else if (selected != null) {
             switch (tab) {
                 case PROJECTS -> projectDetails(lines, selected.key);
-                case CHESTS -> chestDetails(lines, selected.key);
+                case CHESTS -> {
+                    var observation = overview.stock().get(selected.key);
+                    if (observation != null) {
+                        long age = Math.max(0, (System.currentTimeMillis() - observation.observedAt()) / 1000);
+                        lines.add("Last checked " + (age < 60 ? age + "s" : age / 60 + "m") + " ago");
+                        items = observation.report().items();
+                        if (items.isEmpty()) lines.add("Empty");
+                    }
+                }
                 case ACTIVITY -> lines.add(selected.subtitle);
                 default -> {}
             }
@@ -429,12 +453,30 @@ final class BotRosterScreen extends Screen {
         for (String detail : lines) {
             wrapped.addAll(textRenderer.wrapLines(Text.literal(detail), Math.max(1, w)));
         }
-        int shown = Math.max(1, (detailBottom - y) / 14);
-        detailLimit = Math.max(0, wrapped.size() - shown);
+        var stock = items.entrySet().stream().sorted(Map.Entry.comparingByKey()).toList();
+        int columns = Math.max(1, w / 44);
+        int textHeight = wrapped.size() * 14;
+        int gridHeight = (stock.size() + columns - 1) / columns * 25;
+        detailLimit = Math.max(0, textHeight + gridHeight - (detailBottom - y));
         detailOffset = Math.min(detailOffset, detailLimit);
-        for (int i = 0; i < shown && i + detailOffset < wrapped.size(); i++) {
-            draw.drawText(textRenderer, wrapped.get(i + detailOffset), x, y + i * 14, TEXT, false);
+        clipPanel(draw, x, y, x + w, detailBottom);
+        int lineY = y - detailOffset;
+        for (var detail : wrapped) {
+            if (lineY + 10 > y && lineY < detailBottom) draw.drawText(textRenderer, detail, x, lineY, TEXT, false);
+            lineY += 14;
         }
+        for (int i = 0; i < stock.size(); i++) {
+            int iconY = lineY + i / columns * 25;
+            if (iconY + 23 <= y || iconY >= detailBottom) continue;
+            var item = stock.get(i);
+            var id = Identifier.tryParse(item.getKey());
+            int iconX = x + i % columns * (w / columns);
+            if (id != null && Registries.ITEM.containsId(id)) {
+                draw.drawItem(Registries.ITEM.get(id).getDefaultStack(), iconX, iconY);
+            }
+            line(draw, item.getValue().toString(), iconX + 18, iconY + 5, w / columns - 18, TEXT);
+        }
+        draw.disableScissor();
     }
 
     private static long completed(ProjectQueue.Project project) {
@@ -454,22 +496,14 @@ final class BotRosterScreen extends Screen {
                 .forEach(job -> lines.add(job.worker() + " · " + job.work().id()));
     }
 
-    private void chestDetails(List<String> lines, String key) {
-        var observation = overview.stock().get(key);
-        if (observation == null) return;
-        long age = Math.max(0, (System.currentTimeMillis() - observation.observedAt()) / 1000);
-        lines.add("Last checked " + (age < 60 ? age + "s" : age / 60 + "m") + " ago");
-        if (observation.report().items().isEmpty()) lines.add("Empty");
-        appendItems(lines, observation.report().items());
-    }
-
-    private static void appendItems(List<String> lines, Map<String, Integer> items) {
-        items.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry -> {
-            var id = Identifier.tryParse(entry.getKey());
-            String name = id != null && Registries.ITEM.containsId(id)
-                    ? Registries.ITEM.get(id).getName().getString() : entry.getKey();
-            lines.add(entry.getValue() + " × " + name);
-        });
+    private void meter(DrawContext draw, Meter meter, int x, int y, int w) {
+        int done = x + Math.min(w, Math.round(w * meter.done));
+        int working = x + Math.min(w, Math.round(w * (meter.done + meter.working)));
+        int failed = x + Math.min(w, Math.round(w * (meter.done + meter.working + meter.failed)));
+        draw.fill(x, y, x + w, y + 2, BotUiTheme.EDGE);
+        draw.fill(x, y, done, y + 2, 0xFF89C6A0);
+        draw.fill(done, y, working, y + 2, ACCENT);
+        draw.fill(working, y, failed, y + 2, RED);
     }
 
     private static String location(String key) { return key.replace("block:", "").replace(",", ", "); }
@@ -478,7 +512,7 @@ final class BotRosterScreen extends Screen {
         draw.drawText(textRenderer, textRenderer.trimToWidth(text, Math.max(1, room)), x, y, color, false);
     }
 
-    @Override public boolean mouseClicked(double x, double y, int button) {
+    @Override protected boolean panelMouseClicked(double x, double y, int button) {
         if (FormationClient.wheel.matchesMouse(button)) { close(); return true; }
         if (button == 0 && x >= MARGIN && x < MARGIN + listWidth() && y >= ROW_TOP) {
             int row = (int)(y - ROW_TOP) / ROW_HEIGHT;
@@ -489,12 +523,12 @@ final class BotRosterScreen extends Screen {
                 return true;
             }
         }
-        return super.mouseClicked(x, y, button);
+        return super.panelMouseClicked(x, y, button);
     }
 
-    @Override public boolean mouseScrolled(double x, double y, double amount) {
+    @Override protected boolean panelMouseScrolled(double x, double y, double amount) {
         if (x >= detailLeft()) {
-            detailOffset = Math.max(0, Math.min(detailLimit, detailOffset + (amount > 0 ? -2 : 2)));
+            detailOffset = Math.max(0, Math.min(detailLimit, detailOffset + (amount > 0 ? -25 : 25)));
             return true;
         }
         offset = Math.max(0, Math.min(Math.max(0, rows().size() - visibleRows()), offset + (amount > 0 ? -1 : 1)));

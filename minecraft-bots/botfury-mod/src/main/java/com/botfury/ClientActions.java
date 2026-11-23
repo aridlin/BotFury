@@ -26,7 +26,7 @@ final class ClientActions {
             case "gather", "spread" -> inventory(client, action, "minecraft:air", 1);
             case "hud" -> BotUiConfig.toggle();
             case "esp" -> BotUiConfig.toggleEsp();
-            case "bots" -> client.setScreen(new BotRosterScreen(null));
+            case "bots" -> FormationClient.openRoster();
             case "resume" -> BotTracker.manageSelected("resume");
             case "status" -> message(client, "BotFury · " + LocalFormation.mode() + " · " + LocalFormation.peers()
                     + " bots · " + LocalFormation.stage());
@@ -49,7 +49,16 @@ final class ClientActions {
         try {
             BotInventory.parse(action + "|" + item + "|" + count + "|" + name);
             String command="inventory:" + action + "|" + item + "|" + count + "|" + name;
-            if(BotTracker.targets().isEmpty())LocalFormation.fleetCommand(command);else BotTracker.sendSelected(command);
+            var here = LocalFormation.here();
+            int port = BotFuryMod.controlPort();
+            String coordinates = "";
+            if ((action.equals("gather") || action.equals("deliver")) && here != null && port >= 1024) {
+                coordinates = "|" + here.server() + "|" + here.dimension() + "|" + here.x() + "|" + here.y() + "|" + here.z() + "|" + port;
+            }
+            if (BotTracker.targets().isEmpty()) LocalFormation.fleetCommand(command);
+            else if (BotTracker.sendSelected(command, coordinates) > 0 && !item.equals("minecraft:air")) {
+                BotUiConfig.trackRequest(java.util.List.of(item));
+            }
         } catch (IllegalArgumentException error) { message(client, error.getMessage()); }
     }
     static void friend(MinecraftClient client, String operation, String name) {

@@ -45,6 +45,7 @@ final class OutputOrder {
             var plan = plan(storage, chest, table, furnace, item, batch, stackSize, Math.max(1, selected), steps);
             String id = "output-" + UUID.randomUUID().toString().substring(0, 8);
             ProjectBroker.submitOutput(id, here, plan);
+            BotUiConfig.trackRequest(List.of(item.toString()));
             int workers = BotTracker.sendSelected("project:worker " + port);
             String method = steps.usesDroppedItems() ? " (carried or dropped items)" : "";
             ClientActions.message(client, "Queued " + id + " for batches of " + batch + " " + item

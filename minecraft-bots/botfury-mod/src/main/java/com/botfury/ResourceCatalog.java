@@ -15,6 +15,11 @@ final class ResourceCatalog {
             list.add(new Resource(wood,title(wood),"Wood",List.of("minecraft:"+wood+"_log","minecraft:"+wood+"_wood"),List.of()));
         for(String stone:List.of("stone","deepslate","granite","diorite","andesite","tuff","calcite","sandstone","netherrack","end_stone"))
             list.add(new Resource(stone,title(stone),"Stone",List.of("minecraft:"+stone),List.of()));
+        for (String category : List.of("Wood", "Stone")) {
+            var members = list.stream().filter(resource -> resource.category.equals(category)).flatMap(resource -> resource.normal.stream()).toList();
+            list.add(0, new Resource("any_" + category.toLowerCase(Locale.ROOT), "Any " + category.toLowerCase(Locale.ROOT),
+                    category, members, List.of()));
+        }
         RESOURCES=List.copyOf(list);
     }
     static String title(String id){String text=id.replace('_',' ');return Character.toUpperCase(text.charAt(0))+text.substring(1);}
@@ -32,5 +37,22 @@ final class ResourceCatalog {
             return resource.deepslate;
         }
         var result=new ArrayList<>(resource.normal);result.addAll(resource.deepslate);return List.copyOf(result);
+    }
+
+    static List<String> trackedDrops(String resource, String variant) {
+        var items = new LinkedHashSet<String>();
+        String drop = switch (resource) {
+            case "iron", "copper", "gold" -> "raw_" + resource;
+            case "lapis" -> "lapis_lazuli";
+            case "nether_gold" -> "gold_nugget";
+            case "stone" -> "cobblestone";
+            case "deepslate" -> "cobbled_deepslate";
+            case "coal", "redstone", "diamond", "emerald", "quartz" -> resource;
+            default -> null;
+        };
+        if (drop != null) items.add("minecraft:" + drop);
+        if (resource.equals("any_stone")) items.addAll(List.of("minecraft:cobblestone", "minecraft:cobbled_deepslate"));
+        items.addAll(blocks(resource, variant));
+        return List.copyOf(items);
     }
 }

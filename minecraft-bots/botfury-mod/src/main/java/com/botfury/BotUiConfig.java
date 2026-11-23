@@ -9,11 +9,30 @@ import java.util.Map;
 final class BotUiConfig {
     static boolean hud = true;
     static boolean esp = true;
+    static boolean paths = true;
     static boolean defense;
     static boolean fleetGuideSeen;
     static String item = "";
     static final int TRACK_LIMIT = 6;
     static final List<String> trackedItems = new ArrayList<>();
+    private static List<String> requestedItems = List.of();
+    record Tracked(String icon, List<String> items) {
+        int count(Map<String, Integer> inventory) {
+            return items.stream().mapToInt(id -> inventory.getOrDefault(id, 0)).sum();
+        }
+    }
+    static void trackRequest(List<String> ids) {
+        requestedItems = ids.stream().filter(id -> {
+            var item = net.minecraft.util.Identifier.tryParse(id);
+            return item != null && !id.equals("minecraft:air") && net.minecraft.registry.Registries.ITEM.containsId(item);
+        }).distinct().toList();
+    }
+    static List<Tracked> displayedItems() {
+        var result = new ArrayList<Tracked>();
+        if (!requestedItems.isEmpty()) result.add(new Tracked(requestedItems.get(0), requestedItems));
+        for (String id : trackedItems) if (!requestedItems.contains(id)) result.add(new Tracked(id, List.of(id)));
+        return result;
+    }
     static boolean mouseMigrated;
     private static Path path() {
         return LocalFormation.settingsPath().toAbsolutePath().resolveSibling("botfury-ui.json");
@@ -22,6 +41,7 @@ final class BotUiConfig {
         try {
             var value = new Gson().fromJson(Files.readString(path()), com.google.gson.JsonObject.class);
             if (value.has("hud")) hud = value.get("hud").getAsBoolean();
+            if (value.has("paths")) paths = value.get("paths").getAsBoolean();
             if (value.has("esp")) esp = value.get("esp").getAsBoolean();
             if (value.has("defense")) defense = value.get("defense").getAsBoolean();
             if (value.has("fleetGuideSeen")) fleetGuideSeen = value.get("fleetGuideSeen").getAsBoolean();
@@ -45,6 +65,7 @@ final class BotUiConfig {
         hud = !hud;
         save();
     }
+    static void togglePaths() { paths = !paths; save(); }
     static void toggleEsp() { esp = !esp; save(); }
     static void markFleetGuideSeen() {
         if (fleetGuideSeen) return;
@@ -60,7 +81,7 @@ final class BotUiConfig {
     }
 
     static void save() {
-        try { Files.createDirectories(path().getParent()); Files.writeString(path(), new Gson().toJson(Map.of("hud", hud, "esp", esp, "item", item, "trackedItems", trackedItems, "defense", defense, "fleetGuideSeen", fleetGuideSeen))); }
+        try { Files.createDirectories(path().getParent()); Files.writeString(path(), new Gson().toJson(Map.of("hud", hud, "esp", esp, "paths", paths, "item", item, "trackedItems", trackedItems, "defense", defense, "fleetGuideSeen", fleetGuideSeen))); }
         catch (Exception error) { BotEvents.add("warn", "settings", "Could not save HUD preference"); }
     }
 }

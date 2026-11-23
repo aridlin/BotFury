@@ -214,12 +214,24 @@ final class MaterialRecipe {
         if (ORES.containsKey(id)) return ORES.get(id);
         if (!(Registries.ITEM.get(item) instanceof BlockItem block)
                 || !item.equals(Registries.BLOCK.getId(block.getBlock()))) return null;
+        String flower = flowerSource(item);
+        if (flower != null) return flower;
         if (id.endsWith("_log") && !id.startsWith("stripped_")
                 || id.equals("crimson_stem") || id.equals("warped_stem")
                 || Set.of("dirt", "sand", "red_sand", "gravel", "granite", "diorite", "andesite", "tuff",
                         "calcite", "sandstone", "red_sandstone", "netherrack", "end_stone", "basalt", "blackstone",
                         "obsidian", "amethyst_block", "mud", "soul_sand", "soul_soil",
                         "terracotta").contains(id)) {
+            return "block:" + item;
+        }
+        return null;
+    }
+
+    static String flowerSource(Identifier item) {
+        if (Registries.ITEM.get(item) instanceof BlockItem itemBlock
+                && item.equals(Registries.BLOCK.getId(itemBlock.getBlock()))
+                && (itemBlock.getBlock() instanceof net.minecraft.block.FlowerBlock
+                    || itemBlock.getBlock() instanceof net.minecraft.block.TallFlowerBlock)) {
             return "block:" + item;
         }
         return null;

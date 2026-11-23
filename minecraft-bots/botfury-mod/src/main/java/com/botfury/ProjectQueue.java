@@ -80,6 +80,7 @@ final class ProjectQueue {
             }
         }
     }
+    private record GatherSource(String resource, String variant, String item) {}
     record ChestReport(String location, Map<String, Integer> items, Integer free) {
         ChestReport(String location, Map<String, Integer> items) { this(location, items, null); }
 
@@ -361,12 +362,34 @@ final class ProjectQueue {
                 if (job.work.sameWorkerAs != null
                         && !worker.equalsIgnoreCase(find(project, job.work.sameWorkerAs).worker)) continue;
                 Job assigned = new Job(job.work, State.LEASED, job.attempts + 1, worker,
-                        UUID.randomUUID(), now + LEASE_MS, null, job.chest, job.resourceSite);
+                        UUID.randomUUID(), now + LEASE_MS, null, job.chest, gatheringSite(project, job));
                 replace(project, assigned);
                 return new Assignment(project.id, project.world, assigned);
             }
         }
         return null;
+    }
+
+    private static ResourceSite gatheringSite(Project project, Job job) {
+        if (job.resourceSite != null || job.work.kind != Kind.GATHER) return job.resourceSite;
+        var source = gatherSource(job.work.payload);
+        if (source == null) return null;
+        for (int index = project.jobs.size() - 1; index >= 0; index--) {
+            var previous = project.jobs.get(index);
+            if (previous.state == State.DONE && previous.work.kind == Kind.GATHER && previous.resourceSite != null
+                    && source.equals(gatherSource(previous.work.payload))) return previous.resourceSite;
+        }
+        return null;
+    }
+
+    private static GatherSource gatherSource(String payload) {
+        try {
+            var source = JSON.fromJson(payload, GatherSource.class);
+            return source != null && source.resource != null && !source.resource.equals("dropped")
+                    && source.variant != null && source.item != null ? source : null;
+        } catch (JsonParseException invalid) {
+            return null;
+        }
     }
 
     private static boolean settled(String id, Set<String> done, Set<String> blocked) {

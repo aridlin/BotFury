@@ -20,6 +20,7 @@ import org.lwjgl.glfw.GLFW;
 final class FormationClient {
     static KeyBinding wheel, quick;
     private static boolean pendingWheel;
+    private static boolean pendingTutorial;
     private FormationClient() {}
     private static int submitStructure(
             com.mojang.brigadier.context.CommandContext<net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource> context,
@@ -37,6 +38,10 @@ final class FormationClient {
             var root = ClientCommandManager.literal("bf").executes(context -> { open(context.getSource().getClient()); return 1; });
             for (String action : new String[]{"saturn", "lightning", "stop", "scatter", "gather", "spread", "hud", "esp", "bots", "resume", "status", "help"})
                 root.then(ClientCommandManager.literal(action).executes(context -> { ClientActions.action(context.getSource().getClient(), action); return 1; }));
+            root.then(ClientCommandManager.literal("tutorial").executes(context -> {
+                pendingTutorial = true;
+                return 1;
+            }));
             var inventory = ClientCommandManager.literal("inventory");
             for (String action : new String[]{"collect", "deliver", "keep", "only", "drop"}) {
                 var itemArgument = ClientCommandManager.argument("item", net.minecraft.command.argument.IdentifierArgumentType.identifier())
@@ -135,8 +140,11 @@ final class FormationClient {
             LocalFormation.tick(client);
             while (wheel.wasPressed()) if (client.player != null && client.currentScreen == null) open(client);
             while (quick.wasPressed()) if (client.player != null && client.currentScreen == null) quick(client);
-            if (client.player == null) pendingWheel = false;
-            else if (pendingWheel && client.currentScreen == null) {
+            if (client.player == null) pendingWheel = pendingTutorial = false;
+            else if (pendingTutorial && client.currentScreen == null) {
+                pendingTutorial = pendingWheel = false;
+                client.setScreen(new BotRosterScreen(null, true));
+            } else if (pendingWheel && client.currentScreen == null) {
                 pendingWheel = false;
                 client.setScreen(new CommandWheel(wheel.isPressed()));
             }

@@ -9,7 +9,6 @@ import net.minecraft.block.FallingBlock;
 import net.minecraft.block.SlabBlock;
 import net.minecraft.block.TrapdoorBlock;
 import net.minecraft.block.enums.ChestType;
-import net.minecraft.block.enums.SlabType;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.nbt.*;
 import net.minecraft.registry.Registries;
@@ -750,7 +749,7 @@ final class StructureProject {
                 if (stand != null) return new BuildPose(stand, face, support, exposed, accessRoutes.get(stand));
             }
         }
-        boolean supportsEdgePlacement = placement.getBlock() instanceof TrapdoorBlock
+        boolean supportsEdgePlacement = placement.getBlock() instanceof TrapdoorBlock || placement.getBlock() instanceof SlabBlock
                 || placement.isFullCube(client.world, cell.pos) && !(placement.getBlock() instanceof FallingBlock);
         if (current == null || !supportsEdgePlacement) return null;
         for (Direction face : ProjectPlacement.faces(placement)) {
@@ -761,8 +760,7 @@ final class StructureProject {
                     || !safeStand(client, stand, current)
                     || !airAt(client, cell.pos.up(), current) || !airAt(client, cell.pos.up(2), current)) continue;
             var floor = current.getOrDefault(support, client.world.getBlockState(support));
-            if (!floor.isFullCube(client.world, support)
-                    || !ProjectPlacement.support(floor, placement, face, client.world, support)) continue;
+            if (!ProjectPlacement.support(floor, placement, face, client.world, support)) continue;
             // A crouched player can reach the side while their feet still overlap the supporting block.
             var eye = ProjectBlock.edgePosition(stand, face).add(0, 1.27, 0);
             var click = ProjectPlacement.facePoint(support, face, floor, placement);
@@ -984,9 +982,7 @@ final class StructureProject {
         var below = stand.down();
         var above = stand.up();
         var floor = layout.getOrDefault(below, world.getBlockState(below));
-        boolean flushSurface = floor.isFullCube(world, below)
-                || floor.getBlock() instanceof SlabBlock && floor.get(SlabBlock.TYPE) == SlabType.TOP;
-        return flushSurface && floor.getFluidState().isEmpty()
+        return ProjectPlacement.flushFloor(floor, world, below)
                 && airAt(client, stand, layout) && airAt(client, above, layout);
     }
 

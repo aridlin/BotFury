@@ -345,7 +345,7 @@ final class ProjectWorker {
         }
         stableSince = 0;
         if (kind == ProjectQueue.Kind.BUILD) {
-            if (edge && (!client.world.getBlockState(block.support()).isFullCube(client.world, block.support())
+            if (edge && (!ProjectPlacement.flushFloor(client.world.getBlockState(block.support()), client.world, block.support())
                     || !client.world.getBlockState(target.up()).isAir()
                     || !client.world.getBlockState(target.up(2)).isAir())) {
                 finish(client, false, "Edge placement needs a solid floor and clear space");

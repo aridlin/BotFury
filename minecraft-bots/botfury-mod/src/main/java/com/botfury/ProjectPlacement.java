@@ -66,6 +66,11 @@ final class ProjectPlacement {
         return supported(state) && (container(state) || ProjectShapedBlock.recognized(state) || state.isFullCube(world, pos));
     }
 
+    static boolean flushFloor(BlockState state, BlockView world, BlockPos pos) {
+        return state.getFluidState().isEmpty() && (state.isFullCube(world, pos)
+                || state.getBlock() instanceof SlabBlock && state.get(SlabBlock.TYPE) == SlabType.TOP);
+    }
+
     static boolean support(BlockState state, BlockState desired, Direction face, BlockView world, BlockPos pos) {
         if (desired.isOf(Blocks.CHEST) && desired.get(ChestBlock.CHEST_TYPE) != ChestType.SINGLE) {
             return state.equals(singleChest(desired));

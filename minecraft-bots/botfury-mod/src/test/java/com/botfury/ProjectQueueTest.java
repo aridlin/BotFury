@@ -18,6 +18,24 @@ class ProjectQueueTest {
         return new ProjectQueue.Work(id, kind, "", needs, Set.of(locks));
     }
 
+    @Test void scopedWorkersSkipOtherProjectsAndKeepTheirScopeAcrossLeaseExpiry() throws Exception {
+        var journal = directory.resolve("scoped-board.json");
+        var board = new ProjectQueue(journal);
+        board.submit("diamonds", WORLD, List.of(job("gather-diamonds", GATHER, List.of())));
+        board.submit("sunflowers", WORLD, List.of(job("gather-sunflowers", GATHER, List.of())));
+
+        var oldLease = board.claim(WORLD, "Bot02", Set.of(GATHER), 1);
+        assertEquals("diamonds", oldLease.project());
+        assertNull(board.claim(WORLD, "Bot02", Set.of(GATHER), "sunflowers", 2));
+        board = new ProjectQueue(journal);
+        var sunflowerLease = board.claim(WORLD, "Bot02", Set.of(GATHER), "sunflowers", oldLease.job().expiresAt() + 1);
+        assertEquals("sunflowers", sunflowerLease.project());
+        assertTrue(board.finish("sunflowers", "gather-sunflowers", sunflowerLease.job().lease(), true,
+                "Gathered sunflowers", oldLease.job().expiresAt() + 2));
+        assertNull(board.claim(WORLD, "Bot02", Set.of(GATHER), "sunflowers", oldLease.job().expiresAt() + 3));
+        assertEquals("diamonds", board.claim(WORLD, "Bot03", Set.of(GATHER), oldLease.job().expiresAt() + 4).project());
+    }
+
     @Test void largeInspectionWaitsForAllPlacementsAcrossReopen() throws Exception {
         var journal = directory.resolve("large-board.json");
         var placements = java.util.stream.IntStream.range(0, 300)

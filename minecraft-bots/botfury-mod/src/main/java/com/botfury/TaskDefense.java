@@ -40,11 +40,15 @@ final class TaskDefense {
         if(pathPaused){BaritoneClient.execute("resume");pathPaused=false;}
         return false;
     }
+    static boolean defendProject(MinecraftClient client) {
+        return eligible(client, true) && client.player.currentScreenHandler == client.player.playerScreenHandler
+                && LocalFormation.defend(client, config.owner, config.protectedNames,
+                other -> other instanceof net.minecraft.entity.mob.Monster
+                        && !(other instanceof net.minecraft.entity.mob.CreeperEntity));
+    }
+
     static boolean tick(MinecraftClient client,boolean working){
-        var here=LocalFormation.here();
-        if(!working||!Boolean.getBoolean("botfury.managedHttp")||!enabled()||here==null
-                ||client.player==null||client.world==null||!client.player.isAlive()
-                ||!config.server.equals(here.server())||!config.dimension.equals(here.dimension()))return false;
+        if(!eligible(client,working))return false;
         var safe=new java.util.ArrayList<>(config.protectedNames);
         if(!BotInventory.recipient().isEmpty())safe.add(BotInventory.recipient());
         return LocalFormation.defend(client,config.owner,safe);

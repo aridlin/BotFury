@@ -9,12 +9,17 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 
 /** Explicit opt-in for one local coordinator, player and Minecraft world. */
-record WorkerEnrollment(String name, String world, int port) {
+record WorkerEnrollment(String name, String world, int port, String project) {
     private static final Gson JSON = new Gson();
+
+    WorkerEnrollment(String name, String world, int port) {
+        this(name, world, port, null);
+    }
 
     WorkerEnrollment {
         if (name == null || !name.matches("[A-Za-z0-9_]{1,16}") || world == null || world.isBlank()
-                || world.length() > 240 || port < 1024 || port > 65535) {
+                || world.length() > 240 || port < 1024 || port > 65535
+                || project != null && !ProjectQueue.validId(project)) {
             throw new IllegalArgumentException("Invalid project worker enrollment");
         }
     }

@@ -198,9 +198,14 @@ final class ProjectQueue {
     }
 
     synchronized boolean cancelOutput(String world, String chest) throws IOException {
+        return cancelOutput(world, chest, null);
+    }
+
+    synchronized boolean cancelOutput(String world, String chest, String projectId) throws IOException {
         for (Project project : projects.values()) {
             var repeat = project.repeat;
-            if (!project.world.equals(world) || repeat == null || repeat.cancelled || !repeat.chest.equals(chest)) continue;
+            if (!project.world.equals(world) || repeat == null || repeat.cancelled || !repeat.chest.equals(chest)
+                    || projectId != null && !projectId.equals(project.id)) continue;
             var cancelled = new Repeat(repeat.batch, repeat.item, repeat.chest, repeat.completed, repeat.lastStock, true, repeat.capacity);
             commit(new Project(project.id, project.world, project.jobs, cancelled, project.supplyChest, project.supplyRecoveries));
             return true;
@@ -284,10 +289,15 @@ final class ProjectQueue {
     }
 
     synchronized Assignment claim(String world, String worker, Set<Kind> kinds, long now) throws IOException {
-        if (world == null || !validId(worker) || kinds == null || kinds.isEmpty()) {
+        return claim(world, worker, kinds, null, now);
+    }
+
+    synchronized Assignment claim(String world, String worker, Set<Kind> kinds, String projectId, long now) throws IOException {
+        if (world == null || !validId(worker) || kinds == null || kinds.isEmpty()
+                || projectId != null && !validId(projectId)) {
             throw new IllegalArgumentException("Invalid worker or world");
         }
-        markSeen(world, worker, now);
+        markSeen(world, worker, projectId, now);
         expire(now);
         recoverMissingSuppliers(world, now);
         Set<String> reserved = new HashSet<>();
@@ -308,6 +318,7 @@ final class ProjectQueue {
                 if (worker.equalsIgnoreCase(job.worker)) {
                     // A claim response can be lost. Repeating a claim returns the original assignment.
                     return world.equals(project.world) && kinds.contains(job.work.kind) && !cancelled(project)
+                            && (projectId == null || projectId.equals(project.id))
                             ? new Assignment(project.id, project.world, job) : null;
                 }
                 if (world.equals(project.world)) reserved.addAll(job.work.locks);
@@ -318,7 +329,8 @@ final class ProjectQueue {
         Project ownedOrder = null;
         String ownedLane = null;
         for (Project project : projects.values()) {
-            if (!world.equals(project.world) || cancelled(project) || project.repeat == null) continue;
+            if (!world.equals(project.world) || cancelled(project) || project.repeat == null
+                    || projectId != null && !projectId.equals(project.id)) continue;
             var pinned = project.jobs.stream().filter(job -> job.state == State.WAITING
                     && job.work.sameWorkerAs != null && worker.equalsIgnoreCase(find(project, job.work.sameWorkerAs).worker)
                     && find(project, job.work.sameWorkerAs).state == State.DONE).findFirst();
@@ -329,7 +341,8 @@ final class ProjectQueue {
             }
         }
         for (Project project : projects.values()) {
-            if (!world.equals(project.world) || cancelled(project) || (ownedOrder != null && ownedOrder != project)) continue;
+            if (!world.equals(project.world) || cancelled(project) || (ownedOrder != null && ownedOrder != project)
+                    || projectId != null && !projectId.equals(project.id)) continue;
             Set<String> done = new HashSet<>();
             for (Job job : project.jobs) if (job.state == State.DONE) done.add(job.work.id);
             var blocked = blockedJobs(project);
@@ -394,7 +407,7 @@ final class ProjectQueue {
         Job renewed = new Job(job.work, State.LEASED, job.attempts, job.worker,
                 job.lease, now + LEASE_MS, null, job.chest, gatheringSite(job, site));
         replace(project, renewed);
-        markSeen(project.world, job.worker, now);
+        markSeen(project.world, job.worker, project.id, now);
         return renewed;
     }
 
@@ -442,7 +455,7 @@ final class ProjectQueue {
                 throw new IllegalArgumentException("Pickup shortfall requires a failed transfer and chest observation");
             }
             if (recoverShortPickup(project, job, evidence, observation)) {
-                markSeen(project.world, job.worker, now);
+                markSeen(project.world, job.worker, project.id, now);
                 return true;
             }
         }
@@ -460,7 +473,7 @@ final class ProjectQueue {
                             ? new Job(entry.work, State.WAITING, 0, null, null, 0, null, null, entry.resourceSite) : entry).toList();
             commit(new Project(project.id, project.world, reset, next, project.supplyChest, project.supplyRecoveries));
         } else replace(project, result);
-        markSeen(project.world, job.worker, now);
+        markSeen(project.world, job.worker, project.id, now);
         return true;
     }
 
@@ -525,12 +538,12 @@ final class ProjectQueue {
         latest.merge(observation.report.location, observation, (a, b) -> a.observedAt > b.observedAt ? a : b);
     }
 
-    private static String workerKey(String world, String worker) {
-        return world + "\n" + worker.toLowerCase(Locale.ROOT);
+    private static String workerKey(String world, String worker, String project) {
+        return world + "\n" + worker.toLowerCase(Locale.ROOT) + "\n" + (project == null ? "" : project);
     }
 
-    private void markSeen(String world, String worker, long now) {
-        workerSeen.put(workerKey(world, worker), now);
+    private void markSeen(String world, String worker, String project, long now) {
+        workerSeen.put(workerKey(world, worker, project), now);
     }
 
     private boolean recoverShortPickup(Project project, Job pickup, String evidence, ChestObservation observation)
@@ -556,9 +569,10 @@ final class ProjectQueue {
                 if (job.state != State.WAITING || job.work.sameWorkerAs == null
                         || !job.work.needs.stream().allMatch(id -> jobs.get(id).state == State.DONE)) continue;
                 var supplier = jobs.get(job.work.sameWorkerAs);
-                var key = workerKey(world, supplier.worker);
+                var key = workerKey(world, supplier.worker, project.id);
                 // After a coordinator restart, give workers the full window to reconnect.
-                long seen = workerSeen.computeIfAbsent(key, ignored -> now);
+                long seen = Math.max(workerSeen.computeIfAbsent(key, ignored -> now),
+                        workerSeen.getOrDefault(workerKey(world, supplier.worker, null), 0L));
                 if (now - seen < SUPPLIER_OFFLINE_MS) continue;
                 if (rewindSupply(project, job, supplier, jobs, "Supplier " + supplier.worker + " went offline",
                         job.chest)) break;
@@ -704,7 +718,7 @@ final class ProjectQueue {
         }
     }
 
-    private static boolean validId(String id) {
+    static boolean validId(String id) {
         return id != null && id.matches("[A-Za-z0-9_-]{1,64}");
     }
 }

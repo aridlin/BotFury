@@ -28,7 +28,7 @@ final class BotRosterScreen extends FleetPanel {
         RESUME(null, "Hand control back",
                 "Try Practice Resume. The real button clears a manual hold so those bots can take work again. If a bot is offline, check its status and use Join my world."),
         BUILDS(Tab.PROJECTS, "Queue a build and follow its progress",
-                "Open Projects. New build opens the schematic picker. Assign workers enrolls the selected bots. Select a project to see its completed jobs, current workers, and any failures."),
+                "Open Projects and choose Build schematic. Select a project to see its progress, or use Assign bots to send the selected fleet to that project."),
         STOCK(Tab.CHESTS, "Check shared supplies",
                 "Open Chests. Select a chest by its coordinates to see the last counted items and when a worker checked them. Check the age before relying on the count."),
         LOG(Tab.ACTIVITY, "Find out why work stopped",
@@ -58,6 +58,7 @@ final class BotRosterScreen extends FleetPanel {
     private String world, error = "", filter = "";
     private TextFieldWidget search;
     private TextFieldWidget command;
+    private BotUiButton assign, stopOrder;
     private int offset, detailOffset, detailLimit;
     private GuideStep guide;
 
@@ -103,6 +104,7 @@ final class BotRosterScreen extends FleetPanel {
         int y = height - 30;
         button("Back", width - MARGIN - 82, y, 82, this::close);
         command = null;
+        assign = stopOrder = null;
         if (guide != null) {
             button(guide == GuideStep.DONE ? "Done" : "Skip guide", MARGIN, y, 93, this::endGuide);
             if (tab == Tab.FLEET && (guide == GuideStep.HOLD || guide == GuideStep.RESUME)) {
@@ -136,8 +138,13 @@ final class BotRosterScreen extends FleetPanel {
                     rebuild();
                 });
             }
-            case PROJECTS -> controls(2, "New build…", () -> client.setScreen(new SchematicQueueScreen(this)),
-                    "Assign workers", this::assignWorkers);
+            case PROJECTS -> {
+                int w = width - detailLeft() - MARGIN;
+                button("Build schematic…", detailLeft(), 42, w, () -> client.setScreen(new SchematicQueueScreen(this))).emphasize();
+                int half = (w - 5) / 2;
+                assign = button("Assign bots", detailLeft(), height - 63, half, this::assignWorkers);
+                stopOrder = button("Stop order", detailLeft() + half + 5, height - 63, w - half - 5, this::stopOutput);
+            }
             case ACTIVITY -> {
                 command = addDrawableChild(new TextFieldWidget(textRenderer, MARGIN, y, width - 2 * MARGIN - 144,
                         21, Text.literal("Baritone command")));
@@ -218,11 +225,33 @@ final class BotRosterScreen extends FleetPanel {
     private void assignWorkers() {
         int port = BotFuryMod.controlPort();
         if (LocalFormation.here() == null || port < 1024) return;
-        int count = BotTracker.sendSelected("project:worker " + port);
-        if (count > 0) BotEvents.add("info", "projects", "Requested " + count + " project workers");
+        var project = selectedProject();
+        if (project == null || !needsWorkers(project)) return;
+        int count = BotTracker.sendSelected("project:worker " + port + " " + project.id());
+        BotEvents.add(count > 0 ? "info" : "warn", "projects", count > 0
+                ? "Assigned " + count + " bots to " + projectTitle(project) : "No connected bots selected");
+    }
+
+    private void stopOutput() {
+        var here = LocalFormation.here();
+        var project = selectedProject();
+        if (here == null || project == null || project.repeat() == null || project.repeat().cancelled()) return;
+        try {
+            if (ProjectBroker.cancelOutput(here, project)) BotEvents.add("info", "projects", "Stopped " + projectTitle(project));
+            nextRead = 0;
+        } catch (IOException error) {
+            BotEvents.add("warn", "projects", "Could not stop the output order");
+        }
+    }
+
+    private ProjectQueue.Project selectedProject() {
+        var id = selection.get(Tab.PROJECTS);
+        return overview.projects().stream().filter(project -> project.id().equals(id)).findFirst().orElse(null);
     }
 
     void showProject(String id) {
+        tab = Tab.PROJECTS;
+        filter = "";
         selection.put(Tab.PROJECTS, id);
         offset = detailOffset = 0;
         nextRead = 0;
@@ -287,6 +316,7 @@ final class BotRosterScreen extends FleetPanel {
             case PROJECTS -> {
                 var projects = new ArrayList<>(overview.projects());
                 Collections.reverse(projects);
+                projects.sort(java.util.Comparator.comparing(project -> !needsWorkers(project)));
                 for (var project : projects) {
                     long done = completed(project);
                     String progress = done + " / " + project.jobs().size() + " jobs complete";
@@ -297,8 +327,11 @@ final class BotRosterScreen extends FleetPanel {
                         if (job.state() == ProjectQueue.State.LEASED) working++;
                     }
                     float total = Math.max(1, project.jobs().size());
-                    rows.add(new Row(project.id(), project.id(), failed > 0 ? "Needs attention · " + progress : progress,
-                            failed > 0 ? RED : ACCENT, new Meter(done / total, working / total, failed / total)));
+                    boolean stopped = project.repeat() != null && project.repeat().cancelled();
+                    String state = stopped ? "Stopped" : failed > 0 ? "Needs attention"
+                            : working > 0 ? "Working" : !needsWorkers(project) ? "Complete" : "Waiting";
+                    rows.add(new Row(project.id(), projectTitle(project), state + " · " + progress,
+                            stopped ? MUTED : failed > 0 ? RED : ACCENT, new Meter(done / total, working / total, failed / total)));
                 }
             }
             case CHESTS -> overview.stock().entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry ->
@@ -308,7 +341,7 @@ final class BotRosterScreen extends FleetPanel {
                     event.level().equals("info") ? ACCENT : RED)));
         }
         String query = filter.strip().toLowerCase(Locale.ROOT);
-        return rows.stream().filter(row -> (row.title + " " + row.subtitle).toLowerCase(Locale.ROOT).contains(query)).toList();
+        return rows.stream().filter(row -> (row.title + " " + row.subtitle + " " + row.key).toLowerCase(Locale.ROOT).contains(query)).toList();
     }
 
     private void select(Row row) {
@@ -343,7 +376,12 @@ final class BotRosterScreen extends FleetPanel {
         }
         if (rows.isEmpty()) line(draw, error.isEmpty() ? emptyLabel() : error, MARGIN + 3, ROW_TOP + 5, listWidth() - 6,
                 error.isEmpty() ? MUTED : RED);
-        if (guide == null) drawDetails(draw, selected, 49);
+        if (assign != null) {
+            var project = selected == null ? null : selectedProject();
+            assign.active = project != null && needsWorkers(project);
+            stopOrder.visible = project != null && project.repeat() != null && !project.repeat().cancelled();
+        }
+        if (guide == null) drawDetails(draw, selected, tab == Tab.PROJECTS ? ROW_TOP : 49);
         else {
             int nextY = drawGuide(draw) + 10;
             if (tab != Tab.FLEET && selected != null && nextY + 35 < height - 34) {
@@ -479,6 +517,22 @@ final class BotRosterScreen extends FleetPanel {
         draw.disableScissor();
     }
 
+    private static boolean needsWorkers(ProjectQueue.Project project) {
+        if (project.repeat() != null && project.repeat().cancelled()) return false;
+        return project.jobs().stream().anyMatch(job -> job.state() == ProjectQueue.State.WAITING
+                || job.state() == ProjectQueue.State.LEASED);
+    }
+
+    private static String projectTitle(ProjectQueue.Project project) {
+        if (project.repeat() != null) {
+            var id = Identifier.tryParse(project.repeat().item());
+            var name = id != null && Registries.ITEM.containsId(id)
+                    ? Registries.ITEM.get(id).getName().getString() : project.repeat().item();
+            return project.repeat().batch() + " × " + name;
+        }
+        return project.id().replaceFirst("-[0-9a-f]{8}$", "").replace('-', ' ').replace('_', ' ');
+    }
+
     private static long completed(ProjectQueue.Project project) {
         return project.jobs().stream().filter(job -> job.state() == ProjectQueue.State.DONE).count();
     }
@@ -489,7 +543,9 @@ final class BotRosterScreen extends FleetPanel {
         lines.add(completed(project) + " / " + project.jobs().size() + " jobs complete");
         if (project.repeat() != null) lines.add(project.repeat().cancelled() ? "Output order cancelled"
                 : project.repeat().completed() + " batches deposited");
-        if (project.supplyChest() != null) lines.add("Chest · " + location(project.supplyChest()));
+        String chest = project.repeat() == null ? project.supplyChest() : project.repeat().chest();
+        if (chest != null) lines.add("Chest · " + location(chest));
+        if (needsWorkers(project)) lines.add("Assign bots · " + BotTracker.targetLabel());
         project.jobs().stream().filter(job -> job.state() == ProjectQueue.State.FAILED).limit(3)
                 .forEach(job -> lines.add(job.work().id() + " · " + job.evidence()));
         project.jobs().stream().filter(job -> job.state() == ProjectQueue.State.LEASED).limit(5)

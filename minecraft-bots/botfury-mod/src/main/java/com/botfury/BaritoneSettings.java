@@ -9,7 +9,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 
 final class BaritoneSettings implements AutoCloseable {
-    private final Object breaking, placing, avoidance, oldBreak, oldPlace;
+    private final Object breaking, placing, avoidance, mobAvoidance, oldBreak, oldPlace, oldMobAvoidance;
     private final List<?> oldAvoidance;
     private final Field value;
 
@@ -26,13 +26,16 @@ final class BaritoneSettings implements AutoCloseable {
         breaking = settings.getClass().getField("allowBreak").get(settings);
         placing = settings.getClass().getField("allowPlace").get(settings);
         avoidance = preserveGates ? settings.getClass().getField("blocksToAvoid").get(settings) : null;
+        mobAvoidance = settings.getClass().getField("avoidance").get(settings);
         value = breaking.getClass().getField("value");
         oldBreak = value.get(breaking);
         oldPlace = value.get(placing);
+        oldMobAvoidance = value.get(mobAvoidance);
         oldAvoidance = avoidance == null ? null : (List<?>) value.get(avoidance);
         try {
             value.set(breaking, allowBreak);
             value.set(placing, false);
+            value.set(mobAvoidance, true);
             if (avoidance != null) {
                 var blocked = new LinkedHashSet<Object>(oldAvoidance);
                 for (Block block : Registries.BLOCK) {
@@ -50,6 +53,7 @@ final class BaritoneSettings implements AutoCloseable {
         try {
             value.set(breaking, oldBreak);
             value.set(placing, oldPlace);
+            value.set(mobAvoidance, oldMobAvoidance);
             if (avoidance != null) value.set(avoidance, oldAvoidance);
         } catch (ReflectiveOperationException error) {
             BotEvents.add("warn", "movement", "Could not restore Baritone settings");

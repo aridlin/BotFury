@@ -46,7 +46,7 @@ final class OutputOrder {
             String id = "output-" + UUID.randomUUID().toString().substring(0, 8);
             ProjectBroker.submitOutput(id, here, plan);
             BotUiConfig.trackRequest(List.of(item.toString()));
-            int workers = BotTracker.sendSelected("project:worker " + port);
+            int workers = BotTracker.sendSelected("project:worker " + port + " " + id);
             String method = steps.usesDroppedItems() ? " (carried or dropped items)" : "";
             ClientActions.message(client, "Queued " + id + " for batches of " + batch + " " + item
                     + method + " · " + workers + " bots requested");

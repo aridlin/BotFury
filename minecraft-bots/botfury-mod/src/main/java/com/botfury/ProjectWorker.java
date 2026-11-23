@@ -57,7 +57,7 @@ final class ProjectWorker {
     static String status() { return status; }
     static boolean supports(ProjectQueue.Kind kind) { return KINDS.contains(kind); }
 
-    static void start(MinecraftClient client, int coordinator) {
+    static void start(MinecraftClient client, int coordinator, String project) {
         var here = LocalFormation.snapshot(client);
         if (here == null || coordinator == BotFuryMod.controlPort()) {
             BotEvents.add("warn", "projects", "Join the project world before enabling the worker");
@@ -65,7 +65,7 @@ final class ProjectWorker {
         }
         WorkerEnrollment next;
         try {
-            next = new WorkerEnrollment(here.name(), world(here), coordinator);
+            next = new WorkerEnrollment(here.name(), world(here), coordinator, project);
             if (next.equals(enrollment) && enabled()) return;
             WorkerEnrollment.save(enrollmentPath(), next);
         } catch (IOException | IllegalArgumentException error) {
@@ -181,6 +181,7 @@ final class ProjectWorker {
         if (!enabled()) return;
         long now = System.nanoTime();
         if (assignment == null) {
+            TaskDefense.evade(client, false);
             if (!pending && now >= nextRequest) request(client, here, "claim", now);
             return;
         }
@@ -192,9 +193,20 @@ final class ProjectWorker {
             return;
         }
         if (!pending && now >= nextRequest) request(client, here, success == null ? "renew" : "finish", now);
-        if (success != null) return;
+        if (success != null) {
+            TaskDefense.evade(client, false);
+            return;
+        }
         if (now >= taskEnd) {
             finish(client, false, "Timed out approaching or changing the target");
+            return;
+        }
+        if (TaskDefense.evade(client, true)) {
+            releaseCentering(client);
+            return;
+        }
+        if (!centering && TaskDefense.defendProject(client)) {
+            if (client.interactionManager != null) client.interactionManager.cancelBlockBreaking();
             return;
         }
         if (gather != null) {
@@ -268,7 +280,7 @@ final class ProjectWorker {
                     approachProgress = current;
                     retryApproach = now + seconds(5);
                     BlockPos pos = block.stand();
-                    if (!BaritoneClient.execute("goto " + pos.getX() + " " + pos.getY() + " " + pos.getZ())) {
+                    if (!BaritoneClient.pursuing(pos) && !BaritoneClient.execute("goto " + pos.getX() + " " + pos.getY() + " " + pos.getZ())) {
                         finish(client, false, "Baritone could not start project approach");
                     }
                 } catch (ReflectiveOperationException error) {
@@ -470,6 +482,7 @@ final class ProjectWorker {
         args.put("action", action);
         if (assignment == null) {
             args.put("worker", here.name());
+            if (enrollment.project() != null) args.put("project", enrollment.project());
             args.put("kinds", KINDS);
         } else {
             args.put("project", assignment.project());
@@ -502,6 +515,11 @@ final class ProjectWorker {
                 if (action.equals("claim")) {
                     assignment = JSON.fromJson(reply.body(), ProjectQueue.Assignment.class);
                     if (assignment == null) return;
+                    if (enrollment.project() != null && !enrollment.project().equals(assignment.project())) {
+                        assignment = null;
+                        status = "Coordinator did not honor the selected project";
+                        return;
+                    }
                     deadline = deadline(assignment.job(), now);
 
                     var work = assignment.job().work();

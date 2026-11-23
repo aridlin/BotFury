@@ -50,6 +50,8 @@ final class ProjectWorker {
     private static final Set<BlockPos> rejectedExcavationStands = new HashSet<>();
     private static long nextExcavationStandSearch;
     private static final StallRecovery approachRecovery = new StallRecovery();
+    private static final SubsurfaceAccess stationReturn = new SubsurfaceAccess();
+    private static int approachAge;
     private static Vec3d approachProgress;
     private static long retryApproach;
     private static long nextRequest, deadline, taskEnd, stableSince, nextPlacement, inspectionStarted;
@@ -157,6 +159,8 @@ final class ProjectWorker {
         excavationStand = null;
         rejectedExcavationStands.clear();
         nextExcavationStandSearch = 0;
+        approachAge = 0;
+        stationReturn.reset();
         inspection = null;
         fill = null;
         chest = null;
@@ -174,6 +178,7 @@ final class ProjectWorker {
 
     private static void halt(MinecraftClient client) {
         approachRecovery.reset();
+        stationReturn.stop();
         releaseCentering(client);
         if (chest != null) chest.close(client);
         if (production != null) production.close(client);
@@ -191,8 +196,9 @@ final class ProjectWorker {
     }
 
     static boolean blocksRecoveryBreak(BlockPos pos) {
-        if (recoveryOrigin == null) return false;
         var client = MinecraftClient.getInstance();
+        if (stationReturn.blocksBreaking(client, pos)) return true;
+        if (recoveryOrigin == null) return false;
         if (client.world == null || block == null || !pos.isWithinDistance(recoveryOrigin, 9)
                 || pos.getY() < recoveryOrigin.getY() || pos.getY() > block.stand().getY() + 1
                 || pos.equals(block.target()) || pos.equals(block.target().down()) || pos.equals(block.stand().down())
@@ -311,6 +317,8 @@ final class ProjectWorker {
         if (!player.isOnGround() || !atStand && !inspectNearby && !workstationNearby && !canExcavateHere) {
             releaseCentering(client);
             stableSince = 0;
+            approachAge++;
+            if (tryStationReturn(client, stand, now)) return;
             var recovery = approachRecovery.tick(client, stand,
                     pos -> !pos.equals(target) && !pos.up().equals(target));
             if (recovery == StallRecovery.State.DETOUR) {
@@ -352,7 +360,7 @@ final class ProjectWorker {
             }
             return;
         }
-        if (approach != null) halt(client);
+        if (approach != null || stationReturn.active()) halt(client);
         if (!targetLoaded) {
             stableSince = 0;
             return;
@@ -487,6 +495,28 @@ final class ProjectWorker {
         if (BuildProtection.projectAction(assignment.project(),
                 () -> client.interactionManager.updateBlockBreakingProgress(target, ray.getSide()))) player.swingHand(Hand.MAIN_HAND);
         breaking = true;
+    }
+
+    private static boolean tryStationReturn(MinecraftClient client, BlockPos destination, long now) {
+        if (chest == null && production == null) return false;
+        var position = client.player.getBlockPos();
+        if (destination.getY() - position.getY() < 5 || !position.isWithinDistance(destination, 32)) {
+            stationReturn.stop();
+            return false;
+        }
+        if (!stationReturn.active()) {
+            if (approach == null || now < retryApproach || BaritoneClient.pursuing(destination)) return false;
+            BaritoneClient.execute("stop");
+            approachRecovery.reset();
+            approach.close();
+            approach = null;
+            recoveryOrigin = null;
+        }
+        var target = block.target();
+        var excluded = StructureSupply.union(new ProjectGather.Area(target, target), block);
+        if (!stationReturn.advanceToward(client, approachAge, destination, excluded)) return false;
+        status = assignment.project() + "/" + assignment.job().work().id() + ": Opening a return route to the station";
+        return true;
     }
 
     private static boolean matchesExcavationState(net.minecraft.block.BlockState state) {

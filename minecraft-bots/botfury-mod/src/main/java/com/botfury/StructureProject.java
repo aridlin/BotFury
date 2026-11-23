@@ -538,27 +538,39 @@ final class StructureProject {
                                            List<String> prerequisites, String suffix, int room) {
         var current = new HashMap<>(cleared);
         current.putAll(ready);
-        var tried = new HashSet<BlockPos>();
+        var triedPillars = new HashSet<BlockPos>();
+        var overhead = new HashMap<BlockPos, Scaffold>();
         for (var cell : nearby) {
             if (horizontalDistance(first.pos, cell.pos) > 9 || Math.abs(cell.pos.getY() - first.pos.getY()) > 4
-                    || cell.desired.getBlock() instanceof FallingBlock
-                    || !cell.desired.isFullCube(client.world, cell.pos)) continue;
+                    || cell.desired.getBlock() instanceof FallingBlock) continue;
             for (var face : ProjectPlacement.faces(cell.desired)) {
                 var top = cell.pos.offset(face.getOpposite());
-                if (!tried.add(top)) continue;
-                var base = top;
-                int maxHeight = Math.min(4, room / 3);
-                while (top.getY() - base.getY() < maxHeight && loaded(client, base)
-                        && airAt(client, base, layout) && airAt(client, base, current)
-                        && !BuildProtection.blocked(base)) {
-                    base = base.down();
+                Scaffold trial;
+                if (face == Direction.DOWN) {
+                    // A slab or trapdoor can take its orientation from the underside of a temporary block.
+                    if (!loaded(client, top) || !airAt(client, top, layout) || !airAt(client, top, current)
+                            || BuildProtection.blocked(top)) continue;
+                    if (!overhead.containsKey(top)) {
+                        overhead.put(top, planScaffoldBlocks(client, Map.of(top, SCAFFOLD), layout, cleared,
+                                ready, placed, prerequisites, suffix));
+                    }
+                    trial = overhead.get(top);
+                } else {
+                    if (!cell.desired.isFullCube(client.world, cell.pos) || !triedPillars.add(top)) continue;
+                    var base = top;
+                    int maxHeight = Math.min(4, room / 3);
+                    while (top.getY() - base.getY() < maxHeight && loaded(client, base)
+                            && airAt(client, base, layout) && airAt(client, base, current)
+                            && !BuildProtection.blocked(base)) {
+                        base = base.down();
+                    }
+                    if (!loaded(client, base) || !current.getOrDefault(base, client.world.getBlockState(base))
+                            .isFullCube(client.world, base)) continue;
+                    var blocks = new LinkedHashMap<BlockPos, BlockState>();
+                    for (var pos = base.up(); pos.getY() <= top.getY(); pos = pos.up()) blocks.put(pos, SCAFFOLD);
+                    if (blocks.isEmpty()) continue;
+                    trial = planScaffoldBlocks(client, blocks, layout, cleared, ready, placed, prerequisites, suffix);
                 }
-                if (!loaded(client, base) || !current.getOrDefault(base, client.world.getBlockState(base))
-                        .isFullCube(client.world, base)) continue;
-                var blocks = new LinkedHashMap<BlockPos, BlockState>();
-                for (var pos = base.up(); pos.getY() <= top.getY(); pos = pos.up()) blocks.put(pos, SCAFFOLD);
-                if (blocks.isEmpty()) continue;
-                var trial = planScaffoldBlocks(client, blocks, layout, cleared, ready, placed, prerequisites, suffix);
                 if (trial == null) continue;
                 var expanded = new HashMap<>(layout);
                 expanded.putAll(trial.layout);
@@ -658,15 +670,19 @@ final class StructureProject {
             existing.putAll(built);
             var simulated = new HashMap<>(layout);
             simulated.putAll(built);
-            var stand = findPlacementStand(client, pos, null, feet ->
+            Predicate<BlockPos> removalStand = feet ->
                     safeStand(client, feet, existing) && safeStand(client, feet, simulated)
                             && canRemoveBlock(client, feet, pos, existing)
                             && canRemoveBlock(client, feet, pos, simulated)
                             && (safeStand(client, feet, cleared)
-                            || builtAccess(client, feet, pos, cleared, existing, simulated, placed) != null));
+                            || builtAccess(client, feet, pos, cleared, existing, simulated, placed) != null);
+            var placement = placements.get(placements.size() - 1 - steps.size());
+            // Prefer the proven construction approach when it still has a clear removal face.
+            var stand = ProjectBlock.parse(placement.payload()).stand();
+            if (!removalStand.test(stand)) stand = findPlacementStand(client, pos, null, removalStand);
             if (stand == null) return null;
             built.remove(pos);
-            steps.add(new ScaffoldStep(pos, placements.get(placements.size() - 1 - steps.size()), stand));
+            steps.add(new ScaffoldStep(pos, placement, stand));
         }
         Collections.reverse(steps);
         return new Scaffold(jobs, steps, scaffold, anchors);

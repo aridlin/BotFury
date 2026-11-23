@@ -951,14 +951,15 @@ final class StructureProject {
                                           BlockState placement, boolean avoidCorners) {
         var eye = Vec3d.ofBottomCenter(stand).add(0, 1.62, 0);
         var state = desired.getOrDefault(support, client.world.getBlockState(support));
-        var point = ProjectPlacement.facePoint(support, face, state, placement);
-        if (!hitsFace(client, eye, point, target, support, face, desired)) return false;
-        if (!avoidCorners) return true;
-        // A ray that only slips past the exact corner of a block is too fragile in game.
-        for (double dx : new double[]{-.08, .08}) for (double dz : new double[]{-.08, .08}) {
-            if (!hitsFace(client, eye.add(dx, 0, dz), point, target, support, face, desired)) return false;
-        }
-        return true;
+        return ProjectPlacement.findSupportHit(client.world, support, face, state, placement, point -> {
+            if (!hitsFace(client, eye, point, target, support, face, desired)) return null;
+            if (!avoidCorners) return point;
+            // A ray that only slips past the exact corner of a block is too fragile in game.
+            for (double dx : new double[]{-.08, .08}) for (double dz : new double[]{-.08, .08}) {
+                if (!hitsFace(client, eye.add(dx, 0, dz), point, target, support, face, desired)) return null;
+            }
+            return point;
+        }) != null;
     }
 
     private static boolean hitsFace(MinecraftClient client, Vec3d eye, Vec3d point, BlockPos target,

@@ -505,16 +505,15 @@ away. Both jobs reserve the target, stand, and the blocks
 above and below the stand. Excavation leaves block entities alone and
 requires a suitable hotbar tool for blocks that require one.
 
-For a structure build, put a compressed vanilla `.nbt` or a WorldEdit
-Sponge v2/v3 `.schem` file in the controller's `config/botfury-structures`
-directory.
+Put a compressed vanilla `.nbt`, Sponge v2/v3 `.schem`, or legacy vanilla
+Alpha `.schematic` file in the controller's `config/botfury-structures` directory.
 Run `/bf project build example.nbt 100 64 100` at a loaded site. The command
 queues the project and enables workers on the selected bots. It plans
 excavation for conflicting blocks, placements in support order, and a
 verification pass after changes complete. The command reports the material
 count. Stock the bots with the blocks they will place.
 
-For `.schem` files, the coordinates specify the minimum corner. The planner
+For `.schem` and `.schematic` files, the coordinates specify the minimum corner. The planner
 uses the block volume, including air, and leaves biomes untouched. Its
 coordinates take precedence over the stored paste offset.
 
@@ -528,7 +527,8 @@ cuboid from automated block changes and mining. Workers can walk through
 it. Use `/bf zone list` for the current dimension and `/bf zone remove storage`
 to remove a named exclusion from the controller.
 
-The vanilla importer uses a single palette. Both formats accept explicit
+The vanilla importer uses a single palette. Convert legacy files with entity
+data to modern `.schem` before import. The planner accepts explicit
 air, full single-state blocks, and full blocks with an axis, such as logs.
 They also accept dry ladders, floor torches, top and bottom slabs, and
 unpowered wooden trapdoors and fence gates. Workers use the required
@@ -575,9 +575,9 @@ remain available through the local API.
 
 To gather and produce materials automatically, look at a dedicated single or
 double chest outside the work area and run
-`/bf project build example.nbt 100 64 100 supplied`. Place a reachable
-crafting table or furnace near the chest for materials that need one. Give
-workers suitable tools and unlock the crafting recipes. Workers gather,
+`/bf project build example.nbt 100 64 100 supplied`. Workers set up a shared
+crafting table when a recipe needs one. Provide a reachable furnace for smelting,
+suitable tools for mining, and access to the crafting recipes. Workers gather,
 produce, and deposit the required blocks, then builders collect them from
 the chest. When multiple selected bots are online, the planner divides each
 material into pickup batches. Each batch goes to the bot that collects it,

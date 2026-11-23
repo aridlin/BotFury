@@ -88,7 +88,7 @@ final class StallRecovery {
             retryAt = now + COOLDOWN;
             return State.REPLAN;
         }
-        if (!BaritoneClient.execute("goto " + waypoint.getX() + " " + waypoint.getY() + " " + waypoint.getZ())) {
+        if (!BaritoneClient.goTo(waypoint)) {
             endDetour();
             retryAt = now + COOLDOWN;
             return State.REPLAN;

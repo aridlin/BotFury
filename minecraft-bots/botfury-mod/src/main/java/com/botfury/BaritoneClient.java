@@ -3,6 +3,7 @@ package com.botfury;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.util.math.BlockPos;
 
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
@@ -29,6 +30,41 @@ final class BaritoneClient {
         } catch (ReflectiveOperationException | LinkageError error) {
             System.err.println("[BotFury] Baritone command failed: " + error.getMessage());
             return false;
+        }
+    }
+
+    static boolean goTo(BlockPos destination) {
+        if (!available()) return false;
+        var api = GoalApi.INSTANCE;
+        if (api != null) {
+            try {
+                var goal = api.block.newInstance(destination.getX(), destination.getY(), destination.getZ());
+                api.start.invoke(api.process, goal);
+                return true;
+            } catch (ReflectiveOperationException | LinkageError error) {
+                BotEvents.add("warn", "movement", "Baritone rejected the coordinate goal");
+                return false;
+            }
+        }
+        return execute("goto " + destination.getX() + " " + destination.getY() + " " + destination.getZ());
+    }
+
+    private record GoalApi(Object process, Constructor<?> block, Method start) {
+        private static final GoalApi INSTANCE = create();
+
+        private static GoalApi create() {
+            var path = PathApi.INSTANCE;
+            if (path == null) return null;
+            try {
+                var bot = Class.forName("baritone.api.IBaritone");
+                var process = bot.getMethod("getCustomGoalProcess").invoke(path.bot);
+                var goal = Class.forName("baritone.api.pathing.goals.Goal");
+                var block = Class.forName("baritone.api.pathing.goals.GoalBlock");
+                var start = Class.forName("baritone.api.process.ICustomGoalProcess").getMethod("setGoalAndPath", goal);
+                return new GoalApi(process, block.getConstructor(int.class, int.class, int.class), start);
+            } catch (ReflectiveOperationException | LinkageError unavailable) {
+                return null;
+            }
         }
     }
 

@@ -86,9 +86,13 @@ final class StructureProject {
         }
     }
 
+    static boolean supportedFilename(String file) {
+        return file.matches("[A-Za-z0-9_-]{1,64}\\.(nbt|schem|schematic)");
+    }
+
     static Map<BlockPos, BlockState> readBlueprint(String file, BlockPos origin) throws IOException {
-        if (!file.matches("[A-Za-z0-9_-]{1,64}\\.(nbt|schem)")) {
-            throw new IllegalArgumentException("Use a structure filename ending in .nbt or .schem");
+        if (!supportedFilename(file)) {
+            throw new IllegalArgumentException("Use a structure filename ending in .nbt, .schem, or .schematic");
         }
         var folder = FabricLoader.getInstance().getConfigDir().resolve("botfury-structures");
         Files.createDirectories(folder);
@@ -101,7 +105,9 @@ final class StructureProject {
         try (var input = new DataInputStream(new GZIPInputStream(Files.newInputStream(path)))) {
             structure = NbtIo.read(input, new NbtTagSizeTracker(2 * 1024 * 1024));
         }
-        return file.endsWith(".schem") ? schematicCells(structure, origin) : cells(structure, origin);
+        if (file.endsWith(".schem")) return schematicCells(structure, origin);
+        if (file.endsWith(".schematic")) structure = LegacySchematic.convert(structure, CELL_LIMIT);
+        return cells(structure, origin);
     }
 
     static boolean canSubstitute(BlockState state, net.minecraft.world.BlockView world, BlockPos pos) {

@@ -42,7 +42,7 @@ final class SchematicQueueScreen extends FleetPanel {
         if (Files.isDirectory(directory)) {
             try (var entries = Files.list(directory)) {
                 files = entries.filter(Files::isRegularFile).map(path -> path.getFileName().toString())
-                        .filter(name -> name.matches("[A-Za-z0-9_-]{1,64}\\.(nbt|schem)"))
+                        .filter(StructureProject::supportedFilename)
                         .sorted(String.CASE_INSENSITIVE_ORDER).toList();
             } catch (IOException failure) {
                 feedback = "Could not read the structures folder.";
@@ -123,7 +123,7 @@ final class SchematicQueueScreen extends FleetPanel {
             draw.drawText(textRenderer, textRenderer.trimToWidth(file, panelWidth - 12), left + 6, y + 4, BotUiTheme.TEXT, false);
         }
         if (files.isEmpty()) draw.drawText(textRenderer, this.files.isEmpty()
-                ? "Add a .schem or .nbt file to config/botfury-structures." : "No matching schematics", left, 70, BotUiTheme.MUTED, false);
+                ? "Add a .schem, .nbt, or .schematic file to config/botfury-structures." : "No matching schematics", left, 70, BotUiTheme.MUTED, false);
         draw.drawText(textRenderer, "Build origin · X, Y, Z", left, height - 126, BotUiTheme.MUTED, false);
         if (!feedback.isBlank()) draw.drawText(textRenderer, textRenderer.trimToWidth(feedback, panelWidth),
                 left, height - 69, BotUiTheme.DANGER, false);

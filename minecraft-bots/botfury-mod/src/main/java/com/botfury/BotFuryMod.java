@@ -300,9 +300,12 @@ public class BotFuryMod implements ClientModInitializer {
                 return "error: project workers must be connected managed bots with Baritone";
             }
             try {
-                int coordinator = Integer.parseInt(cmd.substring(15).strip());
+                String[] enrollment = cmd.substring(15).strip().split("\\s+", 2);
+                int coordinator = Integer.parseInt(enrollment[0]);
+                String project = enrollment.length == 2 ? enrollment[1] : null;
+                if (project != null && !ProjectQueue.validId(project)) return "error: invalid project ID";
                 if (coordinator < 1024 || coordinator > 65535) return "error: invalid coordinator port";
-                client.execute(() -> ProjectWorker.start(client, coordinator));
+                client.execute(() -> ProjectWorker.start(client, coordinator, project));
                 return "Project worker enabled";
             } catch (NumberFormatException error) {
                 return "error: invalid coordinator port";

@@ -174,10 +174,10 @@ final class MiningTask {
                     return;
                 }
                 if (recoverRoute(client, p)) return;
-                if (age >= nextPath) {
-                    nextPath = age + 20;
+                if (age >= nextPath && !BaritoneClient.pursuing(p)) {
+                    nextPath = age + 60;
                     if (!path("goto " + p.getX() + " " + p.getY() + " " + p.getZ())) {
-                        status = "Baritone could not approach reserved ore";
+                        status = "Baritone could not approach reserved " + job.resource;
                         rejected.put(target, age + 200);
                         clearReservation();
                     } else status = "Approaching reserved " + job.resource;
@@ -334,7 +334,8 @@ final class MiningTask {
                     ||!c.world.getFluidState(feet).isEmpty()||!c.world.getFluidState(feet.up()).isEmpty()
                     ||c.world.getBlockState(feet).getHardness(c.world,feet)<0||c.world.getBlockState(feet.up()).getHardness(c.world,feet.up())<0)continue;
             Vec3d point=Vec3d.ofBottomCenter(feet);var box=c.player.getBoundingBox().offset(point.subtract(c.player.getPos())).expand(.35,0,.35);
-            if (thin && miningHit(c, ore, point.add(0, 1.62, 0), 4.3) == null) continue;
+            boolean clear = c.world.isSpaceEmpty(c.player, c.player.getBoundingBox().offset(point.subtract(c.player.getPos())));
+            if (thin && (!clear || miningHit(c, ore, point.add(0, 1.62, 0), 4.3) == null)) continue;
             if(!c.world.getOtherEntities(c.player,box,e->e instanceof PlayerEntity&&e.isAlive()).isEmpty())continue;
             double climb = Math.max(0, point.y - c.player.getY());
             double distance=c.player.squaredDistanceTo(point) + climb * 6 + (c.world.isSpaceEmpty(c.player,box)?0:16);
@@ -356,8 +357,9 @@ final class MiningTask {
                 if (!action.equals("renew")) {
                     approachProgress = age;
                     approachDistance = client.player.getPos().distanceTo(place);
+                    nextPath = age;
                 }
-                target=ore;stand=place;leaseToken=token;leaseUntil=System.currentTimeMillis()+Math.min(10000,reply.leaseMillis());nextRenew=age+40;nextPath=age;
+                target=ore;stand=place;leaseToken=token;leaseUntil=System.currentTimeMillis()+Math.min(10000,reply.leaseMillis());nextRenew=age+40;
             }catch(RuntimeException e){status="Invalid mining coordinator reply";}
         }));
     }

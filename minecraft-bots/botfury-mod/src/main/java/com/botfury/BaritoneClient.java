@@ -32,6 +32,20 @@ final class BaritoneClient {
         }
     }
 
+    static boolean pursuing(BlockPos destination) {
+        if (!available() || PathApi.INSTANCE == null) return false;
+        var api = PathApi.INSTANCE;
+        try {
+            var behavior = api.behavior.invoke(api.bot);
+            var goal = api.goal.invoke(behavior);
+            return goal != null && (boolean) api.inGoal.invoke(goal, destination.getX(), destination.getY(), destination.getZ())
+                    && ((boolean) api.pathing.invoke(behavior)
+                        || ((java.util.Optional<?>) api.calculating.invoke(behavior)).isPresent());
+        } catch (ReflectiveOperationException | LinkageError unavailable) {
+            return false;
+        }
+    }
+
     /** Read the active and already-planned continuation from the client's tick thread. */
     static List<BlockPos> route() {
         if (!available() || PathApi.INSTANCE == null) return List.of();
@@ -48,7 +62,8 @@ final class BaritoneClient {
     }
 
     private record PathApi(Object bot, Method behavior, Method current, Method next,
-                           Method path, Method position, Method positions) {
+                           Method path, Method position, Method positions, Method goal, Method inGoal,
+                           Method pathing, Method calculating) {
         private static final PathApi INSTANCE = create();
 
         private static PathApi create() {
@@ -58,9 +73,13 @@ final class BaritoneClient {
                 var behavior = Class.forName("baritone.api.IBaritone").getMethod("getPathingBehavior");
                 var executor = Class.forName("baritone.api.pathing.path.IPathExecutor");
                 var path = Class.forName("baritone.api.pathing.calc.IPath");
-                return new PathApi(bot, behavior, behavior.getReturnType().getMethod("getCurrent"),
-                        behavior.getReturnType().getMethod("getNext"), executor.getMethod("getPath"),
-                        executor.getMethod("getPosition"), path.getMethod("positions"));
+                var type = behavior.getReturnType();
+                var goal = type.getMethod("getGoal");
+                return new PathApi(bot, behavior, type.getMethod("getCurrent"),
+                        type.getMethod("getNext"), executor.getMethod("getPath"),
+                        executor.getMethod("getPosition"), path.getMethod("positions"), goal,
+                        goal.getReturnType().getMethod("isInGoal", int.class, int.class, int.class),
+                        type.getMethod("isPathing"), type.getMethod("getInProgress"));
             } catch (ReflectiveOperationException | LinkageError unavailable) {
                 return null;
             }

@@ -26,6 +26,16 @@ class WorkerEnrollmentTest {
         assertFalse(restored.matches("Bot01", "paper:25566|minecraft:overworld"));
     }
 
+    @Test void restoresProjectScopeAndReadsOlderPoolEnrollments() throws Exception {
+        Path path = folder.resolve("botfury-worker.json");
+        var scoped = new WorkerEnrollment("Bot02", "test|world", 8840, "sunflowers");
+        WorkerEnrollment.save(path, scoped);
+        assertEquals(scoped, WorkerEnrollment.read(path));
+
+        Files.writeString(path, "{\"name\":\"Bot02\",\"world\":\"test|world\",\"port\":8840}");
+        assertNull(WorkerEnrollment.read(path).project());
+    }
+
     @Test void canReplaceAnEnrollmentWithAStopMarkerAndRejectMalformedFiles() throws Exception {
         Path path = folder.resolve("botfury-worker.json");
         WorkerEnrollment.save(path, new WorkerEnrollment("Bot01", "test|world", 8840));

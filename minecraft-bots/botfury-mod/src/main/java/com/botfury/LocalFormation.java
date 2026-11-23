@@ -543,13 +543,18 @@ final class LocalFormation {
         defend(client,order.owner,order.protectedNames);
     }
     static boolean defend(MinecraftClient client,String owner,java.util.Collection<String> protectedNames) {
+        return defend(client, owner, protectedNames, other -> true);
+    }
+
+    static boolean defend(MinecraftClient client, String owner, java.util.Collection<String> protectedNames,
+                          java.util.function.Predicate<LivingEntity> threat) {
         if (owner == null || protectedNames == null) return false;
         var safe = new java.util.HashSet<String>(BotFriends.names());
         if (!BotFriends.reliable()) return false;
         protectedNames.forEach(name -> safe.add(name.toLowerCase(java.util.Locale.ROOT)));
         safe.add(owner.toLowerCase(java.util.Locale.ROOT));
         LivingEntity target = client.world.getEntitiesByClass(LivingEntity.class,
-                client.player.getBoundingBox().expand(3), other -> other != client.player
+                client.player.getBoundingBox().expand(3), other -> other != client.player && threat.test(other)
                         && other.isAlive() && !other.isSpectator() && !other.isTeammate(client.player)
                         && !BotFriends.protectedName(other.getName().getString(), owner, safe)
                         && !BotCollisionPolicy.known(other.getName().getString())

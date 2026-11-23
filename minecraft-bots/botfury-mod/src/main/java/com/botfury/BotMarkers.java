@@ -62,7 +62,7 @@ final class BotMarkers {
             BotGeometry.circle(draw, x, y, Math.max(1f, 2.5f * hudScale), color);
             String name=bot.name()+" · "+Math.round(position.distanceTo(client.player.getLerpedPos(delta)))+"m";
             String task=bot.mining().isEmpty()?(bot.inventory().isEmpty()?bot.mode():bot.inventory()):bot.mining();
-            String info=live?(alive?Math.round(health)+" HP · "+client.textRenderer.trimToWidth(task,140):"Respawning"):"Last known "+Math.max(0,age/1000)+"s";
+            String info=live?(alive?Math.round(health)+" HP · "+task:"Respawning"):"Last known "+Math.max(0,age/1000)+"s";
             var counts = new java.util.ArrayList<ItemCount>();
             int maxRow = 0, rowWidth = 0;
             for (var item : tracked) {
@@ -75,7 +75,8 @@ final class BotMarkers {
                 rowWidth += cellWidth;
                 maxRow = Math.max(maxRow, rowWidth);
             }
-            int w = Math.max(Math.max(client.textRenderer.getWidth(name) + 10, client.textRenderer.getWidth(info)), maxRow) + 10;
+            int w = Math.max(Math.max(Math.min(155, client.textRenderer.getWidth(name) + 8),
+                    Math.min(155, client.textRenderer.getWidth(info))), maxRow) + 10;
             int widthScaled = (int)Math.ceil(labelScale * w);
             int labelX = Math.max(5, Math.min(width - widthScaled - 5, x - widthScaled / 2));
             int preferredY = y - heightScaled - 6;
@@ -111,9 +112,27 @@ final class BotMarkers {
                 }
             }
             BotGeometry.circle(draw, 7, itemHeight + 7, 2f, color);
-            draw.drawText(client.textRenderer, name, 13, itemHeight + 3, color, false);
-            draw.drawText(client.textRenderer, info, 5, itemHeight + 13, BotUiTheme.MUTED, false);
+            scrollLine(draw, client.textRenderer, name, 13, itemHeight + 3, w - 18, color, labelX, labelY, labelScale);
+            scrollLine(draw, client.textRenderer, info, 5, itemHeight + 13, w - 10, BotUiTheme.MUTED, labelX, labelY, labelScale);
             matrices.pop();
         }
+    }
+
+    private static void scrollLine(DrawContext draw, net.minecraft.client.font.TextRenderer font,
+                                   String text, int x, int y, int room, int color, int left, int top, float scale) {
+        int overflow = font.getWidth(text) - room;
+        if (overflow <= 0) {
+            draw.drawText(font, text, x, y, color, false);
+            return;
+        }
+        long travel = overflow * 45L;
+        long pause = 1000;
+        long phase = net.minecraft.util.Util.getMeasuringTimeMs() % (2 * (travel + pause));
+        long distance = Math.min(phase, 2 * (travel + pause) - phase);
+        int shift = (int) Math.min(overflow, Math.max(0, distance - pause) / 45L);
+        draw.enableScissor(left + (int) Math.floor(x * scale), top + (int) Math.floor(y * scale),
+                left + (int) Math.ceil((x + room) * scale), top + (int) Math.ceil((y + font.fontHeight) * scale));
+        draw.drawText(font, text, x - shift, y, color, false);
+        draw.disableScissor();
     }
 }

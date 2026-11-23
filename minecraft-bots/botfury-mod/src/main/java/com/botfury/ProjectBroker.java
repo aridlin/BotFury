@@ -61,6 +61,10 @@ final class ProjectBroker {
         return queue().cancelOutput(here.server() + "|" + here.dimension(), chest);
     }
 
+    static boolean cancelOutput(LocalFormation.Peer here, ProjectQueue.Project project) throws IOException {
+        return queue().cancelOutput(here.server() + "|" + here.dimension(), project.repeat().chest(), project.id());
+    }
+
     static void handle(HttpExchange exchange) throws IOException {
         String host = exchange.getRequestHeaders().getFirst("Host");
         if (!exchange.getRemoteAddress().getAddress().isLoopbackAddress()
@@ -153,7 +157,7 @@ final class ProjectBroker {
                     board.submit(request.project, world, work);
                     reply(exchange, 201, request.project);
                 }
-                case "claim" -> reply(exchange, 200, board.claim(world, request.worker, request.kinds, now));
+                case "claim" -> reply(exchange, 200, board.claim(world, request.worker, request.kinds, request.project, now));
                 case "renew" -> {
                     var renewed = board.renew(request.project, request.job, request.token, request.resourceSite, now);
                     reply(exchange, renewed == null ? 409 : 200, renewed);

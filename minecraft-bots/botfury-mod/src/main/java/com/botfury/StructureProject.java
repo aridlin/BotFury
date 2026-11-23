@@ -76,7 +76,7 @@ final class StructureProject {
             var supply = supplied && !plan.materials().isEmpty() ? StructureSupply.compile(client, plan) : null;
             ProjectBroker.submitStructure(id, here, plan, supply);
             int jobCount = supply == null ? plan.jobs().size() : supply.jobs().size();
-            int workers = BotTracker.sendSelected("project:worker " + port);
+            int workers = BotTracker.sendSelected("project:worker " + port + " " + id);
             ClientActions.message(client, "Queued " + id + " (" + jobCount + " jobs, " + workers + " bots requested)");
             if (!plan.materials().isEmpty()) ClientActions.message(client, "Building materials: " + plan.materials());
             return id;

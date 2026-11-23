@@ -587,6 +587,9 @@ can take another batch of that material after its current placements finish.
 The console's **Projects** and **Chest stock** controls show job progress
 and the most recent stock observations.
 
+After resolving an excavation failure, use `/bf project retry-excavation <id>`
+to reopen failed excavation jobs and keep completed work in the same project.
+
 If a supplied project's next step needs materials from an offline worker,
 other workers can reacquire the materials after a 60-second grace period.
 Each material chain can be reacquired twice. The coordinator remembers a

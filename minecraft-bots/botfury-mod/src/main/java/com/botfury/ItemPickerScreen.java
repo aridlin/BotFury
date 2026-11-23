@@ -2,74 +2,213 @@ package com.botfury;
 
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.item.*;
 import net.minecraft.registry.Registries;
 import net.minecraft.text.Text;
-import java.util.*;
+import org.lwjgl.glfw.GLFW;
+
+import java.util.ArrayDeque;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Locale;
 import java.util.function.Consumer;
 
 final class ItemPickerScreen extends Screen {
-    private record Entry(Item item,String id,String name) {}
+    private record Entry(Item item, String id, String name, String words) {}
+    private enum Category { All, Recent, Tools, Wood, Stone, Ores, Food, Blocks }
+
+    private static final int ROW_HEIGHT = 28;
+    private static final ArrayDeque<String> RECENT = new ArrayDeque<>();
     private final Screen parent;
     private final Consumer<String> selected;
     private final boolean blocksOnly;
     private final List<Entry> all;
-    private List<Entry> filtered=List.of();
+    private List<Entry> filtered = List.of();
     private TextFieldWidget search;
-    private String category="All";
-    private int offset;
-    ItemPickerScreen(Screen parent,boolean blocksOnly,Consumer<String> selected){
-        super(Text.literal(blocksOnly?"Choose mining block":"Choose item"));this.parent=parent;this.blocksOnly=blocksOnly;this.selected=selected;
-        all=Registries.ITEM.getIds().stream().map(id->new Entry(Registries.ITEM.get(id),id.toString(),Registries.ITEM.get(id).getName().getString()))
-            .filter(e->e.item!=Items.AIR&&(!blocksOnly||e.item instanceof BlockItem)).sorted(Comparator.comparing(Entry::name).thenComparing(Entry::id)).toList();
+    private Category category = Category.All;
+    private String query = "";
+    private int firstRow, cursor, left, panelWidth, columns, listTop;
+
+    ItemPickerScreen(Screen parent, boolean blocksOnly, Consumer<String> selected) {
+        super(Text.literal(blocksOnly ? "Choose mining block" : "Choose item"));
+        this.parent = parent;
+        this.blocksOnly = blocksOnly;
+        this.selected = selected;
+        all = Registries.ITEM.getIds().stream().map(id -> {
+            var item = Registries.ITEM.get(id);
+            String name = item.getName().getString();
+            String words = (id.toString() + " " + id.getPath().replace('_', ' ') + " " + name).toLowerCase(Locale.ROOT);
+            return new Entry(item, id.toString(), name, words);
+        }).filter(entry -> entry.item != Items.AIR && (!blocksOnly || entry.item instanceof BlockItem))
+                .sorted(Comparator.comparing(Entry::name).thenComparing(Entry::id)).toList();
     }
-    @Override protected void init(){
-        search=new TextFieldWidget(textRenderer,132,42,width-152,20,Text.literal("Search items"));
+
+    @Override protected void init() {
+        panelWidth = Math.min(540, width - 24);
+        left = (width - panelWidth) / 2;
+        columns = panelWidth >= 340 ? 2 : 1;
+        int tabColumns = panelWidth >= 304 ? 8 : 4;
+        listTop = 71 + ((Category.values().length + tabColumns - 1) / tabColumns) * 22;
+        int searchWidth = panelWidth - (blocksOnly ? 0 : 76);
+        search = new TextFieldWidget(textRenderer, left, 38, searchWidth, 21, Text.literal("Search items"));
         search.setPlaceholder(Text.literal("Search name or item ID"));
-        search.setMaxLength(128);search.setChangedListener(value->filter());addDrawableChild(search);setInitialFocus(search);
-        int y=42;for(String name:List.of("All","Tools","Wood","Stone","Ores","Food","Blocks")){
-            addDrawableChild(ButtonWidget.builder(Text.literal(name),b->{category=name;offset=0;filter();}).dimensions(18,y,100,20).build());y+=24;
+        search.setMaxLength(128);
+        search.setText(query);
+        search.setChangedListener(value -> { query = value; filter(); });
+        addDrawableChild(search);
+        setInitialFocus(search);
+        if (!blocksOnly) {
+            var held = new BotUiButton("Use held", left + searchWidth + 6, 38, 70, 21,
+                    button -> choose(ClientActions.heldItem(client)));
+            held.active = client.player != null && !client.player.getMainHandStack().isEmpty();
+            addDrawableChild(held);
         }
-        if(!blocksOnly)addDrawableChild(ButtonWidget.builder(Text.literal("Held item"),b->selected.accept(ClientActions.heldItem(client))).dimensions(width-110,14,92,20).build());
-        addDrawableChild(ButtonWidget.builder(Text.literal("Back"),b->close()).dimensions(18,height-30,100,20).build());filter();
+        int tabWidth = panelWidth / tabColumns;
+        for (var option : Category.values()) {
+            int column = option.ordinal() % tabColumns, row = option.ordinal() / tabColumns;
+            addDrawableChild(new BotUiButton(option.name(), left + column * tabWidth,
+                    66 + row * 22, tabWidth - 3, 19, button -> {
+                category = option;
+                BotUiSound.confirm();
+                filter();
+                updateTabs();
+                setFocused(search);
+            }));
+        }
+        addDrawableChild(new BotUiButton("Back", left + panelWidth - 60, height - 28, 60, 19, button -> close()));
+        filter();
+        updateTabs();
     }
-    private void filter(){
-        String query=search==null?"":search.getText().toLowerCase(Locale.ROOT);
-        filtered=all.stream().filter(e->matchesCategory(e,category)&&(e.id.toLowerCase(Locale.ROOT).contains(query)||e.name.toLowerCase(Locale.ROOT).contains(query))).toList();offset=0;
+
+    private void updateTabs() {
+        int firstTab = blocksOnly ? 1 : 2;
+        for (var option : Category.values()) {
+            var button = (BotUiButton) children().get(firstTab + option.ordinal());
+            button.highlight(option == category);
+        }
     }
-    private static boolean matchesCategory(Entry e,String category){
-        String id=e.id;
-        return switch(category){
-            case "Tools"->e.item instanceof ToolItem||e.item instanceof ShearsItem||e.item instanceof FishingRodItem||e.item instanceof BowItem||e.item instanceof CrossbowItem||id.contains("brush")||id.contains("flint_and_steel");
-            case "Wood"->List.of("oak","spruce","birch","jungle","acacia","mangrove","cherry","bamboo","crimson","warped","stick").stream().anyMatch(id::contains);
-            case "Stone"->List.of("stone","deepslate","granite","diorite","andesite","tuff","calcite","basalt").stream().anyMatch(id::contains);
-            case "Ores"->id.endsWith("_ore")||id.contains("ancient_debris")||id.contains("raw_");
-            case "Food"->e.item.isFood();
-            case "Blocks"->e.item instanceof BlockItem;
-            default->true;
+
+    private void filter() {
+        String[] tokens = query.toLowerCase(Locale.ROOT).strip().split("\\s+");
+        var recent = List.copyOf(RECENT);
+        var matches = all.stream()
+                .filter(entry -> (category == Category.Recent ? recent.contains(entry.id) : matchesCategory(entry, category))
+                        && java.util.Arrays.stream(tokens).allMatch(entry.words::contains));
+        if (category == Category.Recent) matches = matches.sorted(Comparator.comparingInt(entry -> recent.indexOf(entry.id)));
+        filtered = matches.toList();
+        cursor = 0;
+        firstRow = 0;
+    }
+
+    private static boolean matchesCategory(Entry entry, Category category) {
+        String id = entry.id.substring(entry.id.indexOf(':') + 1);
+        return switch (category) {
+            case Tools -> entry.item instanceof ToolItem || entry.item instanceof ShearsItem
+                    || entry.item instanceof FishingRodItem || entry.item instanceof BowItem
+                    || entry.item instanceof CrossbowItem || id.equals("brush") || id.equals("flint_and_steel");
+            case Wood -> List.of("oak_", "spruce_", "birch_", "jungle_", "acacia_", "mangrove_", "cherry_",
+                    "bamboo", "crimson_", "warped_", "stripped_").stream().anyMatch(id::startsWith) || id.equals("stick");
+            case Stone -> List.of("stone", "deepslate", "granite", "diorite", "andesite", "tuff", "calcite", "basalt")
+                    .stream().anyMatch(id::contains);
+            case Ores -> id.endsWith("_ore") || id.equals("ancient_debris") || id.startsWith("raw_");
+            case Food -> entry.item.isFood();
+            case Blocks -> entry.item instanceof BlockItem;
+            default -> true;
         };
     }
-    private int rows(){return Math.max(1,(height-110)/24);}
-    @Override public boolean shouldPause(){return false;}
-    @Override public void render(DrawContext draw,int mouseX,int mouseY,float delta){
-        draw.fill(0,0,width,height,0xEB101927);draw.drawCenteredTextWithShadow(textRenderer,title,width/2,16,0xFF5DE4D2);
-        super.render(draw,mouseX,mouseY,delta);
-        draw.drawText(textRenderer,category+" · "+filtered.size()+" items",132,67,0xFF9DB1C7,false);
-        for(int row=0;row<rows()&&offset+row<filtered.size();row++){
-            Entry e=filtered.get(offset+row);int y=82+row*24;boolean hover=mouseX>=130&&mouseX<width-18&&mouseY>=y&&mouseY<y+23;
-            draw.fill(130,y,width-18,y+23,hover?0xFF275C58:0xB51C2B40);draw.drawItem(e.item.getDefaultStack(),136,y+3);
-            draw.drawText(textRenderer,textRenderer.trimToWidth(e.name,width-182),158,y+3,0xFFE7F0FA,false);
-            draw.drawText(textRenderer,textRenderer.trimToWidth(e.id,width-182),158,y+13,0xFF8FA6BE,false);
+
+    private int rows() { return Math.max(1, (height - listTop - 34) / ROW_HEIGHT); }
+    private int totalRows() { return (filtered.size() + columns - 1) / columns; }
+    private int cellWidth() { return panelWidth / columns; }
+
+    private int indexAt(double x, double y) {
+        if (x < left || x >= left + columns * cellWidth() || y < listTop || y >= listTop + rows() * ROW_HEIGHT) return -1;
+        int index = (firstRow + (int)(y - listTop) / ROW_HEIGHT) * columns + (int)(x - left) / cellWidth();
+        return index < filtered.size() ? index : -1;
+    }
+
+    @Override public boolean shouldPause() { return false; }
+
+    @Override public void render(DrawContext draw, int mouseX, int mouseY, float delta) {
+        draw.fillGradient(0, 0, width, height, 0xF0121A2D, 0xEA0C1220);
+        draw.drawTextWithShadow(textRenderer, title, left, 17, 0xFFE9F6FF);
+        String count = filtered.size() + (filtered.size() == 1 ? " item" : " items");
+        draw.drawText(textRenderer, count, left + panelWidth - textRenderer.getWidth(count), 17, 0xFFB5C8D8, false);
+        super.render(draw, mouseX, mouseY, delta);
+        int hover = indexAt(mouseX, mouseY);
+        for (int row = 0; row < rows(); row++) for (int col = 0; col < columns; col++) {
+            int index = (firstRow + row) * columns + col;
+            if (index >= filtered.size()) break;
+            var entry = filtered.get(index);
+            int x = left + col * cellWidth(), y = listTop + row * ROW_HEIGHT;
+            draw.fill(x, y, x + cellWidth() - 4, y + 25, hover == index ? 0xFF285754 : 0xDA1A273E);
+            if (cursor == index) draw.fill(x, y, x + 2, y + 25, 0xFF70E6CD);
+            draw.drawItem(entry.item.getDefaultStack(), x + 7, y + 4);
+            draw.drawText(textRenderer, textRenderer.trimToWidth(entry.name, cellWidth() - 34),
+                    x + 29, y + 4, 0xFFE7F0FA, false);
+            draw.drawText(textRenderer, textRenderer.trimToWidth(entry.id, cellWidth() - 34),
+                    x + 29, y + 15, 0xFFA5B9CE, false);
         }
-        draw.drawText(textRenderer,"Scroll · click an item to select",132,height-23,0xFF8FA6BE,false);
+        if (filtered.isEmpty()) {
+            draw.drawCenteredTextWithShadow(textRenderer, category == Category.Recent && query.isBlank()
+                    ? "No recent selections" : "No matching items", width / 2, listTop + 8, 0xFFADBCD0);
+        }
+        draw.drawText(textRenderer, textRenderer.trimToWidth("Arrows to move  ·  Enter to select", panelWidth - 68),
+                left, height - 22, 0xFFA5B9CE, false);
+        if (totalRows() > rows()) {
+            int h = rows() * ROW_HEIGHT - 3;
+            int thumb = Math.max(8, h * rows() / totalRows());
+            int y = listTop + firstRow * (h - thumb) / (totalRows() - rows());
+            draw.fill(left + panelWidth - 2, listTop, left + panelWidth, listTop + h, 0xFF25344B);
+            draw.fill(left + panelWidth - 2, y, left + panelWidth, y + thumb, 0xFF73CCBC);
+        }
     }
-    @Override public boolean mouseClicked(double x,double y,int button){
-        if(FormationClient.wheel.matchesMouse(button)){close();return true;}
-        if(button==0&&x>=130&&x<width-18&&y>=82){int row=(int)(y-82)/24;if(row<rows()&&offset+row<filtered.size()){selected.accept(filtered.get(offset+row).id);return true;}}
-        return super.mouseClicked(x,y,button);
+
+    private void choose(String id) {
+        RECENT.remove(id);
+        RECENT.addFirst(id);
+        while (RECENT.size() > 16) RECENT.removeLast();
+        BotUiSound.confirm();
+        selected.accept(id);
     }
-    @Override public boolean mouseScrolled(double x,double y,double amount){offset=Math.max(0,Math.min(Math.max(0,filtered.size()-rows()),offset+(amount>0?-3:3)));return true;}
-    @Override public void close(){client.setScreen(parent);}
+
+    @Override public boolean mouseClicked(double x, double y, int button) {
+        if (FormationClient.wheel.matchesMouse(button)) { close(); return true; }
+        int index = indexAt(x, y);
+        if (button == 0 && index >= 0) { choose(filtered.get(index).id); return true; }
+        return super.mouseClicked(x, y, button);
+    }
+
+    @Override public boolean mouseScrolled(double x, double y, double amount) {
+        if (amount == 0 || y < listTop || y >= listTop + rows() * ROW_HEIGHT
+                || x < left || x > left + panelWidth) return false;
+        firstRow = Math.max(0, Math.min(Math.max(0, totalRows() - rows()), firstRow + (amount > 0 ? -2 : 2)));
+        if (cursor / columns < firstRow || cursor / columns >= firstRow + rows()) cursor = firstRow * columns;
+        return true;
+    }
+
+    @Override public boolean keyPressed(int key, int scan, int modifiers) {
+        if (filtered.isEmpty()) return super.keyPressed(key, scan, modifiers);
+        if ((key == GLFW.GLFW_KEY_ENTER || key == GLFW.GLFW_KEY_KP_ENTER) && getFocused() == search) {
+            choose(filtered.get(cursor).id);
+            return true;
+        }
+        int offset = switch (key) {
+            case GLFW.GLFW_KEY_DOWN -> 1;
+            case GLFW.GLFW_KEY_UP -> -1;
+            case GLFW.GLFW_KEY_PAGE_DOWN -> rows() * columns;
+            case GLFW.GLFW_KEY_PAGE_UP -> -rows() * columns;
+            default -> 0;
+        };
+        if (offset == 0) return super.keyPressed(key, scan, modifiers);
+        cursor = Math.max(0, Math.min(filtered.size() - 1, cursor + offset));
+        int row = cursor / columns;
+        firstRow = Math.min(firstRow, row);
+        firstRow = Math.max(firstRow, row - rows() + 1);
+        setFocused(search);
+        return true;
+    }
+
+    @Override public void close() { BotUiSound.back(); client.setScreen(parent); }
 }

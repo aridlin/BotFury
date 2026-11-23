@@ -628,10 +628,17 @@ final class StructureProject {
             var pose = buildPose(client, new Cell(pos, SCAFFOLD, Blocks.AIR.getDefaultState()), finalLayout, built, cleared, placed, false);
             if (pose == null) return null;
             int index = placements.size();
+            var approach = new LinkedHashSet<>(next);
+            String support = placed.get(pose.support);
+            if (support != null) approach.add(support);
+            if (pose.access != null) approach.addAll(pose.access.needs);
             String check = "check-access-" + suffix + index;
-            jobs.add(work(check, ProjectQueue.Kind.VERIFY, pos, Blocks.AIR.getDefaultState(), pose.stand, Direction.UP, next));
+            var verification = work(check, ProjectQueue.Kind.VERIFY, pos, Blocks.AIR.getDefaultState(), pose.stand,
+                    Direction.UP, List.copyOf(approach));
+            jobs.add(reserveApproach(verification, pose.access));
             String id = "place-access-" + suffix + index;
-            var placement = work(id, ProjectQueue.Kind.BUILD, pos, SCAFFOLD, pose.stand, pose.face, List.of(check));
+            var placement = reserveApproach(
+                    work(id, ProjectQueue.Kind.BUILD, pos, SCAFFOLD, pose.stand, pose.face, List.of(check)), pose.access);
             placements.add(placement);
             jobs.add(placement);
             built.put(pos, SCAFFOLD);
@@ -660,6 +667,13 @@ final class StructureProject {
         }
         Collections.reverse(steps);
         return new Scaffold(jobs, steps, scaffold, anchors);
+    }
+
+    private static ProjectQueue.Work reserveApproach(ProjectQueue.Work work, BuildAccess access) {
+        if (access == null) return work;
+        var locks = new LinkedHashSet<>(work.locks());
+        locks.addAll(access.locks);
+        return new ProjectQueue.Work(work.id(), work.kind(), work.payload(), work.needs(), locks);
     }
 
     private static String appendScaffoldCleanup(List<ProjectQueue.Work> jobs, Scaffold scaffold,

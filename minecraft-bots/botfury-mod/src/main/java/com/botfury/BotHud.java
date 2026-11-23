@@ -16,10 +16,10 @@ final class BotHud {
         var fleet = BotTracker.all();
         var nearby = fleet.stream().filter(bot -> bot.fresh() && bot.connected() && bot.sameWorld()).toList();
         var target = BotTracker.get(BotTracker.selected());
-        var tracked = BotUiConfig.trackedItems;
+        var tracked = BotUiConfig.displayedItems();
         String formation = LocalFormation.mode();
         boolean lightning = formation.equals("strike");
-        int accent = lightning ? BotUiTheme.ACCENT : BotUiTheme.ACCENT;
+        int accent = BotUiTheme.ACCENT;
         String mode = switch (formation) {
             case "orbit" -> "Saturn";
             case "strike" -> "Lightning";
@@ -27,12 +27,20 @@ final class BotHud {
             default -> formation.toUpperCase(Locale.ROOT);
         };
 
-        int x = 10, y = 10, w = Math.min(232, client.getWindow().getScaledWidth() - 20);
-        int h = 69 + ((tracked.size() + 2) / 3) * 22;
+        var window = client.getWindow();
+        float scale = FleetPanel.scaleForWindow(window);
+        var matrices = draw.getMatrices();
+        matrices.push();
+        matrices.scale(scale, scale, 1);
+        int x = 8, y = 8, w = Math.min(202, (int)(window.getScaledWidth() / scale) - 16);
+        int h = 62 + (tracked.isEmpty() ? 0 : 12 + ((tracked.size() + 2) / 3) * 22);
         var font = client.textRenderer;
-        draw.fillGradient(x, y, x + w, y + h, 0xE93D222C, 0xE92B1921);
-        draw.fill(x, y, x + w, y + 2, accent);
-        draw.drawText(font, mode, x + 9, y + 9, accent, false);
+        draw.fillGradient(x + 3, y, x + w - 3, y + h, 0xEA351C25, 0xEA24161C);
+        draw.fill(x, y + 3, x + 3, y + h - 3, 0xEA2A1820);
+        draw.fill(x + w - 3, y + 3, x + w, y + h - 3, 0xEA2A1820);
+        BotGeometry.circle(draw, x + 15, y + 13, 5.5f, lightning ? 0xFFF8D788 : 0xFFE66C77);
+        BotGeometry.circle(draw, x + 15, y + 13, 2f, 0xF445202C);
+        draw.drawText(font, mode, x + 25, y + 9, accent, false);
         String scope = target == null ? "Fleet" : target.name();
         draw.drawText(font, scope, x + w - 9 - font.getWidth(scope), y + 9, BotUiTheme.TEXT, false);
 
@@ -42,9 +50,11 @@ final class BotHud {
         if (lightning && !strikeTarget.isEmpty()) status = strikeTarget + (status.isBlank() ? "" : " · " + status);
         if (!lightning && target != null && !target.summary().isBlank()) status = target.summary();
         if (warning) status = BotEvents.last;
-        if (status.isBlank()) status = nearby.isEmpty() ? "No bots in this dimension" : "Awaiting orders";
-        draw.drawText(font, font.trimToWidth(status, w - 18), x + 9, y + 23,
-                warning ? BotUiTheme.ACCENT : BotUiTheme.TEXT, false);
+        if (status.isBlank() && nearby.isEmpty()) status = "No bots in this dimension";
+        if (!status.equalsIgnoreCase("idle")) {
+            draw.drawText(font, font.trimToWidth(status, w - 18), x + 9, y + 23,
+                    warning ? BotUiTheme.ACCENT : BotUiTheme.TEXT, false);
+        }
 
         long alive = nearby.stream().filter(BotTracker.Bot::alive).count();
         long hurt = nearby.stream().filter(bot -> bot.alive() && bot.maxHealth() > 0 && bot.health() <= bot.maxHealth() * .4).count();
@@ -53,23 +63,27 @@ final class BotHud {
         if (hurt > 0) availability += "  ·  " + hurt + " low HP";
         draw.drawText(font, font.trimToWidth(availability, w - 18), x + 9, y + 36,
                 hurt > 0 ? BotUiTheme.ACCENT : BotUiTheme.MUTED, false);
-        draw.fill(x + 9, y + 48, x + w - 9, y + 50, BotUiTheme.EDGE);
-        if (!fleet.isEmpty()) draw.fill(x + 9, y + 48, x + 9 + (int)((w - 18) * alive / fleet.size()), y + 50, accent);
+        int shown = Math.min(6, fleet.size());
+        for (int i = 0; i < shown; i++) {
+            BotGeometry.circle(draw, x + w - 12 - (shown - 1 - i) * 6, y + 39, 1.6f,
+                    i < Math.ceil(alive * shown / (double) fleet.size()) ? 0xFFE67983 : 0xFF663747);
+        }
 
         if (!tracked.isEmpty()) {
-            var countsFrom = target == null ? nearby : nearby.stream().filter(bot -> bot.port() == target.port()).toList();
+            draw.drawText(font, "Fleet stock", x + 9, y + 49, BotUiTheme.MUTED, false);
+            var countsFrom = fleet.stream().filter(bot -> bot.fresh() && bot.connected()).toList();
             int space = (w - 18) / Math.min(3, tracked.size());
             for (int i = 0; i < tracked.size(); i++) {
-                String id = tracked.get(i);
+                var item = tracked.get(i);
                 int cellX = x + 9 + i % 3 * space;
-                int cellY = y + 54 + i / 3 * 22;
+                int cellY = y + 59 + i / 3 * 22;
                 int quantity = 0, known = 0;
                 for (var bot : countsFrom) {
                     if (bot.items() == null) continue;
                     known++;
-                    quantity += bot.items().getOrDefault(id, 0);
+                    quantity += item.count(bot.items());
                 }
-                draw.drawItem(Registries.ITEM.get(new Identifier(id)).getDefaultStack(), cellX, cellY);
+                draw.drawItem(Registries.ITEM.get(new Identifier(item.icon())).getDefaultStack(), cellX, cellY);
                 String count = known == 0 ? "—" : Integer.toString(quantity) + (known < countsFrom.size() ? "+" : "");
                 draw.drawText(font, font.trimToWidth(count, Math.max(0, space - 20)), cellX + 18, cellY + 5, BotUiTheme.TEXT, false);
             }
@@ -79,5 +93,6 @@ final class BotHud {
                 + FormationClient.quick.getBoundKeyLocalizedText().getString() + "  "
                 + (lightning ? (LocalFormation.willResumeSaturn() ? "return to Saturn" : "stop strike") : "strike / stop");
         draw.drawText(font, font.trimToWidth(keys, w - 18), x + 9, y + h - 13, BotUiTheme.MUTED, false);
+        matrices.pop();
     }
 }

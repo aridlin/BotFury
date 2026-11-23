@@ -21,6 +21,7 @@ final class FormationClient {
     static KeyBinding wheel, quick;
     private static boolean pendingWheel;
     private static boolean pendingTutorial;
+    private static boolean pendingRoster;
     private FormationClient() {}
     private static int submitStructure(
             com.mojang.brigadier.context.CommandContext<net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource> context,
@@ -42,6 +43,15 @@ final class FormationClient {
                 pendingTutorial = true;
                 return 1;
             }));
+            root.then(ClientCommandManager.literal("paths").executes(context -> {
+                BotUiConfig.togglePaths();
+                ClientActions.message(context.getSource().getClient(), BotUiConfig.paths ? "Bot paths shown" : "Bot paths hidden");
+                return 1;
+            }));
+            root.then(ClientCommandManager.literal("preview").then(ClientCommandManager.literal("clear").executes(context -> {
+                WorldOverlays.clear();
+                return 1;
+            })));
             var inventory = ClientCommandManager.literal("inventory");
             for (String action : new String[]{"collect", "deliver", "keep", "only", "drop"}) {
                 var itemArgument = ClientCommandManager.argument("item", net.minecraft.command.argument.IdentifierArgumentType.identifier())
@@ -128,6 +138,8 @@ final class FormationClient {
             }));
         });
         BotMarkers.register();
+        BotHalftone.register();
+        WorldOverlays.register();
         HudRenderCallback.EVENT.register(BotMarkers::render);
         HudRenderCallback.EVENT.register(BotHud::render);
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
@@ -140,10 +152,11 @@ final class FormationClient {
             LocalFormation.tick(client);
             while (wheel.wasPressed()) if (client.player != null && client.currentScreen == null) open(client);
             while (quick.wasPressed()) if (client.player != null && client.currentScreen == null) quick(client);
-            if (client.player == null) pendingWheel = pendingTutorial = false;
-            else if (pendingTutorial && client.currentScreen == null) {
-                pendingTutorial = pendingWheel = false;
-                client.setScreen(new BotRosterScreen(null, true));
+            if (client.player == null) pendingWheel = pendingTutorial = pendingRoster = false;
+            else if ((pendingTutorial || pendingRoster) && client.currentScreen == null) {
+                boolean tutorial = pendingTutorial;
+                pendingTutorial = pendingRoster = pendingWheel = false;
+                client.setScreen(new BotRosterScreen(null, tutorial));
             } else if (pendingWheel && client.currentScreen == null) {
                 pendingWheel = false;
                 client.setScreen(new CommandWheel(wheel.isPressed()));
@@ -151,6 +164,7 @@ final class FormationClient {
         });
     }
     static void open(MinecraftClient client) { if (client.player != null) pendingWheel = true; }
+    static void openRoster() { pendingRoster = true; }
     static void quick(MinecraftClient client) {
         if (LocalFormation.mode().equals("strike")) LocalFormation.cancelStrike(client);
         else if (lightningTarget(client) != null) ClientActions.action(client, "lightning");

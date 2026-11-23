@@ -2,7 +2,6 @@ package com.botfury;
 
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.render.*;
 import net.minecraft.item.Item;
 import net.minecraft.item.Items;
@@ -12,7 +11,7 @@ import net.minecraft.util.Util;
 
 import java.util.Arrays;
 
-final class CommandWheel extends Screen {
+final class CommandWheel extends FleetPanel {
     private int page, quantity = 1, selected = -1;
     private boolean quantityChosen;
     private final float[] emphasis = new float[8];
@@ -67,6 +66,9 @@ final class CommandWheel extends Screen {
         if (gesture) pressedAt = Util.getMeasuringTimeMs();
         BotUiSound.open();
     }
+    @Override protected void initPanel() {}
+    @Override protected boolean framed() { return false; }
+
     @Override public boolean shouldPause() { return false; }
     private float radius() { return Math.min(108, Math.min(height * .31f, width * .37f)); }
 
@@ -91,7 +93,7 @@ final class CommandWheel extends Screen {
         lastFrame = Util.getMeasuringTimeMs();
     }
 
-    @Override public void render(DrawContext draw, int mouseX, int mouseY, float delta) {
+    @Override protected void renderPanel(DrawContext draw, int mouseX, int mouseY, float delta) {
         int cx = width / 2, cy = height / 2;
         float baseRadius = radius();
         long now = Util.getMeasuringTimeMs();
@@ -118,7 +120,6 @@ final class CommandWheel extends Screen {
         }
         advanceMesh(elapsed, .23f + reach * .77f, turn);
 
-        draw.fillGradient(0, 0, width, height, 0xC2181016, 0xA823151C);
         String heading = switch (page) {
             case 1 -> "Inventory";
             case 2 -> "Friends";
@@ -243,7 +244,7 @@ final class CommandWheel extends Screen {
         RenderSystem.disableBlend();
     }
 
-    @Override public boolean mouseClicked(double x, double y, int button) {
+    @Override protected boolean panelMouseClicked(double x, double y, int button) {
         if (FormationClient.wheel.matchesMouse(button)) { beginGesture(); return true; }
         if (button == 1) { gesture = false; back(); return true; }
         if (button != 0) return false;
@@ -255,8 +256,8 @@ final class CommandWheel extends Screen {
         return true;
     }
 
-    @Override public boolean mouseReleased(double x, double y, int button) {
-        if (!FormationClient.wheel.matchesMouse(button)) return super.mouseReleased(x, y, button);
+    @Override protected boolean panelMouseReleased(double x, double y, int button) {
+        if (!FormationClient.wheel.matchesMouse(button)) return super.panelMouseReleased(x, y, button);
         finishGesture(x, y);
         return true;
     }
@@ -318,7 +319,7 @@ final class CommandWheel extends Screen {
         else showPage(page == 4 ? 1 : page == 2 ? 3 : 0);
     }
 
-    @Override public boolean mouseScrolled(double x, double y, double amount) {
+    @Override protected boolean panelMouseScrolled(double x, double y, double amount) {
         if (page == 1) { quantityChosen=true; quantity = Math.max(1, Math.min(2304, quantity + (amount > 0 ? 1 : -1) * (hasShiftDown() ? 16 : 1))); }
         if (page == 4) outputBatch = Math.max(1, Math.min(64,
                 outputBatch + (amount > 0 ? 1 : -1) * (hasShiftDown() ? 8 : 1)));
@@ -334,8 +335,8 @@ final class CommandWheel extends Screen {
     @Override public boolean keyReleased(int keyCode, int scanCode, int modifiers) {
         if (!FormationClient.wheel.matchesKey(keyCode, scanCode)) return super.keyReleased(keyCode, scanCode, modifiers);
         var window = client.getWindow();
-        finishGesture(client.mouse.getX() * width / window.getWidth(),
-                client.mouse.getY() * height / window.getHeight());
+        finishGesture(panelX(client.mouse.getX() * window.getScaledWidth() / window.getWidth()),
+                panelY(client.mouse.getY() * window.getScaledHeight() / window.getHeight()));
         return true;
     }
 }

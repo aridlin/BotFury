@@ -8,7 +8,6 @@ import org.joml.Vector4f;
 import net.minecraft.util.math.Vec3d;
 
 final class BotMarkers {
-    private static final float LABEL_SCALE = 0.75f;
     private static final int ITEMS_PER_ROW = 3;
     private record ItemCount(net.minecraft.item.Item item, String label, int width) {}
     private static Matrix4f matrix;
@@ -19,11 +18,15 @@ final class BotMarkers {
     static void render(DrawContext draw,float delta){
         var client=MinecraftClient.getInstance();
         if(!BotUiConfig.esp||client.player==null||client.world==null||client.options.hudHidden||client.currentScreen!=null||matrix==null||camera==null||Boolean.getBoolean("botfury.managedHttp"))return;
-        int width=draw.getScaledWindowWidth(),height=draw.getScaledWindowHeight(),index=0;
-        var tracked = BotUiConfig.trackedItems;
+        int width=draw.getScaledWindowWidth(),height=draw.getScaledWindowHeight();
+        float hudScale = FleetPanel.scaleForWindow(client.getWindow());
+        float labelScale = hudScale * .78f;
+        int hudRight = (int) (212 * hudScale);
+        int hudBottom = (int) ((84 + ((BotUiConfig.displayedItems().size() + 2) / 3) * 22) * hudScale);
+        var tracked = BotUiConfig.displayedItems();
         int itemHeight = ((tracked.size() + ITEMS_PER_ROW - 1) / ITEMS_PER_ROW) * 18;
         int labelHeight = 24 + itemHeight;
-        int heightScaled = (int)Math.ceil(LABEL_SCALE * labelHeight);
+        int heightScaled = (int)Math.ceil(labelScale * labelHeight);
         boolean saturn = LocalFormation.mode().equals("orbit");
         var occupied=new java.util.ArrayList<int[]>();
         for(var bot:BotTracker.all()){
@@ -46,38 +49,38 @@ final class BotMarkers {
             if(point==null)continue;
             int x=(int)point.x(),y=(int)point.y();
             if(point.edge()&&Math.abs(x-width/2)<140&&y>height-80)y=height-80;
-            int color=!live?0xFF8995A5:!alive?0xFFFF7777:entity==null&&age>2000?0xFFFFC35C:0xFF5DE4D2;
+            int color=!live?0xFF8995A5:!alive?0xFFFF7777:entity==null&&age>2000?0xFFFFC35C:0xFF000000 | WorldOverlays.pathColor(bot.port());
             if (saturn) {
-                draw.fill(x - 1, y - 2, x + 2, y + 3, color);
-                draw.fill(x - 2, y - 1, x + 3, y + 2, color);
+                if (!point.edge()) BotGeometry.circle(draw, x, y, Math.max(1.2f, 3.2f * hudScale), color);
                 continue;
             }
+            if (point.edge()) {
+                double angle = Math.atan2(y - height / 2.0, x - width / 2.0);
+                BotGeometry.arrow(draw, x, y, angle, Math.max(4.5f, 10f * hudScale), color);
+                continue;
+            }
+            BotGeometry.circle(draw, x, y, Math.max(1f, 2.5f * hudScale), color);
             String name=bot.name()+" · "+Math.round(position.distanceTo(client.player.getLerpedPos(delta)))+"m";
             String task=bot.mining().isEmpty()?(bot.inventory().isEmpty()?bot.mode():bot.inventory()):bot.mining();
             String info=live?(alive?Math.round(health)+" HP · "+client.textRenderer.trimToWidth(task,140):"Respawning"):"Last known "+Math.max(0,age/1000)+"s";
-            if(point.edge()){
-                double angle=Math.atan2(y-height/2.0,x-width/2.0);
-                line(draw,x,y,x-(int)(6*Math.cos(angle-.6)),y-(int)(6*Math.sin(angle-.6)),color);
-                line(draw,x,y,x-(int)(6*Math.cos(angle+.6)),y-(int)(6*Math.sin(angle+.6)),color);
-            }else {draw.fill(x-1,y-1,x+2,y+2,color);}
             var counts = new java.util.ArrayList<ItemCount>();
             int maxRow = 0, rowWidth = 0;
-            for (String id : tracked) {
-                String count = bot.items() == null ? "?" : Integer.toString(bot.items().getOrDefault(id, 0));
+            for (var item : tracked) {
+                String count = bot.items() == null ? "?" : Integer.toString(item.count(bot.items()));
                 if (bot.items() != null && (!bot.fresh() || !bot.connected())) count = "~" + count;
                 if (counts.size() % ITEMS_PER_ROW == 0) rowWidth = 0;
                 int cellWidth = 20 + client.textRenderer.getWidth(count) + 4;
-                counts.add(new ItemCount(net.minecraft.registry.Registries.ITEM.get(new net.minecraft.util.Identifier(id)),
+                counts.add(new ItemCount(net.minecraft.registry.Registries.ITEM.get(new net.minecraft.util.Identifier(item.icon())),
                         count, cellWidth));
                 rowWidth += cellWidth;
                 maxRow = Math.max(maxRow, rowWidth);
             }
-            int w = Math.max(Math.max(client.textRenderer.getWidth(name), client.textRenderer.getWidth(info)), maxRow) + 10;
-            int widthScaled = (int)Math.ceil(LABEL_SCALE * w);
+            int w = Math.max(Math.max(client.textRenderer.getWidth(name) + 10, client.textRenderer.getWidth(info)), maxRow) + 10;
+            int widthScaled = (int)Math.ceil(labelScale * w);
             int labelX = Math.max(5, Math.min(width - widthScaled - 5, x - widthScaled / 2));
-            int preferredY = point.edge() ? y + 5 + (index++ % 3) * 3 : y - heightScaled - 6;
+            int preferredY = y - heightScaled - 6;
             int labelY = Math.max(5, Math.min(height - heightScaled - 5, preferredY));
-            if (labelX < 238 && labelY < 88) labelY = 90;
+            if (BotUiConfig.hud && labelX < hudRight && labelY < hudBottom) labelY = hudBottom;
             for (int attempt = 0; attempt < 8; attempt++) {
                 boolean collision = false;
                 for (int[] other : occupied) {
@@ -89,15 +92,14 @@ final class BotMarkers {
                 }
                 if (!collision) break;
                 labelY = labelY + heightScaled + 3 < height - heightScaled - 5 ? labelY + heightScaled + 3
-                        : Math.max(92, labelY - 2 * heightScaled - attempt * 12);
+                        : Math.max(hudBottom, labelY - 2 * heightScaled - attempt * 12);
             }
             occupied.add(new int[]{labelX, labelY, widthScaled, heightScaled});
             var matrices = draw.getMatrices();
             matrices.push();
             matrices.translate(labelX, labelY, 0);
-            matrices.scale(LABEL_SCALE, LABEL_SCALE, 1);
-            draw.fill(0, 0, w, labelHeight, 0xD5111926);
-            draw.fill(0, 0, 2, labelHeight, color);
+            matrices.scale(labelScale, labelScale, 1);
+            draw.fill(0, 0, w, labelHeight, 0xE52D1923);
             for (int i = 0; i < counts.size(); i += ITEMS_PER_ROW) {
                 var row = counts.subList(i, Math.min(counts.size(), i + ITEMS_PER_ROW));
                 int rowX = (w - row.stream().mapToInt(ItemCount::width).sum()) / 2;
@@ -108,13 +110,10 @@ final class BotMarkers {
                     rowX += entry.width;
                 }
             }
-            draw.drawText(client.textRenderer, name, 5, itemHeight + 3, color, false);
-            draw.drawText(client.textRenderer, info, 5, itemHeight + 13, 0xFFB6C5D7, false);
+            BotGeometry.circle(draw, 7, itemHeight + 7, 2f, color);
+            draw.drawText(client.textRenderer, name, 13, itemHeight + 3, color, false);
+            draw.drawText(client.textRenderer, info, 5, itemHeight + 13, BotUiTheme.MUTED, false);
             matrices.pop();
         }
-    }
-    private static void line(DrawContext draw,int x1,int y1,int x2,int y2,int color){
-        int steps=Math.max(Math.abs(x2-x1),Math.abs(y2-y1));
-        for(int i=0;i<=steps;i++){int x=x1+(x2-x1)*i/Math.max(1,steps),y=y1+(y2-y1)*i/Math.max(1,steps);draw.fill(x,y,x+2,y+2,color);}
     }
 }

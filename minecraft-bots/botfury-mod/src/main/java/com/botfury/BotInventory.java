@@ -11,15 +11,23 @@ import net.minecraft.util.math.Vec3d;
 import net.minecraft.command.argument.EntityAnchorArgumentType;
 import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 /** Explicit inventory tasks; only the 36 main inventory slots are modified. */
 final class BotInventory {
-    record Request(String action, Item item, int count, String recipient) {}
+    record Destination(String server, String dimension, Vec3d position, int controller) {
+        boolean sameWorld(LocalFormation.Peer here) {
+            return here != null && server.equals(here.server()) && dimension.equals(here.dimension());
+        }
+    }
+    record Request(String action, Item item, int count, String recipient, Destination destination) {}
     private static Request task;
     private static boolean paused;
     private static boolean manualPause,baritoneTask;
     private static Vec3d excessDropCenter;
     private static Vec3d lastRecipient;
+    private static CompletableFuture<Vec3d> locationRead;
+    private static int recipientSeen, nextLocationRead;
     private static String completion = "Done";
     static void pause(boolean value) {
         if (value) routeRecovery.reset();
@@ -37,8 +45,8 @@ final class BotInventory {
     static Request parse(String input) {
         String[] parts = input.split("\\|", -1);
         if (parts.length == 4 && parts[0].equals("stop"))
-            return new Request("stop", net.minecraft.item.Items.AIR, 1, "FuryMaster");
-        if (parts.length != 4 || !ACTIONS.contains(parts[0]) || !parts[3].matches("[A-Za-z0-9_]{1,16}"))
+            return new Request("stop", net.minecraft.item.Items.AIR, 1, "FuryMaster", null);
+        if ((parts.length != 4 && parts.length != 10) || !ACTIONS.contains(parts[0]) || !parts[3].matches("[A-Za-z0-9_]{1,16}"))
             throw new IllegalArgumentException("Invalid inventory task or recipient");
         boolean needsItem = !Set.of("gather", "spread").contains(parts[0]);
         Identifier id = Identifier.tryParse(needsItem ? parts[1] : "minecraft:air");
@@ -46,7 +54,25 @@ final class BotInventory {
         int count;
         try { count = needsItem ? (parts[0].equals("drop")&&(parts[2].isBlank()||parts[2].equalsIgnoreCase("all"))?2304:Integer.parseInt(parts[2])) : 1; } catch (NumberFormatException e) { throw new IllegalArgumentException("Invalid quantity"); }
         if (count < 1 || count > 2304) throw new IllegalArgumentException("Quantity must be 1–2304");
-        return new Request(parts[0], Registries.ITEM.get(id), count, parts[3]);
+        Destination destination = null;
+        if (parts.length == 10) {
+            if (!parts[0].equals("gather") && !parts[0].equals("deliver")) throw new IllegalArgumentException("Unexpected recipient coordinates");
+            try {
+                var location = new Vec3d(Double.parseDouble(parts[6]), Double.parseDouble(parts[7]), Double.parseDouble(parts[8]));
+                int port = Integer.parseInt(parts[9]);
+                if (!validLocation(location) || parts[4].isBlank() || Identifier.tryParse(parts[5]) == null
+                        || port < 1024 || port > 65535) throw new IllegalArgumentException("Invalid recipient coordinates");
+                destination = new Destination(parts[4], parts[5], location, port);
+            } catch (NumberFormatException invalid) {
+                throw new IllegalArgumentException("Invalid recipient coordinates");
+            }
+        }
+        return new Request(parts[0], Registries.ITEM.get(id), count, parts[3], destination);
+    }
+
+    static boolean validLocation(Vec3d point) {
+        return Math.abs(point.x) <= 30_000_000 && Math.abs(point.z) <= 30_000_000
+                && point.y >= -2048 && point.y <= 2048;
     }
 
     static String status() { return status; }
@@ -71,7 +97,11 @@ final class BotInventory {
         paused = true;
         task = request;
         session = client.getNetworkHandler();
-        age = delivered = waitTicks = 0;
+        age = delivered = waitTicks = recipientSeen = nextLocationRead = 0;
+        locationRead = null;
+        if (request.destination != null && request.destination.sameWorld(LocalFormation.here())) {
+            lastRecipient = request.destination.position;
+        }
         spreadGoal = null;
         world = client.world.getRegistryKey().getValue().toString();
         status = request.action + " active";
@@ -100,15 +130,22 @@ final class BotInventory {
         int held = count(client, task.item);
         switch (task.action) {
             case "deliver", "gather" -> {
-                if(recipient!=null)lastRecipient=recipient.getPos();
+                boolean visible = recipient != null && recipient != client.player && recipient.isAlive();
+                if (visible) {
+                    lastRecipient = recipient.getPos();
+                    recipientSeen = age;
+                    locationRead = null;
+                }
                 if(task.action.equals("deliver")&&(delivered>=task.count||held==0)) {
                     completion="Dropped "+delivered+" of "+task.count+" near "+task.recipient;
                     spread(client);return;
                 }
-                if (recipient == null || recipient == client.player || !recipient.isAlive()) {
-                    status = "Waiting for recipient in loaded area"; return;
+                if (!visible) {
+                    followCoordinates(client);
+                    return;
                 }
                 if (client.player.squaredDistanceTo(recipient) > 6.25 || !client.player.canSee(recipient)) {
+                    status = "Approaching " + task.recipient;
                     path(client, recipient.getPos()); return;
                 }
                 routeRecovery.reset();
@@ -139,6 +176,33 @@ final class BotInventory {
             }
             case "spread" -> spread(client);
             default -> finish("Stopped");
+        }
+    }
+
+    private static void followCoordinates(MinecraftClient client) {
+        var destination = task.destination;
+        if (destination == null || !destination.sameWorld(LocalFormation.here())) {
+            status = "Waiting for recipient in loaded area";
+            return;
+        }
+        if (locationRead != null && locationRead.isDone()) {
+            var point = locationRead.getNow(null);
+            if (point != null) {
+                lastRecipient = point;
+                recipientSeen = age;
+            }
+            locationRead = null;
+        }
+        if (locationRead == null && age >= nextLocationRead) {
+            nextLocationRead = age + 20;
+            locationRead = BotTracker.recipientLocation(destination, task.recipient);
+        }
+        if (lastRecipient != null && age - recipientSeen <= 240) {
+            status = "Following coordinates to " + task.recipient;
+            path(client, lastRecipient);
+        } else {
+            if (!status.equals("Waiting for fresh recipient coordinates")) BaritoneClient.execute("stop");
+            status = "Waiting for fresh recipient coordinates";
         }
     }
 
@@ -213,6 +277,7 @@ final class BotInventory {
         if (task != null || baritoneTask) BaritoneClient.execute("stop");
         pickup.reset();
         task = null;
+        locationRead = null;
         baritoneTask=false;
         spreadGoal = null;
         status = message;

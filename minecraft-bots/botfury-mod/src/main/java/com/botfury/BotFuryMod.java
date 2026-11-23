@@ -175,6 +175,7 @@ public class BotFuryMod implements ClientModInitializer {
         status.put("lastEventLevel", BotEvents.lastLevel);
         status.put("coordinatedMining", true);
         status.put("taskDefenseCapable", true);
+        status.put("inventoryCoordinates", true);
         status.put("taskDefenseEnabled", TaskDefense.enabled());
         if (client.player != null) {
             var items = new java.util.TreeMap<String, Integer>();
@@ -188,6 +189,10 @@ public class BotFuryMod implements ClientModInitializer {
             status.put("maxHealth", client.player.getMaxHealth());
             status.put("x", client.player.getX()); status.put("y", client.player.getY()); status.put("z", client.player.getZ());
             status.put("alive", client.player.isAlive());
+            if (MANAGED_HTTP && client.player.isAlive()) {
+                var route = BaritoneClient.route();
+                if (!route.isEmpty()) status.put("route", route.stream().mapToLong(net.minecraft.util.math.BlockPos::asLong).toArray());
+            }
         }
         status.putAll(LocalFormation.telemetry());
         statusSnapshot = new com.google.gson.Gson().toJson(status);

@@ -2,6 +2,7 @@ package com.botfury;
 
 import com.google.gson.Gson;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.ChestBlock;
@@ -58,6 +59,11 @@ final class StructureProject {
     }
 
     static String submitProject(MinecraftClient client, String file, BlockPos origin, boolean supplied) {
+        return submitProject(client, file, origin, supplied, Map.of());
+    }
+
+    static String submitProject(MinecraftClient client, String file, BlockPos origin, boolean supplied,
+                                Map<Block, BlockState> replacements) {
         var here = LocalFormation.here();
         int port = BotFuryMod.controlPort();
         if (here == null || client.world == null || port < 1024 || Boolean.getBoolean("botfury.managedHttp")) {
@@ -65,7 +71,7 @@ final class StructureProject {
             return null;
         }
         try {
-            Plan plan = plan(client, file, origin);
+            Plan plan = plan(client, file, origin, replacements);
             String id = file.substring(0, Math.min(file.lastIndexOf('.'), 48)) + "-" + UUID.randomUUID().toString().substring(0, 8);
             var supply = supplied && !plan.materials().isEmpty() ? StructureSupply.compile(client, plan) : null;
             ProjectBroker.submitStructure(id, here, plan, supply);
@@ -80,7 +86,7 @@ final class StructureProject {
         }
     }
 
-    static Plan plan(MinecraftClient client, String file, BlockPos origin) throws IOException {
+    static Map<BlockPos, BlockState> readBlueprint(String file, BlockPos origin) throws IOException {
         if (!file.matches("[A-Za-z0-9_-]{1,64}\\.(nbt|schem)")) {
             throw new IllegalArgumentException("Use a structure filename ending in .nbt or .schem");
         }
@@ -95,7 +101,24 @@ final class StructureProject {
         try (var input = new DataInputStream(new GZIPInputStream(Files.newInputStream(path)))) {
             structure = NbtIo.read(input, new NbtTagSizeTracker(2 * 1024 * 1024));
         }
-        var desired = file.endsWith(".schem") ? schematicCells(structure, origin) : cells(structure, origin);
+        return file.endsWith(".schem") ? schematicCells(structure, origin) : cells(structure, origin);
+    }
+
+    static boolean canSubstitute(BlockState state, net.minecraft.world.BlockView world, BlockPos pos) {
+        return !state.isAir() && !state.hasBlockEntity() && state.getProperties().isEmpty()
+                && state.getFluidState().isEmpty() && !(state.getBlock() instanceof FallingBlock) && state.isFullCube(world, pos);
+    }
+
+    static Map<BlockPos, BlockState> substitute(Map<BlockPos, BlockState> blueprint, Map<Block, BlockState> replacements) {
+        if (replacements.isEmpty()) return blueprint;
+        var materialized = new HashMap<>(blueprint);
+        materialized.replaceAll((pos, block) -> replacements.getOrDefault(block.getBlock(), block));
+        return materialized;
+    }
+
+    private static Plan plan(MinecraftClient client, String file, BlockPos origin,
+                             Map<Block, BlockState> replacements) throws IOException {
+        var desired = substitute(readBlueprint(file, origin), replacements);
         var cells = new ArrayList<Cell>();
         for (var entry : desired.entrySet()) {
             var pos = entry.getKey();

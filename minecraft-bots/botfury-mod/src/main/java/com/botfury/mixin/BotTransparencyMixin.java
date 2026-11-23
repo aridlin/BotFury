@@ -27,7 +27,7 @@ abstract class BotTransparencyMixin {
     private VertexConsumer botfury$model(VertexConsumerProvider provider, RenderLayer layer,
                                         LivingEntity entity, float yaw, float tickDelta, MatrixStack matrices,
                                         VertexConsumerProvider original, int light) {
-        return BotVisuals.isBot(entity) ? BotVisuals.buffer(provider, layer) : provider.getBuffer(layer);
+        return BotVisuals.isBot(entity) ? BotVisuals.buffer(provider, layer, entity) : provider.getBuffer(layer);
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -36,7 +36,7 @@ abstract class BotTransparencyMixin {
     private void botfury$features(FeatureRenderer feature, MatrixStack matrices, VertexConsumerProvider provider, int light,
                                   Entity entity, float limbAngle, float limbDistance, float tickDelta,
                                   float animation, float headYaw, float headPitch) {
-        VertexConsumerProvider buffers = BotVisuals.isBot(entity) ? layer -> BotVisuals.buffer(provider, layer) : provider;
+        VertexConsumerProvider buffers = BotVisuals.isBot(entity) ? layer -> BotVisuals.buffer(provider, layer, entity) : provider;
         feature.render(matrices, buffers, light, entity, limbAngle, limbDistance, tickDelta, animation, headYaw, headPitch);
     }
 }

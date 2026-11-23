@@ -6,7 +6,7 @@ import net.minecraft.text.Text;
 
 import java.util.List;
 
-final class MiningScreen extends Screen {
+final class MiningScreen extends FleetPanel {
     private final Screen parent;
     private String category = "Ores", variant = "both", error = "";
     private int offset;
@@ -17,7 +17,7 @@ final class MiningScreen extends Screen {
     }
 
     @Override public boolean shouldPause() { return false; }
-    @Override protected void init() { rebuild(); }
+    @Override protected void initPanel() { rebuild(); }
 
     private List<ResourceCatalog.Resource> resources() {
         return ResourceCatalog.RESOURCES.stream().filter(resource -> resource.category().equals(category)).toList();
@@ -78,6 +78,7 @@ final class MiningScreen extends Screen {
     private void start(String id, String choice) {
         String command = "mining:" + id + "|" + choice + "|" + BotFuryMod.controlPort();
         if (BotTracker.sendSelected(command) > 0) {
+            BotUiConfig.trackRequest(ResourceCatalog.trackedDrops(id, choice));
             BotUiSound.confirm();
             client.setScreen(null);
         } else {
@@ -86,15 +87,15 @@ final class MiningScreen extends Screen {
         }
     }
 
-    @Override public void render(DrawContext draw, int x, int y, float delta) {
+    @Override protected void renderPanel(DrawContext draw, int x, int y, float delta) {
         draw.fillGradient(0, 0, width, height, BotUiTheme.PANEL_BOTTOM, BotUiTheme.PANEL_TOP);
         draw.drawCenteredTextWithShadow(textRenderer, title, width / 2, 16, BotUiTheme.TEXT);
         draw.drawCenteredTextWithShadow(textRenderer, error.isEmpty() ? BotTracker.targetLabel() : error,
                 width / 2, 32, error.isEmpty() ? BotUiTheme.MUTED : BotUiTheme.ACCENT);
-        super.render(draw, x, y, delta);
+        super.renderPanel(draw, x, y, delta);
     }
 
-    @Override public boolean mouseScrolled(double x, double y, double amount) {
+    @Override protected boolean panelMouseScrolled(double x, double y, double amount) {
         if (y < 101 || y >= height - 28 || amount == 0) return false;
         int previous = offset;
         offset = Math.max(0, Math.min(Math.max(0, resources().size() - rows()), offset + (amount > 0 ? -2 : 2)));
@@ -102,9 +103,9 @@ final class MiningScreen extends Screen {
         return true;
     }
 
-    @Override public boolean mouseClicked(double x, double y, int button) {
+    @Override protected boolean panelMouseClicked(double x, double y, int button) {
         if (FormationClient.wheel.matchesMouse(button)) { close(); return true; }
-        return super.mouseClicked(x, y, button);
+        return super.panelMouseClicked(x, y, button);
     }
     @Override public void close() { BotUiSound.back(); client.setScreen(parent); }
 }

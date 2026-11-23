@@ -121,7 +121,7 @@ final class MiningTask {
         if(client.player==null||client.world==null||here==null||!world.equals(here.server()+"|"+here.dimension())){stop();return;}
         age++;dead=false;
         if(target!=null){
-            if (BuildProtection.blocked(target)) {
+            if (protectedTarget(client, target)) {
                 stopPath();
                 clearReservation();
                 client.interactionManager.cancelBlockBreaking();
@@ -138,9 +138,8 @@ final class MiningTask {
             if(age>=nextRenew&&!requesting){request(client,target,stand,"renew");nextRenew=age+40;}
             if(System.currentTimeMillis()>=leaseUntil){stopPath();client.interactionManager.cancelBlockBreaking();status="Waiting for mining reservation";return;}
             double reach=Math.min(4.3,client.interactionManager.getReachDistance()-.1);
-            Vec3d eye=client.player.getEyePos(),center=Vec3d.ofCenter(target);
-            var ray=client.world.raycast(new RaycastContext(eye,center,RaycastContext.ShapeType.COLLIDER,RaycastContext.FluidHandling.NONE,client.player));
-            if(client.player.squaredDistanceTo(stand)<=1.44&&eye.squaredDistanceTo(center)<=reach*reach&&ray.getType()==HitResult.Type.BLOCK&&((BlockHitResult)ray).getBlockPos().equals(target)){
+            var ray = miningHit(client, target, client.player.getEyePos(), reach);
+            if(client.player.squaredDistanceTo(stand)<=1.44&&ray!=null){
                 stopPath();
                 if(!equip(client,target)){status="Need a suitable tool";return;}
                 if (projectMining) {
@@ -149,9 +148,9 @@ final class MiningTask {
                         observedSite = new ProjectQueue.ResourceSite(feet.getX(), feet.getY(), feet.getZ());
                     }
                 }
-                client.player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES,center);
+                client.player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES,ray.getPos());
                 String blockName=Registries.BLOCK.getId(client.world.getBlockState(target).getBlock()).getPath();
-                client.interactionManager.updateBlockBreakingProgress(target,((BlockHitResult)ray).getSide());client.player.swingHand(Hand.MAIN_HAND);
+                client.interactionManager.updateBlockBreakingProgress(ray.getBlockPos(),ray.getSide());client.player.swingHand(Hand.MAIN_HAND);
                 status="Mining "+blockName;
             } else {
                 var p = BlockPos.ofFloored(stand);
@@ -191,7 +190,7 @@ final class MiningTask {
         for(int x=-12;x<=12;x++)for(int z=-12;z<=12;z++)for(int y=-10;y<=10;y++){
             BlockPos p=position.add(x,y,z);
             if (excluded != null && excluded.contains(p)) continue;
-            if(rejected.getOrDefault(p,0)>age||!client.world.isChunkLoaded(p.getX()>>4,p.getZ()>>4)||!matches(client,p)||BuildProtection.blocked(p))continue;
+            if(rejected.getOrDefault(p,0)>age||!client.world.isChunkLoaded(p.getX()>>4,p.getZ()>>4)||!matches(client,p)||protectedTarget(client,p))continue;
             if(!hasTool(client,p)){needsTool=true;continue;}candidates.add(p);
         }
         candidates.sort(Comparator.comparingDouble(p->p.getSquaredDistance(position)));
@@ -256,7 +255,46 @@ final class MiningTask {
         var p=BlockPos.ofFloored(pickup);
         path("goto "+p.getX()+" "+p.getY()+" "+p.getZ());
     }
-    private static boolean matches(MinecraftClient c,BlockPos p){return blocks.contains(Registries.BLOCK.getId(c.world.getBlockState(p).getBlock()).toString());}
+    private static boolean matches(MinecraftClient c, BlockPos p) {
+        var state = c.world.getBlockState(p);
+        if (state.getBlock() instanceof net.minecraft.block.TallPlantBlock
+                && state.get(net.minecraft.block.TallPlantBlock.HALF) == net.minecraft.block.enums.DoubleBlockHalf.UPPER) return false;
+        return blocks.contains(Registries.BLOCK.getId(state.getBlock()).toString());
+    }
+
+    private static boolean protectedTarget(MinecraftClient client, BlockPos pos) {
+        if (BuildProtection.blocked(pos)) return true;
+        var upper = pos.up();
+        return client.world.getBlockState(pos).getBlock() instanceof net.minecraft.block.TallPlantBlock
+                && (BuildProtection.blocked(upper) || excluded != null && excluded.contains(upper));
+    }
+
+    private static BlockHitResult miningHit(MinecraftClient client, BlockPos target, Vec3d eye, double reach) {
+        var state = client.world.getBlockState(target);
+        if (state.getCollisionShape(client.world, target).isEmpty()) {
+            var lower = outlineHit(client, target, eye, reach);
+            var upper = target.up();
+            return lower != null || !(state.getBlock() instanceof net.minecraft.block.TallPlantBlock)
+                    || client.world.getBlockState(upper).getBlock() != state.getBlock()
+                    ? lower : outlineHit(client, upper, eye, reach);
+        }
+        Vec3d center = Vec3d.ofCenter(target);
+        if (eye.squaredDistanceTo(center) > reach * reach) return null;
+        var ray = client.world.raycast(new RaycastContext(eye, center, RaycastContext.ShapeType.COLLIDER,
+                RaycastContext.FluidHandling.NONE, client.player));
+        return ray.getType() == HitResult.Type.BLOCK && ray.getBlockPos().equals(target) ? ray : null;
+    }
+
+    private static BlockHitResult outlineHit(MinecraftClient client, BlockPos target, Vec3d eye, double reach) {
+        for (var box : client.world.getBlockState(target).getOutlineShape(client.world, target).getBoundingBoxes()) {
+            Vec3d center = box.getCenter().add(target.getX(), target.getY(), target.getZ());
+            if (eye.squaredDistanceTo(center) > reach * reach) continue;
+            var ray = client.world.raycast(new RaycastContext(eye, center, RaycastContext.ShapeType.OUTLINE,
+                    RaycastContext.FluidHandling.NONE, client.player));
+            if (ray.getType() == HitResult.Type.BLOCK && ray.getBlockPos().equals(target)) return ray;
+        }
+        return null;
+    }
     private static boolean hasTool(MinecraftClient c,BlockPos p){var state=c.world.getBlockState(p);if(!state.isToolRequired())return true;for(int i=0;i<36;i++)if(c.player.getInventory().getStack(i).isSuitableFor(state))return true;return false;}
     private static boolean equip(MinecraftClient c,BlockPos p){
         var state=c.world.getBlockState(p);int best=-1;float speed=-1;
@@ -268,12 +306,14 @@ final class MiningTask {
     }
     private static Vec3d standing(MinecraftClient c,BlockPos ore){
         Vec3d best=null;double score=Double.POSITIVE_INFINITY;
+        boolean thin = c.world.getBlockState(ore).getCollisionShape(c.world, ore).isEmpty();
         for(int dx=-1;dx<=1;dx++)for(int dz=-1;dz<=1;dz++)for(int dy=-1;dy<=1;dy++){
             if(dx==0&&dz==0)continue;BlockPos feet=ore.add(dx,dy,dz),below=feet.down();
             if(!c.world.isChunkLoaded(feet.getX()>>4,feet.getZ()>>4)||c.world.getBlockState(below).getCollisionShape(c.world,below).isEmpty()
                     ||!c.world.getFluidState(feet).isEmpty()||!c.world.getFluidState(feet.up()).isEmpty()
                     ||c.world.getBlockState(feet).getHardness(c.world,feet)<0||c.world.getBlockState(feet.up()).getHardness(c.world,feet.up())<0)continue;
             Vec3d point=Vec3d.ofBottomCenter(feet);var box=c.player.getBoundingBox().offset(point.subtract(c.player.getPos())).expand(.35,0,.35);
+            if (thin && miningHit(c, ore, point.add(0, 1.62, 0), 4.3) == null) continue;
             if(!c.world.getOtherEntities(c.player,box,e->e instanceof PlayerEntity&&e.isAlive()).isEmpty())continue;
             double distance=c.player.squaredDistanceTo(point)+(c.world.isSpaceEmpty(c.player,box)?0:16);
             if(distance<score){score=distance;best=point;}

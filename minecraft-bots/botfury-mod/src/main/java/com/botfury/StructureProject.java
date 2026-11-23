@@ -679,6 +679,7 @@ final class StructureProject {
                                        Map<BlockPos, String> placed, boolean avoidCorners) {
         var placement = placementState(cell, ready);
         if (placement == null) return null;
+        Map<BlockPos, BlockState> current = null;
         for (Direction face : ProjectPlacement.faces(placement)) {
             var support = cell.pos.offset(face.getOpposite());
             if (!loaded(client, support)) continue;
@@ -693,26 +694,52 @@ final class StructureProject {
                         safeStand(client, pos, cleared) && safeStand(client, pos, desired) && visible.test(pos));
             }
             if (stand != null) return new BuildPose(stand, face, support, false);
-            var current = new HashMap<>(cleared);
-            current.putAll(ready);
+            if (current == null) {
+                current = new HashMap<>(cleared);
+                current.putAll(ready);
+            }
+            var built = current;
             stand = findPlacementStand(client, cell.pos, face, pos ->
                     safeStand(client, pos, cleared) && safeStand(client, pos, desired)
-                            && clearBuildFace(client, pos, cell.pos, support, face, current, placement, avoidCorners));
+                            && clearBuildFace(client, pos, cell.pos, support, face, built, placement, avoidCorners));
             // Later placements wait until a face that will be covered has been used.
             if (stand != null) return new BuildPose(stand, face, support, true);
             for (boolean exposed : new boolean[]{false, true}) {
-                var visibleLayout = exposed ? current : desired;
+                var visibleLayout = exposed ? built : desired;
                 var accessRoutes = new HashMap<BlockPos, BuildAccess>();
                 stand = findPlacementStand(client, cell.pos, face, pos -> {
-                    if (!placed.containsKey(pos.down()) || !safeStand(client, pos, current)
+                    if (!placed.containsKey(pos.down()) || !safeStand(client, pos, built)
                             || !safeStand(client, pos, visibleLayout)
                             || !clearBuildFace(client, pos, cell.pos, support, face, visibleLayout, placement, avoidCorners)) return false;
-                    var access = builtAccess(client, pos, cell.pos, cleared, current, visibleLayout, placed);
+                    var access = builtAccess(client, pos, cell.pos, cleared, built, visibleLayout, placed);
                     if (access == null) return false;
                     accessRoutes.put(pos, access);
                     return true;
                 });
                 if (stand != null) return new BuildPose(stand, face, support, exposed, accessRoutes.get(stand));
+            }
+        }
+        if (current == null || !placement.isFullCube(client.world, cell.pos)
+                || placement.getBlock() instanceof FallingBlock) return null;
+        for (Direction face : ProjectPlacement.faces(placement)) {
+            if (!face.getAxis().isHorizontal()) continue;
+            var support = cell.pos.offset(face.getOpposite());
+            var stand = support.up();
+            if (!loaded(client, support) || !loaded(client, stand.up()) || !loaded(client, cell.pos.up(2))
+                    || !safeStand(client, stand, current)
+                    || !airAt(client, cell.pos.up(), current) || !airAt(client, cell.pos.up(2), current)) continue;
+            var floor = current.getOrDefault(support, client.world.getBlockState(support));
+            if (!ProjectPlacement.support(floor, placement, face, client.world, support)) continue;
+            // A crouched player can reach the side while their feet still overlap the supporting block.
+            var eye = ProjectBlock.edgePosition(stand, face).add(0, 1.27, 0);
+            var click = ProjectPlacement.facePoint(support, face, floor, placement);
+            for (boolean exposed : new boolean[]{false, true}) {
+                var layout = exposed ? current : desired;
+                if (!safeStand(client, stand, layout)
+                        || !airAt(client, cell.pos.up(), layout) || !airAt(client, cell.pos.up(2), layout)
+                        || !hitsFace(client, eye, click, cell.pos, support, face, layout)) continue;
+                var access = builtAccess(client, stand, cell.pos, cleared, current, layout, placed);
+                if (access != null) return new BuildPose(stand, face, support, exposed, access);
             }
         }
         return null;

@@ -7,6 +7,7 @@ import net.minecraft.state.property.Property;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.Vec3d;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.TreeMap;
@@ -20,6 +21,10 @@ record ProjectBlock(BlockPos target, BlockPos stand, Identifier block, Map<Strin
 
     BlockState desired() { return state(block, properties); }
     BlockPos support() { return target.offset(face.getOpposite()); }
+    boolean edgePlacement() { return face.getAxis().isHorizontal() && stand.equals(support().up()); }
+    static Vec3d edgePosition(BlockPos stand, Direction face) {
+        return Vec3d.ofBottomCenter(stand).add(Vec3d.of(face.getVector()).multiply(.66));
+    }
 
     boolean matches(BlockState actual) {
         if (block.equals(Identifier.of("minecraft", "air"))) return actual.isAir();
@@ -94,6 +99,10 @@ record ProjectBlock(BlockPos target, BlockPos stand, Identifier block, Map<Strin
         locks.add(key(stand));
         locks.add(key(stand.down()));
         locks.add(key(stand.up()));
+        if (work.kind() == ProjectQueue.Kind.BUILD && edgePlacement()) {
+            locks.add(key(target.up()));
+            locks.add(key(target.up(2)));
+        }
         if (work.cleanup() != null && !key(target).equals(work.cleanup().site())) {
             throw new IllegalArgumentException("Cleanup site must match its target");
         }

@@ -176,7 +176,7 @@ final class MiningTask {
                 if (recoverRoute(client, p)) return;
                 if (age >= nextPath && !BaritoneClient.pursuing(p)) {
                     nextPath = age + 60;
-                    if (!path("goto " + p.getX() + " " + p.getY() + " " + p.getZ())) {
+                    if (!path(p)) {
                         status = "Baritone could not approach reserved " + job.resource;
                         rejected.put(target, age + 200);
                         clearReservation();
@@ -230,7 +230,7 @@ final class MiningTask {
                     && client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)
                     && client.world.getBottomY() <= -54) {
                 status = "Searching for diamonds around " + x + ", -54, " + z;
-                path("goto " + x + " -54 " + z);
+                path(new BlockPos(x, -54, z));
             } else path("explore " + x + " " + z);
         }
     }
@@ -238,7 +238,7 @@ final class MiningTask {
         if (rememberedSite == null) return false;
         var point = Vec3d.ofBottomCenter(rememberedSite);
         if (age < rememberedUntil && client.player.squaredDistanceTo(point) > 25) {
-            if (age < nextPath || path("goto " + rememberedSite.getX() + " " + rememberedSite.getY() + " " + rememberedSite.getZ())) {
+            if (age < nextPath || path(rememberedSite)) {
                 if (age >= nextPath) nextPath = age + 100;
                 status = "Returning to gathering site " + rememberedSite.toShortString();
                 return true;
@@ -269,11 +269,17 @@ final class MiningTask {
             pathActive = false;
         }
     }
+    private static boolean path(BlockPos target) {
+        boolean accepted = BaritoneClient.goTo(target);
+        pathActive |= accepted;
+        return accepted;
+    }
+
     private static boolean path(String command){boolean accepted=BaritoneClient.execute(command);pathActive|=accepted;return accepted;}
     private static void pickupPath(){
         if(pickup==null)return;
         var p=BlockPos.ofFloored(pickup);
-        path("goto "+p.getX()+" "+p.getY()+" "+p.getZ());
+        path(p);
     }
     private static boolean matches(MinecraftClient c, BlockPos p) {
         var state = c.world.getBlockState(p);

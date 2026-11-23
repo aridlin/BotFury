@@ -288,7 +288,7 @@ final class ProjectWorker {
                     approachProgress = current;
                     retryApproach = now + seconds(5);
                     BlockPos pos = block.stand();
-                    if (!BaritoneClient.pursuing(pos) && !BaritoneClient.execute("goto " + pos.getX() + " " + pos.getY() + " " + pos.getZ())) {
+                    if (!BaritoneClient.pursuing(pos) && !BaritoneClient.goTo(pos)) {
                         finish(client, false, "Baritone could not start project approach");
                     }
                 } catch (ReflectiveOperationException error) {

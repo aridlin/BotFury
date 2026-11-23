@@ -6,7 +6,9 @@ import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.ChestBlock;
 import net.minecraft.block.FallingBlock;
+import net.minecraft.block.SlabBlock;
 import net.minecraft.block.enums.ChestType;
+import net.minecraft.block.enums.SlabType;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.nbt.*;
 import net.minecraft.registry.Registries;
@@ -729,7 +731,8 @@ final class StructureProject {
                     || !safeStand(client, stand, current)
                     || !airAt(client, cell.pos.up(), current) || !airAt(client, cell.pos.up(2), current)) continue;
             var floor = current.getOrDefault(support, client.world.getBlockState(support));
-            if (!ProjectPlacement.support(floor, placement, face, client.world, support)) continue;
+            if (!floor.isFullCube(client.world, support)
+                    || !ProjectPlacement.support(floor, placement, face, client.world, support)) continue;
             // A crouched player can reach the side while their feet still overlap the supporting block.
             var eye = ProjectBlock.edgePosition(stand, face).add(0, 1.27, 0);
             var click = ProjectPlacement.facePoint(support, face, floor, placement);
@@ -941,7 +944,9 @@ final class StructureProject {
         var below = stand.down();
         var above = stand.up();
         var floor = layout.getOrDefault(below, world.getBlockState(below));
-        return floor.isFullCube(world, below) && floor.getFluidState().isEmpty()
+        boolean flushSurface = floor.isFullCube(world, below)
+                || floor.getBlock() instanceof SlabBlock && floor.get(SlabBlock.TYPE) == SlabType.TOP;
+        return flushSurface && floor.getFluidState().isEmpty()
                 && airAt(client, stand, layout) && airAt(client, above, layout);
     }
 

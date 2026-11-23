@@ -156,6 +156,10 @@ public final class BuildProtection {
         return true;
     }
 
+    public static boolean blocksWorkerBreaking(BlockPos pos) {
+        return blocksWorkerInteraction(pos) || ProjectWorker.blocksRecoveryBreak(pos);
+    }
+
     static <T> T projectAction(String project, Supplier<T> action) {
         PROJECT.set(project);
         try {

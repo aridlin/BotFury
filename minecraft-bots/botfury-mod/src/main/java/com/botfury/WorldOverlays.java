@@ -19,7 +19,7 @@ import java.util.Map;
 
 /** Renders local planning information against the terrain's depth buffer. */
 final class WorldOverlays {
-    private static final int[] PATH_COLORS = {0xED7C82, 0xF8D788, 0xFFAE93, 0xD86B94, 0xFF9BA8};
+    static final int IDLE_COLOR = 0xC9AEBC;
     private static final int RANGE = 112;
     private static final RenderLayer FILLS = RenderLayer.getDebugQuads();
     private static final RenderLayer LINES = RenderLayer.getLines();
@@ -72,7 +72,19 @@ final class WorldOverlays {
     }
 
     static int pathColor(int port) {
-        return PATH_COLORS[Math.floorMod(port - Integer.getInteger("botfury.formationBasePort", 8765), PATH_COLORS.length)];
+        return taskColor(BotTracker.get(port));
+    }
+
+    static int taskColor(BotTracker.Bot bot) {
+        if (bot == null) return IDLE_COLOR;
+        return switch (bot.task()) {
+            case "orbit", "strike" -> 0xF56F84;
+            case "mining", "GATHER", "EXCAVATE" -> 0xF8D788;
+            case "CRAFT", "SMELT", "FILL_BUCKETS" -> 0xFAAE86;
+            case "BUILD", "VERIFY", "INSPECT" -> 0x8DDBC3;
+            case "TRANSFER", "inventory", "goto", "move" -> 0x9EB8FF;
+            default -> IDLE_COLOR;
+        };
     }
 
     private static void line(VertexConsumer buffer, MatrixStack.Entry matrix, Vec3d a, Vec3d b, int color, float alpha) {

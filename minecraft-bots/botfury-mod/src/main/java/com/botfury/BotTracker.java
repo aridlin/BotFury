@@ -16,7 +16,7 @@ final class BotTracker {
     record Bot(int port, String name, boolean reachable, boolean connected, boolean alive,
                double x, double y, double z, float health, float maxHealth, String server, String dimension,
                String mode, String state, String inventory, String mining, String build, boolean baritone,boolean defenseCapable,
-               Map<String,Integer> items, List<BlockPos> route, boolean inventoryCoordinates, long contactAt, long positionAt, String error) {
+               Map<String,Integer> items, List<BlockPos> route, boolean inventoryCoordinates, long contactAt, long positionAt, String error, String task) {
         boolean fresh() { return reachable && System.currentTimeMillis() - contactAt < 3000; }
         boolean sameWorld() {
             var here = LocalFormation.here();
@@ -46,16 +46,40 @@ final class BotTracker {
     private static volatile long nextPoll;
     private static long rosterAt;
     private static int selected = -1;
+    private static String squad;
+    record Target(int port, Set<String> members) {
+        boolean all() { return port < 0 && members == null; }
+        boolean includes(int candidate, String name) {
+            return members == null ? port < 0 || port == candidate : members.contains(name.toLowerCase(Locale.ROOT));
+        }
+    }
+    static Target target() {
+        if (squad == null) return new Target(selected, null);
+        var members = BotUiConfig.squads.getOrDefault(squad, List.of()).stream()
+                .map(name -> name.toLowerCase(Locale.ROOT)).collect(java.util.stream.Collectors.toUnmodifiableSet());
+        return new Target(-1, members);
+    }
+    static void selectSquad(String name) { selected = -1; squad = name; }
+    static String selectedSquad() { return squad; }
+    static void cycleSquad() {
+        var names = new ArrayList<>(BotUiConfig.squads.keySet());
+        int next = names.indexOf(squad) + 1;
+        selectSquad(next < names.size() ? names.get(next) : null);
+    }
     static String json(){return new Gson().toJson(java.util.Map.of("selectedPort",selected,"bots",all()));}
     static int selected() { return selected; }
-    static void select(int port) { selected = port; }
-    static String targetLabel() { Bot bot=bots.get(selected);return bot==null?"All bots":bot.name; }
+    static void select(int port) { selected = port; squad = null; }
+    static String targetLabel() { Bot bot=bots.get(selected);return squad != null ? squad : bot==null?"All bots":bot.name; }
     static Bot get(int port) { return bots.get(port); }
-    static boolean isTrackedPlayer(String name) {
-        return bots.values().stream().anyMatch(bot -> bot.sameWorld() && bot.name.equalsIgnoreCase(name));
+    static Bot trackedPlayer(String name) {
+        return bots.values().stream().filter(bot -> bot.sameWorld() && bot.name.equalsIgnoreCase(name)).findFirst().orElse(null);
     }
+    static boolean isTrackedPlayer(String name) { return trackedPlayer(name) != null; }
     static List<Bot> all() { return bots.values().stream().sorted(Comparator.comparingInt(Bot::port)).toList(); }
-    static List<Bot> targets() { return all().stream().filter(b -> selected < 0 || b.port == selected).toList(); }
+    static List<Bot> targets() {
+        var target = target();
+        return all().stream().filter(bot -> target.includes(bot.port, bot.name)).toList();
+    }
     static void refresh() { nextPoll=0; }
     static void tick() {
         if (Boolean.getBoolean("botfury.managedHttp")) return;
@@ -97,7 +121,7 @@ final class BotTracker {
                 position?text(p,"server",""):old==null?"":old.server,position?text(p,"dimension",""):old==null?"":old.dimension,
                 text(s,"formation","idle"),text(s,"movementState",""),text(s,"inventoryTask",""),text(s,"miningTask",""),text(s,"build","0.2"),
                 p!=null&&bool(p,"baritone",false),bool(s,"taskDefenseCapable",false),s.has("items")?itemCounts(s):connected?null:old==null?null:old.items,
-                position ? route(s) : List.of(),bool(s,"inventoryCoordinates",false),now,position?now:old==null?0:old.positionAt,text(s,"lastEventLevel","info").equals("info")?"":text(s,"lastEvent",""));
+                position ? route(s) : List.of(),bool(s,"inventoryCoordinates",false),now,position?now:old==null?0:old.positionAt,text(s,"lastEventLevel","info").equals("info")?"":text(s,"lastEvent",""), text(s,"taskKind",""));
             bots.put(port,value);return null;
         }).whenComplete((ignored,error)->{if(error!=null)offline(port);inflight.remove(port);});
     }
@@ -133,7 +157,7 @@ final class BotTracker {
                 });
     }
 
-    private static void offline(int port){bots.computeIfPresent(port,(p,b)->new Bot(b.port,b.name,false,b.connected,b.alive,b.x,b.y,b.z,b.health,b.maxHealth,b.server,b.dimension,b.mode,b.state,b.inventory,b.mining,b.build,b.baritone,b.defenseCapable,b.items,List.of(),b.inventoryCoordinates,b.contactAt,b.positionAt,"Unreachable"));}
+    private static void offline(int port){bots.computeIfPresent(port,(p,b)->new Bot(b.port,b.name,false,b.connected,b.alive,b.x,b.y,b.z,b.health,b.maxHealth,b.server,b.dimension,b.mode,b.state,b.inventory,b.mining,b.build,b.baritone,b.defenseCapable,b.items,List.of(),b.inventoryCoordinates,b.contactAt,b.positionAt,"Unreachable",b.task));}
     static void command(int port,String command){command(port,command,true);}
     private static void command(int port,String command,boolean report){
         Bot bot=bots.get(port);if(bot==null||!bot.fresh()){if(report)BotEvents.add("warn","bots","Bot is offline");return;}

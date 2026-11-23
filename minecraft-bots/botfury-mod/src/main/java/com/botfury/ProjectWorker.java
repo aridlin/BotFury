@@ -55,6 +55,9 @@ final class ProjectWorker {
 
     static boolean enabled() { return port != 0; }
     static String status() { return status; }
+    static String taskKind() {
+        return assignment == null || success != null ? "" : assignment.job().work().kind().name();
+    }
     static boolean supports(ProjectQueue.Kind kind) { return KINDS.contains(kind); }
 
     static void start(MinecraftClient client, int coordinator, String project) {

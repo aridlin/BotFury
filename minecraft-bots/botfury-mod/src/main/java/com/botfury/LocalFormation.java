@@ -33,7 +33,7 @@ final class LocalFormation {
     private static final OrderGate GATE = new OrderGate();
     private static long sequence;
     private static volatile String stage = "Idle";
-    private record FleetTask(String command, int requestedAt) {}
+    private record FleetTask(String command, int requestedAt, BotTracker.Target target) {}
     private static final java.util.ArrayDeque<FleetTask> fleetTasks = new java.util.ArrayDeque<>();
     private static final Map<Integer, java.util.concurrent.CompletableFuture<Void>> commandChains = new ConcurrentHashMap<>();
     private static volatile String rejection = "Unknown local session";
@@ -58,6 +58,8 @@ final class LocalFormation {
     private static volatile Order incoming;
     private static volatile long receivedAt;
     private static String mode = "";
+    private static BotTracker.Target formationTarget = new BotTracker.Target(-1, null);
+    private static BotTracker.Target saturnTarget;
     private static int tick;
     private static int castTick;
     private static BlockPos lastGoal;
@@ -207,15 +209,16 @@ final class LocalFormation {
             client.player.sendMessage(Text.literal("Enable movement with /bf allow packets or /bf allow movement."), true);
             return;
         }
-        if (action.equals("stop") || (action.equals("orbit") && mode.equals("orbit"))) {
+        var target = BotTracker.target();
+        if (action.equals("stop") || action.equals("orbit") && mode.equals("orbit") && target.equals(formationTarget)) {
             stop();
             client.player.sendMessage(Text.literal("Local formation stopped."), true);
             return;
         }
         if (BotInventory.active()) BotInventory.resume();
-        overrides.entrySet().removeIf(entry->!entry.getValue().action.equals("hold"));
+        if (!mode.isEmpty()) stop();
+        applyFormationTarget(target);
         resumeSaturn = false;
-        fleetCommand("control:resume");
         mode = action;
         if(action.equals("scatter"))scatterOrigin=client.player.getPos();
         stage = "Finding fleet";
@@ -239,11 +242,11 @@ final class LocalFormation {
         }
         if (protectedTarget(target)) { ClientActions.message(client, "That target is protected by your fleet or friend list."); return; }
         if (BotInventory.active()) BotInventory.resume();
-        boolean wasOrbiting = mode.equals("orbit") || resumeSaturn;
+        var restore = mode.equals("orbit") ? formationTarget : saturnTarget;
         stop();
-        overrides.entrySet().removeIf(entry->!entry.getValue().action.equals("hold"));
-        resumeSaturn = wasOrbiting;
-        fleetCommand("control:resume");
+        saturnTarget = restore;
+        resumeSaturn = restore != null;
+        applyFormationTarget(BotTracker.target());
         strikeTarget = target.getUuid();
         lastTargetPosition = target.getPos();
         targetMissingSince = -1;
@@ -340,6 +343,7 @@ final class LocalFormation {
         stage = mode.equals("strike") ? "Lightning active" : "Directing " + peers() + " bots";
         List<Map.Entry<Integer, Peer>> bots = PEERS.entrySet().stream()
                 .filter(entry -> sameWorld(entry.getValue())
+                        && formationTarget.includes(entry.getKey(), entry.getValue().name)
                         && System.nanoTime() - entry.getValue().time < Duration.ofSeconds(4).toNanos())
                 .sorted(Map.Entry.comparingByKey()).toList();
         if (mode.equals("strike")) {
@@ -786,9 +790,22 @@ final class LocalFormation {
         fleetTasks.clear();
     }
     static void cancelStrike(MinecraftClient client) { if (mode.equals("strike")) finishStrike(client); }
+    private static void applyFormationTarget(BotTracker.Target target) {
+        formationTarget = target;
+        overrides.entrySet().removeIf(entry -> {
+            var bot = BotTracker.get(entry.getKey());
+            return bot != null && target.includes(bot.port(), bot.name()) && !entry.getValue().action.equals("hold");
+        });
+        fleetCommand("control:resume", target);
+    }
+
     static void fleetCommand(String command) {
+        fleetCommand(command, new BotTracker.Target(-1, null));
+    }
+
+    static void fleetCommand(String command, BotTracker.Target target) {
         if (fleetTasks.size() >= 16) { BotEvents.add("warn", "fleet", "Too many queued tasks; wait for delivery"); return; }
-        fleetTasks.addLast(new FleetTask(command, tick));
+        fleetTasks.addLast(new FleetTask(command, tick, target));
         discover();
         BotEvents.add("info", "fleet", "Fleet task queued");
     }
@@ -797,6 +814,7 @@ final class LocalFormation {
         FleetTask task = fleetTasks.peekFirst();
         if (tick - task.requestedAt < 4) return;
         var ports = PEERS.entrySet().stream().filter(entry -> System.nanoTime() - entry.getValue().time < 4_000_000_000L)
+                .filter(entry -> task.target.includes(entry.getKey(), entry.getValue().name))
                 .map(Map.Entry::getKey).toList();
         if (ports.isEmpty() && tick - task.requestedAt < 30) return;
         fleetTasks.removeFirst();
@@ -819,6 +837,9 @@ final class LocalFormation {
         if (resumeSaturn && client.player != null && client.player.isAlive() && !permission().isEmpty()) {
             resumeSaturn = false;
             strikeTarget = null;
+            var restore = saturnTarget;
+            stop();
+            applyFormationTarget(restore);
             mode = "orbit";
             castTick = tick;
             step = 0;
@@ -829,6 +850,7 @@ final class LocalFormation {
     private static void stop() {
         BaritoneClient.execute("stop");
         resumeSaturn = false;
+        saturnTarget = null;
         if (mode.isEmpty()) { incoming = null; cancelPath(); BaritoneClient.execute("stop"); stage = "Idle"; return; }
         mode = "";
         stage = "Idle";
@@ -836,7 +858,7 @@ final class LocalFormation {
         strikeTarget = null;
         Peer here = local;
         if (here != null) PEERS.forEach((port, peer) -> {
-            if (sameWorld(peer)) send(port, new Order(here.server, here.dimension, "stop", 0, 0, 0, null));
+            if (sameWorld(peer) && formationTarget.includes(port, peer.name)) send(port, new Order(here.server, here.dimension, "stop", 0, 0, 0, null));
         });
         PEERS.clear();
     }

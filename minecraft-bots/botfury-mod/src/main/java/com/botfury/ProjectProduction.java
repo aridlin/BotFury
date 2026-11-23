@@ -84,13 +84,15 @@ final class ProjectProduction {
     }
 
     private static BlockHitResult workstationHit(MinecraftClient client, BlockPos target) {
-        var player = client.player;
-        var eye = player.getEyePos();
+        return workstationHit(client, target, client.player.getEyePos());
+    }
+
+    static BlockHitResult workstationHit(MinecraftClient client, BlockPos target, Vec3d eye) {
         var center = Vec3d.ofCenter(target);
         double reach = client.interactionManager.getReachDistance() - .1;
         if (eye.squaredDistanceTo(center) > reach * reach) return null;
         var hit = client.world.raycast(new RaycastContext(eye, center, RaycastContext.ShapeType.OUTLINE,
-                RaycastContext.FluidHandling.NONE, player));
+                RaycastContext.FluidHandling.NONE, client.player));
         return hit.getType() == HitResult.Type.BLOCK && target.equals(hit.getBlockPos()) ? hit : null;
     }
 

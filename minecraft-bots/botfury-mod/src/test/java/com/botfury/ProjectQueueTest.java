@@ -14,6 +14,61 @@ class ProjectQueueTest {
     @TempDir Path directory;
     private static final String WORLD = "test|overworld";
 
+    @Test void missingCargoReopensOnlyTheAffectedGatheringChain() throws Exception {
+        var journal = directory.resolve("missing-cargo.json");
+        var queue = new ProjectQueue(journal);
+        String chest = "block:3,64,0";
+        queue.submitSupplied("stock", WORLD, List.of(job("setup", EXCAVATE, List.of()),
+                job("logs", GATHER, List.of("setup")),
+                new ProjectQueue.Work("deliver", TRANSFER,
+                        "{\"direction\":\"DEPOSIT\",\"item\":\"any_logs\",\"stock\":4}",
+                        List.of("logs"), Set.of(chest), "logs")), chest);
+        var setup = queue.claim(WORLD, "miner", Set.of(EXCAVATE), 1).job();
+        assertTrue(queue.finish("stock", setup.work().id(), setup.lease(), true, "Ready", 2));
+        var gather = queue.claim(WORLD, "miner", Set.of(GATHER), 3).job();
+        var site = new ProjectQueue.ResourceSite(10, 65, 8);
+        assertTrue(queue.finish("stock", gather.work().id(), gather.lease(), true, "Collected logs", null, site, 4));
+        var delivery = queue.claim(WORLD, "miner", Set.of(TRANSFER), 5).job();
+        var observed = new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:birch_log", 2));
+        assertTrue(queue.finish("stock", delivery.work().id(), delivery.lease(), false, "Delivery is short",
+                observed, null, true, 6));
+        var restored = new ProjectQueue(journal);
+        var jobs = restored.snapshot(7).get(0).jobs();
+        assertEquals(ProjectQueue.State.DONE, jobs.get(0).state());
+        assertEquals(ProjectQueue.State.WAITING, jobs.get(1).state());
+        assertEquals(site, jobs.get(1).resourceSite());
+        assertNull(restored.claim(WORLD, "next", Set.of(TRANSFER), 8));
+        assertEquals("logs", restored.claim(WORLD, "next", Set.of(GATHER), 9).job().work().id());
+    }
+
+    @Test void restoresOwnedStationWithoutReplayingUnrelatedCargo() throws Exception {
+        var journal = directory.resolve("missing-station.json");
+        var queue = new ProjectQueue(journal);
+        String chest = "block:3,64,0";
+        queue.submitSupplied("stock", WORLD, List.of(job("wood", GATHER, List.of()),
+                new ProjectQueue.Work("craft-chest", CRAFT, "", List.of("wood"), Set.of(), "wood"),
+                new ProjectQueue.Work("setup-storage", BUILD,
+                        "{\"target\":{\"x\":3,\"y\":64,\"z\":0},\"block\":\"minecraft:chest\"}",
+                        List.of("craft-chest"), Set.of(chest), "craft-chest"),
+                job("cargo", GATHER, List.of("setup-storage")),
+                new ProjectQueue.Work("deliver", TRANSFER, "", List.of("cargo"), Set.of(chest), "cargo")), chest);
+        long now = 1;
+        for (var kind : List.of(GATHER, CRAFT, BUILD, GATHER)) {
+            var claimed = queue.claim(WORLD, kind == GATHER && now == 7 ? "hauler" : "builder", Set.of(kind), now++).job();
+            assertTrue(queue.finish("stock", claimed.work().id(), claimed.lease(), true, "Done", now++));
+        }
+        assertEquals(1, queue.ownedStations(WORLD).size());
+        assertTrue(queue.restoreOwnedStation(WORLD, "stock", "setup-storage"));
+        var restored = new ProjectQueue(journal);
+        assertEquals(ProjectQueue.State.DONE, restored.snapshot(now).get(0).jobs().get(3).state());
+        assertNull(restored.claim(WORLD, "hauler", Set.of(TRANSFER), now++));
+        for (var kind : List.of(GATHER, CRAFT, BUILD)) {
+            var claimed = restored.claim(WORLD, "repairer", Set.of(kind), now++).job();
+            assertTrue(restored.finish("stock", claimed.work().id(), claimed.lease(), true, "Restored", now++));
+        }
+        assertEquals("deliver", restored.claim(WORLD, "hauler", Set.of(TRANSFER), now).job().work().id());
+    }
+
     @Test void retriesOnlyPlacementsWithExhaustedApproaches() throws Exception {
         var journal = directory.resolve("placement-approaches.json");
         var board = new ProjectQueue(journal);

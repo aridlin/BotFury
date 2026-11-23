@@ -293,14 +293,18 @@ final class ProjectWorker {
         boolean canBuildHere = ordinaryBuild && targetLoaded && player.isOnGround() && !centering
                 && !player.getBoundingBox().intersects(new net.minecraft.util.math.Box(target))
                 && ProjectPlacement.supportHit(client, block) != null;
+        boolean stationJob = production != null || chest != null;
+        boolean stationNearby = targetLoaded && (production != null && production.reachableFromHere(client)
+                || chest != null && chest.reachableFromHere(client));
         boolean searchingForStand = excavate && !canExcavateHere || ordinaryBuild && !canBuildHere
-                && client.world.getBlockState(target).isAir();
+                && client.world.getBlockState(target).isAir()
+                || stationJob && !stationNearby && block.matches(client.world.getBlockState(target));
         if (searchingForStand && targetLoaded && now >= nextInteractionStandSearch
                 && client.world.isChunkLoaded(stand.getX() >> 4, stand.getZ() >> 4)
                 && (!usableInteractionStand(client, stand, target) || !centering && player.getBlockPos().equals(stand)
                     || approach != null && now >= retryApproach && !BaritoneClient.pursuing(stand))) {
             nextInteractionStandSearch = now + seconds(1);
-            var alternate = nextInteractionStand(client, target, stand, excavate);
+            var alternate = nextInteractionStand(client, target, stand, kind);
             if (alternate != null) {
                 rejectedInteractionStands.add(stand);
                 halt(client);
@@ -318,9 +322,7 @@ final class ProjectWorker {
                 && (client.world.getBlockState(target).isAir() || excavationHit(client, target) != null);
         boolean atStand = nearStand && (!exactFooting || player.getBlockPos().equals(stand) || canCleanFromHere
                 || edge && centering && player.getBlockPos().equals(target.up()));
-        // A leased station can be used from the first safe position with a clear interaction ray.
-        boolean workstationNearby = production != null && targetLoaded && production.reachableFromHere(client);
-        if (!player.isOnGround() || !atStand && !inspectNearby && !workstationNearby && !canExcavateHere && !canBuildHere) {
+        if (!player.isOnGround() || !atStand && !inspectNearby && !stationNearby && !canExcavateHere && !canBuildHere) {
             releaseCentering(client);
             stableSince = 0;
             approachAge++;
@@ -510,7 +512,8 @@ final class ProjectWorker {
     private static boolean tryStationReturn(MinecraftClient client, BlockPos destination, long now) {
         if (chest == null && production == null) return false;
         var position = client.player.getBlockPos();
-        if (destination.getY() - position.getY() < 5 || !position.isWithinDistance(destination, 32)) {
+        // Each segment is bounded around the worker. A distant station can still need that local climb.
+        if (destination.getY() - position.getY() < 5) {
             stationReturn.stop();
             return false;
         }
@@ -536,7 +539,8 @@ final class ProjectWorker {
                 && expected.with(LeavesBlock.DISTANCE, state.get(LeavesBlock.DISTANCE)).equals(state);
     }
 
-    private static BlockPos nextInteractionStand(MinecraftClient client, BlockPos target, BlockPos previous, boolean excavate) {
+    private static BlockPos nextInteractionStand(MinecraftClient client, BlockPos target, BlockPos previous,
+                                                ProjectQueue.Kind kind) {
         BlockPos nearest = null;
         double bestDistance = Double.POSITIVE_INFINITY;
         for (var pos : BlockPos.iterateOutwards(target, 4, 4, 4)) {
@@ -547,7 +551,12 @@ final class ProjectWorker {
             double distance = client.player.squaredDistanceTo(feet);
             if (distance >= bestDistance) continue;
             var eye = feet.add(0, 1.62, 0);
-            if ((excavate ? excavationHit(client, target, eye) : ProjectPlacement.supportHit(client, block, eye)) == null) continue;
+            var hit = switch (kind) {
+                case EXCAVATE -> excavationHit(client, target, eye);
+                case BUILD -> ProjectPlacement.supportHit(client, block, eye);
+                default -> ProjectProduction.workstationHit(client, target, eye);
+            };
+            if (hit == null) continue;
             bestDistance = distance;
             nearest = pos.toImmutable();
         }

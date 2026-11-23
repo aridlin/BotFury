@@ -15,6 +15,7 @@ final class ProjectBroker {
     private static final Gson JSON = new Gson();
     private static final int MAX_BODY = 512 * 1024;
     private static ProjectQueue queue;
+    private static long nextStationCheck;
     record Overview(List<ProjectQueue.Project> projects, Map<String, ProjectQueue.ChestObservation> stock) {}
 
     private record Request(String action, String project, String worker, Set<ProjectQueue.Kind> kinds,
@@ -55,6 +56,33 @@ final class ProjectBroker {
 
     static void submitManifest(String id, LocalFormation.Peer here, List<ProjectQueue.Work> jobs, String chest) throws IOException {
         queue().submitSupplied(id, here.server() + "|" + here.dimension(), jobs, chest);
+    }
+
+    static void checkOwnedStations(net.minecraft.client.MinecraftClient client) {
+        if (Boolean.getBoolean("botfury.managedHttp") || client.world == null || client.player == null) return;
+        long now = System.nanoTime();
+        if (nextStationCheck != 0 && now < nextStationCheck) return;
+        nextStationCheck = now + java.time.Duration.ofSeconds(5).toNanos();
+        var here = LocalFormation.here();
+        if (here == null) return;
+        String world = here.server() + "|" + here.dimension();
+        try {
+            var board = queue();
+            for (var station : board.ownedStations(world)) {
+                var block = ProjectBlock.parse(station.payload());
+                var target = block.target();
+                if (!client.world.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
+                        || !client.world.isAir(target)) continue;
+                var support = block.support();
+                if (!ProjectPlacement.support(client.world.getBlockState(support), block.desired(), block.face(), client.world, support)
+                        || BuildProtection.blocked(world, target, station.project())) continue;
+                if (board.restoreOwnedStation(world, station.project(), station.job())) {
+                    BotEvents.add("info", "projects", "Rebuilding missing station at " + target.toShortString());
+                }
+            }
+        } catch (IOException | IllegalArgumentException failure) {
+            BotEvents.add("warn", "projects", "Could not check owned stations. " + failure.getMessage());
+        }
     }
 
     static int retryExcavation(net.minecraft.client.MinecraftClient client, String project) {

@@ -126,6 +126,12 @@ final class ProjectChest {
         opening = false;
     }
 
+    boolean reachableFromHere(MinecraftClient client) {
+        if (screen != null && client.player.currentScreenHandler == screen) return true;
+        return !client.player.isTouchingWater() && !client.player.isClimbing()
+                && ProjectProduction.workstationHit(client, spec.location.target(), client.player.getEyePos()) != null;
+    }
+
     Result tick(MinecraftClient client, long now) {
         if (now < nextAction) return null;
         var target = spec.location.target();
@@ -141,13 +147,9 @@ final class ProjectChest {
             opening = false;
         } else if (screen == null) {
             if (player.currentScreenHandler != player.playerScreenHandler) return failure("Another container is open");
-            var eye = player.getEyePos();
             var center = Vec3d.ofCenter(target);
-            var hit = client.world.raycast(new RaycastContext(eye, center, RaycastContext.ShapeType.OUTLINE,
-                    RaycastContext.FluidHandling.NONE, player));
-            double reach = client.interactionManager.getReachDistance() - .1;
-            if (eye.squaredDistanceTo(center) > reach * reach || hit.getType() != HitResult.Type.BLOCK
-                    || !target.equals(hit.getBlockPos())) return failure("Chest obstructed or out of reach");
+            var hit = ProjectProduction.workstationHit(client, target, player.getEyePos());
+            if (hit == null) return failure("Chest obstructed or out of reach");
             opening = true;
             player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, center);
             client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
@@ -167,7 +169,7 @@ final class ProjectChest {
         boolean deposit = spec.direction == Direction.DEPOSIT;
         int containerSize = screen.getRows() * 9;
         int carried = 0;
-        if (spec.direction == Direction.TAKE) {
+        if (deposit || spec.direction == Direction.TAKE) {
             for (int i = containerSize; i < screen.slots.size(); i++) {
                 var stack = screen.getSlot(i).getStack();
                 if (spec.item.matches(stack)) carried += stack.getCount();
@@ -212,7 +214,18 @@ final class ProjectChest {
             return new Result(false, "Chest has " + held + " " + spec.item + ", worker needs " + remaining,
                     stock, null, true);
         }
+        if (deposit && carried < remaining && hasDeliverySpace()) {
+            return new Result(false, "Delivery is short by " + (remaining - carried) + " " + spec.item,
+                    stock, null, true);
+        }
         return new Result(false, "Missing " + spec.item + " or destination is full", stock);
+    }
+
+    private boolean hasDeliverySpace() {
+        for (var id : spec.item.ids()) {
+            if (freeSlots(Registries.ITEM.get(id).getDefaultStack()) > 0) return true;
+        }
+        return false;
     }
 
     private void click(MinecraftClient client, int slot, int button) {
@@ -221,7 +234,10 @@ final class ProjectChest {
 
     private Integer freeSlots() {
         if (spec.item == null || spec.item.grouped()) return null;
-        var sample = spec.item.sample().getDefaultStack();
+        return freeSlots(spec.item.sample().getDefaultStack());
+    }
+
+    private int freeSlots(ItemStack sample) {
         int remaining = 0;
         for (int i = 0; i < screen.getRows() * 9; i++) {
             var slot = screen.getSlot(i);

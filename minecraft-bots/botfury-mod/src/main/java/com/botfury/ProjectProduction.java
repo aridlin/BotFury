@@ -108,7 +108,7 @@ final class ProjectProduction {
         }
         nextAction = now + SETTLE;
         if (recipe instanceof CraftingRecipe craft) return craft(client, craft, output);
-        return smelt(client, (SmeltingRecipe) recipe, output);
+        return smelt(client, (SmeltingRecipe) recipe, output, spec.count - held);
     }
 
     private Result craft(MinecraftClient client, CraftingRecipe recipe, ItemStack output) {
@@ -128,7 +128,7 @@ final class ProjectProduction {
         return null;
     }
 
-    private Result smelt(MinecraftClient client, SmeltingRecipe recipe, ItemStack output) {
+    private Result smelt(MinecraftClient client, SmeltingRecipe recipe, ItemStack output, int remaining) {
         var furnace = (FurnaceScreenHandler) screen;
         var raw = Registries.ITEM.get(spec.input).getDefaultStack();
         var fuel = Registries.ITEM.get(spec.fuel).getDefaultStack();
@@ -143,23 +143,36 @@ final class ProjectProduction {
                 || !result.isEmpty() && !ItemStack.canCombine(result, output)) {
             return failure("Furnace contains unrelated items");
         }
+        int outstanding = Math.max(0, remaining - result.getCount());
+        int inputs = (outstanding + output.getCount() - 1) / output.getCount();
+        int queued = existingInput.getCount();
+        int load = Math.min(inputs, furnace.getSlot(0).getMaxItemCount(raw)) - queued;
+        // Keep the next input ready so a live furnace does not burn fuel between items.
+        if (load > 0 && feed(client, 0, raw, load)) return null;
         if (!result.isEmpty()) {
             click(client, 2, 0, SlotActionType.QUICK_MOVE);
             return null;
         }
-        if (existingInput.isEmpty() && !feed(client, 0, raw)) return failure("Missing furnace input " + spec.input);
-        if (!furnace.isBurning() && existingFuel.isEmpty() && !feed(client, 1, fuel)) {
+        if (queued == 0) return failure("Missing furnace input " + spec.input);
+        if (!furnace.isBurning() && existingFuel.isEmpty() && !feed(client, 1, fuel, 1)) {
             return failure("Missing furnace fuel " + spec.fuel);
         }
         return null;
     }
 
-    private boolean feed(MinecraftClient client, int destination, ItemStack wanted) {
+    private boolean feed(MinecraftClient client, int destination, ItemStack wanted, int count) {
         for (int i = 3; i < screen.slots.size(); i++) {
             ItemStack source = screen.getSlot(i).getStack();
             if (!ItemStack.canCombine(source, wanted)) continue;
+            int available = source.getCount();
             click(client, i, 0, SlotActionType.PICKUP);
-            click(client, destination, 1, SlotActionType.PICKUP);
+            if (available <= count) {
+                click(client, destination, 0, SlotActionType.PICKUP);
+            } else {
+                for (int moved = 0; moved < count && !screen.getCursorStack().isEmpty(); moved++) {
+                    click(client, destination, 1, SlotActionType.PICKUP);
+                }
+            }
             if (!screen.getCursorStack().isEmpty()) click(client, i, 0, SlotActionType.PICKUP);
             return true;
         }

@@ -166,6 +166,7 @@ final class FormationClient {
                 BotUiConfig.markMouseMigration();
             }
             LocalFormation.tick(client);
+            ProjectBroker.checkOwnedStations(client);
             while (wheel.wasPressed()) if (client.player != null && client.currentScreen == null) open(client);
             while (quick.wasPressed()) if (client.player != null && client.currentScreen == null) quick(client);
             if (client.player == null) pendingWheel = pendingTutorial = pendingRoster = false;

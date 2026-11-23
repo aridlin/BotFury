@@ -167,7 +167,7 @@ final class ProjectChest {
         boolean deposit = spec.direction == Direction.DEPOSIT;
         int containerSize = screen.getRows() * 9;
         int carried = 0;
-        if (spec.direction == Direction.TAKE) {
+        if (deposit || spec.direction == Direction.TAKE) {
             for (int i = containerSize; i < screen.slots.size(); i++) {
                 var stack = screen.getSlot(i).getStack();
                 if (spec.item.matches(stack)) carried += stack.getCount();
@@ -212,7 +212,18 @@ final class ProjectChest {
             return new Result(false, "Chest has " + held + " " + spec.item + ", worker needs " + remaining,
                     stock, null, true);
         }
+        if (deposit && carried < remaining && hasDeliverySpace()) {
+            return new Result(false, "Delivery is short by " + (remaining - carried) + " " + spec.item,
+                    stock, null, true);
+        }
         return new Result(false, "Missing " + spec.item + " or destination is full", stock);
+    }
+
+    private boolean hasDeliverySpace() {
+        for (var id : spec.item.ids()) {
+            if (freeSlots(Registries.ITEM.get(id).getDefaultStack()) > 0) return true;
+        }
+        return false;
     }
 
     private void click(MinecraftClient client, int slot, int button) {
@@ -221,7 +232,10 @@ final class ProjectChest {
 
     private Integer freeSlots() {
         if (spec.item == null || spec.item.grouped()) return null;
-        var sample = spec.item.sample().getDefaultStack();
+        return freeSlots(spec.item.sample().getDefaultStack());
+    }
+
+    private int freeSlots(ItemStack sample) {
         int remaining = 0;
         for (int i = 0; i < screen.getRows() * 9; i++) {
             var slot = screen.getSlot(i);

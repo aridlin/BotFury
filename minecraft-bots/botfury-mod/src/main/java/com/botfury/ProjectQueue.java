@@ -116,6 +116,8 @@ final class ProjectQueue {
         }
     }
     record Assignment(String project, String world, Job job) {}
+    record OwnedStation(String project, String job, String payload) {}
+    private record StationTarget(ProjectBlock.Position target, String block) {}
     private record Board(int schema, Map<String, Project> projects) {}
     private record PickupTarget(String direction, String item, int stock) {}
 
@@ -156,6 +158,48 @@ final class ProjectQueue {
     synchronized List<Project> snapshot(long now) throws IOException {
         expire(now);
         return List.copyOf(projects.values());
+    }
+
+    synchronized List<OwnedStation> ownedStations(String world) {
+        var result = new ArrayList<OwnedStation>();
+        for (var project : projects.values()) {
+            if (!project.world.equals(world) || cancelled(project)
+                    || project.jobs.stream().allMatch(job -> job.state == State.DONE)) continue;
+            for (var job : project.jobs) {
+                if (job.state == State.DONE && stationKey(job) != null) {
+                    result.add(new OwnedStation(project.id, job.work.id, job.work.payload));
+                }
+            }
+        }
+        return result;
+    }
+
+    synchronized boolean restoreOwnedStation(String world, String projectId, String jobId) throws IOException {
+        var project = projects.get(projectId);
+        var station = find(project, jobId);
+        if (project == null || !project.world.equals(world) || cancelled(project)
+                || station == null || station.state != State.DONE || stationKey(station) == null) return false;
+        var jobs = new HashMap<String, Job>();
+        project.jobs.forEach(job -> jobs.put(job.work.id, job));
+        var recipe = jobs.get(station.work.sameWorkerAs);
+        if (recipe == null || recipe.state != State.DONE) return false;
+        return rewindSupply(project, station, recipe, jobs, "Owned station is missing", null);
+    }
+
+    private static String stationKey(Job job) {
+        if (job.work.kind != Kind.BUILD || job.work.sameWorkerAs == null) return null;
+        String expected = switch (job.work.id) {
+            case "setup-workbench" -> "minecraft:crafting_table";
+            case "setup-furnace" -> "minecraft:furnace";
+            case "setup-storage" -> "minecraft:chest";
+            default -> null;
+        };
+        if (expected == null) return null;
+        var location = JSON.fromJson(job.work.payload, StationTarget.class);
+        if (location == null || location.target == null || !expected.equals(location.block)) return null;
+        var target = location.target;
+        String key = "block:" + target.x() + "," + target.y() + "," + target.z();
+        return job.work.locks.contains(key) ? key : null;
     }
 
     synchronized void submit(String id, String world, List<Work> work) throws IOException {
@@ -358,6 +402,12 @@ final class ProjectQueue {
                     || projectId != null && !projectId.equals(project.id)) continue;
             Set<String> done = new HashSet<>();
             for (Job job : project.jobs) if (job.state == State.DONE) done.add(job.work.id);
+            var unavailableStations = new HashSet<String>();
+            for (var job : project.jobs) {
+                if (job.state == State.DONE) continue;
+                var key = stationKey(job);
+                if (key != null) unavailableStations.add(key);
+            }
             var blocked = blockedJobs(project);
             String deposit = project.repeat == null ? null : pendingDeposit(project, done);
             for (Job job : project.jobs) {
@@ -372,7 +422,9 @@ final class ProjectQueue {
                 boolean pinned = job.work.sameWorkerAs != null;
                 if (pinned
                         && !worker.equalsIgnoreCase(find(project, job.work.sameWorkerAs).worker)) continue;
-                if (!Collections.disjoint(reserved, job.work.locks) || job.work.locks.stream().anyMatch(key ->
+                boolean usesStation = job.work.kind == Kind.TRANSFER || job.work.kind == Kind.CRAFT || job.work.kind == Kind.SMELT;
+                if (usesStation && !Collections.disjoint(unavailableStations, job.work.locks)
+                        || !Collections.disjoint(reserved, job.work.locks) || job.work.locks.stream().anyMatch(key ->
                         projectReservations.containsKey(key) && !project.id.equals(projectReservations.get(key)))) {
                     waitingWithCargo |= pinned;
                     continue;
@@ -501,9 +553,9 @@ final class ProjectQueue {
         var location = gatheringSite(job, site);
         if (pickupShortfall) {
             if (success || chest == null || job.work.kind != Kind.TRANSFER) {
-                throw new IllegalArgumentException("Pickup shortfall requires a failed transfer and chest observation");
+                throw new IllegalArgumentException("A stock shortfall requires a failed transfer and chest observation");
             }
-            if (recoverShortPickup(project, job, evidence, observation)) {
+            if (recoverShortTransfer(project, job, evidence, observation)) {
                 markAssignmentSeen(project, job.worker, now);
                 restoredLeases.remove(token);
                 return true;
@@ -604,18 +656,23 @@ final class ProjectQueue {
         }
     }
 
-    private boolean recoverShortPickup(Project project, Job pickup, String evidence, ChestObservation observation)
+    private boolean recoverShortTransfer(Project project, Job transfer, String evidence, ChestObservation observation)
             throws IOException {
         var chest = observation.report;
-        if (!chest.location.equals(project.supplyChest) || pickup.work.needs.size() != 1) return false;
-        var target = JSON.fromJson(pickup.work.payload, PickupTarget.class);
-        if (target == null || !"TAKE".equals(target.direction) || target.item == null
-                || chest.items.getOrDefault(target.item, 0) >= target.stock) return false;
+        if (!chest.location.equals(project.supplyChest) || transfer.work.needs.size() != 1) return false;
+        var target = JSON.fromJson(transfer.work.payload, PickupTarget.class);
+        if (target == null || target.item == null) return false;
+        boolean deposit = "DEPOSIT".equals(target.direction);
+        if (!(deposit && transfer.work.sameWorkerAs != null || "TAKE".equals(target.direction))) return false;
+        int stock = "any_logs".equals(target.item)
+                ? ResourceCatalog.blocks(target.item, "both").stream().mapToInt(id -> chest.items.getOrDefault(id, 0)).sum()
+                : chest.items.getOrDefault(target.item, 0);
+        if (stock >= target.stock) return false;
 
         var jobs = new HashMap<String, Job>();
         project.jobs.forEach(job -> jobs.put(job.work.id, job));
-        var deposit = jobs.get(pickup.work.needs.get(0));
-        return rewindSupply(project, pickup, deposit, jobs, evidence, observation);
+        var prerequisite = jobs.get(transfer.work.needs.get(0));
+        return rewindSupply(project, transfer, prerequisite, jobs, evidence, observation);
     }
 
     private void recoverMissingSuppliers(String world, long now) throws IOException {

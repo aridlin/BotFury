@@ -570,13 +570,16 @@ final class ProjectQueue {
                                  String evidence, ChestObservation observation) throws IOException {
         Set<String> rewind = new HashSet<>();
         Job stage = supplier;
-        // A supplied material follows a single dependency chain from gathering to chest collection.
-        while (!stage.work.needs.isEmpty()) {
-            if (stage.work.needs.size() != 1) return false;
+        // Earlier batches can gate gathering, but their completed work must survive recovery.
+        while (stage.work.kind != Kind.GATHER || stage.work.sameWorkerAs != null) {
+            String previous = stage.work.sameWorkerAs;
+            if (previous == null) {
+                if (stage.work.needs.size() != 1) return false;
+                previous = stage.work.needs.get(0);
+            }
             rewind.add(stage.work.id);
-            stage = jobs.get(stage.work.needs.get(0));
+            stage = jobs.get(previous);
         }
-        if (stage.work.kind != Kind.GATHER) return false;
         String root = stage.work.id;
         rewind.add(root);
         // A second pickup may still be drawing from the same deposit.

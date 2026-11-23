@@ -18,6 +18,11 @@ final class MaterialRecipe {
                 Map<Identifier, Integer> ingredients, int cookTime) {}
 
     private record Quantity(Identifier item, Step step, int count) {}
+    record Batch(Plan plan, int count) {}
+
+    private static final class BatchTooLarge extends IllegalArgumentException {
+        BatchTooLarge(Identifier item) { super("Split the material batch for " + item); }
+    }
 
     static final class Plan {
         private final List<Quantity> quantities;
@@ -28,6 +33,11 @@ final class MaterialRecipe {
 
         List<ProjectQueue.Work> jobs(String prefix, ProjectGather.Area protectedArea,
                                      ProjectBlock table, ProjectBlock furnace) {
+            return jobs(prefix, protectedArea, table, furnace, List.of());
+        }
+
+        List<ProjectQueue.Work> jobs(String prefix, ProjectGather.Area protectedArea,
+                                     ProjectBlock table, ProjectBlock furnace, List<String> startAfter) {
             var jobs = new ArrayList<ProjectQueue.Work>();
             String previous = null;
             for (var quantity : quantities) {
@@ -58,7 +68,7 @@ final class MaterialRecipe {
                 payload.addProperty("count", quantity.count);
                 String id = prefix + jobs.size();
                 var job = new ProjectQueue.Work(id, step.kind, JSON.toJson(payload),
-                        previous == null ? List.of() : List.of(previous), Set.of(), previous);
+                        previous == null ? startAfter : List.of(previous), Set.of(), previous);
                 jobs.add(station == null ? job : station.reserve(job));
                 previous = id;
             }
@@ -97,12 +107,40 @@ final class MaterialRecipe {
     }
 
     Plan plan(Identifier item, int count, boolean allowDrops) {
+        return quantities(item, count, allowDrops, resolveSteps(item, allowDrops));
+    }
+
+    List<Batch> batches(Identifier item, int count, int maxPerBatch) {
+        var steps = resolveSteps(item, false);
+        int lower = 1;
+        int upper = Math.min(count, maxPerBatch);
+        while (lower < upper) {
+            int candidate = lower + (upper - lower + 1) / 2;
+            try {
+                quantities(item, candidate, false, steps);
+                lower = candidate;
+            } catch (BatchTooLarge ignored) {
+                upper = candidate - 1;
+            }
+        }
+        var fullBatch = new Batch(quantities(item, lower, false, steps), lower);
+        var batches = new ArrayList<Batch>();
+        for (; count >= lower; count -= lower) batches.add(fullBatch);
+        if (count > 0) batches.add(new Batch(quantities(item, count, false, steps), count));
+        return List.copyOf(batches);
+    }
+
+    private LinkedHashMap<Identifier, Step> resolveSteps(Identifier item, boolean allowDrops) {
         remaining = 512;
         var steps = new LinkedHashMap<Identifier, Step>();
         if (!resolve(item, steps, new HashSet<>())) {
             if (!allowDrops) throw new IllegalArgumentException("No automatic source for " + item);
             steps.put(item, gather("dropped"));
         }
+        return steps;
+    }
+
+    private static Plan quantities(Identifier item, int count, boolean allowDrops, Map<Identifier, Step> steps) {
         var demand = new HashMap<Identifier, Integer>();
         demand.put(item, count);
         var ordered = new ArrayList<>(steps.entrySet());
@@ -115,7 +153,7 @@ final class MaterialRecipe {
             int batches = (needed + step.yield - 1) / step.yield;
             long cookTicks = (long) step.cookTime * batches;
             if (needed > (step.kind == ProjectQueue.Kind.GATHER ? 576 : 256) || (!allowDrops && cookTicks > 4800)) {
-                throw new IllegalArgumentException("Split the material batch for " + entry.getKey());
+                throw new BatchTooLarge(entry.getKey());
             }
             step.ingredients.forEach((ingredient, amount) -> demand.merge(ingredient, Math.multiplyExact(amount, batches), Math::addExact));
             if (cookTicks > 0) demand.merge(COAL, (int) ((cookTicks + 1599) / 1600), Math::addExact);

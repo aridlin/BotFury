@@ -207,7 +207,7 @@ final class ProjectWorker {
                 else status = (result == DroppedItemSearch.State.SEARCHING ? "Looking for dropped " : "Collecting ")
                         + gather.item() + " (" + held + "/" + gather.count() + ")";
             } else if (!MiningTask.active()) {
-                MiningTask.startProject(client, gather.mining(port), gather.exclude(), gatherSite);
+                MiningTask.startProject(client, gather.mining(port), gather.exclude(), gatherSite, Registries.ITEM.get(gather.item()));
                 if (!MiningTask.active()) finish(client, false, MiningTask.lastStatus());
             } else {
                 status = assignment.project() + "/" + assignment.job().work().id() + " (" + held + "/" + gather.count()

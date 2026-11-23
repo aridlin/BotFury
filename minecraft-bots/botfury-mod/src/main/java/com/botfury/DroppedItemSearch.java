@@ -24,6 +24,10 @@ final class DroppedItemSearch {
     private BaritoneSettings settings;
 
     State tick(MinecraftClient client, Item item) {
+        return tick(client, item, null);
+    }
+
+    State tick(MinecraftClient client, Item item, Vec3d minedAt) {
         age++;
         var player = client.player;
         if (target != null) {
@@ -43,7 +47,9 @@ final class DroppedItemSearch {
             target = client.world.getEntitiesByClass(ItemEntity.class, player.getBoundingBox().expand(RADIUS),
                     entity -> entity.isAlive() && entity.getStack().isOf(item)
                             && player.squaredDistanceTo(entity) <= RADIUS * RADIUS
-                            && !retry.containsKey(entity.getUuid())).stream()
+                            && !retry.containsKey(entity.getUuid())
+                            && (minedAt == null || Math.abs(entity.getX() - minedAt.x) <= 5
+                            && Math.abs(entity.getZ() - minedAt.z) <= 5)).stream()
                     .min(Comparator.comparingDouble(player::squaredDistanceTo)).orElse(null);
             if (target != null) {
                 try {
@@ -57,6 +63,7 @@ final class DroppedItemSearch {
             }
         }
         if (target == null) return State.SEARCHING;
+        if (minedAt != null && !target.isOnGround() && age - started < 20) return State.APPROACHING;
         var next = target.getBlockPos();
         if (next.equals(goal) || (goal != null && age % 5 != 0)) return State.APPROACHING;
         goal = next;

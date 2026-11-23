@@ -2,6 +2,7 @@ package com.botfury;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import net.minecraft.block.Block;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.BlockItem;
 import net.minecraft.item.Items;
@@ -10,6 +11,7 @@ import net.minecraft.recipe.Recipe;
 import net.minecraft.recipe.SmeltingRecipe;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.math.BlockPos;
 
 import java.util.*;
 
@@ -102,6 +104,8 @@ final class MaterialRecipe {
             Map.entry("clay_ball", "block:minecraft:clay"));
     private final Map<Identifier, List<Recipe<?>>> recipes = new HashMap<>();
     private final MinecraftClient client;
+    private final Map<Identifier, Integer> ingredientAvailability = new HashMap<>();
+    private Map<Block, Integer> nearbyBlocks;
 
     private int remaining = 512;
 
@@ -234,8 +238,13 @@ final class MaterialRecipe {
                 for (var ingredient : recipe.getIngredients()) {
                     if (ingredient.isEmpty()) continue;
                     Identifier match = null;
-                    for (var stack : ingredient.getMatchingStacks()) {
-                        var id = Registries.ITEM.getId(stack.getItem());
+                    var alternatives = Arrays.stream(ingredient.getMatchingStacks())
+                            .map(stack -> Registries.ITEM.getId(stack.getItem())).distinct().toList();
+                    if (alternatives.size() > 1) {
+                        alternatives = alternatives.stream()
+                                .sorted(Comparator.comparingInt(this::ingredientAvailability).reversed()).toList();
+                    }
+                    for (var id : alternatives) {
                         if (resolve(id, candidate, ancestors)) { match = id; break; }
                     }
                     if (match == null) { possible = false; break; }
@@ -255,6 +264,41 @@ final class MaterialRecipe {
         } finally {
             ancestors.remove(item);
         }
+    }
+
+    private int ingredientAvailability(Identifier item) {
+        return ingredientAvailability.computeIfAbsent(item, id -> {
+            int best = nearbySources(id);
+            for (var recipe : recipes.getOrDefault(id, List.of())) {
+                int available = Integer.MAX_VALUE;
+                for (var ingredient : recipe.getIngredients()) {
+                    if (ingredient.isEmpty()) continue;
+                    int count = Arrays.stream(ingredient.getMatchingStacks())
+                            .mapToInt(stack -> nearbySources(Registries.ITEM.getId(stack.getItem()))).max().orElse(0);
+                    available = Math.min(available, count);
+                    if (available == 0) break;
+                }
+                if (available != Integer.MAX_VALUE) best = Math.max(best, available);
+            }
+            return best;
+        });
+    }
+
+    private int nearbySources(Identifier item) {
+        String source = naturalSource(item);
+        if (source == null) return 0;
+        if (nearbyBlocks == null) {
+            nearbyBlocks = new IdentityHashMap<>();
+            if (client.player != null) {
+                for (var pos : BlockPos.iterateOutwards(client.player.getBlockPos(), 16, 10, 16)) {
+                    if (!client.world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)) continue;
+                    var state = client.world.getBlockState(pos);
+                    if (!state.isAir()) nearbyBlocks.merge(state.getBlock(), 1, Integer::sum);
+                }
+            }
+        }
+        return ResourceCatalog.blocks(source, "both").stream()
+                .mapToInt(block -> nearbyBlocks.getOrDefault(Registries.BLOCK.get(new Identifier(block)), 0)).sum();
     }
 
     private static Step gather(String source) {

@@ -265,7 +265,7 @@ final class StructureProject {
             for (var iterator = obstructing.entrySet().iterator(); iterator.hasNext(); ) {
                 var entry = iterator.next();
                 var cell = entry.getValue();
-                var stand = findStand(client, cell.pos, null, true, pos ->
+                var stand = findPlacementStand(client, cell.pos, null, pos ->
                         !removed.contains(pos.down()) && safeStand(client, pos, cleared)
                                 && canRemoveBlock(client, pos, cell.pos, cleared));
                 if (stand == null) continue;

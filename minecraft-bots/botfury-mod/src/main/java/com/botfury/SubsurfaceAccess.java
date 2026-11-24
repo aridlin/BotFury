@@ -38,6 +38,7 @@ final class SubsurfaceAccess {
     private static final int REACH = 12;
     private static final int HARVEST_RESERVE = 20;
     private static final int ASCENT_CHECKPOINT = 12;
+    private static final int DESCENT_RECOVERY_TICKS = 240;
     private static final int[] ROUTE_DISTANCES = {5, 3, 7};
     private static final int[] ROUTE_OFFSETS = {0, -2, 2};
     private BlockPos origin;
@@ -52,6 +53,8 @@ final class SubsurfaceAccess {
     private int passageDeadline;
     private BlockPos stalledAt;
     private int routeFailures;
+    private int lowestProspectingY = Integer.MAX_VALUE;
+    private int nextDescentRecovery;
     private final java.util.LinkedHashSet<Passage> attemptedPassages = new java.util.LinkedHashSet<>();
 
     boolean active() { return settings != null; }
@@ -154,6 +157,13 @@ final class SubsurfaceAccess {
     private boolean advance(MinecraftClient client, int age, int height, ProjectGather.Area area,
                             BlockPos destinationHint, boolean allowNaturalAscent) {
         var position = client.player.getBlockPos();
+        boolean descending = destinationHint == null && position.getY() > height;
+        if (descending && position.getY() < lowestProspectingY && hasFooting(client)) {
+            lowestProspectingY = position.getY();
+            nextDescentRecovery = age + DESCENT_RECOVERY_TICKS;
+        } else if (destinationHint == null && !descending) {
+            lowestProspectingY = Integer.MAX_VALUE;
+        }
         if (active()) {
             var feet = client.player.getPos();
             if (feet.squaredDistanceTo(lastMovement) >= .36) {
@@ -194,8 +204,16 @@ final class SubsurfaceAccess {
             return false;
         }
         int initial = Math.floorMod(client.player.getUuid().hashCode(), HEADINGS.length);
-        if (routeFailures >= 2 && position.equals(stalledAt)
-                && openPassage(client, age, position, area, initial + heading / 2, height < position.getY() ? -1 : 0)) return true;
+        // A cave can bring a path back at a different X/Z without reaching a lower layer.
+        boolean stalledDescent = descending && lowestProspectingY != Integer.MAX_VALUE && age >= nextDescentRecovery;
+        if ((stalledDescent || routeFailures >= 2 && position.equals(stalledAt))
+                && openPassage(client, age, position, area, initial + heading / 2, descending ? -1 : 0)) {
+            if (stalledDescent) {
+                nextDescentRecovery = age + DESCENT_RECOVERY_TICKS;
+                BotEvents.add("debug", "mining", "Recovering descent after no progress below Y " + lowestProspectingY);
+            }
+            return true;
+        }
         // Shorter, shallower alternatives can get around a wall without returning up the cave.
         int delta = height - position.getY();
         int fallbackY = position.getY() + (delta == 0 ? 1 : Math.abs(delta) <= 2 ? 0 : Integer.signum(delta) * 2);
@@ -556,6 +574,8 @@ final class SubsurfaceAccess {
         retryAt = heading = 0;
         stalledAt = null;
         routeFailures = 0;
+        lowestProspectingY = Integer.MAX_VALUE;
+        nextDescentRecovery = 0;
         attemptedPassages.clear();
     }
 }

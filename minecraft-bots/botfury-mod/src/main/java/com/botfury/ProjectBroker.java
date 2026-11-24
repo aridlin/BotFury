@@ -26,7 +26,7 @@ final class ProjectBroker {
     private record Request(String action, String project, String worker, Set<ProjectQueue.Kind> kinds,
                            List<ProjectQueue.Work> work, String job, UUID token, Boolean success,
                            String evidence, ProjectQueue.ChestReport chest, ProjectQueue.ResourceSite resourceSite,
-                           boolean pickupShortfall, Map<String, Integer> toolUses) {}
+                           boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
         if (queue == null) {
@@ -318,15 +318,16 @@ final class ProjectBroker {
                 }
                 case "claim" -> {
                     var position = workerPosition(request.worker);
+                    int returnRevision = Math.max(0, Math.min(request.returnRouteRevision, SubsurfaceAccess.RETURN_ROUTE_REVISION));
                     var assignment = request.kinds.contains(ProjectQueue.Kind.TRANSFER)
                             ? board.offerCheckpointDeposit(world, request.worker, request.project, now,
-                                position, ProjectBroker::heldCount) : null;
+                                position, ProjectBroker::heldCount, returnRevision) : null;
                     if (assignment == null) assignment = board.claim(world, request.worker, request.kinds,
                             request.project, now, position, material -> hasExcavationTool(request.toolUses, material),
-                            ProjectBroker::heldCount, request.toolUses);
+                            ProjectBroker::heldCount, request.toolUses, returnRevision);
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.TRANSFER)) {
                         assignment = board.offerInterruptedDeposit(world, request.worker, request.project, now,
-                                position, ProjectBroker::heldCount);
+                                position, ProjectBroker::heldCount, returnRevision);
                         if (assignment == null) {
                             assignment = board.offerGatheringStock(world, request.worker, request.project, now, position,
                                     ProjectBroker::heldCount);
@@ -342,7 +343,7 @@ final class ProjectBroker {
                             && board.offerConstructionHandoff(world, request.worker, request.project,
                                     request.kinds, now, ProjectBroker::workerPosition, ProjectBroker::heldCount)) {
                         assignment = board.claim(world, request.worker, request.kinds, request.project, now, position,
-                                material -> hasExcavationTool(request.toolUses, material), ProjectBroker::heldCount, request.toolUses);
+                                material -> hasExcavationTool(request.toolUses, material), ProjectBroker::heldCount, request.toolUses, returnRevision);
                     }
                     reply(exchange, 200, assignment);
                 }

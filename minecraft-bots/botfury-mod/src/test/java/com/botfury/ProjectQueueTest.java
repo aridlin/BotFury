@@ -244,6 +244,41 @@ class ProjectQueueTest {
         assertEquals("ingredients", queue.claim(WORLD, "replacement", Set.of(GATHER), now).job().work().id());
     }
 
+    @Test void aNewReturnRouteGetsOneRetryWithTheSameCargoAndPosition() throws Exception {
+        for (boolean observedStock : new boolean[]{false, true}) {
+            var journal = directory.resolve("return-upgrade-" + observedStock + ".json");
+            String chest = "block:3,64,0";
+            String item = "minecraft:diamond";
+            String key = "contribution:deposit:carrier";
+            String project = "mine";
+            var cave = new ProjectQueue.ResourceSite(3, -10, 0);
+            var gather = new ProjectQueue.Work("gather", GATHER,
+                    "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":64}",
+                    List.of(), Set.of());
+            var deposit = new ProjectQueue.Work("deposit", TRANSFER,
+                    "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":64,\"target\":{\"x\":3,\"y\":64,\"z\":0}}",
+                    List.of("gather"), Set.of(chest), "gather");
+            var observation = observedStock ? new ProjectQueue.ChestObservation(
+                    new ProjectQueue.ChestReport(chest, java.util.Map.of()), 1) : null;
+            var jobs = List.of(new ProjectQueue.Job(gather, ProjectQueue.State.FAILED, 3, null, null, 0,
+                            ProjectQueue.GATHER_TOOLS_NEEDED + " after 2 supply recoveries", null, cave),
+                    new ProjectQueue.Job(deposit, ProjectQueue.State.WAITING, 1, null, null, 0,
+                            "Partial stock contribution settled", observation));
+            var seeded = new ProjectQueue.Project(project, WORLD, jobs, null, chest,
+                    java.util.Map.of(key, 3), java.util.Map.of(key, cave));
+            Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                    "projects", java.util.Map.of(project, seeded))));
+            var queue = new ProjectQueue(journal);
+            assertNull(queue.offerInterruptedDeposit(WORLD, "carrier", null, 2, cave, (bot, material) -> 3));
+            assertNull(queue.offerInterruptedDeposit(WORLD, "empty", null, 3, cave, (bot, material) -> 0, 1));
+            assertNotNull(queue.offerInterruptedDeposit(WORLD, "carrier", null, 4, cave, (bot, material) -> 3, 1));
+            var lease = queue.claim(WORLD, "carrier", Set.of(TRANSFER), 5).job();
+            assertTrue(queue.finish(project, "deposit", lease.lease(), false, ProjectQueue.TARGET_TIMEOUT, 6));
+            queue = new ProjectQueue(journal);
+            assertNull(queue.offerInterruptedDeposit(WORLD, "carrier", null, 7, cave, (bot, material) -> 3, 1));
+        }
+    }
+
     @Test void aBystanderCanFinishTheChestOrderWhileTheOriginalMinerHasALease() throws Exception {
         var journal = directory.resolve("mining-drop-bystander.json");
         String world = WORLD;

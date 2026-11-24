@@ -139,6 +139,7 @@ final class ProjectQueue {
     private static final int CONSTRUCTION_PICKUP_RETRY_CLIMB = 12;
     private static final int STOCK_RECOVERY_RADIUS = 64;
     private static final int PLACEMENT_HANDOFF_SEPARATION = 6;
+    static final long PLACEMENT_HANDOFF_WINDOW_MS = 8_000;
     private static final long SUPPLIER_OFFLINE_MS = 60_000;
     private static final int MAX_SUPPLY_RECOVERIES = 2;
     private static final int MAX_PROJECTS = 32;
@@ -572,10 +573,12 @@ final class ProjectQueue {
             if (!world.equals(project.world) || cancelled(project) || (ownedOrder != null && ownedOrder != project)
                     || projectId != null && !projectId.equals(project.id)) continue;
             Set<String> done = new HashSet<>();
+            Set<String> cargoAwaitingHandoff = new HashSet<>();
             var byId = new HashMap<String, Job>();
             for (Job job : project.jobs) {
                 byId.put(job.work.id, job);
                 if (job.state == State.DONE) done.add(job.work.id);
+                if (placementHandoffOpen(job, now)) cargoAwaitingHandoff.add(job.work.sameWorkerAs);
             }
             var unavailableStations = new HashSet<String>();
             for (var job : project.jobs) {
@@ -589,7 +592,8 @@ final class ProjectQueue {
                 if (job.work.constructionMaterial != null && carried.contains(job.work.constructionMaterial)) continue;
                 if (ownedLane != null && !ownedLane.equals(lane(job.work.id))) continue;
                 if (deposit != null && job.work.kind == Kind.TRANSFER && !deposit.equals(job.work.id)) continue;
-                if (job.work.kind.coordinatorOnly() || retryDelayedFor(job, worker, now)
+                if (job.work.kind.coordinatorOnly() || cargoAwaitingHandoff.contains(job.work.sameWorkerAs)
+                        || retryDelayedFor(job, worker, now)
                         || !kinds.contains(job.work.kind)) continue;
                 boolean nearbyPickup = canRetryConstructionPickup(job, position);
                 if (job.state != State.WAITING && !nearbyPickup) continue;
@@ -669,7 +673,8 @@ final class ProjectQueue {
             if (project.supplyChest == null || !world.equals(project.world) || cancelled(project)
                     || projectId != null && !project.id.equals(projectId)) continue;
             for (var job : project.jobs) {
-                boolean failedApproach = job.state == State.FAILED && placementApproachFailure(job);
+                boolean failedApproach = placementHandoffOpen(job, now)
+                        || job.state == State.FAILED && placementApproachFailure(job);
                 if (job.state != State.WAITING && !failedApproach || job.work.kind != Kind.BUILD
                         || job.work.sameWorkerAs == null || !SCHEMATIC_PLACEMENT.matcher(job.work.id).matches()) continue;
                 var pickup = find(project, job.work.sameWorkerAs);
@@ -721,7 +726,8 @@ final class ProjectQueue {
         recovery.put(key, handoffs + 1);
         var jobs = project.jobs.stream().map(job -> {
             if (job == pickup) return replacement;
-            if (batch.contains(job) && job.state == State.FAILED && placementApproachFailure(job)) {
+            if (batch.contains(job) && (placementHandoffOpen(job, now)
+                    || job.state == State.FAILED && placementApproachFailure(job))) {
                 return new Job(job.work, State.WAITING, 0, null, null, 0,
                         "Reassigned to a nearby builder", job.chest, job.resourceSite);
             }
@@ -1226,6 +1232,12 @@ final class ProjectQueue {
                 && GATHER_STALLED.equals(evidence)) {
             result = new Job(job.work, State.WAITING, job.attempts, job.worker, null,
                     now + STALLED_WORKER_COOLDOWN_MS, evidence, observation, location);
+        } else if (job.attempts < MAX_ATTEMPTS && project.supplyChest != null && job.work.kind == Kind.BUILD
+                && job.work.sameWorkerAs != null && SCHEMATIC_PLACEMENT.matcher(job.work.id).matches()
+                && find(project, job.work.sameWorkerAs).work.constructionMaterial != null
+                && placementApproachFailure(evidence)) {
+            result = new Job(job.work, State.WAITING, job.attempts, job.worker, null,
+                    now + PLACEMENT_HANDOFF_WINDOW_MS, evidence, observation, location);
         } else result = retry(job, evidence, observation, location);
         if (success && project.repeat != null && !project.repeat.cancelled && job.work.id.equals(lane(job.work.id) + "inspect")) {
             prepareOutputDeposit(project, result);
@@ -1680,8 +1692,17 @@ final class ProjectQueue {
     }
 
     private static boolean placementApproachFailure(Job job) {
-        return job.evidence != null && (TARGET_TIMEOUT.equals(job.evidence)
-                || job.evidence.startsWith("No reachable solid support face for "));
+        return placementApproachFailure(job.evidence);
+    }
+
+    private static boolean placementApproachFailure(String evidence) {
+        return evidence != null && (TARGET_TIMEOUT.equals(evidence)
+                || evidence.startsWith("No reachable solid support face for "));
+    }
+
+    private static boolean placementHandoffOpen(Job job, long now) {
+        return job.state == State.WAITING && job.work.kind == Kind.BUILD && job.work.sameWorkerAs != null
+                && job.worker != null && job.expiresAt > now && placementApproachFailure(job);
     }
 
     private int retryFailures(String world, String id, java.util.function.Predicate<Job> applicable) throws IOException {

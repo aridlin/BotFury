@@ -1945,6 +1945,72 @@ final class ProjectQueue {
         return result;
     }
 
+    synchronized List<CarriedSmelt> reusableSmeltingOutputs(String world) {
+        var result = new ArrayList<CarriedSmelt>();
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || project.supplyChest == null || project.repeat != null || cancelled(project)) continue;
+            for (var job : project.jobs) {
+                if (rebuildingSmeltingOutput(job)) result.add(new CarriedSmelt(project.id, job.work));
+            }
+        }
+        return result;
+    }
+
+    private static boolean rebuildingSmeltingOutput(Job job) {
+        return job.work.kind == Kind.SMELT && job.work.sameWorkerAs != null && job.state == State.WAITING
+                && job.evidence != null && job.evidence.endsWith("; reacquiring materials")
+                && (job.evidence.startsWith("Missing ingredients for ") || job.evidence.startsWith("Missing furnace "));
+    }
+
+    synchronized boolean reuseCarriedSmeltingOutput(String world, CarriedSmelt candidate, String worker,
+                                                     String item, long now,
+                                                     java.util.function.ToIntBiFunction<String, String> held) throws IOException {
+        var project = projects.get(candidate.project);
+        var smelt = find(project, candidate.work.id);
+        if (smelt == null || !world.equals(project.world) || project.supplyChest == null || project.repeat != null
+                || cancelled(project) || !smelt.work.equals(candidate.work) || !rebuildingSmeltingOutput(smelt)
+                || !availableProjectWorker(project, worker, now)) return false;
+        var spec = JSON.fromJson(smelt.work.payload, SmeltFuel.class);
+        if (spec == null || spec.count < 1 || held.applyAsInt(worker, item) < spec.count
+                || pendingBuildMaterials(world, worker).contains(item) || hasPendingDepositOf(world, worker, item)) return false;
+
+        var ancestors = new HashSet<String>();
+        for (var stage = find(project, smelt.work.sameWorkerAs); stage != null;
+             stage = find(project, stage.work.sameWorkerAs)) {
+            if (stage.work.kind != Kind.GATHER && stage.work.kind != Kind.CRAFT && stage.work.kind != Kind.SMELT) return false;
+            if (stage.state == State.LEASED) {
+                var source = stage.work.kind == Kind.GATHER ? gatherSource(stage.work.payload) : null;
+                if (source == null || handoffWorker(stage) != null || held.applyAsInt(stage.worker, source.item) != 0) {
+                    return false;
+                }
+            }
+            ancestors.add(stage.work.id);
+        }
+        if (ancestors.isEmpty() || !privatePreparationReady(project, smelt, ancestors)
+                || smelt.work.needs.stream().anyMatch(id -> !ancestors.contains(id) && find(project, id).state != State.DONE)) {
+            return false;
+        }
+        for (var other : projects.values()) {
+            if (!world.equals(other.world) || cancelled(other)) continue;
+            for (var job : other.jobs) {
+                if (job.state != State.WAITING || job.work.sameWorkerAs == null) continue;
+                var prior = find(other, job.work.sameWorkerAs);
+                if (prior != null && prior.state == State.DONE && worker.equalsIgnoreCase(prior.worker)) return false;
+            }
+        }
+        var jobs = project.jobs.stream().map(job -> {
+            if (job == smelt) {
+                return new Job(job.work, State.DONE, job.attempts, worker, null, 0,
+                        "Observed " + spec.count + " " + item + " already carried by the worker", job.chest, job.resourceSite);
+            }
+            if (!ancestors.contains(job.work.id) || job.state == State.DONE) return job;
+            return new Job(job.work, State.DONE, job.attempts, worker, null, 0,
+                    "Preparation fulfilled by the carried furnace output", job.chest, job.resourceSite);
+        }).toList();
+        commit(project.withJobs(jobs));
+        return true;
+    }
+
     private static boolean canReassignSmelting(Project project, Job job, long now) {
         if (job.state == State.WAITING && CARRIED_SMELT_ASSIGNED.equals(job.evidence)) return job.expiresAt <= now;
         if (job.state != State.FAILED) return false;

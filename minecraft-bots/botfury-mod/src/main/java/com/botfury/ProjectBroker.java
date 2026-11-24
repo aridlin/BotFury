@@ -109,6 +109,7 @@ final class ProjectBroker {
             checkOwnedPlacements(client, board, world);
             confirmLocalScaffoldClearance(client, board, world);
             confirmLocalInspections(client, board, world, now);
+            reuseCarriedSmeltingOutputs(client, board, world);
             resumeCarriedSmelting(client, board, world);
             useCarriedCraftingIngredients(client, board, world);
             if (now >= nextAccessCheck) {
@@ -139,6 +140,24 @@ final class ProjectBroker {
                 if (board.offerCarriedCraftHandoff(world, request, helper.name(), inputs,
                         ProjectBroker::heldCount, System.currentTimeMillis())) {
                     BotEvents.add("info", "projects", helper.name() + " can supply the recipe for " + request.work().id());
+                    return;
+                }
+            }
+        }
+    }
+
+    private static void reuseCarriedSmeltingOutputs(net.minecraft.client.MinecraftClient client, ProjectQueue board,
+                                                     String world) throws IOException {
+        long now = System.currentTimeMillis();
+        for (var candidate : board.reusableSmeltingOutputs(world)) {
+            var item = ProjectProduction.smeltingOutput(client, candidate.work().payload());
+            if (item == null) continue;
+            for (var bot : BotTracker.all()) {
+                if (!bot.fresh() || !bot.connected() || !bot.alive() || !bot.sameWorld()
+                        || bot.items().getOrDefault(item.toString(), 0) < 1) continue;
+                if (board.reuseCarriedSmeltingOutput(world, candidate, bot.name(), item.toString(), now,
+                        ProjectBroker::heldCount)) {
+                    BotEvents.add("info", "projects", bot.name() + " already carries furnace output for " + candidate.work().id());
                     return;
                 }
             }

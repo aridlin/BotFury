@@ -264,6 +264,7 @@ class ProjectQueueTest {
         }
         assertNull(queue.claim(WORLD, "nearby", Set.of(EXCAVATE), 10));
         var request = queue.failedScaffoldCleanups(WORLD).get(0);
+        assertFalse(queue.recoverScaffoldCleanup(WORLD, request, new ProjectQueue.ResourceSite(12, 115, 2), "nearby", 11));
         assertTrue(queue.recoverScaffoldCleanup(WORLD, request, new ProjectQueue.ResourceSite(10, 116, 2), "nearby", 11));
         assertFalse(queue.recoverScaffoldCleanup(WORLD, request, new ProjectQueue.ResourceSite(11, 116, 2), "builder", 12));
         queue = new ProjectQueue(path);

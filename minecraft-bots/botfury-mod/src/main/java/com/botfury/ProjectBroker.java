@@ -176,11 +176,12 @@ final class ProjectBroker {
     private static void recoverScaffoldCleanups(net.minecraft.client.MinecraftClient client, ProjectQueue board,
                                                String world) throws IOException {
         for (var request : board.failedScaffoldCleanups(world)) {
-            var target = ProjectBlock.parse(request.job().payload());
+            var target = ProjectBlock.parse(request.placementPayload());
             if (BuildProtection.blocked(world, target.target(), request.project())) continue;
             var temporary = board.temporaryFooting(request.project());
             var nearby = BotTracker.all().stream().filter(bot -> bot.fresh() && bot.connected() && bot.alive()
                     && bot.sameWorld() && bot.baritone() && bot.health() > 4)
+                    .filter(bot -> bot.scaffoldCleanupCapable() || hasExcavationTool(bot.items(), target.block().toString()))
                     .sorted(java.util.Comparator.comparing(bot -> !hasExcavationTool(bot.items(), target.block().toString())))
                     .toList();
             for (var bot : nearby) {

@@ -180,6 +180,7 @@ public class BotFuryMod implements ClientModInitializer {
         status.put("lastEventLevel", BotEvents.lastLevel);
         status.put("coordinatedMining", true);
         status.put("taskDefenseCapable", true);
+        status.put("scaffoldCleanupCapable", true);
         status.put("inventoryCoordinates", true);
         status.put("taskDefenseEnabled", TaskDefense.enabled());
         if (client.player != null) {

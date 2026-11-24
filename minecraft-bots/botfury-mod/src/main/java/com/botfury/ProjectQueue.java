@@ -172,7 +172,7 @@ final class ProjectQueue {
     }
     record ScaffoldClearance(String project, Work job) {}
     record LocalInspection(String project, Work job) {}
-    record CleanupRecovery(String project, Work job) {}
+    record CleanupRecovery(String project, Work job, String placementPayload) {}
     private static final java.util.regex.Pattern SCHEMATIC_PLACEMENT = java.util.regex.Pattern.compile("place-[0-9]+");
     private record StationTarget(ProjectBlock.Position target, ProjectBlock.Position stand, String block) {}
     private record Board(int schema, Map<String, Project> projects) {}
@@ -421,13 +421,16 @@ final class ProjectQueue {
                 if (job.state != State.FAILED || job.work.cleanup == null
                         || !(TARGET_TIMEOUT.equals(job.evidence) || job.evidence != null
                             && job.evidence.startsWith(EXCAVATION_TOOL_NEEDED)
-                            || "Target obstructed or out of reach from the approved stand".equals(job.evidence))
-                        || project.supplyRecoveries.getOrDefault("cleanup-pose:" + job.work.id, 0) >= MAX_SUPPLY_RECOVERIES
+                            || "Target obstructed or out of reach from the approved stand".equals(job.evidence)
+                            || "Invalid project job payload".equals(job.evidence)
+                                && project.supplyRecoveries.containsKey("cleanup-pose:" + job.work.id))
+                        || project.supplyRecoveries.getOrDefault("validated-cleanup-pose:" + job.work.id, 0) >= MAX_SUPPLY_RECOVERIES
                         || !done.containsAll(job.work.needs)
                         || !settled(job.work.cleanup.afterSettled, done, blocked)
                         || job.work.cleanup.alsoSettled.stream().anyMatch(id -> !settled(id, done, blocked))
                         || !ownsCobblestoneScaffold(project, job.work)) continue;
-                result.add(new CleanupRecovery(project.id, job.work));
+                var placement = find(project, job.work.needs.get(0));
+                result.add(new CleanupRecovery(project.id, job.work, placement.work.payload));
             }
         }
         return result;
@@ -450,6 +453,8 @@ final class ProjectQueue {
         if (!availableProjectWorker(project, worker, now)) return false;
         var current = find(project, request.job.id);
         var payload = JSON.fromJson(current.work.payload, com.google.gson.JsonObject.class);
+        var target = JSON.fromJson(current.work.payload, StationTarget.class).target.checked();
+        if (!ProjectBlock.validStand(target, new net.minecraft.util.math.BlockPos(stand.x, stand.y, stand.z))) return false;
         payload.add("stand", JSON.toJsonTree(stand));
         var locks = new HashSet<>(current.work.locks);
         for (int y = stand.y - 1; y <= stand.y + 1; y++) locks.add("block:" + stand.x + "," + y + "," + stand.z);
@@ -464,7 +469,7 @@ final class ProjectQueue {
         var lease = new Job(work, State.LEASED, current.attempts + 1, worker, UUID.randomUUID(),
                 now + LEASE_MS, "Assigned scaffold cleanup from reachable footing", null);
         var counts = new HashMap<>(project.supplyRecoveries);
-        counts.merge("cleanup-pose:" + work.id, 1, Integer::sum);
+        counts.merge("validated-cleanup-pose:" + work.id, 1, Integer::sum);
         commit(project.withRecovery(project.jobs.stream().map(job -> job == current ? lease : job).toList(), counts));
         return true;
     }

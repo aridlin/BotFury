@@ -700,7 +700,7 @@ final class StructureProject {
         if (!start.isWithinDistance(target, 10) || !loaded(client, target)
                 || !block.matches(client.world.getBlockState(target))) return null;
         return locallyReachableStands(client, start, stand -> dryCleanupFooting(client, stand)).stream()
-                .filter(stand -> !stand.down().equals(target) && !temporaryFooting.contains(ProjectBlock.key(stand.down()))
+                .filter(stand -> ProjectBlock.validStand(target, stand) && !temporaryFooting.contains(ProjectBlock.key(stand.down()))
                         && (stand.equals(start) || !stand.equals(block.stand()))
                         && canRemoveBlock(client, stand, target, Map.of()))
                 .min(Comparator.comparingDouble(stand -> stand.getSquaredDistance(start))).orElse(null);

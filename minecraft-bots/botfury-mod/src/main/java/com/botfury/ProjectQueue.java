@@ -1548,7 +1548,7 @@ final class ProjectQueue {
                 var craft = find(project, gather.work.sameWorkerAs);
                 if (craft.work.kind != Kind.CRAFT) continue;
                 var recipe = JSON.fromJson(craft.work.payload, ToolRecipe.class);
-                int tier = recipe == null || recipe.recipe == null ? -1 : PICKAXE_TIERS.indexOf(recipe.recipe);
+                int tier = recipe == null || recipe.recipe == null || recipe.recipe == null ? -1 : PICKAXE_TIERS.indexOf(recipe.recipe);
                 if (tier < 0) continue;
                 String carriedTool = PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
                         .filter(tool -> toolUses.get(tool) != null && toolUses.get(tool) >= 32)
@@ -1848,6 +1848,52 @@ final class ProjectQueue {
         counts.put("carried-smelt:" + smelt.work.id, 1);
         commit(project.withRecovery(jobs, counts));
         return true;
+    }
+
+    synchronized Assignment offerSmeltingRefill(String world, String worker, String projectId,
+                                                Map<String, Integer> toolUses, long now) throws IOException {
+        if (toolUses == null || toolUses.isEmpty()) return null;
+        for (var project : projects.values()) {
+            if (project.supplyChest == null || !world.equals(project.world) || cancelled(project)
+                    || projectId != null && !projectId.equals(project.id)
+                    || !availableProjectWorker(project, worker, now)) continue;
+            for (var smelt : project.jobs) {
+                if (smelt.work.kind != Kind.SMELT || smelt.state != State.FAILED || smelt.work.sameWorkerAs == null
+                        || smelt.evidence == null || !smelt.evidence.startsWith("Missing furnace input ")
+                        || !canReassignSmelting(project, smelt, now)) continue;
+                String recoveryKey = "smelting-refill:" + smelt.work.id;
+                if (project.supplyRecoveries.containsKey(recoveryKey)) continue;
+                var input = JSON.fromJson(smelt.work.payload, SmeltFuel.class).input;
+                var path = new LinkedHashSet<String>();
+                for (var stage = find(project, smelt.work.sameWorkerAs); stage != null;
+                     stage = find(project, stage.work.sameWorkerAs)) {
+                    if (stage.state != State.DONE || stage.work.kind != Kind.GATHER) break;
+                    var source = gatherSource(stage.work.payload);
+                    if (source == null) break;
+                    path.add(stage.work.id);
+                    if (!input.equals(source.item)) continue;
+                    var prerequisite = find(project, stage.work.sameWorkerAs);
+                    if (prerequisite == null || prerequisite.state != State.DONE || prerequisite.work.kind != Kind.CRAFT) break;
+                    var recipe = JSON.fromJson(prerequisite.work.payload, ToolRecipe.class);
+                    int tier = recipe == null || recipe.recipe == null ? -1 : PICKAXE_TIERS.indexOf(recipe.recipe);
+                    if (tier < 0 || PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
+                            .noneMatch(tool -> toolUses.getOrDefault(tool, 0) >= 32)
+                            || !privatePreparationReady(project, smelt, path)) break;
+                    var lease = new Job(stage.work, State.LEASED, 1, worker, UUID.randomUUID(),
+                            now + LEASE_MS, null, stage.chest, gatheringSite(project, stage));
+                    var jobs = project.jobs.stream().map(job -> {
+                        if (job.work.id.equals(lease.work.id)) return lease;
+                        if (job == smelt || path.contains(job.work.id)) return freshStockWork(job.work);
+                        return job;
+                    }).toList();
+                    var recoveries = new HashMap<>(project.supplyRecoveries);
+                    recoveries.put(recoveryKey, 1);
+                    commit(project.withRecovery(jobs, recoveries));
+                    return assignment(project, lease);
+                }
+            }
+        }
+        return null;
     }
 
     private boolean availableProjectWorker(Project project, String worker, long now) {

@@ -104,6 +104,7 @@ final class ProjectQueue {
         }
     }
     record ChestObservation(ChestReport report, long observedAt) {}
+    record StockCarrier(String worker, ResourceSite position, Map<String, Integer> items) {}
     record Repeat(int batch, String item, String chest, int completed, ChestObservation lastStock,
                   boolean cancelled, int capacity) {
         Repeat(int batch, String item, String chest, int completed, ChestObservation lastStock, boolean cancelled) {
@@ -3268,6 +3269,12 @@ final class ProjectQueue {
     synchronized boolean finish(String projectId, String jobId, UUID token, boolean success,
                                 String evidence, ChestReport chest, ResourceSite site, boolean pickupShortfall,
                                 long now) throws IOException {
+        return finish(projectId, jobId, token, success, evidence, chest, site, pickupShortfall, List.of(), now);
+    }
+
+    synchronized boolean finish(String projectId, String jobId, UUID token, boolean success, String evidence,
+                                ChestReport chest, ResourceSite site, boolean pickupShortfall,
+                                List<StockCarrier> carriers, long now) throws IOException {
         if (evidence == null || evidence.isBlank() || evidence.length() > 2048) {
             throw new IllegalArgumentException("Report an observed outcome or failure reason");
         }
@@ -3372,7 +3379,7 @@ final class ProjectQueue {
             if (success || chest == null || job.work.kind != Kind.TRANSFER) {
                 throw new IllegalArgumentException("A stock shortfall requires a failed transfer and chest observation");
             }
-            if (recoverShortTransfer(project, job, evidence, observation)) {
+            if (recoverShortTransfer(project, job, evidence, observation, carriers, now)) {
                 markAssignmentSeen(project, job.worker, now);
                 restoredLeases.remove(token);
                 return true;
@@ -3506,8 +3513,8 @@ final class ProjectQueue {
         }
     }
 
-    private boolean recoverShortTransfer(Project project, Job transfer, String evidence, ChestObservation observation)
-            throws IOException {
+    private boolean recoverShortTransfer(Project project, Job transfer, String evidence, ChestObservation observation,
+                                         List<StockCarrier> carriers, long now) throws IOException {
         var chest = observation.report;
         if (!chest.location.equals(project.supplyChest)) return false;
         var target = transferTarget(transfer);
@@ -3522,13 +3529,42 @@ final class ProjectQueue {
         var jobs = new HashMap<String, Job>();
         project.jobs.forEach(job -> jobs.put(job.work.id, job));
         var prerequisite = jobs.get(production);
+        if (deposit && recoverReportedDepositWithCarrier(project, transfer, prerequisite, target,
+                observation, stock, carriers, now)) return true;
         return rewindSupply(project, transfer, prerequisite, jobs, evidence, observation);
     }
 
+    private boolean recoverReportedDepositWithCarrier(Project project, Job deposit, Job gather, PickupTarget target,
+                                                        ChestObservation observation, int stock,
+                                                        List<StockCarrier> carriers, long now) throws IOException {
+        if (carriers.isEmpty() || project.repeat != null || gather.state != State.DONE || gather.work.kind != Kind.GATHER
+                || project.jobs.stream().anyMatch(job -> job != deposit && job.work.needs.contains(gather.work.id))) return false;
+        var source = gatherSource(gather.work.payload);
+        if (source == null || !target.item.equals(source.item)) return false;
+        for (var carrier : carriers) {
+            String worker = carrier.worker;
+            int held = stockCount(carrier.items, target.item);
+            if (held < target.stock - stock || worker.equalsIgnoreCase(deposit.worker)
+                    || !availableProjectWorker(project, worker, now)
+                    || pendingBuildMaterials(project.world, worker).contains(target.item)
+                    || hasPendingDepositOf(project.world, worker, target.item)) continue;
+            var replacement = new Job(deposit.work, State.LEASED, 1, worker, UUID.randomUUID(),
+                    now + LEASE_MS, CONTRIBUTION_ACTIVE, observation);
+            var jobs = project.jobs.stream().map(job -> job == deposit ? replacement : job).toList();
+            commit(project.withContribution(jobs, contributionCargo(deposit, worker), held, carrier.position, stock, 0));
+            return true;
+        }
+        return false;
+    }
+
     private static int stockCount(ChestReport chest, String item) {
+        return stockCount(chest.items, item);
+    }
+
+    private static int stockCount(Map<String, Integer> items, String item) {
         return "any_logs".equals(item)
-                ? ResourceCatalog.blocks(item, "both").stream().mapToInt(id -> chest.items.getOrDefault(id, 0)).sum()
-                : chest.items.getOrDefault(item, 0);
+                ? ResourceCatalog.blocks(item, "both").stream().mapToInt(id -> items.getOrDefault(id, 0)).sum()
+                : items.getOrDefault(item, 0);
     }
 
     private void settleContribution(Project project, Job deposit, String evidence, ChestObservation observation,

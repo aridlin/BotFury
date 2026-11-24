@@ -1575,6 +1575,35 @@ class ProjectQueueTest {
         assertEquals(mined.lease(), restored.snapshot(11).get(0).jobs().get(1).lease());
     }
 
+    @Test void shortDepositReservesAStockedCarrierBeforeRewinding() throws Exception {
+        var journal = directory.resolve("short-deposit-carrier.json");
+        var queue = new ProjectQueue(journal);
+        String chest = "block:3,64,0";
+        String item = "minecraft:cobblestone";
+        var collect = new ProjectQueue.Work("collect", GATHER,
+                "{\"resource\":\"stone\",\"variant\":\"both\",\"item\":\"minecraft:cobblestone\",\"count\":64}", List.of(), Set.of());
+        var deliver = new ProjectQueue.Work("deliver", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:cobblestone\",\"stock\":192}",
+                List.of(collect.id()), Set.of(chest), collect.id());
+        queue.submitSupplied("stock", WORLD, List.of(collect, deliver), chest);
+        var gathered = queue.claim(WORLD, "old", Set.of(GATHER), 1).job();
+        assertTrue(queue.finish("stock", "collect", gathered.lease(), true, "Collected", 2));
+        var deposit = queue.claim(WORLD, "old", Set.of(TRANSFER), 3).job();
+        assertNull(queue.claim(WORLD, "helper", Set.of(TRANSFER), 4));
+        var observation = new ProjectQueue.ChestReport(chest, java.util.Map.of(item, 128));
+        var carrier = new ProjectQueue.StockCarrier("helper", new ProjectQueue.ResourceSite(2, 64, 0), java.util.Map.of(item, 64));
+        assertTrue(queue.finish("stock", deliver.id(), deposit.lease(), false, "Short deposit",
+                observation, null, true, List.of(carrier), 5));
+
+        var reopened = new ProjectQueue(journal);
+        var jobs = reopened.snapshot(6).get(0).jobs();
+        assertEquals(gathered.lease(), jobs.get(0).lease());
+        assertEquals(ProjectQueue.State.DONE, jobs.get(0).state());
+        assertEquals("helper", jobs.get(1).worker());
+        assertNotEquals(deposit.lease(), jobs.get(1).lease());
+        assertEquals(observation, jobs.get(1).chest().report());
+    }
+
     @Test void missingCargoReopensOnlyTheAffectedGatheringChain() throws Exception {
         var journal = directory.resolve("missing-cargo.json");
         var queue = new ProjectQueue(journal);

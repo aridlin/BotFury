@@ -2518,15 +2518,18 @@ final class ProjectQueue {
         if (job.work.kind != Kind.GATHER) return job.resourceSite;
         if (GATHER_STALLED.equals(job.evidence)) return nearestRetrySite(project, job, position);
         var known = gatheringSite(project, job);
-        return known == null ? interruptedDeepSite(project, job, position) : known;
+        var deeper = interruptedDeepSite(project, job, position, known);
+        return deeper == null ? known : deeper;
     }
 
-    private static ResourceSite interruptedDeepSite(Project project, Job job, ResourceSite position) {
+    private static ResourceSite interruptedDeepSite(Project project, Job job, ResourceSite position, ResourceSite known) {
         if (position == null) return null;
         var source = gatherSource(job.work.payload);
         if (source == null) return null;
         Integer depth = SubsurfaceAccess.prospectingAltitude(source.resource);
         if (depth == null || depth > 0) return null;
+        int deepEnough = depth + DEEP_SITE_DEPTH_MARGIN;
+        if (known != null && known.y <= deepEnough) return null;
 
         var compatible = project.jobs.stream().filter(peer -> peer != job && peer.work.kind == Kind.GATHER
                 && source.equals(gatherSource(peer.work.payload))).toList();
@@ -2535,7 +2538,7 @@ final class ProjectQueue {
                 .filter(peer -> (peer.state == State.WAITING && RECOVERING_TOOLS.equals(peer.evidence))
                         || (peer.state == State.FAILED && EXHAUSTED_TOOLS.equals(peer.evidence)))
                 .map(Job::resourceSite)
-                .filter(site -> site != null && site.y <= depth + DEEP_SITE_DEPTH_MARGIN)
+                .filter(site -> site != null && site.y <= deepEnough)
                 .filter(site -> gatheringDistance(site, position) <= DEEP_SITE_REUSE_RADIUS)
                 .filter(site -> active.stream().noneMatch(peer -> peer.resourceSite == null
                         || gatheringDistance(site, peer.resourceSite) <= DEEP_SITE_WORK_RADIUS))

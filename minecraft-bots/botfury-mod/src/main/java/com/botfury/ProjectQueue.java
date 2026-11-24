@@ -1565,6 +1565,87 @@ final class ProjectQueue {
         return true;
     }
 
+    /**
+     * Split the outstanding stock of a failed, private production chain. Each
+     * worker starts with a complete tool recipe. Only deposits are serialized.
+     */
+    synchronized boolean shareBlockedStock(String world, String worker, String projectId, long now) throws IOException {
+        for (var project : projects.values()) {
+            if (!project.id.startsWith("manifest-") || !world.equals(project.world) || project.supplyChest == null
+                    || project.repeat != null || projectId != null && !projectId.equals(project.id)
+                    || !availableProjectWorker(project, worker, now)) continue;
+            var byId = new HashMap<String, Job>();
+            project.jobs.forEach(job -> byId.put(job.work.id, job));
+            for (var deposit : project.jobs) {
+                if (deposit.state != State.WAITING || !deposit.work.id.matches("stock-[0-9]+-[0-9]+-deposit")
+                        || !deposit.work.locks.contains(project.supplyChest)
+                        || project.supplyRecoveries.containsKey("shared:" + deposit.work.id)) continue;
+                var target = transferTarget(deposit);
+                var gather = byId.get(deposit.work.sameWorkerAs);
+                if (target == null || !"DEPOSIT".equals(target.direction) || gather == null
+                        || gather.work.kind != Kind.GATHER || gather.state != State.WAITING
+                        && !(gather.state == State.FAILED && EXHAUSTED_TOOLS.equals(gather.evidence))) continue;
+                var source = gatherSource(gather.work.payload);
+                if (source == null || !source.item.equals(target.item)) continue;
+                var chain = new ArrayList<Job>();
+                for (var stage = gather; stage != null; stage = byId.get(stage.work.sameWorkerAs)) chain.add(stage);
+                Collections.reverse(chain);
+                var ids = new HashSet<String>();
+                for (var stage : chain) ids.add(stage.work.id);
+                if (chain.stream().noneMatch(stage -> stage.state == State.FAILED)
+                        || chain.stream().anyMatch(stage -> stage.state == State.LEASED || stage.gatheringAfterPickup != null
+                                || stage.work.kind != Kind.GATHER && stage.work.kind != Kind.CRAFT && stage.work.kind != Kind.SMELT)
+                        || !privatePreparationReady(project, deposit, ids)) continue;
+                var quantity = JSON.fromJson(gather.work.payload, com.google.gson.JsonObject.class).get("count");
+                if (quantity == null) continue;
+                int remaining = quantity.getAsInt();
+                if (remaining < 2 || remaining > target.stock || project.jobs.size() + chain.size() + 1 > MAX_JOBS) continue;
+                String key = "share-" + deposit.work.id;
+                if (byId.keySet().stream().anyMatch(id -> id.startsWith(key + "-"))) continue;
+                int portion = remaining / 2;
+                var helper = new ArrayList<Job>();
+                var replacements = new HashMap<String, Job>();
+                String previous = null;
+                for (var stage : chain) {
+                    var w = stage.work;
+                    String id = key + "-" + helper.size();
+                    var payload = JSON.fromJson(w.payload, com.google.gson.JsonObject.class);
+                    if (w.kind == Kind.SMELT && payload.has("plannedFuel")) payload.add("fuel", payload.remove("plannedFuel"));
+                    if (stage == gather) payload.addProperty("count", portion);
+                    var deps = new ArrayList<>(w.needs.stream().filter(need -> !ids.contains(need)).toList());
+                    if (previous != null) deps.add(previous);
+                    helper.add(freshStockWork(new Work(id, w.kind, JSON.toJson(payload), deps, w.locks, previous)));
+                    previous = id;
+                    if (stage == gather) payload.addProperty("count", remaining - portion);
+                    replacements.put(w.id, freshStockWork(new Work(w.id, w.kind, JSON.toJson(payload),
+                            w.needs, w.locks, w.sameWorkerAs)));
+                }
+                var transfer = JSON.fromJson(deposit.work.payload, com.google.gson.JsonObject.class);
+                transfer.addProperty("stock", target.stock - remaining + portion);
+                var deps = new ArrayList<>(deposit.work.needs);
+                deps.remove(gather.work.id);
+                deps.add(previous);
+                var handoff = new Work(key + "-bank", Kind.TRANSFER, JSON.toJson(transfer), deps, deposit.work.locks, previous);
+                helper.add(freshStockWork(handoff));
+                replacements.put(deposit.work.id, withNeeds(deposit, List.of(gather.work.id, handoff.id)));
+                var jobs = new ArrayList<Job>();
+                for (var job : project.jobs) {
+                    if (job == deposit) jobs.addAll(helper);
+                    jobs.add(replacements.getOrDefault(job.work.id, job));
+                }
+                var recoveries = new HashMap<>(project.supplyRecoveries);
+                recoveries.put("shared:" + deposit.work.id, portion);
+                commit(project.withRecovery(jobs, recoveries));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static Job freshStockWork(Work work) {
+        return new Job(work, State.WAITING, 0, null, null, 0, null, null);
+    }
+
     synchronized List<CarriedCraft> craftableToolPreparation(String world, long now) {
         var result = new ArrayList<CarriedCraft>();
         for (var project : projects.values()) {

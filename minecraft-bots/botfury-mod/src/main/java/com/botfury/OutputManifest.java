@@ -22,7 +22,7 @@ final class OutputManifest {
     private static final int MAX_ITEMS = 16;
     private static final int BATCH_SIZE = 64;
 
-    private record Target(ProjectItem item, int count, List<MaterialRecipe.Batch> batches) {}
+    private record Target(ProjectItem item, int count, int batchLimit, List<MaterialRecipe.Batch> batches) {}
 
     private OutputManifest() {}
 
@@ -31,7 +31,9 @@ final class OutputManifest {
         int port = BotFuryMod.controlPort();
         if (here == null || client.world == null || port < 1024 || Boolean.getBoolean("botfury.managedHttp")) return 0;
         try {
-            var targets = parse(client, requested);
+            int crew = (int) BotTracker.targets().stream().filter(bot -> bot.fresh() && bot.sameWorld()
+                    && bot.connected() && bot.alive()).count();
+            var targets = parse(client, requested, crew);
             boolean newStorage = !(client.crosshairTarget instanceof BlockHitResult hit)
                     || hit.getType() != HitResult.Type.BLOCK || !client.world.getBlockState(hit.getBlockPos()).isOf(Blocks.CHEST);
             var origin = client.player.getBlockPos();
@@ -53,20 +55,10 @@ final class OutputManifest {
             var table = OutputOrder.findStation(client, storage.key(), Identifier.of("minecraft", "crafting_table"));
             var furnace = OutputOrder.findStation(client, storage.key(), Identifier.of("minecraft", "furnace"));
             area = StructureSupply.union(storage.include(new ProjectGather.Area(chest.target(), chest.target())), chest, table, furnace);
-            var recipes = targets.stream().flatMap(target -> target.batches.stream()).map(MaterialRecipe.Batch::plan).toList();
-            var stations = ProjectWorkstations.prepare(client, storage.key(), area, table, furnace,
-                    newStorage || recipes.stream().anyMatch(MaterialRecipe.Plan::needsTable),
-                    recipes.stream().anyMatch(MaterialRecipe.Plan::needsFurnace));
-            var jobs = new ArrayList<>(stations.jobs());
-            if (newStorage) jobs.addAll(stations.storageJobs(client, chest));
-            var delivered = new ArrayList<String>();
-            for (int index = 0; index < targets.size(); index++) {
-                delivered.add(addBatches(jobs, targets.get(index), index, storage, chest, stations, newStorage));
-            }
-            for (int index = 0; index < targets.size(); index++) {
-                var target = targets.get(index);
-                jobs.add(transfer("verify-stock-" + index, storage, chest, target.item, target.count,
-                        ProjectChest.Direction.VERIFY_STOCK, delivered, null));
+            var jobs = jobs(client, targets, storage, chest, table, furnace, area, newStorage);
+            if (jobs.size() > ProjectQueue.MAX_JOBS && crew > 1) {
+                targets = parse(client, requested, 1);
+                jobs = jobs(client, targets, storage, chest, table, furnace, area, newStorage);
             }
             String id = "manifest-" + UUID.randomUUID().toString().substring(0, 8);
             ProjectBroker.submitManifest(id, here, jobs, ProjectBlock.key(storage.key()));
@@ -81,7 +73,35 @@ final class OutputManifest {
         }
     }
 
-    private static List<Target> parse(MinecraftClient client, String requested) {
+    private static List<ProjectQueue.Work> jobs(MinecraftClient client, List<Target> targets,
+                                                 ProjectChest.Storage storage, ProjectBlock chest,
+                                                 ProjectBlock table, ProjectBlock furnace, ProjectGather.Area area,
+                                                 boolean newStorage) {
+        var recipes = targets.stream().flatMap(target -> target.batches.stream()).map(MaterialRecipe.Batch::plan).toList();
+        var stations = ProjectWorkstations.prepare(client, storage.key(), area, table, furnace,
+                newStorage || recipes.stream().anyMatch(MaterialRecipe.Plan::needsTable),
+                recipes.stream().anyMatch(MaterialRecipe.Plan::needsFurnace));
+        var jobs = new ArrayList<>(stations.jobs());
+        if (newStorage) jobs.addAll(stations.storageJobs(client, chest));
+        var delivered = new ArrayList<String>();
+        for (int index = 0; index < targets.size(); index++) {
+            delivered.add(addBatches(jobs, targets.get(index), index, storage, chest, stations, newStorage));
+        }
+        for (int index = 0; index < targets.size(); index++) {
+            var target = targets.get(index);
+            jobs.add(transfer("verify-stock-" + index, storage, chest, target.item, target.count,
+                    ProjectChest.Direction.VERIFY_STOCK, delivered, null));
+        }
+        return jobs;
+    }
+
+    static int batchLimit(int quantity, int crew) {
+        int workers = Math.max(1, crew);
+        // Amortize travel and tool setup across at least eight requested items when possible.
+        return Math.min(quantity, Math.min(BATCH_SIZE, Math.max(8, (quantity + workers - 1) / workers)));
+    }
+
+    private static List<Target> parse(MinecraftClient client, String requested, int crew) {
         String[] entries = requested.strip().split("\\s+");
         if (entries.length > MAX_ITEMS) throw new IllegalArgumentException("Use at most " + MAX_ITEMS + " item totals");
         var items = new HashSet<Identifier>();
@@ -95,9 +115,10 @@ final class OutputManifest {
             if (count < 1 || count > 3456) throw new IllegalArgumentException("Choose a total between 1 and 3456");
             if (!java.util.Collections.disjoint(items, item.ids())) throw new IllegalArgumentException("Item targets overlap");
             items.addAll(item.ids());
+            int limit = batchLimit(count, crew);
             var batches = item.grouped() ? List.<MaterialRecipe.Batch>of()
-                    : recipes.batches(item.ids().get(0), count, Math.min(BATCH_SIZE, 9 * item.sample().getMaxCount()));
-            targets.add(new Target(item, count, batches));
+                    : recipes.batches(item.ids().get(0), count, Math.min(limit, 9 * item.sample().getMaxCount()));
+            targets.add(new Target(item, count, limit, batches));
         }
         return List.copyOf(targets);
     }
@@ -120,7 +141,7 @@ final class OutputManifest {
             if (newStorage) deps.add("setup-storage");
             String produced;
             if (target.item.grouped()) {
-                int count = Math.min(BATCH_SIZE, target.count - total);
+                int count = Math.min(target.batchLimit, target.count - total);
                 var area = stations.protectedArea();
                 String payload = JSON.toJson(Map.of("resource", target.item.key(), "variant", "both",
                         "item", target.item.key(), "count", count, "exclude", Map.of(

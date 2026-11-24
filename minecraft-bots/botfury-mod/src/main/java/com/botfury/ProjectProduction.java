@@ -33,6 +33,8 @@ final class ProjectProduction {
                 Identifier fuel, int count) {}
     record Result(boolean success, String detail) {}
     private record Payload(String recipe, String input, String fuel, Integer count, boolean inventory) {}
+    private static final int FURNACE_BURN_TIME = 0;
+    private static final int FURNACE_COOK_TIME = 2;
     private static final long SETTLE = Duration.ofMillis(750).toNanos();
     private final Spec spec;
     private ScreenHandler screen;
@@ -135,7 +137,7 @@ final class ProjectProduction {
                 carried.merge(Registries.ITEM.getId(stack.getItem()), stack.getCount(), Integer::sum);
             }
         }
-        return alternativeFuel(carried, input, preferred, cookTicks);
+        return alternativeFuel(carried, input, preferred, cookTicks, true);
     }
 
     static Identifier carriedSmeltingFuel(MinecraftClient client, String work, Map<String, Integer> inventory) {
@@ -157,27 +159,38 @@ final class ProjectProduction {
             var id = Identifier.tryParse(key);
             if (id != null && count != null && count > 0) carried.put(id, count);
         });
-        return alternativeFuel(carried, spec.input, spec.fuel, cookTicks);
+        return alternativeFuel(carried, spec.input, spec.fuel, cookTicks, false);
     }
 
     private static Identifier alternativeFuel(Map<Identifier, Integer> carried, Identifier input,
-                                              Identifier preferred, long cookTicks) {
+                                              Identifier preferred, long cookTicks, boolean mixFuels) {
         if (cookTicks <= 0) return null;
         var burnTimes = net.minecraft.block.entity.AbstractFurnaceBlockEntity.createFuelTimeMap();
         Identifier best = null;
+        Identifier longest = null;
         long bestWaste = Long.MAX_VALUE;
+        long availableBurn = 0;
+        int longestBurn = 0;
         for (var entry : carried.entrySet()) {
             var id = entry.getKey();
             int ticks = burnTimes.getOrDefault(Registries.ITEM.get(id), 0);
-            if (ticks <= 0 || id.equals(input) || id.equals(preferred)
-                    || (long) ticks * entry.getValue() < cookTicks) continue;
-            long waste = (cookTicks + (long) ticks - 1) / ticks * ticks - cookTicks;
+            if (ticks <= 0 || id.equals(input)) continue;
+            long burn = (long) ticks * entry.getValue();
+            availableBurn += burn;
+            if (id.equals(preferred)) continue;
+            if (ticks > longestBurn) {
+                longest = id;
+                longestBurn = ticks;
+            }
+            if (burn < cookTicks) continue;
+            long waste = (cookTicks + ticks - 1) / ticks * ticks - cookTicks;
             if (waste < bestWaste) {
                 best = id;
                 bestWaste = waste;
             }
         }
-        return best;
+        if (best != null) return best;
+        return mixFuels && availableBurn >= cookTicks ? longest : null;
     }
 
     private static Identifier item(String name) {
@@ -393,8 +406,11 @@ final class ProjectProduction {
             return null;
         }
         if (queued == 0) return failure("Missing furnace input " + spec.input);
-        if (!furnace.isBurning() && existingFuel.isEmpty()
-                && !addFuel(client, furnace, fuel, (long) recipe.getCookTime() * inputs)) {
+        var progress = ((com.botfury.mixin.FurnaceProgressAccess) furnace).botfury$properties();
+        long fuelNeeded = (long) recipe.getCookTime() * inputs
+                - progress.get(FURNACE_COOK_TIME) - progress.get(FURNACE_BURN_TIME);
+        if (existingFuel.isEmpty() && fuelNeeded > 0
+                && !addFuel(client, furnace, fuel, fuelNeeded) && !furnace.isBurning()) {
             return failure("Missing furnace fuel " + spec.fuel);
         }
         return null;

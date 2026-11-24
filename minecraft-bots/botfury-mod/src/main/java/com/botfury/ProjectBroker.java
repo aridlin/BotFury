@@ -521,7 +521,7 @@ final class ProjectBroker {
                         }
                     }
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.GATHER)) {
-                        assignment = board.offerEquippedMiner(world, request.worker, request.project, request.toolUses, now);
+                        assignment = board.offerEquippedMiner(world, request.worker, request.project, request.toolUses, now, position);
                         if (assignment == null) {
                             assignment = board.offerSmeltingRefill(world, request.worker, request.project, request.toolUses, now);
                         }

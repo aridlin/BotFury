@@ -231,6 +231,9 @@ final class ProjectQueue {
     private static final int GATHERING_RETRY_RADIUS = 64;
     private static final int GATHERING_RETRY_CLIMB = 12;
     private static final int FAILED_SITE_RADIUS = 12;
+    private static final int DEEP_SITE_REUSE_RADIUS = 320;
+    private static final int DEEP_SITE_DEPTH_MARGIN = 12;
+    private static final int DEEP_SITE_WORK_RADIUS = 24;
     private static final long WORKER_RECONNECT_GRACE_MS = 30_000;
     private final Path journal;
     private final Path archive;
@@ -1176,7 +1179,7 @@ final class ProjectQueue {
         }
         if (kinds.contains(Kind.GATHER)) {
             if (toolUses != null) {
-                var mining = offerEquippedMiner(world, worker, projectId, toolUses, now, true);
+                var mining = offerEquippedMiner(world, worker, projectId, toolUses, now, position, true);
                 if (mining != null) return mining;
             }
             if (recoverStalledGathering(world, projectId, now, heldCount)
@@ -1556,11 +1559,17 @@ final class ProjectQueue {
 
     synchronized Assignment offerEquippedMiner(String world, String worker, String projectId,
                                                 Map<String, Integer> toolUses, long now) throws IOException {
-        return offerEquippedMiner(world, worker, projectId, toolUses, now, false);
+        return offerEquippedMiner(world, worker, projectId, toolUses, now, null);
+    }
+
+    synchronized Assignment offerEquippedMiner(String world, String worker, String projectId,
+                                                Map<String, Integer> toolUses, long now, ResourceSite position) throws IOException {
+        return offerEquippedMiner(world, worker, projectId, toolUses, now, position, false);
     }
 
     private Assignment offerEquippedMiner(String world, String worker, String projectId,
-                                          Map<String, Integer> toolUses, long now, boolean exhaustedOnly) throws IOException {
+                                          Map<String, Integer> toolUses, long now, ResourceSite position,
+                                          boolean exhaustedOnly) throws IOException {
         if (toolUses == null || toolUses.isEmpty() || projects.values().stream().flatMap(project -> project.jobs.stream())
                 .anyMatch(job -> workerCommittedToLease(job, worker))) return null;
         for (var project : projects.values()) {
@@ -1590,7 +1599,7 @@ final class ProjectQueue {
                 var prep = reopening ? Set.<String>of() : stalledPrivatePreparation(project, gather, craft);
                 if (!reopening && prep.isEmpty()) continue;
                 var lease = new Job(gather.work, State.LEASED, gather.attempts + 1, worker, UUID.randomUUID(),
-                        now + LEASE_MS, null, gather.chest, gatheringSite(project, gather));
+                        now + LEASE_MS, null, gather.chest, gatheringSite(project, gather, position));
                 var jobs = project.jobs.stream().map(job -> {
                     if (job == gather) return lease;
                     if (!prep.contains(job.work.id)) return job;
@@ -2377,8 +2386,7 @@ final class ProjectQueue {
     }
 
     private Assignment assign(Project project, Job job, String worker, long now, ResourceSite position) throws IOException {
-        var site = job.work.kind == Kind.GATHER && GATHER_STALLED.equals(job.evidence)
-                ? nearestRetrySite(project, job, position) : gatheringSite(project, job);
+        var site = gatheringSite(project, job, position);
         var assigned = new Job(job.work, State.LEASED, job.attempts + 1, worker,
                 UUID.randomUUID(), now + LEASE_MS, null, job.chest, site);
         replace(project, assigned);
@@ -2504,6 +2512,35 @@ final class ProjectQueue {
                     && source.equals(gatherSource(previous.work.payload))) return previous.resourceSite;
         }
         return null;
+    }
+
+    private static ResourceSite gatheringSite(Project project, Job job, ResourceSite position) {
+        if (job.work.kind != Kind.GATHER) return job.resourceSite;
+        if (GATHER_STALLED.equals(job.evidence)) return nearestRetrySite(project, job, position);
+        var known = gatheringSite(project, job);
+        return known == null ? interruptedDeepSite(project, job, position) : known;
+    }
+
+    private static ResourceSite interruptedDeepSite(Project project, Job job, ResourceSite position) {
+        if (position == null) return null;
+        var source = gatherSource(job.work.payload);
+        if (source == null) return null;
+        Integer depth = SubsurfaceAccess.prospectingAltitude(source.resource);
+        if (depth == null || depth > 0) return null;
+
+        var compatible = project.jobs.stream().filter(peer -> peer != job && peer.work.kind == Kind.GATHER
+                && source.equals(gatherSource(peer.work.payload))).toList();
+        var active = compatible.stream().filter(peer -> peer.state == State.LEASED).toList();
+        return compatible.stream()
+                .filter(peer -> (peer.state == State.WAITING && RECOVERING_TOOLS.equals(peer.evidence))
+                        || (peer.state == State.FAILED && EXHAUSTED_TOOLS.equals(peer.evidence)))
+                .map(Job::resourceSite)
+                .filter(site -> site != null && site.y <= depth + DEEP_SITE_DEPTH_MARGIN)
+                .filter(site -> gatheringDistance(site, position) <= DEEP_SITE_REUSE_RADIUS)
+                .filter(site -> active.stream().noneMatch(peer -> peer.resourceSite == null
+                        || gatheringDistance(site, peer.resourceSite) <= DEEP_SITE_WORK_RADIUS))
+                .min(java.util.Comparator.comparingDouble(site -> gatheringDistance(site, position)))
+                .orElse(null);
     }
 
     private static ResourceSite nearestRetrySite(Project project, Job job, ResourceSite position) {

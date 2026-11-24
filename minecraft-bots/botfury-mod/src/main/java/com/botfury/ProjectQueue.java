@@ -141,6 +141,7 @@ final class ProjectQueue {
     private static final String GATHER_REASSIGNED = "Gathering reassigned to a worker with cargo";
     private static final String CONTRIBUTION_ACTIVE = "Delivering a partial stock contribution";
     private static final String CONTRIBUTION_SETTLED = "Partial stock contribution settled";
+    private static final String CONSTRUCTION_PICKUP = "Collecting replacement materials for a nearby builder";
     static final String ALTERNATIVE_FUEL = "Using carried smelting fuel ";
     static final String TARGET_TIMEOUT = "Timed out approaching or changing the target";
     static final String GATHER_STALLED = "Gathering stalled without item or route progress";
@@ -594,7 +595,8 @@ final class ProjectQueue {
                     continue;
                 }
                 // Finish using inventory already gathered for a chain before starting unrelated work.
-                if (job.work.sameWorkerAs != null || ownedOrder != null || gatherReconnectPending(job, now)) {
+                if (job.work.sameWorkerAs != null || ownedOrder != null || gatherReconnectPending(job, now)
+                        || CONSTRUCTION_PICKUP.equals(job.evidence) && job.expiresAt > now) {
                     return assign(project, job, worker, now);
                 }
                 if (fallbackJob == null) {
@@ -618,6 +620,7 @@ final class ProjectQueue {
     }
 
     synchronized boolean offerConstructionHandoff(String world, String worker, String projectId,
+                                                  Set<Kind> kinds, long now,
                                                   java.util.function.Function<String, ResourceSite> locate,
                                                   java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
         var candidate = locate.apply(worker);
@@ -641,7 +644,8 @@ final class ProjectQueue {
                 if (distance > 24) continue;
                 var original = locate.apply(pickup.worker);
                 if (original != null && distance(original, target) < distance + 16) continue;
-                if (reassignConstructionCargo(project, pickup, worker, heldCount.applyAsInt(worker, material))) {
+                if (reassignConstructionCargo(project, pickup, worker, heldCount.applyAsInt(worker, material),
+                        kinds.contains(Kind.TRANSFER), now)) {
                     return true;
                 }
             }
@@ -654,27 +658,49 @@ final class ProjectQueue {
                 (double) site.z - target.z());
     }
 
-    private boolean reassignConstructionCargo(Project project, Job pickup, String worker, int held) throws IOException {
+    private boolean reassignConstructionCargo(Project project, Job pickup, String worker, int held,
+                                              boolean canCollect, long now) throws IOException {
         var batch = project.jobs.stream().filter(job -> job.state != State.DONE
                 && pickup.work.id.equals(job.work.sameWorkerAs)).toList();
-        if (held < batch.size() || batch.stream().anyMatch(job -> job.work.kind != Kind.BUILD
+        if (pickup.state != State.DONE || batch.stream().anyMatch(job -> job.work.kind != Kind.BUILD
                 || job.state == State.LEASED)) return false;
         String key = "build-handoff:" + pickup.work.id;
         int handoffs = project.supplyRecoveries.getOrDefault(key, 0);
         if (handoffs >= MAX_SUPPLY_RECOVERIES) return false;
+        Job replacement = held >= batch.size()
+                ? new Job(pickup.work, State.DONE, pickup.attempts, worker, pickup.lease, 0, pickup.evidence, pickup.chest)
+                : canCollect ? replacementConstructionPickup(project, pickup, worker, batch.size(), held, now) : null;
+        if (replacement == null) return false;
         var recovery = new HashMap<>(project.supplyRecoveries);
         recovery.put(key, handoffs + 1);
         var jobs = project.jobs.stream().map(job -> {
-            if (job == pickup) return new Job(job.work, State.DONE, job.attempts, worker, job.lease, 0,
-                    job.evidence, job.chest);
+            if (job == pickup) return replacement;
             if (batch.contains(job) && job.state == State.FAILED && placementApproachFailure(job)) {
                 return new Job(job.work, State.WAITING, 0, null, null, 0,
-                        "Reassigned to a nearby builder carrying materials", job.chest, job.resourceSite);
+                        "Reassigned to a nearby builder", job.chest, job.resourceSite);
             }
             return job;
         }).toList();
         commit(new Project(project.id, project.world, jobs, project.repeat, project.supplyChest, recovery));
         return true;
+    }
+
+    private Job replacementConstructionPickup(Project project, Job pickup, String worker, int required, int held,
+                                              long now) {
+        var target = transferTarget(pickup);
+        if (target == null || !"TAKE".equals(target.direction) || !pickup.work.constructionMaterial.equals(target.item)
+                || !pickup.work.locks.contains(project.supplyChest)
+                || projects.values().stream().anyMatch(other -> !other.id.equals(project.id)
+                && project.world.equals(other.world) && project.supplyChest.equals(reservedStorage(other)))) return null;
+        var observed = new HashMap<String, ChestObservation>();
+        collectChestStock(project.world, project, observed);
+        var stock = observed.get(project.supplyChest);
+        if (stock == null || stockCount(stock.report, target.item) < required - held) return null;
+        var payload = JSON.fromJson(pickup.work.payload, com.google.gson.JsonObject.class);
+        payload.addProperty("stock", required);
+        var work = new Work(pickup.work.id, pickup.work.kind, JSON.toJson(payload), pickup.work.needs,
+                pickup.work.locks, pickup.work.sameWorkerAs, pickup.work.cleanup, pickup.work.constructionMaterial);
+        return new Job(work, State.WAITING, 0, worker, null, now + LEASE_MS, CONSTRUCTION_PICKUP, pickup.chest);
     }
 
     synchronized Assignment offerEquippedMiner(String world, String worker, String projectId,
@@ -1465,7 +1491,8 @@ final class ProjectQueue {
 
     private static boolean retryDelayedFor(Job job, String worker, long now) {
         if (job.expiresAt <= now) return false;
-        if (RECOVERING_TOOLS.equals(job.evidence) || gatherReconnectPending(job, now)) {
+        if (RECOVERING_TOOLS.equals(job.evidence) || CONSTRUCTION_PICKUP.equals(job.evidence)
+                || gatherReconnectPending(job, now)) {
             return !worker.equalsIgnoreCase(job.worker);
         }
         return !GATHER_STALLED.equals(job.evidence) || worker.equalsIgnoreCase(job.worker);

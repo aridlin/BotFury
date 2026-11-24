@@ -45,7 +45,7 @@ final class TaskDefense {
         var client = MinecraftClient.getInstance();
         stopWalking(client);
         stopEating(client);
-        ThreatEvasion.clearWardenDetour();
+        ThreatEvasion.clearDetour();
         PhantomShelter.clear();
         protectingWork = false;
         pathPaused=false;
@@ -94,6 +94,7 @@ final class TaskDefense {
             if ((shelter || walkingDirection != null || retreatingFromWarden) && now - lastWalkEvent >= 5_000_000_000L) {
                 lastWalkEvent = now;
                 String reason = shelter ? "Sheltering from a nearby Phantom"
+                        : !retreatingFromWarden && retreatStep != null ? "Changing elevation to escape a blast"
                         : !retreatingFromWarden ? "Stepping out of a projectile or blast path"
                         : retreatStep != null ? "Changing elevation to escape a Warden"
                         : walkingDirection == null ? "Holding position near a Warden" : "Sneaking away from a Warden";
@@ -106,7 +107,7 @@ final class TaskDefense {
             if (pathPaused) BaritoneClient.execute("stop");
             pathPaused = protectingWork = false;
             stopEating(client);
-            ThreatEvasion.clearWardenDetour();
+            ThreatEvasion.clearDetour();
             holdUntil = 0;
         } else if (!protectingWork) resumePath();
         return false;

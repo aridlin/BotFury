@@ -42,7 +42,7 @@ final class WorkbenchPickup {
                 || client.world.getPlayers().stream().anyMatch(player -> player.isAlive() && !player.isSpectator()
                         && player.getBlockPos().down().equals(target))) return false;
         var hit = ProjectWorker.excavationHit(client, target);
-        if (hit == null) return false;
+        if (hit == null || !MiningTask.equip(client, target)) return false;
         breaking = true;
         client.player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, hit.getPos());
         if (client.interactionManager.updateBlockBreakingProgress(target, hit.getSide())) client.player.swingHand(Hand.MAIN_HAND);

@@ -20,6 +20,7 @@ final class FieldWorkstation {
 
     private static final Identifier TABLE = Identifier.of("minecraft", "crafting_table");
     private static final Identifier FURNACE = Identifier.of("minecraft", "furnace");
+    private static final int WORKBENCH_COST = 4;
     private static final int PLANK_BUDGET = 8;
     private final ProjectBlock station;
     private final long expires;
@@ -43,10 +44,15 @@ final class FieldWorkstation {
     ProjectBlock station() { return station; }
 
     static FieldWorkstation find(MinecraftClient client, long now, ProjectQueue.Kind kind) {
-        return find(client, now, kind == ProjectQueue.Kind.SMELT ? FURNACE : TABLE, null);
+        return find(client, now, kind == ProjectQueue.Kind.SMELT ? FURNACE : TABLE, null, PLANK_BUDGET, null);
     }
 
-    private static FieldWorkstation find(MinecraftClient client, long now, Identifier wanted, BlockPos reserved) {
+    static FieldWorkstation findForMiningTool(MinecraftClient client, long now, ProjectGather.Area excluded) {
+        return find(client, now, TABLE, null, WORKBENCH_COST, excluded);
+    }
+
+    private static FieldWorkstation find(MinecraftClient client, long now, Identifier wanted, BlockPos reserved,
+                                         int plankBudget, ProjectGather.Area excluded) {
         if (!SubsurfaceAccess.hasFooting(client) || client.player.isTouchingWater()
                 || client.player.currentScreenHandler != client.player.playerScreenHandler) return null;
         var feet = client.player.getBlockPos();
@@ -55,8 +61,8 @@ final class FieldWorkstation {
         boolean held = hasStationItem(client, wanted);
         boolean table = wanted.equals(TABLE);
         int planks = table && !held ? plankCount(client) : 0;
-        var plankRecipe = table && !held && planks < PLANK_BUDGET ? plankRecipe(client, PLANK_BUDGET - planks) : null;
-        boolean canPrepare = held || (table ? planks >= PLANK_BUDGET || plankRecipe != null
+        var plankRecipe = table && !held && planks < plankBudget ? plankRecipe(client, plankBudget - planks) : null;
+        boolean canPrepare = held || (table ? planks >= plankBudget || plankRecipe != null
                 : ProjectProduction.canCraft(client, FURNACE));
         for (var position : BlockPos.iterateOutwards(feet, 3, 2, 3)) {
             if (position.equals(feet) || position.equals(feet.up()) || position.equals(feet.down())
@@ -66,7 +72,8 @@ final class FieldWorkstation {
                     && ProjectProduction.workstationHit(client, position, client.player.getEyePos()) != null) {
                 return new FieldWorkstation(new ProjectBlock(position.toImmutable(), feet, wanted), now, null, null, null);
             }
-            if (!canPrepare || site != null) continue;
+            if (!canPrepare || site != null || excluded != null
+                    && (excluded.contains(position) || excluded.contains(position.down()))) continue;
             if (safeSite(client, position)) {
                 var block = new ProjectBlock(position.toImmutable(), feet, wanted);
                 if (ProjectPlacement.supportHit(client, block) != null) site = block;
@@ -81,7 +88,7 @@ final class FieldWorkstation {
             recess = client.world.getBlockState(site.target());
         }
         if (site == null) return null;
-        var workbench = table || held ? null : find(client, now, TABLE, site.target());
+        var workbench = table || held ? null : find(client, now, TABLE, site.target(), PLANK_BUDGET, excluded);
         if (!table && !held && workbench == null) return null;
         return new FieldWorkstation(site, now, plankRecipe, workbench, recess);
     }

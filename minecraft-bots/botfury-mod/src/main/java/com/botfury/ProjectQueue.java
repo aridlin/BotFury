@@ -3031,6 +3031,15 @@ final class ProjectQueue {
             if (previous.state == State.DONE && previous.work.kind == Kind.GATHER && previous.resourceSite != null
                     && source.equals(gatherSource(previous.work.payload))) return previous.resourceSite;
         }
+        if (project.repeat != null && ResourceCatalog.isWood(source.resource)) {
+            for (var transfer : project.jobs) {
+                if (transfer.work.kind != Kind.TRANSFER || !transfer.work.locks.contains(project.repeat.chest)) continue;
+                var access = JSON.fromJson(transfer.work.payload, StationTarget.class);
+                if (access == null || access.stand == null) continue;
+                var stand = access.stand.checked();
+                return new ResourceSite(stand.getX(), stand.getY(), stand.getZ());
+            }
+        }
         return null;
     }
 

@@ -56,6 +56,12 @@ final class ResourceCatalog {
                     && (resource.normal.contains(block) || resource.deepslate.contains(block))));
     }
 
+    static boolean isWood(String resource) {
+        String block = resource.startsWith("block:") ? resource.substring(6) : null;
+        return RESOURCES.stream().anyMatch(entry -> entry.category.equals("Wood")
+                && (entry.id.equals(resource) || block != null && entry.normal.contains(block)));
+    }
+
     static List<String> trackedDrops(String resource, String variant) {
         if (FURNACE_STONE.equals(resource)) return FURNACE_STONE_DROPS;
         var items = new LinkedHashSet<String>();

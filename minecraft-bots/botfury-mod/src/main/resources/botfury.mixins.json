@@ -5,6 +5,7 @@
   "client": [
     "WorldRendererMixin",
     "ClientNetworkMixin",
+    "GameOptionsMixin",
     "BotPushMixin",
     "ProtectedBlockMixin",
     "BotTransparencyMixin",

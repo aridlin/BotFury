@@ -39,6 +39,10 @@ final class BaritoneSettings implements AutoCloseable {
         return new BaritoneSettings(allowBreak, true, BaritoneSettings::recoverableTerrain, true);
     }
 
+    static BaritoneSettings surfaceGathering() throws ReflectiveOperationException {
+        return new BaritoneSettings(false, true, null, true);
+    }
+
     static BaritoneSettings explorationExit(boolean equipped) throws ReflectiveOperationException {
         return new BaritoneSettings(true, true,
                 equipped ? BaritoneSettings::recoverableTerrain : BaritoneSettings::handDiggableTerrain, true);

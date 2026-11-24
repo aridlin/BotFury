@@ -51,6 +51,7 @@ final class MiningTask {
         paused = value;
         pendingCandidates.clear();
         if (value) {
+            MiningViewDistance.finish(MinecraftClient.getInstance());
             stopPath();
             clearReservation();
             minedDrops.reset();
@@ -70,7 +71,7 @@ final class MiningTask {
     private static BlockPos rememberedSite;
     private static BlockPos deepExplorationGoal;
     private static BlockPos surfaceSearchAnchor, lastExplorationExit;
-    private static BlockPos surfaceRouteGoal;
+    private static BlockPos surfaceRouteGoal, surfaceExplorationGoal;
     private static boolean surfaceResource;
     private static int nextSurfaceSurvey;
     private static int surfaceSearchFailures, explorationExits;
@@ -131,7 +132,7 @@ final class MiningTask {
         if (prospectingY != null && workerY <= location.getY() - 24
                 && Math.abs(workerY - prospectingY) < Math.abs(location.getY() - prospectingY)) return;
         if (client.world.isInBuildLimit(location) && client.world.getWorldBorder().contains(location)
-                && (exclude == null || !exclude.contains(location))) {
+                && (surfaceResource || exclude == null || !exclude.contains(location))) {
             rememberedSite = location;
             lastProspectingCheckpointY = Math.min(lastProspectingCheckpointY, location.getY());
             double distance = client.player.getPos().distanceTo(Vec3d.ofBottomCenter(location));
@@ -161,13 +162,20 @@ final class MiningTask {
         var ids=ResourceCatalog.blocks(next.resource,next.variant);
         for(String id:ids)if(!Registries.BLOCK.containsId(new Identifier(id))){fail("Unknown mining block: "+id);return;}
         for(String id:ids){var state=Registries.BLOCK.get(new Identifier(id)).getDefaultState();if(state.isAir()||state.getHardness(client.world,client.player.getBlockPos())<0){fail("Choose a breakable mining block");return;}}
-        try{settings=new BaritoneSettings(exclude == null, project);}catch(ReflectiveOperationException|LinkageError e){fail("Could not configure mining approach");return;}
-        projectMining=project;
-        localOnly = false;
-        surfaceResource = project && ids.stream().map(id -> Registries.BLOCK.get(new Identifier(id)))
+        boolean surface = project && client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)
+                && ids.stream().map(id -> Registries.BLOCK.get(new Identifier(id)))
                 .allMatch(block -> block.getDefaultState().isIn(BlockTags.LOGS)
                         || block instanceof FlowerBlock || block instanceof TallFlowerBlock);
-        surfaceRouteGoal = null;
+        try {
+            settings = surface ? BaritoneSettings.surfaceGathering() : new BaritoneSettings(exclude == null, project);
+        } catch (ReflectiveOperationException | LinkageError error) {
+            fail("Could not configure mining approach");
+            return;
+        }
+        projectMining = project;
+        localOnly = false;
+        surfaceResource = surface;
+        surfaceRouteGoal = surfaceExplorationGoal = null;
         nextSurfaceSurvey = 0;
         toolShortfall = false;
         routeToolShortfall = false;
@@ -191,6 +199,7 @@ final class MiningTask {
     }
     private static void fail(String reason){status=reason;BotEvents.add("warn","mining",reason);}
     static void stop(){
+        MiningViewDistance.reset(MinecraftClient.getInstance());
         if(job!=null){stopPath();var client=MinecraftClient.getInstance();if(client.interactionManager!=null)client.interactionManager.cancelBlockBreaking();release(job,leaseToken);}
         minedDrops.reset();
         reservedDrop = null;
@@ -200,12 +209,13 @@ final class MiningTask {
         if(settings!=null){settings.close();settings=null;}
         if(!status.isEmpty())status="Mining stopped";
     }
-    static void onDeath(){if(job!=null&&!dead){dead=true;stopPath();clearReservation();minedDrops.reset();pendingCandidates.clear();pickup=null;status="Mining waits for respawn";}}
+    static void onDeath(){if(job!=null&&!dead){dead=true;MiningViewDistance.finish(MinecraftClient.getInstance());stopPath();clearReservation();minedDrops.reset();pendingCandidates.clear();pickup=null;status="Mining waits for respawn";}}
     static void tick(MinecraftClient client){
         if(job==null||paused)return;
         var here=LocalFormation.here();
         if(client.player==null||client.world==null||here==null||!world.equals(here.server()+"|"+here.dimension())){stop();return;}
         age++;dead=false;
+        MiningViewDistance.update(client, age, target);
         if (reservedDrop != null) {
             collectReservedDrop(client);
             return;
@@ -349,7 +359,9 @@ final class MiningTask {
             status = "Opening a local exit to continue gathering " + job.resource;
             return;
         }
-        if (pathActive && recoverRoute(client, surfaceRouteGoal == null ? rememberedSite : surfaceRouteGoal)) return;
+        var routeGoal = surfaceRouteGoal != null ? surfaceRouteGoal
+                : rememberedSite != null ? rememberedSite : surfaceExplorationGoal;
+        if (pathActive && recoverRoute(client, routeGoal)) return;
         if (requesting) return;
         if (pendingCandidates.isEmpty()) {
             if (age < nextSearch) return;
@@ -377,7 +389,7 @@ final class MiningTask {
             status = "Checking approaches to " + job.resource;
             return;
         }
-        nextSearch = age + 20;
+        nextSearch = age + (MiningViewDistance.active() ? 40 : 20);
         if (scanNeedsTool) {
             toolShortfall = projectMining;
             status = "Need a suitable tool for " + job.resource;
@@ -437,7 +449,8 @@ final class MiningTask {
         var nearbyHits = new ArrayList<BlockPos>();
         boolean safeFooting = canMineFromCurrentFooting(client, position);
         scanNeedsTool = false;
-        for (var pos : BlockPos.iterateOutwards(position, 12, 10, 12)) {
+        int radius = MiningViewDistance.active() ? 48 : surfaceResource ? 20 : 12;
+        for (var pos : BlockPos.iterateOutwards(position, radius, 10, radius)) {
             if (excluded != null && excluded.contains(pos) || rejected.containsKey(pos)
                     || !world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)
                     || !matches(client, pos) || protectedTarget(client, pos)) continue;
@@ -493,6 +506,17 @@ final class MiningTask {
         if (surfaceResource && seekSurface(client)) return;
         if (returnToResourceSite(client)) return;
         Integer depth = prospectingAltitude(client);
+        boolean probeAtThisHeight = depth == null || Math.abs(client.player.getBlockY() - depth) <= 12;
+        if ((projectMining || Boolean.getBoolean("botfury.managedHttp")) && probeAtThisHeight
+                && MiningViewDistance.begin(client, age)) {
+            if (pathActive) stopPath();
+            status = "Checking more loaded chunks for " + job.resource;
+            return;
+        }
+        if (surfaceResource) {
+            exploreSurface(client);
+            return;
+        }
         if (depth != null) {
             var feet = client.player.getBlockPos();
             if (lastProspectingCheckpointY - feet.getY() >= 8 && SubsurfaceAccess.hasFooting(client)
@@ -535,6 +559,43 @@ final class MiningTask {
                 path(deepExplorationGoal);
             } else path("explore " + x + " " + z);
         }
+    }
+
+    private static void exploreSurface(MinecraftClient client) {
+        if (age < nextPath) return;
+        var world = client.world;
+        var feet = client.player.getBlockPos();
+        if (surfaceExplorationGoal != null) stopPath();
+        double angle = (client.player.getUuid().hashCode() & 1023) * Math.PI / 512 + exploration++ * .8;
+        int x = feet.getX() + (int)(Math.cos(angle) * 24);
+        int z = feet.getZ() + (int)(Math.sin(angle) * 24);
+        BlockPos best = null;
+        double bestScore = Double.POSITIVE_INFINITY;
+        for (int dx = -12; dx <= 12; dx += 3) {
+            for (int dz = -12; dz <= 12; dz += 3) {
+                int sx = x + dx;
+                int sz = z + dz;
+                if (!world.isChunkLoaded(sx >> 4, sz >> 4)) continue;
+                int height = world.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, sx, sz);
+                var stand = new BlockPos(sx, height, sz);
+                if (height < feet.getY() - 4 || !world.isInBuildLimit(stand.up()) || !world.getWorldBorder().contains(stand)
+                        || BuildProtection.blocked(stand) || BuildProtection.blocked(stand.up())
+                        || excluded != null && (excluded.contains(stand) || excluded.contains(stand.up()))
+                        || !world.getFluidState(stand.down()).isEmpty()) continue;
+                var floor = world.getBlockState(stand.down());
+                if (floor.isIn(BlockTags.LOGS) || !ProjectPlacement.flushFloor(floor, world, stand.down())
+                        || !world.getBlockState(stand).getCollisionShape(world, stand).isEmpty()
+                        || !world.getBlockState(stand.up()).getCollisionShape(world, stand.up()).isEmpty()) continue;
+                double score = dx * dx + dz * dz + Math.abs(height - feet.getY()) * 3;
+                if (score < bestScore) {
+                    best = stand;
+                    bestScore = score;
+                }
+            }
+        }
+        nextPath = age + (best == null ? 60 : 300);
+        status = "Searching the surface for " + job.resource;
+        if (best != null && path(best)) surfaceExplorationGoal = best;
     }
 
     private static boolean seekSurface(MinecraftClient client) {
@@ -681,6 +742,7 @@ final class MiningTask {
         routeRecovery.reset();
         subsurface.stop();
         deepExplorationGoal = null;
+        surfaceExplorationGoal = null;
         if (pathActive) {
             BaritoneClient.execute("stop");
             pathActive = false;

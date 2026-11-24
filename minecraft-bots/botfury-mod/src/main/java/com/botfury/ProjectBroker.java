@@ -182,7 +182,8 @@ final class ProjectBroker {
 
     private static void recoverScaffoldCleanups(net.minecraft.client.MinecraftClient client, ProjectQueue board,
                                                String world) throws IOException {
-        for (var request : board.failedScaffoldCleanups(world)) {
+        var pending = board.failedScaffoldCleanups(world);
+        for (var request : pending) {
             var target = ProjectBlock.parse(request.placementPayload());
             if (BuildProtection.blocked(world, target.target(), request.project())) continue;
             var temporary = board.temporaryFooting(request.project());
@@ -195,7 +196,27 @@ final class ProjectBroker {
                 var position = workerPosition(bot.name());
                 if (position == null) continue;
                 var stand = StructureProject.groundedScaffoldCleanup(client, target, temporary, position);
-                if (stand != null && board.recoverScaffoldCleanup(world, request,
+                if (stand == null) continue;
+                if (bot.scaffoldBatchCapable()) {
+                    var steps = new java.util.ArrayList<ProjectQueue.CleanupStep>();
+                    for (var candidate : pending) {
+                        if (!candidate.project().equals(request.project())) continue;
+                        var block = ProjectBlock.parse(candidate.placementPayload());
+                        if (BuildProtection.blocked(world, block.target(), candidate.project())) continue;
+                        var feet = candidate.equals(request) ? stand
+                                : StructureProject.groundedScaffoldCleanup(client, block, temporary, position);
+                        if (feet == null) continue;
+                        steps.add(new ProjectQueue.CleanupStep(candidate,
+                                new ProjectQueue.ResourceSite(feet.getX(), feet.getY(), feet.getZ())));
+                        if (steps.size() >= ProjectQueue.MAX_BATCH_STEPS) break;
+                    }
+                    int assigned = board.recoverScaffoldBatch(world, steps, bot.name(), System.currentTimeMillis());
+                    if (assigned > 0) {
+                        BotEvents.add("info", "projects", bot.name() + " reserved a scaffold cleanup batch of " + assigned);
+                        return;
+                    }
+                }
+                if (board.recoverScaffoldCleanup(world, request,
                         new ProjectQueue.ResourceSite(stand.getX(), stand.getY(), stand.getZ()),
                         bot.name(), System.currentTimeMillis())) {
                     BotEvents.add("info", "projects", bot.name() + " is clearing temporary scaffold " + target.target().toShortString());
@@ -512,7 +533,8 @@ final class ProjectBroker {
                     }
                     boolean accepted = board.finish(request.project, request.job, request.token,
                             request.success, request.evidence, request.chest, request.resourceSite, request.pickupShortfall, now);
-                    reply(exchange, accepted ? 200 : 409, accepted);
+                    var next = accepted && request.success ? board.batchContinuation(request.project, request.token, now) : null;
+                    reply(exchange, accepted ? 200 : 409, next == null ? accepted : next);
                 }
                 default -> reply(exchange, 400, "Unknown project action");
             }

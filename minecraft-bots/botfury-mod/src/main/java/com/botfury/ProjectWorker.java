@@ -879,7 +879,7 @@ final class ProjectWorker {
                     approachProgress = current;
                     retryApproach = now + seconds(5);
                     var goals = interactionGoals.isEmpty() ? List.of(pos) : interactionGoals;
-                    if (!BaritoneClient.pursuing(pos) && !BaritoneClient.goToAny(goals)) {
+                    if (!BaritoneClient.pursuing(pos) && !approachProjectStand(client, goals)) {
                         finish(client, false, "Baritone could not start project approach");
                     }
                 } catch (ReflectiveOperationException error) {
@@ -1050,6 +1050,23 @@ final class ProjectWorker {
         if (BuildProtection.projectAction(assignment.project(),
                 () -> client.interactionManager.updateBlockBreakingProgress(target, ray.getSide()))) player.swingHand(Hand.MAIN_HAND);
         breaking = true;
+    }
+
+    private static boolean approachProjectStand(MinecraftClient client, List<BlockPos> goals) {
+        if (!ProjectQueue.reservedBatchStep(assignment.job())) return BaritoneClient.goToAny(goals);
+        var occupied = new HashSet<BlockPos>();
+        for (var stand : assignment.peerStands()) {
+            var feet = new BlockPos(stand.x(), stand.y(), stand.z());
+            occupied.add(feet);
+            occupied.add(feet.up());
+        }
+        for (var peer : client.world.getPlayers()) {
+            if (peer == client.player || !peer.isAlive() || peer.isSpectator()) continue;
+            var feet = peer.getBlockPos();
+            occupied.add(feet);
+            occupied.add(feet.up());
+        }
+        return BaritoneClient.goToCooperativeStand(goals, occupied);
     }
 
     private static boolean tryCanopyApproach(MinecraftClient client, BlockPos stand, long now, boolean searching) {
@@ -1502,7 +1519,8 @@ final class ProjectWorker {
             if (generation != epoch) return;
             pending = false;
             if (error != null || reply.statusCode() >= 500) return;
-            if (reply.statusCode() == 409 || action.equals("finish") && reply.statusCode() == 200) {
+            boolean continuation = action.equals("finish") && reply.statusCode() == 200 && reply.body().startsWith("{");
+            if (reply.statusCode() == 409 || action.equals("finish") && reply.statusCode() == 200 && !continuation) {
                 reset(client);
                 status = "Waiting for project jobs";
                 nextRequest = System.nanoTime() + seconds(1);
@@ -1510,7 +1528,8 @@ final class ProjectWorker {
             }
             if (reply.statusCode() != 200) return;
             try {
-                if (action.equals("claim")) {
+                if (action.equals("claim") || continuation) {
+                    if (continuation) reset(client);
                     assignment = JSON.fromJson(reply.body(), ProjectQueue.Assignment.class);
                     if (assignment == null) return;
                     if (enrollment.project() != null && !enrollment.project().equals(assignment.project())) {

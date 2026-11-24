@@ -230,6 +230,47 @@ class ProjectQueueTest {
                 lease.expiresAt() + 2).job().work().id());
     }
 
+    @Test void exhaustedToolsCanBankCarriedLootBeforeResumingTheRemainingGather() throws Exception {
+        var journal = directory.resolve("interrupted-loot.json");
+        var queue = new ProjectQueue(journal);
+        String chest = "block:3,64,0";
+        String project = "stock";
+        String item = "minecraft:diamond";
+        var gather = new ProjectQueue.Work("dig", GATHER,
+                "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":64}",
+                List.of("craft-pickaxe"), Set.of(), "craft-pickaxe");
+        var deposit = new ProjectQueue.Work("deposit", TRANSFER, "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":64}",
+                List.of("dig"), Set.of(chest), "dig");
+        queue.submitSupplied(project, WORLD, List.of(
+                job("find-tool-materials", GATHER, List.of()),
+                new ProjectQueue.Work("craft-pickaxe", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\"}",
+                        List.of("find-tool-materials"), Set.of(), "find-tool-materials"),
+                gather, deposit), chest);
+        var raw = queue.claim(WORLD, "miner", Set.of(GATHER), 1).job();
+        assertTrue(queue.finish(project, raw.work().id(), raw.lease(), true, "Stocked tool supplies", 2));
+        var pick = queue.claim(WORLD, "miner", Set.of(CRAFT), 3).job();
+        assertTrue(queue.finish(project, pick.work().id(), pick.lease(), true, "Crafted", 4));
+        var dig = queue.claim(WORLD, "miner", Set.of(GATHER), 5).job();
+        assertNull(queue.offerInterruptedDeposit(WORLD, "miner", null, 6, (bot, material) -> 7));
+        var site = new ProjectQueue.ResourceSite(10, -53, 4);
+        assertTrue(queue.finish(project, "dig", dig.lease(), false, ProjectQueue.GATHER_TOOLS_NEEDED, null, site, 7));
+        var restarted = new ProjectQueue(journal);
+        var recovery = restarted.offerInterruptedDeposit(WORLD, "miner", null, 8, (bot, material) -> 7).job();
+        assertEquals("deposit", recovery.work().id());
+        assertNull(restarted.offerInterruptedDeposit(WORLD, "helper", null, 9, (bot, material) -> 7));
+        var chestReport = new ProjectQueue.ChestReport(chest, java.util.Map.of(item, 7));
+        assertTrue(restarted.finish(project, "deposit", recovery.lease(), false, "Delivery is short by 57",
+                chestReport, null, true, 10));
+        var jobs = restarted.snapshot(11).get(0).jobs();
+        var remaining = jobs.get(2);
+        assertEquals(ProjectQueue.State.WAITING, remaining.state());
+        assertEquals(site, remaining.resourceSite());
+        assertEquals(57, com.google.gson.JsonParser.parseString(remaining.work().payload()).getAsJsonObject().get("count").getAsInt());
+        assertEquals(ProjectQueue.State.WAITING, jobs.get(3).state());
+        assertEquals(chestReport, restarted.chestStock(WORLD).get(chest).report());
+        assertNull(restarted.offerInterruptedDeposit(WORLD, "miner", null, 12, (bot, material) -> 7));
+    }
+
     @Test void stationaryGathererYieldsClaimWithoutAnchoringReplacementToTheOldSite() throws Exception {
         var journal = directory.resolve("stalled-gather.json");
         var queue = new ProjectQueue(journal);

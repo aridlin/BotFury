@@ -332,6 +332,58 @@ final class ProjectQueue {
         return blockedAccess(world, true);
     }
 
+    synchronized List<BlockedAccess> blockedLocalHandoffs(String world) {
+        var result = new ArrayList<BlockedAccess>();
+        for (var project : projects.values()) {
+            if (!project.world.equals(world) || project.supplyChest == null || cancelled(project)) continue;
+            for (var job : project.jobs) {
+                String id = job.work.id;
+                if (job.state != State.FAILED || !placementApproachFailure(job)
+                        || !project.supplyRecoveries.containsKey("pose-handoff:" + id)
+                        || project.supplyRecoveries.containsKey("local-handoff:" + id)
+                        || !("recovery-" + id + "-cargo").equals(job.work.sameWorkerAs)
+                        || job.work.needs.stream().anyMatch(need -> find(project, need).state != State.DONE)) continue;
+                var pickup = find(project, job.work.sameWorkerAs);
+                if (pickup.worker != null && pickup.work.constructionMaterial != null) {
+                    result.add(new BlockedAccess(project.id, job.work, pickup.worker, false));
+                }
+            }
+        }
+        return result;
+    }
+
+    synchronized boolean installLocalHandoff(String world, BlockedAccess request, Work replacement,
+                                               String worker, int held, long now) throws IOException {
+        var project = projects.get(request.project);
+        if (held < 0 || request.builder.equalsIgnoreCase(worker)
+                || !blockedLocalHandoffs(world).contains(request) || !replacement.id.equals(request.job.id)
+                || !replacement.needs.equals(request.job.needs)
+                || !Objects.equals(replacement.sameWorkerAs, request.job.sameWorkerAs)) return false;
+        long lastSeen = Math.max(workerSeen.getOrDefault(workerKey(world, worker, project.id), 0L),
+                workerSeen.getOrDefault(workerKey(world, worker, null), 0L));
+        if (lastSeen == 0 || now - lastSeen > LEASE_MS || projects.values().stream().flatMap(p -> p.jobs.stream())
+                .anyMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker))) return false;
+        var pickup = find(project, replacement.sameWorkerAs);
+        String material = pickup.work.constructionMaterial;
+        if (hasPendingDepositOf(world, worker, material)
+                || pendingBuildMaterials(world, worker).contains(material)
+                    && !recoveryPickupPrecedesReservations(project, pickup, worker)) return false;
+        var freshPickup = held >= 1
+                ? new Job(pickup.work, State.DONE, pickup.attempts, worker, null, 0,
+                        "Observed carried material for the local placement", pickup.chest)
+                : replacementConstructionPickup(project, pickup, worker, 1, held, now);
+        if (freshPickup == null) return false;
+        var waiting = find(project, replacement.id);
+        var jobs = new ArrayList<>(project.jobs);
+        jobs.set(jobs.indexOf(pickup), freshPickup);
+        jobs.set(jobs.indexOf(waiting), new Job(replacement, State.WAITING, 0, null, null, 0,
+                "Assigned to a builder for a new local approach", waiting.chest, waiting.resourceSite));
+        var counts = new HashMap<>(project.supplyRecoveries);
+        counts.put("local-handoff:" + replacement.id, 1);
+        commit(project.withRecovery(jobs, counts));
+        return true;
+    }
+
     private List<BlockedAccess> blockedAccess(String world, boolean alternatePose) {
         var result = new ArrayList<BlockedAccess>();
         for (var project : projects.values()) {

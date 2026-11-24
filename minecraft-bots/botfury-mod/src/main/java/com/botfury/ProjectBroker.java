@@ -121,6 +121,36 @@ final class ProjectBroker {
                 return;
             }
         }
+        for (var request : board.blockedLocalHandoffs(world)) {
+            var placement = ProjectBlock.parse(request.job().payload());
+            if (BuildProtection.blocked(world, placement.target(), request.project())) continue;
+            var temporary = board.temporaryFooting(request.project());
+            String material = Registries.ITEM.getId(ProjectPlacement.material(placement.desired())).toString();
+            var previous = workerPosition(request.builder());
+            var nearby = new java.util.ArrayList<String>();
+            for (var bot : BotTracker.all()) {
+                if (request.builder().equalsIgnoreCase(bot.name())) continue;
+                var position = workerPosition(bot.name());
+                if (position == null) continue;
+                var pose = StructureProject.groundedPlacementPose(client, request.job(), temporary, position);
+                if (pose != null && board.installLocalHandoff(world, request, pose, bot.name(),
+                        heldCount(bot.name(), material), System.currentTimeMillis())) {
+                    BotEvents.add("info", "projects", "Assigned " + request.job().id() + " to " + bot.name()
+                            + " with a verified local approach");
+                    return;
+                }
+                if (pose == null && StructureProject.betterPlacementFooting(client, placement.target(), position, previous)) {
+                    nearby.add(bot.name());
+                }
+            }
+            for (var worker : nearby) {
+                if (board.installLocalHandoff(world, request, request.job(), worker,
+                        heldCount(worker, material), System.currentTimeMillis())) {
+                    BotEvents.add("info", "projects", "Assigned " + request.job().id() + " to " + worker + " from better local footing");
+                    return;
+                }
+            }
+        }
         var blocked = board.blockedAccess(world);
         if (blocked.isEmpty()) return;
         var reservations = board.accessReservations(world);

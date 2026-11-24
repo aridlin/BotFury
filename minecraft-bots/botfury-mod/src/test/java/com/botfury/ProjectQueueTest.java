@@ -986,6 +986,15 @@ class ProjectQueueTest {
                 name -> name.equals("alternate") ? originalSite : alternateSite, (bot, item) -> 1));
         assertEquals(1, queue.snapshot(now).get(0).supplyRecoveries().get("pose-handoff:place-1"));
         assertEquals(2, queue.snapshot(now).get(0).supplyRecoveries().get("build-handoff:pickup"));
+        var verified = queue.blockedLocalHandoffs(WORLD).get(0);
+        assertFalse(queue.installLocalHandoff(WORLD, verified, verified.job(), "third", 1, now++));
+        assertNull(queue.claim(WORLD, "third", Set.of(BUILD), now++));
+        assertFalse(queue.installLocalHandoff(WORLD, verified, verified.job(), "alternate", 1, now++));
+        assertTrue(queue.installLocalHandoff(WORLD, verified, verified.job(), "third", 1, now++));
+        queue = new ProjectQueue(journal);
+        assertTrue(queue.blockedLocalHandoffs(WORLD).isEmpty());
+        var next = queue.claim(WORLD, "third", Set.of(BUILD), now).job();
+        assertEquals("place-1", next.work().id());
     }
 
     @Test void observedAlternatePoseReopensPlacementAndReplenishesMissingCargo() throws Exception {

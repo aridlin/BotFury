@@ -360,6 +360,12 @@ final class ProjectBroker {
                 }
                 case "finish" -> {
                     if (request.success == null) throw new IllegalArgumentException("Report a success or failure");
+                    var delivery = board.routeToolDelivery(request.project, request.job, request.token, now);
+                    if (request.success && delivery != null
+                            && heldCount(delivery.recipient(), delivery.item()) <= delivery.previousCount()) {
+                        reply(exchange, 202, "Waiting for the recipient to pick up the replacement tool");
+                        return;
+                    }
                     boolean accepted = board.finish(request.project, request.job, request.token,
                             request.success, request.evidence, request.chest, request.resourceSite, request.pickupShortfall, now);
                     reply(exchange, accepted ? 200 : 409, accepted);

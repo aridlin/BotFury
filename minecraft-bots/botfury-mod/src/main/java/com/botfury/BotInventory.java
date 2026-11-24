@@ -34,6 +34,7 @@ final class BotInventory {
         manualPause = value;
     }
     private static int age, delivered, waitTicks;
+    private static boolean projectDelivery;
     private static Vec3d spreadGoal;
     private static final DroppedItemSearch pickup = new DroppedItemSearch();
     private static final StallRecovery routeRecovery = new StallRecovery();
@@ -92,10 +93,12 @@ final class BotInventory {
         ProjectWorker.stop(client);
         MiningTask.stop();
         begin(client, request);
+        projectDelivery = false;
     }
 
     static void startProjectDelivery(MinecraftClient client, Item item, String recipient, Destination destination) {
         begin(client, new Request("deliver", item, 1, recipient, destination));
+        projectDelivery = true;
     }
 
     private static void begin(MinecraftClient client, Request request) {

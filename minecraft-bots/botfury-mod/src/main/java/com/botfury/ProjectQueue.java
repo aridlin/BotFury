@@ -156,7 +156,7 @@ final class ProjectQueue {
         }
         Assignment(String project, String world, Job job) { this(project, world, job, null, List.of(), 0); }
     }
-    record RouteToolDelivery(String recipient, ResourceSite position, String item) {}
+    record RouteToolDelivery(String recipient, ResourceSite position, String item, int previousCount) {}
     private final Set<UUID> routeToolRequests = new HashSet<>();
 
     record FuelUse(String job, String recipe, String input, String expectedFuel, int count) {}
@@ -951,6 +951,12 @@ final class ProjectQueue {
         return new Job(work, State.WAITING, 0, worker, null, now + LEASE_MS, CONSTRUCTION_PICKUP, pickup.chest);
     }
 
+    synchronized RouteToolDelivery routeToolDelivery(String projectId, String jobId, UUID token, long now) {
+        var job = find(projects.get(projectId), jobId);
+        return owns(job, token, now) && job.work.kind == Kind.RESUPPLY
+                ? JSON.fromJson(job.work.payload, RouteToolDelivery.class) : null;
+    }
+
     synchronized Assignment offerRouteTool(String world, String worker, String projectId, long now,
                                            Map<String, Integer> tools,
                                            java.util.function.Function<String, ResourceSite> position,
@@ -970,7 +976,10 @@ final class ProjectQueue {
                 String id = "route-tool-" + deposit.lease;
                 var destination = position.apply(deposit.worker);
                 if (destination == null || find(project, id) != null) continue;
-                var work = new Work(id, Kind.RESUPPLY, JSON.toJson(new RouteToolDelivery(deposit.worker, destination, item)),
+                int previousCount = held.applyAsInt(deposit.worker, item);
+                if (previousCount < 0) continue;
+                var delivery = new RouteToolDelivery(deposit.worker, destination, item, previousCount);
+                var work = new Work(id, Kind.RESUPPLY, JSON.toJson(delivery),
                         List.of(), Set.of());
                 var loan = new Job(work, State.LEASED, 1, worker, UUID.randomUUID(),
                         now + LEASE_MS, null, null);

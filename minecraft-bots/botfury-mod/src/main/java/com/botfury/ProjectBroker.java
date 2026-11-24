@@ -112,6 +112,7 @@ final class ProjectBroker {
             confirmLocalInspections(client, board, world, now);
             reuseCarriedSmeltingOutputs(client, board, world);
             resumeCarriedSmelting(client, board, world);
+            retryNearbyWorkstationCrafts(client, board, world);
             useCarriedCraftingIngredients(client, board, world);
             if (now >= nextAccessCheck) {
                 nextAccessCheck = now + java.time.Duration.ofSeconds(20).toNanos();
@@ -152,6 +153,38 @@ final class ProjectBroker {
                 if (board.offerCarriedCraftHandoff(world, request, helper.name(), inputs,
                         ProjectBroker::heldCount, System.currentTimeMillis())) {
                     BotEvents.add("info", "projects", helper.name() + " can supply the recipe for " + request.work().id());
+                    return;
+                }
+            }
+        }
+    }
+
+    private static void retryNearbyWorkstationCrafts(net.minecraft.client.MinecraftClient client, ProjectQueue board,
+                                                     String world) throws IOException {
+        long now = System.currentTimeMillis();
+        for (var request : board.failedWorkstationCrafts(world)) {
+            var spec = ProjectProduction.parse(request.work().payload(), ProjectQueue.Kind.CRAFT);
+            if (spec.station() == null) continue;
+            var table = spec.station().target();
+            if (!client.world.isChunkLoaded(table.getX() >> 4, table.getZ() >> 4)
+                    || !spec.station().matches(client.world.getBlockState(table))) continue;
+            var previous = liveWorker(request.previousWorker());
+            double previousDistance = previous == null || !previous.sameWorld() ? Double.POSITIVE_INFINITY
+                    : table.getSquaredDistance(previous.x(), previous.y(), previous.z());
+            var nearby = BotTracker.all().stream()
+                    .filter(bot -> bot.fresh() && bot.connected() && bot.alive() && bot.sameWorld()
+                            && !bot.name().equalsIgnoreCase(request.previousWorker()) && !bot.items().isEmpty())
+                    .filter(bot -> {
+                        double distance = table.getSquaredDistance(bot.x(), bot.y(), bot.z());
+                        return distance <= 144 && distance < previousDistance;
+                    })
+                    .sorted(java.util.Comparator.comparingDouble(bot -> table.getSquaredDistance(bot.x(), bot.y(), bot.z())))
+                    .toList();
+            for (var bot : nearby) {
+                var inputs = ProjectProduction.carriedCraftingIngredients(client, request.work().payload(), bot.items());
+                if (board.reassignTimedOutCraft(world, request, bot.name(), inputs, now)) {
+                    BotEvents.add("info", "projects", bot.name() + " resumed " + request.work().id()
+                            + " with ingredients near the workbench");
                     return;
                 }
             }

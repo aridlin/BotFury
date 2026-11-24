@@ -182,6 +182,7 @@ final class ProjectQueue {
     record OwnedPlacement(String project, String job, String payload) {}
     record CarriedSmelt(String project, Work work) {}
     record CarriedCraft(String project, Work work, String worker, UUID gatheringLease) {}
+    record FailedWorkstationCraft(String project, Work work, String previousWorker) {}
     record BlockedAccess(String project, Work job, String builder, boolean replacementScaffold) {
         String repairId() { return job.id + (replacementScaffold ? "-v2" : ""); }
     }
@@ -1992,6 +1993,56 @@ final class ProjectQueue {
 
     private static Job freshStockWork(Work work) {
         return new Job(work, State.WAITING, 0, null, null, 0, null, null);
+    }
+
+    synchronized List<FailedWorkstationCraft> failedWorkstationCrafts(String world) {
+        var result = new ArrayList<FailedWorkstationCraft>();
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || project.supplyChest == null || project.repeat != null || cancelled(project)) {
+                continue;
+            }
+            for (var craft : project.jobs) {
+                var supplier = timedOutCraftSupplier(project, craft);
+                if (supplier != null) result.add(new FailedWorkstationCraft(project.id, craft.work, supplier.worker));
+            }
+        }
+        return result;
+    }
+
+    private static Job timedOutCraftSupplier(Project project, Job craft) {
+        if (craft == null || craft.work.kind != Kind.CRAFT || craft.work.locks.isEmpty()
+                || craft.state != State.FAILED || !TARGET_TIMEOUT.equals(craft.evidence)
+                || project.supplyRecoveries.containsKey("local-craft:" + craft.work.id)) return null;
+        var supplier = find(project, craft.work.sameWorkerAs);
+        if (supplier == null || supplier.state != State.DONE || supplier.worker == null
+                || supplier.work.kind != Kind.GATHER && !productionWork(supplier.work)
+                || craft.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)
+                || !privatePreparationReady(project, craft, Set.of(supplier.work.id))) return null;
+        return supplier;
+    }
+
+    synchronized boolean reassignTimedOutCraft(String world, FailedWorkstationCraft request, String worker,
+                                                Set<String> inputs, long now) throws IOException {
+        var project = projects.get(request.project);
+        if (project == null || !world.equals(project.world) || project.repeat != null || project.supplyChest == null
+                || cancelled(project) || inputs.isEmpty() || worker.equalsIgnoreCase(request.previousWorker)) return false;
+        var craft = find(project, request.work.id);
+        var supplier = timedOutCraftSupplier(project, craft);
+        if (supplier == null || !craft.work.equals(request.work) || !supplier.worker.equals(request.previousWorker)
+                || !availableProjectWorker(project, worker, now)
+                || !Collections.disjoint(inputs, pendingBuildMaterials(world, worker))
+                || inputs.stream().anyMatch(item -> hasPendingDepositOf(world, worker, item))) return false;
+        if (reservedStorage(project) == null && projects.values().stream().anyMatch(other -> other != project
+                && world.equals(other.world) && project.supplyChest.equals(reservedStorage(other)))) return false;
+
+        var jobs = new ArrayList<>(project.jobs);
+        jobs.set(jobs.indexOf(supplier), new Job(supplier.work, State.DONE, supplier.attempts, worker,
+                null, 0, "Preparation satisfied by observed crafting ingredients", supplier.chest, supplier.resourceSite));
+        jobs.set(jobs.indexOf(craft), freshStockWork(craft.work));
+        var recoveries = new HashMap<>(project.supplyRecoveries);
+        recoveries.put("local-craft:" + craft.work.id, 1);
+        commit(project.withRecovery(jobs, recoveries));
+        return true;
     }
 
     synchronized List<CarriedCraft> carriedCraftCandidates(String world, long now) {

@@ -28,6 +28,8 @@ import java.util.concurrent.TimeUnit;
 
 /** One opt-in job loop per managed client. All Minecraft actions run on its client thread. */
 final class ProjectWorker {
+    private static final double STAND_CENTER_TOLERANCE = .075;
+    private static final double[] JUMP_HEIGHTS = {.42, .76, 1, 1.15};
     private static final Gson JSON = new Gson();
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(750)).build();
     private static final Set<ProjectQueue.Kind> KINDS = Set.of(ProjectQueue.Kind.EXCAVATE, ProjectQueue.Kind.VERIFY, ProjectQueue.Kind.INSPECT, ProjectQueue.Kind.FILL_BUCKETS, ProjectQueue.Kind.TRANSFER, ProjectQueue.Kind.BUILD, ProjectQueue.Kind.CRAFT, ProjectQueue.Kind.SMELT, ProjectQueue.Kind.GATHER);
@@ -380,6 +382,8 @@ final class ProjectWorker {
             }
             stableSince = 0;
         }
+        var currentCell = player.getBlockPos();
+        if (interactionGoals.contains(currentCell)) interactionStand = currentCell;
         BlockPos stand = interactionStand == null ? block.stand() : interactionStand;
         boolean canExcavateHere = excavate && targetLoaded && player.isOnGround() && !centering
                 && !player.getBlockPos().down().equals(target) && excavationHit(client, target) != null;
@@ -389,9 +393,9 @@ final class ProjectWorker {
                 && !player.getBoundingBox().intersects(new Box(target))
                 && ProjectPlacement.supportHit(client, block) != null;
         if (ordinaryBuild && targetLoaded && !canBuildHere && player.isOnGround() && !centering
-                && client.world.isAir(target) && canJumpToPlace(client, player.getPos(), player.getBlockPos())) {
+                && !player.isSneaking() && client.world.isAir(target) && canJumpToPlace(client, player.getPos(), currentCell)) {
             halt(client);
-            triedJumpStands.add(player.getBlockPos());
+            triedJumpStands.add(currentCell);
             player.setSprinting(false);
             client.options.jumpKey.setPressed(true);
             jumpPressed = true;
@@ -407,6 +411,12 @@ final class ProjectWorker {
         boolean searchingForStand = excavate && !canExcavateHere || ordinaryBuild && !canBuildHere
                 && client.world.getBlockState(target).isAir()
                 || stationJob && !stationNearby && block.matches(client.world.getBlockState(target));
+        if (searchingForStand && (excavate || ordinaryBuild) && targetLoaded && currentCell.equals(stand)
+                && player.isOnGround() && canCenterForInteraction(client, target, stand, kind)) {
+            if (approach != null) halt(client);
+            centerOnStand(client, Vec3d.ofBottomCenter(stand));
+            return;
+        }
         boolean routeFailed = approach != null && now >= retryApproach && !BaritoneClient.pursuing(stand);
         // Try a protected exit once after both the planned and an alternate approach fail.
         boolean recoverBeforeSwitching = (excavate || ordinaryBuild) && interactionStand != null
@@ -682,13 +692,34 @@ final class ProjectWorker {
 
     private static boolean canJumpToPlace(MinecraftClient client, Vec3d feet, BlockPos stand) {
         if (triedJumpStands.contains(stand) || block.edgePlacement() || ProjectWater.source(block.desired())
-                || client.player.isSneaking() || !client.world.getFluidState(stand).isEmpty()
+                || !client.world.getFluidState(stand).isEmpty()
                 || feet.squaredDistanceTo(Vec3d.ofCenter(block.target())) > 25) return false;
         var player = client.player;
-        var body = player.getBoundingBox().offset(feet.subtract(player.getPos()));
-        var sweep = body.stretch(0, 1.1, 0);
-        return !sweep.intersects(new Box(block.target())) && client.world.isSpaceEmpty(player, sweep)
-                && ProjectPlacement.supportHit(client, block, feet.add(0, player.getEyeY() - player.getY() + 1, 0)) != null;
+        double halfWidth = player.getWidth() / 2;
+        var body = new Box(feet.x - halfWidth, feet.y, feet.z - halfWidth,
+                feet.x + halfWidth, feet.y + 1.8, feet.z + halfWidth);
+        var target = new Box(block.target());
+        for (double lift : JUMP_HEIGHTS) {
+            var sweep = body.stretch(0, lift, 0);
+            if (sweep.intersects(target) || client.world.getBlockCollisions(player, sweep).iterator().hasNext()) break;
+            if (ProjectPlacement.supportHit(client, block, feet.add(0, 1.62 + lift, 0)) != null) return true;
+        }
+        return false;
+    }
+
+    private static boolean canCenterForInteraction(MinecraftClient client, BlockPos target, BlockPos stand,
+                                                   ProjectQueue.Kind kind) {
+        var feet = Vec3d.ofBottomCenter(stand);
+        var position = client.player.getPos();
+        double dx = position.x - feet.x;
+        double dz = position.z - feet.z;
+        if (dx * dx + dz * dz <= STAND_CENTER_TOLERANCE * STAND_CENTER_TOLERANCE) {
+            return centering;
+        }
+        if (!usableInteractionStand(client, stand, target)) return false;
+        var eye = feet.add(0, 1.62, 0);
+        return kind == ProjectQueue.Kind.EXCAVATE ? excavationHit(client, target, eye) != null
+                : ProjectPlacement.supportHit(client, block, eye) != null || canJumpToPlace(client, feet, stand);
     }
 
     private static boolean tickPlacementJump(MinecraftClient client, long now) {
@@ -765,7 +796,7 @@ final class ProjectWorker {
         double dx = stand.x - player.getX();
         double dz = stand.z - player.getZ();
         // Match the eye position used to check reach in the planner.
-        double tolerance = staySneaking ? .04 : .075;
+        double tolerance = staySneaking ? .04 : STAND_CENTER_TOLERANCE;
         if (dx * dx + dz * dz <= tolerance * tolerance) {
             if (staySneaking) {
                 client.options.forwardKey.setPressed(false);

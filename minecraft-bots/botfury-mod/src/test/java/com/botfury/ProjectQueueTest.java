@@ -445,6 +445,27 @@ class ProjectQueueTest {
                 true, ProjectQueue.ALTERNATIVE_FUEL + "minecraft:oak_planks", 5));
     }
 
+    @Test void lostSmeltingInputsReopenOnlyTheirSupplyChain() throws Exception {
+        var journal = directory.resolve("lost-smelting-inputs.json");
+        var board = new ProjectQueue(journal);
+        board.submitSupplied("tools", WORLD, List.of(job("earlier", EXCAVATE, List.of()),
+                job("ore", GATHER, List.of("earlier")),
+                new ProjectQueue.Work("fuel", GATHER, "", List.of("ore"), Set.of(), "ore"),
+                new ProjectQueue.Work("smelt", SMELT, "{\"input\":\"minecraft:raw_iron\",\"fuel\":\"minecraft:oak_log\"}",
+                        List.of("fuel"), Set.of(), "fuel")), "block:3,64,0");
+        long now = 1;
+        for (var kind : List.of(EXCAVATE, GATHER, GATHER)) {
+            var supplied = board.claim(WORLD, "worker", Set.of(kind), now++).job();
+            assertTrue(board.finish("tools", supplied.work().id(), supplied.lease(), true, "Done", now++));
+        }
+        var smelt = board.claim(WORLD, "worker", Set.of(SMELT), now++).job();
+        assertTrue(board.finish("tools", "smelt", smelt.lease(), false, "Missing furnace input minecraft:raw_iron", now++));
+        var restored = new ProjectQueue(journal);
+        assertEquals(ProjectQueue.State.DONE, restored.snapshot(now).get(0).jobs().get(0).state());
+        assertNull(restored.claim(WORLD, "replacement", Set.of(SMELT), now++));
+        assertEquals("ore", restored.claim(WORLD, "replacement", Set.of(GATHER), now).job().work().id());
+    }
+
     @Test void retriesInterruptedProductionWithoutReopeningRecipeFailures() throws Exception {
         var board = new ProjectQueue(directory.resolve("production-retry.json"));
         board.submit("tools", WORLD, List.of(job("craft", CRAFT, List.of()), job("smelt", SMELT, List.of())));

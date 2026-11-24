@@ -32,6 +32,7 @@ import java.util.concurrent.TimeUnit;
 final class ProjectWorker {
     private static final double STAND_CENTER_TOLERANCE = .075;
     private static final double[] JUMP_HEIGHTS = {.42, .76, 1, 1.15};
+    private static final BreathingRecovery breathing = new BreathingRecovery();
     private static final Gson JSON = new Gson();
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(750)).build();
     private static final Set<ProjectQueue.Kind> KINDS = Set.of(ProjectQueue.Kind.EXCAVATE, ProjectQueue.Kind.VERIFY, ProjectQueue.Kind.INSPECT, ProjectQueue.Kind.FILL_BUCKETS, ProjectQueue.Kind.TRANSFER, ProjectQueue.Kind.BUILD, ProjectQueue.Kind.CRAFT, ProjectQueue.Kind.SMELT, ProjectQueue.Kind.GATHER, ProjectQueue.Kind.RESUPPLY);
@@ -170,6 +171,7 @@ final class ProjectWorker {
     }
 
     static void suspend(MinecraftClient client) {
+        breathing.stop(client);
         generation++;
         port = 0;
         reset(client);
@@ -360,6 +362,7 @@ final class ProjectWorker {
             }
         }
         if (assignment == null) {
+            if (recoverBreathing(client)) return;
             if (TaskDefense.evade(client, false)) {
                 idleRecovery.reset();
                 status = "Sheltering from a nearby Phantom";
@@ -369,7 +372,8 @@ final class ProjectWorker {
                 status = "Yielding the work area";
                 return;
             }
-            if (status.equals("Yielding the work area") || status.equals("Sheltering from a nearby Phantom")) {
+            if (status.equals("Yielding the work area") || status.equals("Sheltering from a nearby Phantom")
+                    || status.equals("Swimming toward air")) {
                 status = "Waiting for project jobs";
             }
             if (!pending && now >= nextRequest) request(client, here, "claim", now);
@@ -383,6 +387,7 @@ final class ProjectWorker {
             return;
         }
         if (!pending && now >= nextRequest) request(client, here, success == null ? "renew" : "finish", now);
+        if (recoverBreathing(client)) return;
         if (success != null) {
             TaskDefense.evade(client, false);
             return;
@@ -475,6 +480,14 @@ final class ProjectWorker {
             if (result != null) finish(client, result.success(), result.detail());
             else if (block != null && !prepareFieldWorkstation(client, now)) execute(client, now);
         } else execute(client, now);
+    }
+
+    private static boolean recoverBreathing(MinecraftClient client) {
+        if (!breathing.tick(client)) return false;
+        releaseCentering(client);
+        jumpEnds = 0;
+        status = "Swimming toward air";
+        return true;
     }
 
     private static boolean pickupRouteTool(MinecraftClient client) {

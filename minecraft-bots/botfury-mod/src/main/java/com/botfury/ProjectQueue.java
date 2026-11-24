@@ -863,9 +863,14 @@ final class ProjectQueue {
             }
             if (deposit != null) return deposit;
         }
-        if (toolUses != null && kinds.contains(Kind.GATHER)) {
-            var mining = offerEquippedMiner(world, worker, projectId, toolUses, now, true);
-            if (mining != null) return mining;
+        if (kinds.contains(Kind.GATHER)) {
+            if (toolUses != null) {
+                var mining = offerEquippedMiner(world, worker, projectId, toolUses, now, true);
+                if (mining != null) return mining;
+            }
+            if (heldCount != null && recoverToolsAfterBanking(world, projectId)) {
+                return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses, returnRevision);
+            }
         }
         return fallbackJob == null ? null : assign(fallbackProject, fallbackJob, worker, now, position);
     }
@@ -2089,6 +2094,26 @@ final class ProjectQueue {
         return (job.state == State.WAITING || job.state == State.FAILED)
                 && (("Missing material " + material).equals(job.evidence)
                 || ("Missing unmodified material " + material).equals(job.evidence));
+    }
+
+    private boolean recoverToolsAfterBanking(String world, String projectId) throws IOException {
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || project.supplyChest == null || cancelled(project)
+                    || projectId != null && !project.id.equals(projectId)
+                    || projects.values().stream().anyMatch(other -> other != project && world.equals(other.world)
+                        && project.supplyChest.equals(reservedStorage(other)))) continue;
+            for (var gathering : project.jobs) {
+                if (gathering.work.kind != Kind.GATHER || gathering.state != State.FAILED
+                        || !EXHAUSTED_TOOLS.equals(gathering.evidence)) continue;
+                Integer previous = project.supplyRecoveries.get("tool-stock:" + gathering.work.id);
+                if (previous == null) continue;
+                var payload = JSON.fromJson(gathering.work.payload, com.google.gson.JsonObject.class);
+                var count = payload == null ? null : payload.get("count");
+                if (count != null && count.getAsInt() < previous
+                        && recoverGatheringTools(project, gathering, gathering.resourceSite, 0)) return true;
+            }
+        }
+        return false;
     }
 
     private boolean recoverGatheringTools(Project project, Job gathering, ResourceSite site, long now) throws IOException {

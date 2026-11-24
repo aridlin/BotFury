@@ -2278,7 +2278,8 @@ final class ProjectQueue {
                     || projects.values().stream().anyMatch(other -> other != supplier && project.world.equals(other.world)
                             && supplier.supplyChest.equals(reservedStorage(other)))) continue;
             int outputFloor = supplier.jobs.stream().filter(job -> job.work.kind == Kind.TRANSFER
-                    && job.work.locks.contains(supplier.supplyChest)).map(ProjectQueue::transferTarget)
+                    && job.work.locks.contains(supplier.supplyChest) && !settledConstructionDeposit(supplier, job))
+                    .map(ProjectQueue::transferTarget)
                     .filter(target -> target != null && "DEPOSIT".equals(target.direction) && source.item.equals(target.item))
                     .mapToInt(PickupTarget::stock).max().orElse(0);
             int reserve = Math.max(outputFloor, constructionStockReserve(supplier, source.item));
@@ -2306,6 +2307,19 @@ final class ProjectQueue {
         recoveries.put(key, 1);
         commit(project.withRecovery(project.jobs.stream().map(job -> job == gather ? lease : job).toList(), recoveries));
         return assignment(project, lease);
+    }
+
+    private static boolean settledConstructionDeposit(Project project, Job deposit) {
+        if (deposit.state != State.DONE) return false;
+        var target = transferTarget(deposit);
+        if (target == null || !"DEPOSIT".equals(target.direction) || target.item == null) return false;
+        var pickups = project.jobs.stream().filter(job -> job.work.kind == Kind.TRANSFER
+                && target.item.equals(job.work.constructionMaterial) && job.work.locks.contains(project.supplyChest)
+                && job.work.needs.contains(deposit.work.id)).toList();
+        if (pickups.isEmpty() || pickups.stream().anyMatch(job -> job.state != State.DONE)) return false;
+        var ids = pickups.stream().map(job -> job.work.id).collect(java.util.stream.Collectors.toSet());
+        return project.jobs.stream().noneMatch(job -> job.work.kind == Kind.BUILD && job.state != State.DONE
+                && ids.contains(job.work.sameWorkerAs));
     }
 
     private static boolean usesGroupedStock(Job job) {

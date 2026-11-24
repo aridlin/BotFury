@@ -702,8 +702,11 @@ final class ProjectBroker {
                         reply(exchange, 202, "Waiting for the recipient to pick up the resupply item");
                         return;
                     }
+                    var carriers = request.pickupShortfall && request.chest != null
+                            ? idleStockCarriers() : List.<ProjectQueue.StockCarrier>of();
                     boolean accepted = board.finish(request.project, request.job, request.token,
-                            request.success, request.evidence, request.chest, request.resourceSite, request.pickupShortfall, now);
+                            request.success, request.evidence, request.chest, request.resourceSite, request.pickupShortfall,
+                            carriers, now);
                     var next = accepted && request.success ? board.batchContinuation(request.project, request.token, now) : null;
                     reply(exchange, accepted ? 200 : 409, next == null ? accepted : next);
                 }
@@ -727,6 +730,16 @@ final class ProjectBroker {
             return id != null && tool.getValue() != null && tool.getValue() > 0
                     && Registries.ITEM.getOrEmpty(id).map(item -> new ItemStack(item).isSuitableFor(state)).orElse(false);
         });
+    }
+
+    private static List<ProjectQueue.StockCarrier> idleStockCarriers() {
+        return BotTracker.all().stream().filter(bot -> bot.fresh() && bot.connected() && bot.alive() && bot.sameWorld()
+                        && bot.health() > bot.maxHealth() / 2 && "Waiting for project jobs".equals(bot.inventory())
+                        && bot.items() != null && !bot.items().isEmpty())
+                .map(bot -> new ProjectQueue.StockCarrier(bot.name(),
+                        new ProjectQueue.ResourceSite((int)Math.floor(bot.x()), (int)Math.floor(bot.y()), (int)Math.floor(bot.z())),
+                        bot.items()))
+                .toList();
     }
 
     private static int heldCount(String worker, String item) {

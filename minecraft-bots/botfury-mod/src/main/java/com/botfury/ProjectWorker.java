@@ -332,7 +332,7 @@ final class ProjectWorker {
                 || interactionGoals.contains(pos.up())) return true;
         var world = client.world;
         var state = world.getBlockState(pos);
-        if (canopy) {
+        if (canopy || elevatedPlacementStand != null && state.getBlock() instanceof LeavesBlock) {
             if (!naturalLeaves(state) || !state.getFluidState().isEmpty()
                     || world.getBlockState(pos.up()).getBlock() instanceof FallingBlock) return true;
             for (var side : Direction.values()) {
@@ -730,7 +730,8 @@ final class ProjectWorker {
         if (ordinaryBuild && targetLoaded && !canBuildHere && client.world.isAir(target)
                 && (openingJumpHeadroom != null || !attemptedJumpHeadroom && (routeFailed || reachedAlternative))
                 && openJumpHeadroom(client, currentCell)) return;
-        if (elevatedPlacementStand != null && !canBuildHere && (routeFailed || now >= lowerPlacementEnds)) {
+        if (elevatedPlacementStand != null && !canBuildHere
+                && (routeFailed && recoveryOrigin != null || now >= lowerPlacementEnds)) {
             halt(client);
             interactionStand = stand = elevatedPlacementStand;
             elevatedPlacementStand = null;
@@ -833,9 +834,12 @@ final class ProjectWorker {
                         BaritoneClient.execute("stop");
                         approach.close();
                         approach = null;
-                        approach = new BaritoneSettings(true, true, true);
+                        approach = elevatedPlacementStand == null ? new BaritoneSettings(true, true, true)
+                                : BaritoneSettings.lowerStandApproach();
                         recoveryOrigin = feetBlock;
-                        BotEvents.add("info", "movement", "Opening a short approach through natural terrain");
+                        String detail = elevatedPlacementStand == null ? "Opening a short approach through natural terrain"
+                                : "Opening protected terrain to reach the lower placement stand";
+                        BotEvents.add("info", "movement", detail);
                     }
                     if (approach == null) approach = new BaritoneSettings(false, true);
                     approachProgress = current;

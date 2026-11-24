@@ -2071,6 +2071,14 @@ class ProjectQueueTest {
     }
 
     @Test void equippedReplacementWorkerRefillsFailedSmeltingWithoutRebuildingTools() throws Exception {
+        checkEquippedSmeltingRefill("Missing furnace input minecraft:raw_iron after 2 supply recoveries");
+    }
+
+    @Test void equippedReplacementWorkerRefillsTimedOutSmeltingWithoutRebuildingTools() throws Exception {
+        checkEquippedSmeltingRefill(ProjectQueue.TARGET_TIMEOUT);
+    }
+
+    private void checkEquippedSmeltingRefill(String failure) throws Exception {
         var journal = directory.resolve("smelting-refill.json");
         var pick = new ProjectQueue.Work("pick", CRAFT, "{\"recipe\":\"minecraft:stone_pickaxe\"}", List.of(), Set.of());
         var ore = new ProjectQueue.Work("ore", GATHER,
@@ -2087,8 +2095,7 @@ class ProjectQueueTest {
                 new ProjectQueue.Job(pick, ProjectQueue.State.DONE, 1, "original", null, 0, "Observed pick", null),
                 new ProjectQueue.Job(ore, ProjectQueue.State.DONE, 1, "original", null, 0, "Observed ore", null, site),
                 new ProjectQueue.Job(fuel, ProjectQueue.State.DONE, 1, "original", null, 0, "Observed fuel", null),
-                new ProjectQueue.Job(smelt, ProjectQueue.State.FAILED, 2, null, null, 0,
-                        "Missing furnace input minecraft:raw_iron after 2 supply recoveries", null)),
+                new ProjectQueue.Job(smelt, ProjectQueue.State.FAILED, 2, null, null, 0, failure, null)),
                 null, "block:3,64,0", java.util.Map.of());
         Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
                 "projects", java.util.Map.of(project.id(), project))));

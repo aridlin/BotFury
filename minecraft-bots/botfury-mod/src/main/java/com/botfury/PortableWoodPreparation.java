@@ -15,19 +15,21 @@ final class PortableWoodPreparation {
     private final Identifier recipe;
     private final int targetCount;
     private final ProjectGather.Area excluded;
+    private final ProjectQueue.ResourceSite site;
     private ProjectProduction production;
     private boolean craftingProduct;
     private long belowSurfaceSince;
     private boolean gathering;
     private String status;
 
-    PortableWoodPreparation() { this(Items.CRAFTING_TABLE, 1, null); }
+    PortableWoodPreparation() { this(Items.CRAFTING_TABLE, 1, null, null); }
 
-    PortableWoodPreparation(Item product, int targetCount, ProjectGather.Area excluded) {
+    PortableWoodPreparation(Item product, int targetCount, ProjectGather.Area excluded, ProjectQueue.ResourceSite site) {
         this.product = product;
         recipe = Registries.ITEM.getId(product);
         this.targetCount = targetCount;
         this.excluded = excluded;
+        this.site = site;
     }
 
     static boolean canSupply(MinecraftClient client) {
@@ -67,7 +69,7 @@ final class PortableWoodPreparation {
                     }
                 } else belowSurfaceSince = 0;
                 if (!gathering) {
-                    MiningTask.startProject(client, new MiningTask.Job("any_logs", "both", coordinator), excluded, null, LOGS);
+                    MiningTask.startProject(client, new MiningTask.Job("any_logs", "both", coordinator), excluded, site, LOGS);
                     gathering = true;
                 }
                 if (!MiningTask.active()) return new ProjectProduction.Result(false, MiningTask.lastStatus());

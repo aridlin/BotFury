@@ -22,6 +22,7 @@ final class ProjectBroker {
     private static ProjectQueue queue;
     private static long nextStationCheck;
     private static long nextAccessCheck;
+    private static long nextScaffoldCleanupCheck;
     private static int ownedPlacementCursor;
     private static String inspectionWorld;
     private static ClientWorld inspectionView;
@@ -77,13 +78,20 @@ final class ProjectBroker {
             return;
         }
         long now = System.nanoTime();
-        if (nextStationCheck != 0 && now < nextStationCheck) return;
-        nextStationCheck = now + java.time.Duration.ofSeconds(5).toNanos();
+        boolean stationCheckDue = now >= nextStationCheck;
+        boolean cleanupCheckDue = now >= nextScaffoldCleanupCheck;
+        if (!stationCheckDue && !cleanupCheckDue) return;
         var here = LocalFormation.here();
         if (here == null) return;
         String world = here.server() + "|" + here.dimension();
         try {
             var board = queue();
+            if (cleanupCheckDue) {
+                nextScaffoldCleanupCheck = now + java.time.Duration.ofSeconds(1).toNanos();
+                recoverScaffoldCleanups(client, board, world);
+            }
+            if (!stationCheckDue) return;
+            nextStationCheck = now + java.time.Duration.ofSeconds(5).toNanos();
             for (var station : board.ownedStations(world)) {
                 var block = ProjectBlock.parse(station.payload());
                 var target = block.target();
@@ -104,7 +112,6 @@ final class ProjectBroker {
             if (now >= nextAccessCheck) {
                 nextAccessCheck = now + java.time.Duration.ofSeconds(20).toNanos();
                 repairBlockedAccess(client, board, world);
-                recoverScaffoldCleanups(client, board, world);
             }
         } catch (IOException | IllegalArgumentException failure) {
             BotEvents.add("warn", "projects", "Could not check owned project work. " + failure.getMessage());

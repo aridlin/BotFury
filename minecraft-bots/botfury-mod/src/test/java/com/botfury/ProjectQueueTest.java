@@ -371,14 +371,18 @@ class ProjectQueueTest {
     }
 
     @Test void stalledPlacementCanUseANearbyBuildersExistingMaterials() throws Exception {
-        checkConstructionHandoff(false);
+        checkConstructionHandoff(false, false);
     }
 
     @Test void stalledPlacementCanUseReplacementMaterialsFromTheCommunityChest() throws Exception {
-        checkConstructionHandoff(true);
+        checkConstructionHandoff(true, false);
     }
 
-    private void checkConstructionHandoff(boolean stockAvailable) throws Exception {
+    @Test void readyPlacementHandsOffCargoWithoutInterruptingADistantMiner() throws Exception {
+        checkConstructionHandoff(true, true);
+    }
+
+    private void checkConstructionHandoff(boolean stockAvailable, boolean busySupplier) throws Exception {
         var journal = directory.resolve("construction-handoff-" + stockAvailable + ".json");
         var queue = new ProjectQueue(journal);
         var chest = "block:3,64,0";
@@ -395,12 +399,23 @@ class ProjectQueueTest {
         var stock = new ProjectQueue.ChestReport(chest, stockAvailable
                 ? java.util.Map.of("minecraft:oak_log", 1) : java.util.Map.of());
         assertTrue(queue.finish("house", "pickup", cargo.lease(), true, "Taken", stock, 4));
-        for (long now = 5; now <= 9; now += 2) {
-            var lease = queue.claim(WORLD, "original", Set.of(BUILD), now).job();
-            assertTrue(queue.finish("house", "place-1", lease.lease(), false, ProjectQueue.TARGET_TIMEOUT, now + 1));
-        }
         java.util.function.Function<String, ProjectQueue.ResourceSite> locate = name -> name.equals("builder")
                 ? new ProjectQueue.ResourceSite(8, 64, 10) : new ProjectQueue.ResourceSite(8, 14, 8);
+        ProjectQueue.Job mining = null;
+        if (busySupplier) {
+            var kinds = Set.of(BUILD, TRANSFER);
+            assertFalse(queue.offerConstructionHandoff(WORLD, "builder", null, kinds, 5, locate, (worker, item) -> 0));
+            queue.submit("mining", WORLD, List.of(job("mine", GATHER, List.of())));
+            mining = queue.claim(WORLD, "original", Set.of(GATHER), 6).job();
+            var closeBy = new ProjectQueue.ResourceSite(8, 64, 10);
+            assertFalse(queue.offerConstructionHandoff(WORLD, "builder", null, kinds, 7,
+                    worker -> closeBy, (worker, item) -> 0));
+        } else {
+            for (long now = 5; now <= 9; now += 2) {
+                var lease = queue.claim(WORLD, "original", Set.of(BUILD), now).job();
+                assertTrue(queue.finish("house", "place-1", lease.lease(), false, ProjectQueue.TARGET_TIMEOUT, now + 1));
+            }
+        }
         assertFalse(queue.offerConstructionHandoff(WORLD, "builder", null, Set.of(BUILD), 11, locate, (worker, item) -> 0));
         assertEquals(stockAvailable, queue.offerConstructionHandoff(WORLD, "builder", null,
                 Set.of(BUILD, TRANSFER), 11, locate, (worker, item) -> 0));
@@ -421,6 +436,9 @@ class ProjectQueueTest {
         }
         assertNull(restored.claim(WORLD, "original", Set.of(BUILD), 14));
         assertEquals("place-1", restored.claim(WORLD, "builder", Set.of(BUILD), 14).job().work().id());
+        if (busySupplier) {
+            assertEquals(mining.lease(), restored.claim(WORLD, "original", Set.of(GATHER), 14).job().lease());
+        }
     }
 
     @Test void retriesOnlyPlacementsWithExhaustedApproaches() throws Exception {

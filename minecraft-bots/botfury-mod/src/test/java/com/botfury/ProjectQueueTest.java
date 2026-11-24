@@ -691,6 +691,41 @@ class ProjectQueueTest {
         assertNull(retry.resourceSite());
     }
 
+    @Test void carriedAndStockedInputsRecoverAStalledGatherWithoutBreakingCraftOwnership() throws Exception {
+        var journal = directory.resolve("recover-gather-from-chest.json");
+        var queue = new ProjectQueue(journal);
+        String chest = "block:3,64,0";
+        String logs = "minecraft:oak_log";
+        String inspection = "{\"target\":{\"x\":3,\"y\":64,\"z\":0},\"direction\":\"INSPECT\"}";
+        String gathering = "{\"resource\":\"block:minecraft:oak_log\",\"item\":\"minecraft:oak_log\",\"variant\":\"both\",\"count\":32}";
+        queue.submitSupplied("house", WORLD, List.of(
+                new ProjectQueue.Work("stock", TRANSFER, inspection, List.of(), Set.of(chest)),
+                new ProjectQueue.Work("gather", GATHER, gathering, List.of("stock"), Set.of()),
+                new ProjectQueue.Work("craft", CRAFT, "", List.of("gather"), Set.of(), "gather")), chest);
+        var inspect = queue.claim(WORLD, "scout", Set.of(TRANSFER), 1).job();
+        assertTrue(queue.finish("house", "stock", inspect.lease(), true, "Observed 12 logs",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(logs, 12)), 2));
+        for (int now = 3; now <= 7; now += 2) {
+            var lease = queue.claim(WORLD, "worker" + now, Set.of(GATHER), now).job();
+            assertTrue(queue.finish("house", "gather", lease.lease(), false, ProjectQueue.GATHER_STALLED, now + 1));
+        }
+        var position = new ProjectQueue.ResourceSite(0, 64, 0);
+        assertNull(queue.offerGatheringStock(WORLD, "helper", null, 9, position, (bot, item) -> 16));
+        var pickup = queue.offerGatheringStock(WORLD, "helper", null, 10, position, (bot, item) -> 24).job();
+        assertEquals("gather", pickup.work().id());
+        assertEquals(TRANSFER, pickup.work().kind());
+        assertEquals(Set.of(chest), pickup.work().locks());
+        var restored = new ProjectQueue(journal);
+        assertNull(restored.claim(WORLD, "other", Set.of(CRAFT), 11));
+        pickup = restored.renew("house", "gather", pickup.lease(), 12);
+        assertTrue(restored.finish("house", "gather", pickup.lease(), true, "Observed 32 logs",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(logs, 4)), 13));
+        assertEquals(GATHER, restored.snapshot(14).get(0).jobs().get(1).work().kind());
+        assertEquals(4, restored.chestStock(WORLD).get(chest).report().items().get(logs));
+        assertNull(restored.claim(WORLD, "other", Set.of(CRAFT), 14));
+        assertEquals("craft", restored.claim(WORLD, "helper", Set.of(CRAFT), 15).job().work().id());
+    }
+
     @Test void workerHoldsCargoWhileAnotherDeliveryHasTheChest() throws Exception {
         var queue = new ProjectQueue(directory.resolve("chest-contention.json"));
         queue.submit("house", WORLD, List.of(job("collect", GATHER, List.of()),

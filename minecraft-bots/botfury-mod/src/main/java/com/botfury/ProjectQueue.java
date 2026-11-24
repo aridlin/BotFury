@@ -159,6 +159,9 @@ final class ProjectQueue {
     private static final Set<String> PICKAXE_RECIPES = Set.of("minecraft:wooden_pickaxe", "minecraft:stone_pickaxe",
             "minecraft:iron_pickaxe", "minecraft:diamond_pickaxe");
     private static final long STALLED_WORKER_COOLDOWN_MS = 30_000;
+    private static final int GATHERING_RETRY_RADIUS = 64;
+    private static final int GATHERING_RETRY_CLIMB = 12;
+    private static final int FAILED_SITE_RADIUS = 12;
     private static final long GATHER_RECONNECT_GRACE_MS = 30_000;
     private final Path journal;
     private final Path archive;
@@ -613,7 +616,7 @@ final class ProjectQueue {
                 // Finish using inventory already gathered for a chain before starting unrelated work.
                 if (job.work.sameWorkerAs != null || ownedOrder != null || gatherReconnectPending(job, now)
                         || CONSTRUCTION_PICKUP.equals(job.evidence) && job.expiresAt > now) {
-                    return assign(project, job, worker, now);
+                    return assign(project, job, worker, now, position);
                 }
                 if (fallbackJob == null || nearbyPickup && fallbackJob.state != State.FAILED) {
                     fallbackProject = project;
@@ -621,7 +624,7 @@ final class ProjectQueue {
                 }
             }
         }
-        return fallbackJob == null || waitingWithCargo ? null : assign(fallbackProject, fallbackJob, worker, now);
+        return fallbackJob == null || waitingWithCargo ? null : assign(fallbackProject, fallbackJob, worker, now, position);
     }
 
     private static boolean canRetryConstructionPickup(Job job, ResourceSite position) {
@@ -997,9 +1000,11 @@ final class ProjectQueue {
                 ? job.evidence.substring(GATHER_HANDOFF.length()) : null;
     }
 
-    private Assignment assign(Project project, Job job, String worker, long now) throws IOException {
+    private Assignment assign(Project project, Job job, String worker, long now, ResourceSite position) throws IOException {
+        var site = job.work.kind == Kind.GATHER && GATHER_STALLED.equals(job.evidence)
+                ? nearestRetrySite(project, job, position) : gatheringSite(project, job);
         var assigned = new Job(job.work, State.LEASED, job.attempts + 1, worker,
-                UUID.randomUUID(), now + LEASE_MS, null, job.chest, gatheringSite(project, job));
+                UUID.randomUUID(), now + LEASE_MS, null, job.chest, site);
         replace(project, assigned);
         return assignment(project, assigned);
     }
@@ -1023,7 +1028,7 @@ final class ProjectQueue {
     }
 
     private static ResourceSite gatheringSite(Project project, Job job) {
-        // A route stall invalidates the previous approach, including an inherited site for this material.
+        // Recovery callers without a current worker position must start without a site hint after a stall.
         if (job.work.kind == Kind.GATHER && GATHER_STALLED.equals(job.evidence)) return null;
         if (job.resourceSite != null || job.work.kind != Kind.GATHER) return job.resourceSite;
         var source = gatherSource(job.work.payload);
@@ -1034,6 +1039,30 @@ final class ProjectQueue {
                     && source.equals(gatherSource(previous.work.payload))) return previous.resourceSite;
         }
         return null;
+    }
+
+    private static ResourceSite nearestRetrySite(Project project, Job job, ResourceSite position) {
+        if (position == null) return null;
+        var source = gatherSource(job.work.payload);
+        if (source == null) return null;
+        ResourceSite best = null;
+        double nearest = GATHERING_RETRY_RADIUS;
+        for (var previous : project.jobs) {
+            var site = previous.resourceSite;
+            if (previous.state != State.DONE || previous.work.kind != Kind.GATHER || site == null
+                    || site.y - position.y > GATHERING_RETRY_CLIMB
+                    || job.resourceSite != null && gatheringDistance(site, job.resourceSite) <= FAILED_SITE_RADIUS) continue;
+            double distance = gatheringDistance(site, position);
+            if (distance < nearest && source.equals(gatherSource(previous.work.payload))) {
+                best = site;
+                nearest = distance;
+            }
+        }
+        return best;
+    }
+
+    private static double gatheringDistance(ResourceSite a, ResourceSite b) {
+        return Math.hypot(Math.hypot((double) a.x - b.x, (double) a.y - b.y), (double) a.z - b.z);
     }
 
     private static GatherSource gatherSource(String payload) {

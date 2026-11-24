@@ -282,9 +282,10 @@ final class SubsurfaceAccess {
 
     private boolean start(MinecraftClient client, BlockPos position, List<BlockPos> destinations,
                           ProjectGather.Area area, int age, boolean returning) {
-        if (!equipDiggingTool(client, returning) && !returning) return false;
+        boolean equipped = equipDiggingTool(client, returning);
+        if (!equipped && !returning) return false;
         try {
-            settings = BaritoneSettings.prospecting();
+            settings = BaritoneSettings.prospecting(equipped);
         } catch (ReflectiveOperationException | LinkageError error) {
             return false;
         }

@@ -19,7 +19,7 @@ final class TaskDefense {
     private static long lastWalkEvent;
     private static boolean pathPaused;
     private static boolean retreatingFromWarden;
-    private static boolean sheltering;
+    private static String shelterStatus;
     private static boolean protectingWork;
     private static boolean eating;
     private static Vec3d walkingDirection;
@@ -47,12 +47,13 @@ final class TaskDefense {
         stopEating(client);
         ThreatEvasion.clearDetour();
         PhantomShelter.clear();
+        RangedShelter.clear();
         protectingWork = false;
         pathPaused=false;
         holdUntil=0;
-        sheltering=false;
+        shelterStatus=null;
     }
-    static boolean sheltering() { return sheltering; }
+    static String evasionStatus() { return shelterStatus == null ? "Avoiding danger" : shelterStatus; }
 
     static boolean evade(MinecraftClient client,boolean working){
         if(!eligible(client,true)){
@@ -66,22 +67,25 @@ final class TaskDefense {
             stopWalking(client);
             holdUntil = 0;
         }
-        if((working||sheltering)&&System.nanoTime()<holdUntil){
+        if((working||shelterStatus!=null)&&System.nanoTime()<holdUntil){
             if(walkingDirection!=null)walk(client);
-            else if (sheltering) defendInPlace(client);
+            else if (shelterStatus != null) defendInPlace(client);
             return true;
         }
         stopWalking(client);
         var action=working ? ThreatEvasion.dodge(client) : null;
-        boolean shelter = false;
+        shelterStatus = null;
+        if (action == null) {
+            action = RangedShelter.seek(client);
+            if (action != null) shelterStatus = "Taking cover from skeleton fire";
+        }
         if (action == null) {
             action = PhantomShelter.seek(client);
-            shelter = action != null;
+            if (action != null) shelterStatus = "Sheltering from a nearby Phantom";
         }
-        sheltering = shelter;
         if(action!=null){
             walkingDirection=action.walkingDirection();
-            if (shelter && walkingDirection == null) defendInPlace(client);
+            if (shelterStatus != null && walkingDirection == null) defendInPlace(client);
             else stopEating(client);
             retreatingFromWarden = action.wardensNearby();
             retreatStep = action.step();
@@ -91,9 +95,9 @@ final class TaskDefense {
             BotInventory.evaded();
             long now=System.nanoTime();
             if(walkingDirection!=null) walk(client);
-            if ((shelter || walkingDirection != null || retreatingFromWarden) && now - lastWalkEvent >= 5_000_000_000L) {
+            if ((shelterStatus != null || walkingDirection != null || retreatingFromWarden) && now - lastWalkEvent >= 5_000_000_000L) {
                 lastWalkEvent = now;
-                String reason = shelter ? "Sheltering from a nearby Phantom"
+                String reason = shelterStatus != null ? shelterStatus
                         : !retreatingFromWarden && retreatStep != null ? "Changing elevation to escape a blast"
                         : !retreatingFromWarden ? "Stepping out of a projectile or blast path"
                         : retreatStep != null ? "Changing elevation to escape a Warden"

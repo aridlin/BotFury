@@ -72,8 +72,30 @@ final class BaritoneClient {
         return goTo(destinations.get(0));
     }
 
+    static boolean goToAltitude(int y) {
+        var api = GoalApi.INSTANCE;
+        if (!available() || api == null) return false;
+        var constructor = GoalApi.ALTITUDE;
+        if (constructor == null) return false;
+        try {
+            api.start.invoke(api.process, constructor.newInstance(y));
+            return true;
+        } catch (ReflectiveOperationException | LinkageError error) {
+            return false;
+        }
+    }
+
     private record GoalApi(Object process, Constructor<?> block, Method start) {
         private static final GoalApi INSTANCE = create();
+        private static final Constructor<?> ALTITUDE = altitude();
+
+        private static Constructor<?> altitude() {
+            try {
+                return Class.forName("baritone.api.pathing.goals.GoalYLevel").getConstructor(int.class);
+            } catch (ReflectiveOperationException | LinkageError unavailable) {
+                return null;
+            }
+        }
 
         private static GoalApi create() {
             var path = PathApi.INSTANCE;

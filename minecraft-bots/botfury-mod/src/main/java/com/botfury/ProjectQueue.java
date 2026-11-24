@@ -924,7 +924,17 @@ final class ProjectQueue {
                 var target = JSON.fromJson(job.work.payload, StationTarget.class).target;
                 if (target == null) continue;
                 double distance = distance(candidate, target);
-                if (distance > 24) continue;
+                String handoff = "build-handoff:" + pickup.work.id;
+                int limit = MAX_SUPPLY_RECOVERIES;
+                if (project.supplyRecoveries.getOrDefault(handoff, 0) >= limit) {
+                    if (job.state != State.FAILED || !failedApproach
+                            || !project.supplyRecoveries.containsKey("pose:" + job.work.id)) continue;
+                    handoff = "pose-handoff:" + pickup.work.id;
+                    limit = 1;
+                    var storage = JSON.fromJson(pickup.work.payload, StationTarget.class).target;
+                    if (distance > 40 || target.y() - candidate.y > CONSTRUCTION_PICKUP_RETRY_CLIMB
+                            || storage == null || distance(candidate, storage) > 32) continue;
+                } else if (distance > 24) continue;
                 var original = locate.apply(pickup.worker);
                 if (failedApproach) {
                     // A close worker can still be stranded on the wrong side of a wall or height change.
@@ -932,7 +942,7 @@ final class ProjectQueue {
                             < PLACEMENT_HANDOFF_SEPARATION) continue;
                 } else if (original == null || distance(original, target) < distance + 16) continue;
                 if (reassignConstructionCargo(project, pickup, worker, heldCount.applyAsInt(worker, material),
-                        kinds.contains(Kind.TRANSFER), now)) {
+                        kinds.contains(Kind.TRANSFER), handoff, limit, now)) {
                     return true;
                 }
             }
@@ -946,20 +956,19 @@ final class ProjectQueue {
     }
 
     private boolean reassignConstructionCargo(Project project, Job pickup, String worker, int held,
-                                              boolean canCollect, long now) throws IOException {
+                                              boolean canCollect, String handoff, int limit, long now) throws IOException {
         var batch = project.jobs.stream().filter(job -> job.state != State.DONE
                 && pickup.work.id.equals(job.work.sameWorkerAs)).toList();
         if (pickup.state != State.DONE || batch.stream().anyMatch(job -> job.work.kind != Kind.BUILD
                 || job.state == State.LEASED)) return false;
-        String key = "build-handoff:" + pickup.work.id;
-        int handoffs = project.supplyRecoveries.getOrDefault(key, 0);
-        if (handoffs >= MAX_SUPPLY_RECOVERIES) return false;
+        int handoffs = project.supplyRecoveries.getOrDefault(handoff, 0);
+        if (handoffs >= limit || held < 0) return false;
         Job replacement = held >= batch.size()
                 ? new Job(pickup.work, State.DONE, pickup.attempts, worker, pickup.lease, 0, pickup.evidence, pickup.chest)
                 : canCollect ? replacementConstructionPickup(project, pickup, worker, batch.size(), held, now) : null;
         if (replacement == null) return false;
         var recovery = new HashMap<>(project.supplyRecoveries);
-        recovery.put(key, handoffs + 1);
+        recovery.put(handoff, handoffs + 1);
         var jobs = project.jobs.stream().map(job -> {
             if (job == pickup) return replacement;
             if (batch.contains(job) && (placementHandoffOpen(job, now)

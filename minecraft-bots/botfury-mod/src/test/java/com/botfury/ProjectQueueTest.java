@@ -838,6 +838,51 @@ class ProjectQueueTest {
         assertEquals(1, replacement.attempts());
     }
 
+    @Test void exhaustedHandoffBudgetAllowsOneNewBuilderForAFailedReplannedPose() throws Exception {
+        var journal = directory.resolve("pose-handoff.json");
+        String material = "minecraft:oak_planks";
+        String chest = "block:-27,64,0";
+        var pickup = new ProjectQueue.Work("pickup", TRANSFER,
+                "{\"target\":{\"x\":-27,\"y\":64,\"z\":0},\"direction\":\"TAKE\",\"item\":\"" + material + "\",\"stock\":1}",
+                List.of("ready"), Set.of(chest), null, null, material);
+        var placement = new ProjectQueue.Work("place-1", BUILD, "{\"target\":{\"x\":0,\"y\":66,\"z\":0}}",
+                List.of("pickup"), Set.of("wall"), "pickup");
+        var stock = new ProjectQueue.ChestReport(chest, java.util.Map.of(material, 4));
+        var ready = job("ready", ProjectQueue.Kind.BARRIER, List.of());
+        var initial = List.of(new ProjectQueue.Job(ready, ProjectQueue.State.DONE, 0, null, null, 0, "Ready", null),
+                new ProjectQueue.Job(pickup, ProjectQueue.State.DONE, 1, "original", null, 0,
+                        "Materials collected", new ProjectQueue.ChestObservation(stock, 1)),
+                new ProjectQueue.Job(placement, ProjectQueue.State.FAILED, 3, null, null, 0, ProjectQueue.TARGET_TIMEOUT, null));
+        var project = new ProjectQueue.Project("house", WORLD, initial, null, chest,
+                java.util.Map.of("build-handoff:pickup", 2, "pose:place-1", 1));
+        Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                "projects", java.util.Map.of(project.id(), project))));
+        var queue = new ProjectQueue(journal);
+        var originalSite = new ProjectQueue.ResourceSite(1, 64, 1);
+        var alternateSite = new ProjectQueue.ResourceSite(-29, 64, 0);
+        assertFalse(queue.offerConstructionHandoff(WORLD, "far", null, Set.of(BUILD, TRANSFER), 2,
+                name -> name.equals("original") ? originalSite : new ProjectQueue.ResourceSite(29, 64, 0), (bot, item) -> 0));
+        assertTrue(queue.offerConstructionHandoff(WORLD, "alternate", null, Set.of(BUILD, TRANSFER), 3,
+                name -> name.equals("original") ? originalSite : alternateSite, (bot, item) -> 0));
+        queue = new ProjectQueue(journal);
+        assertNull(queue.claim(WORLD, "original", Set.of(BUILD), 4));
+        var collector = queue.claim(WORLD, "alternate", Set.of(TRANSFER), 5).job();
+        assertEquals("pickup", collector.work().id());
+        assertTrue(queue.finish("house", "pickup", collector.lease(), true, "Plank collected", stock, 6));
+        long now = 7;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            var assigned = queue.claim(WORLD, "alternate", Set.of(BUILD), now++).job();
+            assertEquals("place-1", assigned.work().id());
+            assertTrue(queue.finish("house", "place-1", assigned.lease(), false, ProjectQueue.TARGET_TIMEOUT, now++));
+            now += ProjectQueue.PLACEMENT_HANDOFF_WINDOW_MS;
+        }
+        queue = new ProjectQueue(journal);
+        assertFalse(queue.offerConstructionHandoff(WORLD, "third", null, Set.of(BUILD, TRANSFER), now,
+                name -> name.equals("alternate") ? originalSite : alternateSite, (bot, item) -> 1));
+        assertEquals(1, queue.snapshot(now).get(0).supplyRecoveries().get("pose-handoff:pickup"));
+        assertEquals(2, queue.snapshot(now).get(0).supplyRecoveries().get("build-handoff:pickup"));
+    }
+
     @Test void observedAlternatePoseReopensPlacementAndReplenishesMissingCargo() throws Exception {
         var journal = directory.resolve("alternate-placement-pose.json");
         var queue = new ProjectQueue(journal);

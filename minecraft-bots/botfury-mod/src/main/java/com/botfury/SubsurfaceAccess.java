@@ -32,6 +32,7 @@ final class SubsurfaceAccess {
     private int started, movedAt, retryAt, heading;
     private Vec3d lastMovement;
     private BaritoneSettings settings;
+    private boolean escapingExploration, handDigging;
     private Passage passage;
     private int passageDeadline;
     private BlockPos stalledAt;
@@ -90,6 +91,33 @@ final class SubsurfaceAccess {
         var goal = goals.get(0);
         if (!client.player.getBlockPos().equals(goal) && age - started < 160
                 && (age - started < 55 || BaritoneClient.pursuing(goal))) return true;
+        stop();
+        return false;
+    }
+
+    boolean escapeExploration(MinecraftClient client, int age, ProjectGather.Area area) {
+        if (!hasFooting(client)) return false;
+        var player = client.player;
+        var feet = player.getBlockPos();
+        var world = client.world;
+        var exits = new ArrayList<BlockPos>();
+        for (var exit : BlockPos.iterateOutwards(feet, 5, 2, 5)) {
+            int distance = Math.abs(exit.getX() - feet.getX()) + Math.abs(exit.getZ() - feet.getZ());
+            if (distance < 4 || distance > 5 || !validDestination(client, exit, area)) continue;
+            var floor = world.getBlockState(exit.down());
+            if (!ProjectPlacement.flushFloor(floor, world, exit.down()) || floor.isOf(Blocks.MAGMA_BLOCK)
+                    || !world.getFluidState(exit).isEmpty() || !world.getFluidState(exit.up()).isEmpty()) continue;
+            var box = player.getBoundingBox().offset(Vec3d.ofBottomCenter(exit).subtract(player.getPos()));
+            if (world.isSpaceEmpty(player, box)) exits.add(exit.toImmutable());
+        }
+        return !exits.isEmpty() && start(client, feet, exits, area, age, false, true);
+    }
+
+    boolean continueExplorationExit(MinecraftClient client, int age) {
+        if (!escapingExploration) return false;
+        var feet = client.player.getBlockPos();
+        if (!goals.contains(feet) && age - started < 240
+                && (age - started < 40 || BaritoneClient.pursuing(goals.get(0)))) return true;
         stop();
         return false;
     }
@@ -282,13 +310,20 @@ final class SubsurfaceAccess {
 
     private boolean start(MinecraftClient client, BlockPos position, List<BlockPos> destinations,
                           ProjectGather.Area area, int age, boolean returning) {
+        return start(client, position, destinations, area, age, returning, false);
+    }
+
+    private boolean start(MinecraftClient client, BlockPos position, List<BlockPos> destinations,
+                          ProjectGather.Area area, int age, boolean returning, boolean explorationExit) {
         boolean equipped = equipDiggingTool(client, returning);
-        if (!equipped && !returning) return false;
+        if (!equipped && !returning && !explorationExit) return false;
         try {
-            settings = BaritoneSettings.prospecting(equipped);
+            settings = explorationExit ? BaritoneSettings.explorationExit(equipped) : BaritoneSettings.prospecting(equipped);
         } catch (ReflectiveOperationException | LinkageError error) {
             return false;
         }
+        escapingExploration = explorationExit;
+        handDigging = explorationExit && !equipped;
         origin = position;
         goals = destinations;
         excluded = area;
@@ -310,9 +345,21 @@ final class SubsurfaceAccess {
 
     boolean blocksBreaking(MinecraftClient client, BlockPos pos) {
         if (!active()) return false;
-        if (client.world == null || !pos.isWithinDistance(origin, REACH)
+        if (client.world == null || !pos.isWithinDistance(origin, escapingExploration ? 6 : REACH)
                 || excluded != null && excluded.contains(pos)
                 || !BaritoneSettings.recoverableTerrain(client.world.getBlockState(pos).getBlock())) return true;
+        if (escapingExploration) {
+            var world = client.world;
+            var block = world.getBlockState(pos).getBlock();
+            if (handDigging && !BaritoneSettings.handDiggableTerrain(block) || world.getBlockState(pos.up()).getBlock() instanceof FallingBlock) {
+                return true;
+            }
+            for (var side : Direction.values()) {
+                var neighbor = pos.offset(side);
+                if (!world.isChunkLoaded(neighbor.getX() >> 4, neighbor.getZ() >> 4)
+                        || !world.getFluidState(neighbor).isEmpty()) return true;
+            }
+        }
         return client.world.getPlayers().stream().anyMatch(player -> player.isAlive() && !player.isSpectator()
                 && player.getBlockPos().down().equals(pos));
     }
@@ -358,6 +405,7 @@ final class SubsurfaceAccess {
         BaritoneClient.execute("stop");
         settings.close();
         settings = null;
+        escapingExploration = handDigging = false;
         origin = null;
         lastMovement = null;
         goals = List.of();

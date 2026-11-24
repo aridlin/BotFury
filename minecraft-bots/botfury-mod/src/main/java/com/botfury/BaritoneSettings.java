@@ -30,14 +30,19 @@ final class BaritoneSettings implements AutoCloseable {
     }
 
     BaritoneSettings(boolean allowBreak, boolean preserveGates, boolean recovery) throws ReflectiveOperationException {
-        this(allowBreak, preserveGates, recovery, false);
+        this(allowBreak, preserveGates, recovery, false, false);
     }
 
     static BaritoneSettings prospecting(boolean allowBreak) throws ReflectiveOperationException {
-        return new BaritoneSettings(allowBreak, true, true, true);
+        return new BaritoneSettings(allowBreak, true, true, true, false);
     }
 
-    private BaritoneSettings(boolean allowBreak, boolean preserveGates, boolean recovery, boolean prospecting)
+    static BaritoneSettings explorationExit(boolean equipped) throws ReflectiveOperationException {
+        return new BaritoneSettings(true, true, true, true, !equipped);
+    }
+
+    private BaritoneSettings(boolean allowBreak, boolean preserveGates, boolean recovery, boolean prospecting,
+                             boolean handDigging)
             throws ReflectiveOperationException {
         Object settings = Class.forName("baritone.api.BaritoneAPI").getMethod("getSettings").invoke(null);
         breaking = settings.getClass().getField("allowBreak").get(settings);
@@ -71,7 +76,7 @@ final class BaritoneSettings implements AutoCloseable {
             if (recovery) {
                 var blocked = new LinkedHashSet<Object>(oldExcludedFromBreaking);
                 for (Block block : Registries.BLOCK) {
-                    if (!recoverableTerrain(block)) blocked.add(block);
+                    if (!recoverableTerrain(block) || handDigging && !handDiggableTerrain(block)) blocked.add(block);
                 }
                 value.set(excludedFromBreaking, List.copyOf(blocked));
             }
@@ -90,6 +95,10 @@ final class BaritoneSettings implements AutoCloseable {
         var state = block.getDefaultState();
         return state.isIn(BlockTags.DIRT) || state.isIn(BlockTags.BASE_STONE_OVERWORLD)
                 || state.isIn(BlockTags.BASE_STONE_NETHER);
+    }
+
+    static boolean handDiggableTerrain(Block block) {
+        return block.getDefaultState().isIn(BlockTags.DIRT) && !block.getDefaultState().isToolRequired();
     }
 
     @Override public void close() {

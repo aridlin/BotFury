@@ -422,6 +422,29 @@ class ProjectQueueTest {
         assertEquals(ProjectQueue.State.WAITING, jobs.get(2).state());
     }
 
+    @Test void fuelSubstitutionUpdatesOnlyTheMatchingSmeltJobAndSurvivesRestart() throws Exception {
+        var journal = directory.resolve("smelt-fuel.json");
+        var board = new ProjectQueue(journal);
+        String coal = "{\"resource\":\"coal\",\"variant\":\"both\",\"item\":\"minecraft:coal\",\"count\":1}";
+        board.submitSupplied("stock", WORLD, List.of(new ProjectQueue.Work("fuel", GATHER, coal, List.of(), Set.of(), null),
+                new ProjectQueue.Work("smelt", SMELT,
+                        "{\"recipe\":\"minecraft:iron_ingot_from_smelting_raw_iron\",\"input\":\"minecraft:raw_iron\",\"fuel\":\"minecraft:coal\",\"count\":3}",
+                        List.of("fuel"), Set.of(), "fuel"),
+                new ProjectQueue.Work("coal-stock", GATHER, coal, List.of(), Set.of(), null)), "block:3,64,0");
+        var fuel = board.claim(WORLD, "miner", Set.of(GATHER), 1);
+        assertEquals("smelt", fuel.fuelFor().job());
+        assertTrue(board.finish("stock", "fuel", fuel.job().lease(), true,
+                ProjectQueue.ALTERNATIVE_FUEL + "minecraft:oak_planks", 2));
+        var restored = new ProjectQueue(journal);
+        var smelt = restored.claim(WORLD, "miner", Set.of(SMELT), 3).job();
+        assertEquals("minecraft:oak_planks", com.google.gson.JsonParser.parseString(smelt.work().payload())
+                .getAsJsonObject().get("fuel").getAsString());
+        var coalStock = restored.claim(WORLD, "collector", Set.of(GATHER), 4);
+        assertNull(coalStock.fuelFor());
+        assertThrows(IllegalArgumentException.class, () -> restored.finish("stock", "coal-stock", coalStock.job().lease(),
+                true, ProjectQueue.ALTERNATIVE_FUEL + "minecraft:oak_planks", 5));
+    }
+
     @Test void retriesInterruptedProductionWithoutReopeningRecipeFailures() throws Exception {
         var board = new ProjectQueue(directory.resolve("production-retry.json"));
         board.submit("tools", WORLD, List.of(job("craft", CRAFT, List.of()), job("smelt", SMELT, List.of())));

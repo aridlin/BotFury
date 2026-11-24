@@ -296,6 +296,37 @@ class ProjectQueueTest {
         assertEquals("refine", restored.claim(WORLD, "second", Set.of(CRAFT), 7).job().work().id());
     }
 
+    @Test void stalledGatheringUsesNearestCompatibleSiteOutsideFailedAreaAfterRestart() throws Exception {
+        var journal = directory.resolve("stalled-gather-alternate.json");
+        var queue = new ProjectQueue(journal);
+        String logs = "{\"resource\":\"block:minecraft:oak_log\",\"variant\":\"both\",\"item\":\"minecraft:oak_log\",\"count\":2}";
+        var sites = List.of(new ProjectQueue.ResourceSite(48, 64, 0),
+                new ProjectQueue.ResourceSite(30, 77, 0), new ProjectQueue.ResourceSite(55, 64, 0),
+                new ProjectQueue.ResourceSite(28, 64, 0), new ProjectQueue.ResourceSite(20, 64, 0),
+                new ProjectQueue.ResourceSite(30, 64, 0));
+        var work = new java.util.ArrayList<ProjectQueue.Work>();
+        for (int i = 0; i < sites.size(); i++) {
+            var payload = i == sites.size() - 1 ? logs.replace("oak_log", "birch_log") : logs;
+            work.add(new ProjectQueue.Work("scout-" + i, GATHER, payload, List.of(), Set.of()));
+        }
+        work.add(new ProjectQueue.Work("collect", GATHER, logs,
+                work.stream().map(ProjectQueue.Work::id).toList(), Set.of()));
+        queue.submit("house", WORLD, work);
+        for (int i = 0; i < sites.size(); i++) {
+            var prior = queue.claim(WORLD, "Scout", Set.of(GATHER), 2L * i).job();
+            assertTrue(queue.finish("house", prior.work().id(), prior.lease(), true, "Observed stock",
+                    null, sites.get(i), 2L * i + 1));
+        }
+        var first = queue.claim(WORLD, "First", Set.of(GATHER), 20).job();
+        assertEquals(sites.get(4), first.resourceSite());
+        assertTrue(queue.finish("house", "collect", first.lease(), false, ProjectQueue.GATHER_STALLED, 21));
+
+        var restored = new ProjectQueue(journal);
+        var replacement = restored.claim(WORLD, "Second", Set.of(GATHER), "house", 22,
+                new ProjectQueue.ResourceSite(30, 64, 0)).job();
+        assertEquals(sites.get(0), replacement.resourceSite());
+    }
+
     @Test void repairingAnotherBlockRecalculatesAPreviouslyShrunkPickup() throws Exception {
         var journal = directory.resolve("expanded-repair-cargo.json");
         var queue = new ProjectQueue(journal);

@@ -833,7 +833,7 @@ final class StructureProject {
                 var adjacent = from.offset(direction);
                 for (int height = -1; height <= 1; height++) {
                     var next = adjacent.up(height);
-                    if (!next.isWithinDistance(start, 7) || !loaded(client, next.up())
+                    if (!next.isWithinDistance(start, 12) || !loaded(client, next.up())
                             || !safeStand(client, next, Map.of())
                             || height > 0 && !client.world.isAir(from.up(2))
                             || height < 0 && !client.world.isAir(adjacent.up())) continue;

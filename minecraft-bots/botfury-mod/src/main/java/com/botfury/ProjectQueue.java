@@ -1222,7 +1222,7 @@ final class ProjectQueue {
         if (GATHER_TOOLS_NEEDED.equals(evidence)) {
             var source = gatherSource(waiting.work.payload);
             String checkpoint = "tool-depth:" + waiting.work.id;
-            if (site != null && source != null && SubsurfaceAccess.deepResource(source.resource)
+            if (site != null && source != null && SubsurfaceAccess.prospectingAltitude(source.resource) != null
                     && recoveries.getOrDefault(checkpoint, Integer.MAX_VALUE) - (long) site.y >= 8) {
                 // Renew while a miner opens deeper ground, with a fixed limit at each checkpoint.
                 recoveries.put(checkpoint, site.y);

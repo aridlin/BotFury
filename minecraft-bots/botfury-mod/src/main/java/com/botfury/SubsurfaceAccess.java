@@ -18,7 +18,6 @@ final class SubsurfaceAccess {
     private static final int HARVEST_RESERVE = 20;
     private static final int[] ROUTE_DISTANCES = {5, 3, 7};
     private static final int[] ROUTE_OFFSETS = {0, -2, 2};
-    static final int PROSPECTING_DEPTH = -54;
     private BlockPos origin;
     private List<BlockPos> goals = List.of();
     private ProjectGather.Area excluded;
@@ -29,10 +28,21 @@ final class SubsurfaceAccess {
     boolean active() { return settings != null; }
 
     static boolean deepResource(String resource) {
+        return Integer.valueOf(-54).equals(prospectingAltitude(resource));
+    }
+
+    static Integer prospectingAltitude(String resource) {
+        if (resource.startsWith("block:minecraft:") && resource.endsWith("_ore")) {
+            resource = resource.substring("block:minecraft:".length(), resource.length() - "_ore".length());
+            if (resource.startsWith("deepslate_")) resource = resource.substring("deepslate_".length());
+        }
         return switch (resource) {
-            case "diamond", "redstone", "block:minecraft:diamond_ore", "block:minecraft:deepslate_diamond_ore",
-                    "block:minecraft:redstone_ore", "block:minecraft:deepslate_redstone_ore" -> true;
-            default -> false;
+            case "diamond", "redstone" -> -54;
+            case "gold" -> -16;
+            case "lapis" -> 0;
+            case "iron" -> 16;
+            case "copper" -> 48;
+            default -> null;
         };
     }
 

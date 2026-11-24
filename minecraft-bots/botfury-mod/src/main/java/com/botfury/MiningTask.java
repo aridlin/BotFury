@@ -98,6 +98,10 @@ final class MiningTask {
         projectDrop = drop;
         if (site == null) return;
         var location = new BlockPos(site.x(), site.y(), site.z());
+        Integer prospectingY = prospectingAltitude(client);
+        int workerY = client.player.getBlockY();
+        if (prospectingY != null && workerY <= location.getY() - 24
+                && Math.abs(workerY - prospectingY) < Math.abs(location.getY() - prospectingY)) return;
         if (client.world.isInBuildLimit(location) && client.world.getWorldBorder().contains(location)
                 && (exclude == null || !exclude.contains(location))) {
             rememberedSite = location;
@@ -313,10 +317,8 @@ final class MiningTask {
 
     private static void explore(MinecraftClient client) {
         if (returnToResourceSite(client)) return;
-        int depth = SubsurfaceAccess.PROSPECTING_DEPTH;
-        boolean deep = projectMining && client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)
-                && client.world.getBottomY() <= depth && SubsurfaceAccess.deepResource(job.resource);
-        if (deep) {
+        Integer depth = prospectingAltitude(client);
+        if (depth != null) {
             var feet = client.player.getBlockPos();
             if (lastProspectingCheckpointY - feet.getY() >= 8 && SubsurfaceAccess.hasFooting(client)
                     && !BuildProtection.blocked(feet) && (excluded == null || !excluded.contains(feet))) {
@@ -350,12 +352,18 @@ final class MiningTask {
             double radius = projectMining ? Math.min(1024, 32 + 24.0 * exploration) : 24 + 16 * (exploration % 3);
             int x = (int)(origin.x + Math.cos(angle) * radius);
             int z = (int)(origin.z + Math.sin(angle) * radius);
-            if (deep) {
+            if (depth != null) {
                 status = "Searching for " + job.resource + " around " + x + ", " + depth + ", " + z;
                 deepExplorationGoal = new BlockPos(x, depth, z);
                 path(deepExplorationGoal);
             } else path("explore " + x + " " + z);
         }
+    }
+
+    private static Integer prospectingAltitude(MinecraftClient client) {
+        if (!projectMining || !client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)) return null;
+        Integer depth = SubsurfaceAccess.prospectingAltitude(job.resource);
+        return depth != null && client.world.getBottomY() <= depth && client.world.getTopY() > depth ? depth : null;
     }
 
     private static boolean tryNaturalDescent(MinecraftClient client, int depth) {

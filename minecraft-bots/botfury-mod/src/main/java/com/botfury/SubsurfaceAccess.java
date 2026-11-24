@@ -10,12 +10,24 @@ import net.minecraft.util.math.Direction;
 final class SubsurfaceAccess {
     private static final Direction[] HEADINGS = {Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST};
     private static final int REACH = 12;
+    private static final int HARVEST_RESERVE = 20;
+    static final int PROSPECTING_DEPTH = -54;
     private BlockPos origin, goal;
     private ProjectGather.Area excluded;
     private int started, retryAt, heading;
     private BaritoneSettings settings;
 
     boolean active() { return settings != null; }
+
+    static boolean deepResource(String resource) {
+        return switch (resource) {
+            case "diamond", "redstone", "block:minecraft:diamond_ore", "block:minecraft:deepslate_diamond_ore",
+                    "block:minecraft:redstone_ore", "block:minecraft:deepslate_redstone_ore" -> true;
+            default -> false;
+        };
+    }
+
+    static boolean canDigRoute(MinecraftClient client) { return diggingToolSlot(client, false) >= 0; }
 
     boolean advance(MinecraftClient client, int age, int depth, ProjectGather.Area area) {
         return advance(client, age, depth, area, null);
@@ -83,20 +95,29 @@ final class SubsurfaceAccess {
                 && player.getBlockPos().down().equals(pos));
     }
 
+    private static int diggingToolSlot(MinecraftClient client, boolean returning) {
+        var inventory = client.player.getInventory();
+        int best = -1;
+        int bestPriority = Integer.MAX_VALUE;
+        for (int index = 0; index < 36; index++) {
+            var stack = inventory.getStack(index);
+            if (!(stack.getItem() instanceof PickaxeItem pickaxe)) continue;
+            int level = pickaxe.getMaterial().getMiningLevel();
+            int reserve = !returning && level >= 2 ? HARVEST_RESERVE : 0;
+            if (stack.getMaxDamage() - stack.getDamage() <= reserve) continue;
+            int priority = returning ? level : level == 1 ? -1 : level;
+            if (priority < bestPriority) {
+                best = index;
+                bestPriority = priority;
+            }
+        }
+        return best;
+    }
+
     private boolean equipDiggingTool(MinecraftClient client, boolean returning) {
         var player = client.player;
         var inventory = player.getInventory();
-        int best = -1;
-        int level = Integer.MAX_VALUE;
-        for (int index = 0; index < 36; index++) {
-            var stack = inventory.getStack(index);
-            if (stack.getItem() instanceof PickaxeItem pickaxe
-                    && stack.getMaxDamage() - stack.getDamage() > (returning ? 0 : 20)
-                    && pickaxe.getMaterial().getMiningLevel() < level) {
-                best = index;
-                level = pickaxe.getMaterial().getMiningLevel();
-            }
-        }
+        int best = diggingToolSlot(client, returning);
         if (best < 0) return false;
         if (best < 9) {
             inventory.selectedSlot = best;

@@ -14,6 +14,31 @@ class ProjectQueueTest {
     @TempDir Path directory;
     private static final String WORLD = "test|overworld";
 
+    @Test void wornToolsReopenOnlyTheGatherersProductionChain() throws Exception {
+        var journal = directory.resolve("mining-tools.json");
+        var queue = new ProjectQueue(journal);
+        queue.submitSupplied("stock", WORLD, List.of(job("previous", EXCAVATE, List.of()),
+                job("ingredients", GATHER, List.of("previous")),
+                new ProjectQueue.Work("tools", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\"}",
+                        List.of("ingredients"), Set.of(), "ingredients"),
+                new ProjectQueue.Work("ore", GATHER, "", List.of("tools"), Set.of(), "tools")), "block:3,64,0");
+        long now = 1;
+        for (var kind : List.of(EXCAVATE, GATHER, CRAFT)) {
+            var assigned = queue.claim(WORLD, "miner", Set.of(kind), now++).job();
+            assertTrue(queue.finish("stock", assigned.work().id(), assigned.lease(), true, "Done", now++));
+        }
+        var ore = queue.claim(WORLD, "miner", Set.of(GATHER), now++).job();
+        var site = new ProjectQueue.ResourceSite(6, -50, 8);
+        assertTrue(queue.finish("stock", "ore", ore.lease(), false, ProjectQueue.GATHER_TOOLS_NEEDED, null, site, now++));
+        var restored = new ProjectQueue(journal);
+        var jobs = restored.snapshot(now).get(0).jobs();
+        assertEquals(ProjectQueue.State.DONE, jobs.get(0).state());
+        assertEquals(ProjectQueue.State.WAITING, jobs.get(2).state());
+        assertEquals(site, jobs.get(3).resourceSite());
+        assertNull(restored.claim(WORLD, "other", Set.of(GATHER), now++));
+        assertEquals("ingredients", restored.claim(WORLD, "miner", Set.of(GATHER), now).job().work().id());
+    }
+
     @Test void stationaryGathererYieldsClaimToAnotherWorkerAfterRestart() throws Exception {
         var journal = directory.resolve("stalled-gather.json");
         var queue = new ProjectQueue(journal);

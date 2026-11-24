@@ -267,6 +267,7 @@ final class ProjectWorker {
                 MiningTask.tick(client);
                 var observation = MiningTask.observedSite();
                 if (observation != null) gatherSite = observation;
+                if (MiningTask.toolShortfall()) finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
             }
         } else if (production != null && block == null) {
             var result = production.tick(client, now);

@@ -132,6 +132,7 @@ final class ProjectQueue {
     private static final int MAX_PROJECTS = 32;
     private static final int MAX_DEPENDENCIES = 250_000;
     private static final String LEASE_EXPIRED = "Worker lease expired";
+    private static final String COORDINATOR_RESTARTED = "Coordinator restarted during work";
     static final String TARGET_TIMEOUT = "Timed out approaching or changing the target";
     static final String GATHER_STALLED = "Gathering stalled without item or route progress";
     static final String GATHER_TOOLS_NEEDED = "Gathering needs renewed tools";
@@ -1020,20 +1021,21 @@ final class ProjectQueue {
                 Job job = project.jobs.get(i);
                 if (job.state == State.LEASED && job.expiresAt <= now) {
                     if (jobs == null) jobs = new ArrayList<>(project.jobs);
+                    Job waiting;
                     if (restoredLeases.contains(job.lease)) {
                         interrupted.add(job.lease);
-                        jobs.set(i, new Job(job.work, State.WAITING, Math.max(0, job.attempts - 1), null, null, 0,
-                                "Coordinator restarted during work", job.chest, job.resourceSite));
+                        waiting = new Job(job.work, State.WAITING, Math.max(0, job.attempts - 1), null, null, 0,
+                                COORDINATOR_RESTARTED, job.chest, job.resourceSite);
                     } else {
-                        var retry = retry(job, LEASE_EXPIRED, job.chest, job.resourceSite);
-                        if (retry.state == State.WAITING && job.work.kind == Kind.GATHER && job.work.sameWorkerAs == null
-                                && job.resourceSite != null && gatherSource(job.work.payload) != null) {
-                            // The original gatherer may reconnect with partial cargo still in inventory.
-                            retry = new Job(job.work, State.WAITING, job.attempts, job.worker, null,
-                                    job.expiresAt + GATHER_RECONNECT_GRACE_MS, LEASE_EXPIRED, job.chest, job.resourceSite);
-                        }
-                        jobs.set(i, retry);
+                        waiting = retry(job, LEASE_EXPIRED, job.chest, job.resourceSite);
                     }
+                    if (waiting.state == State.WAITING && job.work.kind == Kind.GATHER && job.work.sameWorkerAs == null
+                            && job.resourceSite != null && gatherSource(job.work.payload) != null) {
+                        // The original gatherer may reconnect with partial cargo still in inventory.
+                        waiting = new Job(job.work, State.WAITING, waiting.attempts, job.worker, null,
+                                job.expiresAt + GATHER_RECONNECT_GRACE_MS, waiting.evidence, job.chest, job.resourceSite);
+                    }
+                    jobs.set(i, waiting);
                 }
             }
             if (jobs != null) {
@@ -1133,7 +1135,7 @@ final class ProjectQueue {
 
     private static boolean gatherReconnectPending(Job job, long now) {
         return job.work.kind == Kind.GATHER && job.worker != null && job.expiresAt > now
-                && LEASE_EXPIRED.equals(job.evidence);
+                && (LEASE_EXPIRED.equals(job.evidence) || COORDINATOR_RESTARTED.equals(job.evidence));
     }
 
     private static boolean cancelled(Project project) {

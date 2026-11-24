@@ -244,6 +244,37 @@ class ProjectQueueTest {
         assertEquals("ingredients", queue.claim(WORLD, "replacement", Set.of(GATHER), now).job().work().id());
     }
 
+    @Test void recoveryKeepsScaffoldOwnershipAndRestoresTheNewCleanerLease() throws Exception {
+        var path = directory.resolve("cleanup-pose.json");
+        var queue = new ProjectQueue(path);
+        String cell = "block:8,116,2";
+        String payload = """
+                {"target":{"x":8,"y":116,"z":2},"stand":{"x":8,"y":116,"z":3},"block":"minecraft:cobblestone"}
+                """;
+        var place = new ProjectQueue.Work("scaffold", BUILD, payload, List.of(), Set.of(cell));
+        var clean = new ProjectQueue.Work("clear", EXCAVATE, payload, List.of("scaffold"), Set.of(cell),
+                null, new ProjectQueue.Cleanup(cell, "scaffold"));
+        queue.submit("house", WORLD, List.of(place, clean));
+        var builder = queue.claim(WORLD, "builder", Set.of(BUILD), 1).job();
+        assertTrue(queue.finish("house", "scaffold", builder.lease(), true, "Placed", 2));
+        for (int attempt = 0; attempt < 3; attempt++) {
+            long now = 3 + attempt * 2;
+            var old = queue.claim(WORLD, "builder", Set.of(EXCAVATE), now).job();
+            assertTrue(queue.finish("house", "clear", old.lease(), false, ProjectQueue.TARGET_TIMEOUT, now + 1));
+        }
+        assertNull(queue.claim(WORLD, "nearby", Set.of(EXCAVATE), 10));
+        var request = queue.failedScaffoldCleanups(WORLD).get(0);
+        assertTrue(queue.recoverScaffoldCleanup(WORLD, request, new ProjectQueue.ResourceSite(10, 116, 2), "nearby", 11));
+        assertFalse(queue.recoverScaffoldCleanup(WORLD, request, new ProjectQueue.ResourceSite(11, 116, 2), "builder", 12));
+        queue = new ProjectQueue(path);
+        var restored = queue.claim(WORLD, "nearby", Set.of(EXCAVATE), 13).job();
+        assertEquals("clear", restored.work().id());
+        assertEquals(clean.cleanup(), restored.work().cleanup());
+        assertTrue(restored.work().locks().contains("block:10,115,2"));
+        assertTrue(queue.finish("house", "clear", restored.lease(), true, "Observed air", 14));
+        assertTrue(queue.failedScaffoldCleanups(WORLD).isEmpty());
+    }
+
     @Test void coordinatorInspectionRequiresCompletedMutationsAndRetiresAStaleWorkerLease() throws Exception {
         var path = directory.resolve("local-inspection.json");
         var queue = new ProjectQueue(path);

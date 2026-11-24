@@ -693,6 +693,28 @@ final class StructureProject {
         return repairPlacementPose(client, work, temporaryFooting, null);
     }
 
+    static BlockPos groundedScaffoldCleanup(MinecraftClient client, ProjectBlock block,
+                                            Set<String> temporaryFooting, ProjectQueue.ResourceSite worker) {
+        var start = new BlockPos(worker.x(), worker.y(), worker.z());
+        var target = block.target();
+        if (!start.isWithinDistance(target, 10) || !loaded(client, target)
+                || !block.matches(client.world.getBlockState(target))) return null;
+        return locallyReachableStands(client, start, stand -> dryCleanupFooting(client, stand)).stream()
+                .filter(stand -> !stand.down().equals(target) && !temporaryFooting.contains(ProjectBlock.key(stand.down()))
+                        && (stand.equals(start) || !stand.equals(block.stand()))
+                        && canRemoveBlock(client, stand, target, Map.of()))
+                .min(Comparator.comparingDouble(stand -> stand.getSquaredDistance(start))).orElse(null);
+    }
+
+    private static boolean dryCleanupFooting(MinecraftClient client, BlockPos stand) {
+        var world = client.world;
+        var floor = stand.down();
+        return ProjectPlacement.flushFloor(world.getBlockState(floor), world, floor)
+                && world.getFluidState(stand).isEmpty() && world.getFluidState(stand.up()).isEmpty()
+                && world.getBlockState(stand).getCollisionShape(world, stand).isEmpty()
+                && world.getBlockState(stand.up()).getCollisionShape(world, stand.up()).isEmpty();
+    }
+
     static ProjectQueue.Work groundedPlacementPose(MinecraftClient client, ProjectQueue.Work work,
                                                   Set<String> temporaryFooting, ProjectQueue.ResourceSite worker) {
         var start = new BlockPos(worker.x(), worker.y(), worker.z());
@@ -846,9 +868,14 @@ final class StructureProject {
     }
 
     private static Set<BlockPos> locallyReachableStands(MinecraftClient client, BlockPos start) {
+        return locallyReachableStands(client, start, stand -> safeStand(client, stand, Map.of()));
+    }
+
+    private static Set<BlockPos> locallyReachableStands(MinecraftClient client, BlockPos start,
+                                                        Predicate<BlockPos> safeFooting) {
         var seen = new HashSet<BlockPos>();
         var open = new ArrayDeque<BlockPos>();
-        if (!loaded(client, start.up()) || !safeStand(client, start, Map.of())) return seen;
+        if (!loaded(client, start.up()) || !safeFooting.test(start)) return seen;
         seen.add(start);
         open.add(start);
         while (!open.isEmpty()) {
@@ -858,7 +885,7 @@ final class StructureProject {
                 for (int height = -1; height <= 1; height++) {
                     var next = adjacent.up(height);
                     if (!next.isWithinDistance(start, 12) || !loaded(client, next.up())
-                            || !safeStand(client, next, Map.of())
+                            || !safeFooting.test(next)
                             || height > 0 && !client.world.isAir(from.up(2))
                             || height < 0 && !client.world.isAir(adjacent.up())) continue;
                     if (seen.add(next)) open.addLast(next);
@@ -1261,6 +1288,6 @@ final class StructureProject {
 
     private static boolean loaded(MinecraftClient client, BlockPos pos) {
         return client.world.isInBuildLimit(pos) && client.world.getWorldBorder().contains(pos)
-                && client.world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4);
+                && client.world.getChunkManager().isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4);
     }
 }

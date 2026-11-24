@@ -1011,7 +1011,9 @@ final class ProjectWorker {
             var inventory = player.getInventory();
             int slot = 0;
             while (slot < 36 && !inventory.getStack(slot).isSuitableFor(state)) slot++;
-            if (slot == 36) {
+            boolean temporaryCobblestone = work.cleanup() != null && work.cleanup().site().equals(ProjectBlock.key(target))
+                    && state.isOf(Blocks.COBBLESTONE);
+            if (slot == 36 && !temporaryCobblestone) {
                 if (!checkedExcavationTool) {
                     checkedExcavationTool = true;
                     if (net.minecraft.item.Items.STONE_PICKAXE.getDefaultStack().isSuitableFor(state)
@@ -1021,7 +1023,7 @@ final class ProjectWorker {
                 finish(client, false, ProjectQueue.EXCAVATION_TOOL_NEEDED + actual);
                 return;
             }
-            if (slot >= 9) {
+            if (slot >= 9 && slot < 36) {
                 if (player.currentScreenHandler != player.playerScreenHandler
                         || !player.playerScreenHandler.getCursorStack().isEmpty()) {
                     finish(client, false, "Close the container or clear the cursor to equip an excavation tool");
@@ -1031,7 +1033,7 @@ final class ProjectWorker {
                         inventory.selectedSlot, SlotActionType.SWAP, player);
                 return;
             }
-            inventory.selectedSlot = slot;
+            if (slot < 9) inventory.selectedSlot = slot;
         }
         player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, ray.getPos());
         if (BuildProtection.projectAction(assignment.project(),

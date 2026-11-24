@@ -70,6 +70,38 @@ final class ProjectProduction {
         return spec;
     }
 
+    static Identifier alternativeFuel(MinecraftClient client, ProjectQueue.FuelUse plan) {
+        var recipe = client.world.getRecipeManager().get(Identifier.tryParse(plan.recipe())).orElse(null);
+        if (!(recipe instanceof SmeltingRecipe smelting)) return null;
+        int output = smelting.getOutput(client.world.getRegistryManager()).getCount();
+        if (output < 1) return null;
+        long cookTicks = (long) smelting.getCookTime() * ((plan.count() + output - 1) / output);
+        if (cookTicks <= 0) return null;
+        var burnTimes = net.minecraft.block.entity.AbstractFurnaceBlockEntity.createFuelTimeMap();
+        var carried = new java.util.LinkedHashMap<Identifier, Integer>();
+        var inventory = client.player.getInventory();
+        for (int slot = 0; slot < 36; slot++) {
+            var stack = inventory.getStack(slot);
+            if (!stack.isEmpty() && !stack.isDamageable() && !stack.hasNbt()) {
+                carried.merge(Registries.ITEM.getId(stack.getItem()), stack.getCount(), Integer::sum);
+            }
+        }
+        Identifier best = null;
+        long bestWaste = Long.MAX_VALUE;
+        for (var entry : carried.entrySet()) {
+            var id = entry.getKey();
+            int ticks = burnTimes.getOrDefault(Registries.ITEM.get(id), 0);
+            if (ticks <= 0 || id.toString().equals(plan.input()) || id.toString().equals(plan.expectedFuel())
+                    || (long) ticks * entry.getValue() < cookTicks) continue;
+            long waste = (cookTicks + (long) ticks - 1) / ticks * ticks - cookTicks;
+            if (waste < bestWaste) {
+                best = id;
+                bestWaste = waste;
+            }
+        }
+        return best;
+    }
+
     private static Identifier item(String name) {
         Identifier id = name == null ? null : Identifier.tryParse(name);
         if (id == null || !Registries.ITEM.containsId(id) || id.equals(Identifier.of("minecraft", "air"))) {

@@ -44,6 +44,7 @@ final class ProjectWorker {
     private static FieldWorkbench fieldWorkbench;
     private static long nextWorkbenchSearch;
     private static ProjectGather gather;
+    private static boolean checkedCarriedFuel;
     private static ProjectQueue.ResourceSite gatherSite;
     private static long lastGatherProgress;
     private static int gatheredHighWater;
@@ -179,6 +180,7 @@ final class ProjectWorker {
         fieldWorkbench = null;
         nextWorkbenchSearch = 0;
         gather = null;
+        checkedCarriedFuel = false;
         gatherSite = null;
         lastGatherProgress = 0;
         gatheredHighWater = 0;
@@ -263,6 +265,14 @@ final class ProjectWorker {
         }
         if (gather != null) {
             int held = gather.inventoryCount(client);
+            if (!checkedCarriedFuel && held < gather.count() && assignment.fuelFor() != null) {
+                checkedCarriedFuel = true;
+                var fuel = ProjectProduction.alternativeFuel(client, assignment.fuelFor());
+                if (fuel != null) {
+                    finish(client, true, ProjectQueue.ALTERNATIVE_FUEL + fuel);
+                    return;
+                }
+            }
             if (held >= gather.count()) {
                 finish(client, true, "Observed " + held + " " + gather.item() + " in worker inventory");
             } else if (!gatherProgress(client, held, now)) {

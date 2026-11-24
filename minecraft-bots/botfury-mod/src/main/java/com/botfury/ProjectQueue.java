@@ -115,7 +115,11 @@ final class ProjectQueue {
             return new Project(id, world, updated, repeat, supplyChest, supplyRecoveries);
         }
     }
-    record Assignment(String project, String world, Job job) {}
+    record Assignment(String project, String world, Job job, FuelUse fuelFor) {
+        Assignment(String project, String world, Job job) { this(project, world, job, null); }
+    }
+    record FuelUse(String job, String recipe, String input, String expectedFuel, int count) {}
+    private record SmeltFuel(String recipe, String input, String fuel, String plannedFuel, int count) {}
     record OwnedStation(String project, String job, String payload) {}
     record OwnedPlacement(String project, String job, String payload) {}
     private static final java.util.regex.Pattern SCHEMATIC_PLACEMENT = java.util.regex.Pattern.compile("place-[0-9]+");
@@ -137,6 +141,7 @@ final class ProjectQueue {
     private static final String GATHER_REASSIGNED = "Gathering reassigned to a worker with cargo";
     private static final String CONTRIBUTION_ACTIVE = "Delivering a partial stock contribution";
     private static final String CONTRIBUTION_SETTLED = "Partial stock contribution settled";
+    static final String ALTERNATIVE_FUEL = "Using carried smelting fuel ";
     static final String TARGET_TIMEOUT = "Timed out approaching or changing the target";
     static final String GATHER_STALLED = "Gathering stalled without item or route progress";
     static final String GATHER_TOOLS_NEEDED = "Gathering needs renewed tools";
@@ -521,7 +526,7 @@ final class ProjectQueue {
                     // A claim response can be lost. Repeating a claim returns the original assignment.
                     return world.equals(project.world) && kinds.contains(job.work.kind) && !cancelled(project)
                             && (projectId == null || projectId.equals(project.id))
-                            ? new Assignment(project.id, project.world, job) : null;
+                            ? assignment(project, job) : null;
                 }
                 if (world.equals(project.world)) reserved.addAll(job.work.locks);
             }
@@ -814,7 +819,25 @@ final class ProjectQueue {
         var assigned = new Job(job.work, State.LEASED, job.attempts + 1, worker,
                 UUID.randomUUID(), now + LEASE_MS, null, job.chest, gatheringSite(project, job));
         replace(project, assigned);
-        return new Assignment(project.id, project.world, assigned);
+        return assignment(project, assigned);
+    }
+
+    private static Assignment assignment(Project project, Job job) {
+        return new Assignment(project.id, project.world, job, fuelUse(project, job));
+    }
+
+    private static FuelUse fuelUse(Project project, Job gather) {
+        if (gather.work.kind != Kind.GATHER || project.repeat != null || project.supplyChest == null) return null;
+        var source = gatherSource(gather.work.payload);
+        if (source == null) return null;
+        var consumers = project.jobs.stream().filter(job -> job.work.needs.contains(gather.work.id)).toList();
+        if (consumers.size() != 1) return null;
+        var smelt = consumers.get(0);
+        if (smelt.state != State.WAITING || smelt.work.kind != Kind.SMELT || !gather.work.id.equals(smelt.work.sameWorkerAs)) return null;
+        var spec = JSON.fromJson(smelt.work.payload, SmeltFuel.class);
+        if (spec == null || spec.recipe == null || spec.input == null || spec.count <= 0) return null;
+        String planned = spec.plannedFuel == null ? spec.fuel : spec.plannedFuel;
+        return source.item.equals(planned) ? new FuelUse(smelt.work.id, spec.recipe, spec.input, planned, spec.count) : null;
     }
 
     private static ResourceSite gatheringSite(Project project, Job job) {
@@ -912,6 +935,29 @@ final class ProjectQueue {
                     && (site == null || site.equals(job.resourceSite));
         }
         if (!owns(job, token, now) || !success && handoffWorker(job) != null) return false;
+        var fuelPlan = success ? fuelUse(project, job) : null;
+        boolean substituted = success && evidence.startsWith(ALTERNATIVE_FUEL);
+        if (substituted || fuelPlan != null && !fuelPlan.expectedFuel.equals(currentFuel(project, fuelPlan))) {
+            String fuel = substituted ? evidence.substring(ALTERNATIVE_FUEL.length()) : fuelPlan.expectedFuel;
+            if (fuelPlan == null || !fuel.matches("[a-z0-9_.-]+:[a-z0-9_./-]+")) {
+                throw new IllegalArgumentException("Alternative fuel needs a matching smelting job");
+            }
+            var smelt = find(project, fuelPlan.job);
+            var work = smelt.work;
+            var payload = JSON.fromJson(work.payload, com.google.gson.JsonObject.class);
+            payload.addProperty("plannedFuel", fuelPlan.expectedFuel);
+            payload.addProperty("fuel", fuel);
+            var modified = new Work(work.id, work.kind, JSON.toJson(payload), work.needs, work.locks, work.sameWorkerAs);
+            var jobs = new ArrayList<>(project.jobs);
+            jobs.set(jobs.indexOf(smelt), new Job(modified, smelt.state, smelt.attempts, smelt.worker, smelt.lease,
+                    smelt.expiresAt, smelt.evidence, smelt.chest, smelt.resourceSite));
+            jobs.set(jobs.indexOf(job), new Job(job.work, State.DONE, job.attempts, job.worker, job.lease, 0,
+                    evidence, null, gatheringSite(job, site)));
+            commit(project.withJobs(jobs));
+            markAssignmentSeen(project, job.worker, now);
+            restoredLeases.remove(token);
+            return true;
+        }
         if (chest != null && (job.work.kind != Kind.TRANSFER || !job.work.locks.contains(chest.location)
                 || project.repeat != null && !project.repeat.chest.equals(chest.location))) {
             throw new IllegalArgumentException("Chest report does not match the leased transfer");
@@ -964,6 +1010,10 @@ final class ProjectQueue {
         markAssignmentSeen(project, job.worker, now);
         restoredLeases.remove(token);
         return true;
+    }
+
+    private static String currentFuel(Project project, FuelUse plan) {
+        return JSON.fromJson(find(project, plan.job).work.payload, SmeltFuel.class).fuel;
     }
 
     private static String lane(String id) {

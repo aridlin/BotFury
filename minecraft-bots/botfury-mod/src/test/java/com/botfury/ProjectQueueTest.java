@@ -253,30 +253,51 @@ class ProjectQueueTest {
         var returnLease = queue.claim(WORLD, "miner", Set.of(TRANSFER), 1).job();
         var tool = java.util.Map.of("minecraft:stone_pickaxe", 180);
         var mine = new ProjectQueue.ResourceSite(0, -30, 0);
-        assertNull(queue.offerRouteTool(WORLD, "helper", null, 2, tool, 0, name -> mine, (bot, item) -> 2));
+        assertNull(queue.offerRouteTool(WORLD, "helper", null, 2, tool, 0, false, name -> mine, (bot, item) -> 2));
         assertNotNull(queue.renew("order", "return", returnLease.lease(), null, 3, true));
-        assertNull(queue.offerRouteTool(WORLD, "helper", null, 4, tool, 0, name -> mine, (bot, item) -> 1));
-        var help = queue.offerRouteTool(WORLD, "helper", null, 5, tool, 0, name -> mine, (bot, item) -> 2).job();
+        assertNull(queue.offerRouteTool(WORLD, "helper", null, 4, tool, 0, false, name -> mine, (bot, item) -> 1));
+        var help = queue.offerRouteTool(WORLD, "helper", null, 5, tool, 0, false, name -> mine, (bot, item) -> 2).job();
         assertEquals(ProjectQueue.Kind.RESUPPLY, help.work().kind());
         var delivery = new com.google.gson.Gson().fromJson(help.work().payload(), ProjectQueue.RouteToolDelivery.class);
         assertEquals("miner", delivery.recipient());
         assertEquals(mine, delivery.position());
         queue = new ProjectQueue(journal);
         assertNotNull(queue.renew("order", "return", returnLease.lease(), null, 6, true));
-        assertNull(queue.offerRouteTool(WORLD, "second", null, 7, tool, 0, name -> mine, (bot, item) -> 2));
+        assertNull(queue.offerRouteTool(WORLD, "second", null, 7, tool, 0, false, name -> mine, (bot, item) -> 2));
         assertTrue(queue.finish("order", help.work().id(), help.lease(), false, "Could not deliver", 8));
-        assertNull(queue.offerRouteTool(WORLD, "second", null, 9, tool, 0, name -> mine, (bot, item) -> 2));
+        assertNull(queue.offerRouteTool(WORLD, "second", null, 9, tool, 0, false, name -> mine, (bot, item) -> 2));
         assertEquals(returnLease.lease(), queue.claim(WORLD, "miner", Set.of(TRANSFER), 10).job().lease());
         var newJournal = directory.resolve("route-tool-crafting.json");
         var craftQueue = new ProjectQueue(newJournal);
         craftQueue.submit("order", WORLD, List.of(deposit));
         var returned = craftQueue.claim(WORLD, "miner", Set.of(TRANSFER), 1).job();
         assertNotNull(craftQueue.renew("order", "return", returned.lease(), null, 2, true));
-        var made = craftQueue.offerRouteTool(WORLD, "crafter", null, 3, null, 1,
+        var made = craftQueue.offerRouteTool(WORLD, "crafter", null, 3, null, 1, false,
                 name -> mine, (bot, item) -> 0).job();
         var spec = new com.google.gson.Gson().fromJson(made.work().payload(), ProjectQueue.RouteToolDelivery.class);
         assertEquals(1, spec.craftTarget());
         assertEquals("minecraft:stone_pickaxe", spec.item());
+    }
+
+    @Test void aCraftablePickaxeCanRequestADeliveredWorkbench() throws Exception {
+        var journal = directory.resolve("route-workbench.json");
+        var queue = new ProjectQueue(journal);
+        var deposit = new ProjectQueue.Work("return", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":3}", List.of(), Set.of("block:0,64,0"));
+        queue.submit("order", WORLD, List.of(deposit));
+        var original = queue.claim(WORLD, "miner", Set.of(TRANSFER), 1).job();
+        var site = new ProjectQueue.ResourceSite(0, -20, 0);
+        assertNotNull(queue.renew("order", "return", original.lease(), null, 2, true));
+        assertNull(queue.offerRouteTool(WORLD, "helper", null, 3, null, 0, true, name -> site, (bot, item) -> 0));
+        assertNotNull(queue.renew("order", "return", original.lease(), null, 4, true, true));
+        var supply = queue.offerRouteTool(WORLD, "helper", null, 5, null, 0, true, name -> site, (bot, item) -> 0).job();
+        assertEquals("minecraft:crafting_table", queue.routeToolDelivery("order", supply.work().id(), supply.lease(), 6).item());
+        queue.recordRouteBenchReceipt("order", "return", java.util.UUID.randomUUID(), 7);
+        assertNotNull(queue.routeToolDelivery("order", supply.work().id(), supply.lease(), 8));
+        queue.recordRouteBenchReceipt("order", "return", original.lease(), 9);
+        queue = new ProjectQueue(journal);
+        assertNull(queue.routeToolDelivery("order", supply.work().id(), supply.lease(), 10));
+        assertTrue(queue.finish("order", supply.work().id(), supply.lease(), true, "Delivered workbench", 11));
     }
 
     @Test void aNewReturnRouteGetsOneRetryWithTheSameCargoAndPosition() throws Exception {

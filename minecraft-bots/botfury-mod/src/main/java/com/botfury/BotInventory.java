@@ -241,7 +241,7 @@ final class BotInventory {
         int bestUses = 20;
         for (int slot = 0; slot < 36; slot++) {
             var stack = inventory.getStack(slot);
-            int uses = stack.getMaxDamage() - stack.getDamage();
+            int uses = stack.isDamageable() ? stack.getMaxDamage() - stack.getDamage() : Integer.MAX_VALUE;
             if (stack.isOf(item) && uses > bestUses) {
                 selected = slot;
                 bestUses = uses;

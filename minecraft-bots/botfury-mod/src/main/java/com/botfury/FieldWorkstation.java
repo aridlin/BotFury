@@ -165,7 +165,7 @@ final class FieldWorkstation {
         openingRecess = false;
     }
 
-    private static ProjectProduction.Spec plankRecipe(MinecraftClient client, int needed) {
+    static ProjectProduction.Spec plankRecipe(MinecraftClient client, int needed) {
         var inventory = client.player.getInventory();
         var matcher = new RecipeMatcher();
         inventory.populateRecipeFinder(matcher);

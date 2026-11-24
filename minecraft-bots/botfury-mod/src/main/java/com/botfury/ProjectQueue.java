@@ -165,7 +165,9 @@ final class ProjectQueue {
     private record SmeltFuel(String recipe, String input, String fuel, String plannedFuel, int count) {}
     record OwnedStation(String project, String job, String payload) {}
     record OwnedPlacement(String project, String job, String payload) {}
-    record BlockedAccess(String project, Work job, String builder) {}
+    record BlockedAccess(String project, Work job, String builder, boolean replacementScaffold) {
+        String repairId() { return job.id + (replacementScaffold ? "-v2" : ""); }
+    }
     record ScaffoldClearance(String project, Work job) {}
     private static final java.util.regex.Pattern SCHEMATIC_PLACEMENT = java.util.regex.Pattern.compile("place-[0-9]+");
     private record StationTarget(ProjectBlock.Position target, ProjectBlock.Position stand, String block) {}
@@ -333,17 +335,24 @@ final class ProjectQueue {
     private List<BlockedAccess> blockedAccess(String world, boolean alternatePose) {
         var result = new ArrayList<BlockedAccess>();
         for (var project : projects.values()) {
-            if (!project.world.equals(world) || project.supplyChest == null || project.repeat != null
-                    || !alternatePose && project.jobs.stream().anyMatch(job -> job.state != State.DONE
-                        && job.work.id.startsWith("remove-access-repair-"))) continue;
+            if (!project.world.equals(world) || project.supplyChest == null || project.repeat != null) continue;
+            boolean openCleanup = project.jobs.stream().anyMatch(job -> job.state != State.DONE
+                    && job.work.id.startsWith("remove-access-repair-"));
+            boolean activeCleanup = project.jobs.stream().anyMatch(job -> (job.state == State.LEASED || job.state == State.WAITING)
+                    && job.work.id.startsWith("remove-access-repair-"));
             for (var job : project.jobs) {
                 if (job.state != State.FAILED || !placementApproachFailure(job) || job.work.kind != Kind.BUILD
                         || !SCHEMATIC_PLACEMENT.matcher(job.work.id).matches() || job.work.sameWorkerAs == null
-                        || project.supplyRecoveries.containsKey((alternatePose ? "pose:" : "access:") + job.work.id)
                         || job.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) continue;
+                boolean replanned = project.supplyRecoveries.containsKey("pose:" + job.work.id);
+                boolean priorScaffold = project.supplyRecoveries.containsKey("access:" + job.work.id);
+                boolean replacement = !alternatePose && priorScaffold;
+                if (alternatePose && replanned || !alternatePose && !priorScaffold && openCleanup
+                        || replacement && (!replanned || activeCleanup
+                            || project.supplyRecoveries.containsKey("access:" + job.work.id + "-v2"))) continue;
                 var cargo = find(project, job.work.sameWorkerAs);
                 if (cargo.state == State.DONE && cargo.worker != null && cargo.work.constructionMaterial != null) {
-                    result.add(new BlockedAccess(project.id, job.work, cargo.worker));
+                    result.add(new BlockedAccess(project.id, job.work, cargo.worker, replacement));
                 }
             }
         }
@@ -451,7 +460,7 @@ final class ProjectQueue {
         payload.addProperty("item", item);
         payload.addProperty("direction", "TAKE");
         payload.addProperty("stock", repair.stone());
-        var pickup = new Work("repair-" + waiting.work.id + "-stock", Kind.TRANSFER, JSON.toJson(payload),
+        var pickup = new Work("repair-" + request.repairId() + "-stock", Kind.TRANSFER, JSON.toJson(payload),
                 cargo.work.needs, cargo.work.locks, null, null, item);
         var jobs = new ArrayList<>(project.jobs);
         int index = jobs.indexOf(waiting);
@@ -462,7 +471,7 @@ final class ProjectQueue {
         for (var work : repair.before()) jobs.add(index++, new Job(work, State.WAITING, 0, null, null, 0, null, null));
         for (var work : repair.cleanup()) jobs.add(new Job(work, State.WAITING, 0, null, null, 0, null, null));
         var counts = new HashMap<>(project.supplyRecoveries);
-        counts.put("access:" + waiting.work.id, 1);
+        counts.put("access:" + request.repairId(), 1);
         commit(project.withRecovery(jobs, counts));
         return true;
     }
@@ -1568,9 +1577,13 @@ final class ProjectQueue {
     }
 
     private static List<ResourceSite> accessRoute(Project project, Job job) {
-        if (job.work.kind != Kind.BUILD || !project.supplyRecoveries.containsKey("access:" + job.work.id)
-                || project.supplyRecoveries.containsKey("pose:" + job.work.id)) return List.of();
-        String stage = "access-repair-" + job.work.id + "-";
+        if (job.work.kind != Kind.BUILD) return List.of();
+        String repair = job.work.id;
+        boolean replacement = project.supplyRecoveries.containsKey("access:" + repair + "-v2");
+        if (replacement) repair += "-v2";
+        else if (!project.supplyRecoveries.containsKey("access:" + repair)
+                || project.supplyRecoveries.containsKey("pose:" + repair)) return List.of();
+        String stage = "access-repair-" + repair + "-";
         var walk = new LinkedHashMap<ResourceSite, ResourceSite>();
         for (var step : project.jobs) {
             if (step.work.id.startsWith("remove-" + stage) && step.state != State.WAITING) return List.of();

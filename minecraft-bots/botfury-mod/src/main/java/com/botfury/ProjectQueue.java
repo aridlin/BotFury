@@ -2304,9 +2304,27 @@ final class ProjectQueue {
                                                       ResourceSite position,
                                                       java.util.function.ToIntBiFunction<String, String> heldCount,
                                                       int returnRevision) throws IOException {
+        expire(now);
         var checkpoint = offerCheckpointDeposit(world, worker, projectId, now, position, heldCount, returnRevision);
         return checkpoint != null ? checkpoint : offerInterruptedDeposit(world, worker, projectId, now, position,
                 heldCount, CargoRecovery.TOOL_FAILURE, returnRevision);
+    }
+
+    synchronized boolean awaitingContributionRetry(String world, String worker, String projectId, long now,
+                                                   java.util.function.ToIntBiFunction<String, String> heldCount) {
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || project.supplyChest == null || cancelled(project)
+                    || projectId != null && !projectId.equals(project.id)) continue;
+            for (var deposit : project.jobs) {
+                if (deposit.state != State.WAITING || !CONTRIBUTION_RETRY.equals(deposit.evidence)
+                        || now >= deposit.expiresAt || !project.supplyRecoveries.containsKey(contributionCargo(deposit, worker))) {
+                    continue;
+                }
+                var target = transferTarget(deposit);
+                if (target != null && heldCount.applyAsInt(worker, target.item) > 0) return true;
+            }
+        }
+        return false;
     }
 
     private Assignment offerInterruptedDeposit(String world, String worker, String projectId, long now,
@@ -3273,6 +3291,7 @@ final class ProjectQueue {
     private void settleContribution(Project project, Job deposit, String evidence, ChestObservation observation,
                                     long now) throws IOException {
         if (observation == null) {
+            BotEvents.add("warn", "projects", deposit.worker + " could not bank " + deposit.work.id + ". " + evidence);
             replace(project, interruptedContribution(deposit, now));
             return;
         }

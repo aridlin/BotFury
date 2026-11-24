@@ -1245,6 +1245,41 @@ class ProjectQueueTest {
                 (worker, material) -> 8, 8));
     }
 
+    @Test void retainsOnlyTheCarrierWithCargoUntilItsDepositCanRetry() throws Exception {
+        var journal = directory.resolve("keep-carrier-through-deposit-cooldown.json");
+        String chest = "block:3,64,0";
+        String item = "minecraft:diamond";
+        var dig = new ProjectQueue.Work("dig", GATHER,
+                "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":32}",
+                List.of(), Set.of());
+        var deposit = new ProjectQueue.Work("deposit", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":32}",
+                List.of("dig"), Set.of(chest), "dig");
+        var resupply = new ProjectQueue.Work("route-tool", ProjectQueue.Kind.RESUPPLY, "{}", List.of(), Set.of());
+        var jobs = List.of(new ProjectQueue.Job(dig, ProjectQueue.State.WAITING, 0, null, null, 0,
+                        ProjectQueue.GATHER_TOOLS_NEEDED + "; reacquiring materials", null),
+                new ProjectQueue.Job(deposit, ProjectQueue.State.WAITING, 1, null, null, 100,
+                        "Partial deposit ended before chest observation", null),
+                new ProjectQueue.Job(resupply, ProjectQueue.State.LEASED, 1, "carrier", java.util.UUID.randomUUID(),
+                        99, null, null));
+        var project = new ProjectQueue.Project("stock", WORLD, jobs, null, chest,
+                java.util.Map.of("contribution:deposit:carrier", 8));
+        Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                "projects", java.util.Map.of("stock", project))));
+        var queue = new ProjectQueue(journal);
+        java.util.function.ToIntBiFunction<String, String> held =
+                (worker, material) -> worker.equals("carrier") && material.equals(item) ? 8 : 0;
+
+        assertTrue(queue.awaitingContributionRetry(WORLD, "carrier", null, 75, held));
+        assertFalse(queue.awaitingContributionRetry(WORLD, "helper", null, 75, (worker, material) -> 8));
+        assertFalse(queue.awaitingContributionRetry(WORLD, "carrier", null, 75, (worker, material) -> 0));
+        assertFalse(queue.awaitingContributionRetry(WORLD, "carrier", null, 100, held));
+        var assignment = queue.offerUrgentMiningDeposit(WORLD, "carrier", null, 100,
+                new ProjectQueue.ResourceSite(3, 64, 0), held, 8);
+        assertNotNull(assignment);
+        assertEquals("deposit", assignment.job().work().id());
+    }
+
     @Test void deepMinerBanksACheckpointBeforeResumingItsOutstandingOrder() throws Exception {
         var journal = directory.resolve("mining-checkpoint.json");
         var queue = new ProjectQueue(journal);

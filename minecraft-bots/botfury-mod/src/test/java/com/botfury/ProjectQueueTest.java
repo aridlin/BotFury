@@ -14,6 +14,43 @@ class ProjectQueueTest {
     @TempDir Path directory;
     private static final String WORLD = "test|overworld";
 
+    @Test void repairsLostSchematicSupportAndReopensItsBlockedDependent() throws Exception {
+        var journal = directory.resolve("destroyed-wall.json");
+        var queue = new ProjectQueue(journal);
+        String chest = "block:3,64,0";
+        queue.submitSupplied("house", WORLD, List.of(job("gather", GATHER, List.of()),
+                new ProjectQueue.Work("pickup", TRANSFER, "{\"direction\":\"TAKE\",\"item\":\"minecraft:oak_log\",\"stock\":2}",
+                        List.of("gather"), Set.of(chest), null, null, "minecraft:oak_log"),
+                new ProjectQueue.Work("place-0", BUILD, "", List.of("pickup"), Set.of("lower"), "pickup"),
+                new ProjectQueue.Work("place-support-1", BUILD, "", List.of("pickup"), Set.of("temporary"), "pickup"),
+                new ProjectQueue.Work("place-1", BUILD, "", List.of("place-0", "pickup"), Set.of("upper"), "pickup")), chest);
+        long now = 1;
+        var gather = queue.claim(WORLD, "builder", Set.of(GATHER), now++).job();
+        assertTrue(queue.finish("house", "gather", gather.lease(), true, "Collected", now++));
+        var pickup = queue.claim(WORLD, "builder", Set.of(TRANSFER), now++).job();
+        assertTrue(queue.finish("house", "pickup", pickup.lease(), true, "Collected",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of()), now++));
+        for (String id : List.of("place-0", "place-support-1")) {
+            var placed = queue.claim(WORLD, "builder", Set.of(BUILD), now++).job();
+            assertEquals(id, placed.work().id());
+            assertTrue(queue.finish("house", id, placed.lease(), true, "Placed", now++));
+        }
+        for (int retry = 0; retry < 3; retry++) {
+            var upper = queue.claim(WORLD, "builder", Set.of(BUILD), now++).job();
+            assertEquals("place-1", upper.work().id());
+            assertFalse(queue.repairMissingPlacement(WORLD, "house", "place-0"));
+            assertTrue(queue.finish("house", "place-1", upper.lease(), false, ProjectQueue.TARGET_TIMEOUT, now++));
+        }
+        assertEquals(List.of("place-0"), queue.ownedPlacements(WORLD).stream().map(ProjectQueue.OwnedPlacement::job).toList());
+        assertTrue(queue.repairMissingPlacement(WORLD, "house", "place-0"));
+        var restored = new ProjectQueue(journal);
+        var lower = restored.claim(WORLD, "builder", Set.of(BUILD), now++).job();
+        assertEquals("place-0", lower.work().id());
+        assertTrue(restored.finish("house", "place-0", lower.lease(), true, "Rebuilt lower support", now++));
+        assertEquals("place-1", restored.claim(WORLD, "builder", Set.of(BUILD), now).job().work().id());
+        assertEquals(ProjectQueue.State.DONE, restored.snapshot(now).get(0).jobs().get(3).state());
+    }
+
     @Test void savedManifestGathersInParallelAndKeepsCumulativeDepositsOrdered() throws Exception {
         var journal = directory.resolve("parallel-manifest.json");
         var queue = new ProjectQueue(journal);

@@ -16,6 +16,7 @@ final class ProjectBroker {
     private static final int MAX_BODY = 512 * 1024;
     private static ProjectQueue queue;
     private static long nextStationCheck;
+    private static int ownedPlacementCursor;
     record Overview(List<ProjectQueue.Project> projects, Map<String, ProjectQueue.ChestObservation> stock) {}
 
     private record Request(String action, String project, String worker, Set<ProjectQueue.Kind> kinds,
@@ -58,7 +59,7 @@ final class ProjectBroker {
         queue().submitSupplied(id, here.server() + "|" + here.dimension(), jobs, chest);
     }
 
-    static void checkOwnedStations(net.minecraft.client.MinecraftClient client) {
+    static void checkOwnedWork(net.minecraft.client.MinecraftClient client) {
         if (Boolean.getBoolean("botfury.managedHttp") || client.world == null || client.player == null) return;
         long now = System.nanoTime();
         if (nextStationCheck != 0 && now < nextStationCheck) return;
@@ -80,8 +81,31 @@ final class ProjectBroker {
                     BotEvents.add("info", "projects", "Rebuilding missing station at " + target.toShortString());
                 }
             }
+            checkOwnedPlacements(client, board, world);
         } catch (IOException | IllegalArgumentException failure) {
             BotEvents.add("warn", "projects", "Could not check owned stations. " + failure.getMessage());
+        }
+    }
+
+    private static void checkOwnedPlacements(net.minecraft.client.MinecraftClient client, ProjectQueue board, String world)
+            throws IOException {
+        var placements = board.ownedPlacements(world);
+        if (placements.isEmpty()) return;
+        int repaired = 0;
+        int limit = Math.min(128, placements.size());
+        for (int checked = 0; checked < limit; checked++) {
+            ownedPlacementCursor = Math.floorMod(ownedPlacementCursor, placements.size());
+            var placement = placements.get(ownedPlacementCursor++);
+            var block = ProjectBlock.parse(placement.payload());
+            var target = block.target();
+            if (!client.world.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
+                    || !client.world.isAir(target) || BuildProtection.blocked(world, target, placement.project())) continue;
+            var support = block.support();
+            if (!ProjectPlacement.support(client.world.getBlockState(support), block.desired(), block.face(), client.world, support)) continue;
+            if (board.repairMissingPlacement(world, placement.project(), placement.job())) {
+                BotEvents.add("info", "projects", "Rebuilding missing schematic block at " + target.toShortString());
+                if (++repaired >= 4) return;
+            }
         }
     }
 

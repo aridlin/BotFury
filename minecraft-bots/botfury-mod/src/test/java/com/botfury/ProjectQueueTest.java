@@ -524,8 +524,10 @@ class ProjectQueueTest {
         String step = "place-access-repair-place-1-0";
         String done = "repair-place-1-settled";
         var verification = new ProjectQueue.Work(check, ProjectQueue.Kind.VERIFY, "{}", List.of(intake), Set.of(key));
-        var temporary = new ProjectQueue.Work(step, BUILD, "{}", List.of(intake, check), Set.of(key), intake);
-        var moved = new ProjectQueue.Work("place-1", BUILD, "{}", List.of("pickup", step), Set.of("wall"), "pickup");
+        var temporary = new ProjectQueue.Work(step, BUILD, "{\"target\":{\"x\":6,\"y\":64,\"z\":1}}",
+                List.of(intake, check), Set.of(key), intake);
+        var moved = new ProjectQueue.Work("place-1", BUILD, "{\"stand\":{\"x\":6,\"y\":65,\"z\":1}}",
+                List.of("pickup", step), Set.of("wall"), "pickup");
         var barrier = job(done, ProjectQueue.Kind.SETTLEMENT_BARRIER, List.of("place-1"));
         var cleanup = new ProjectQueue.Work("remove-access-repair-place-1-0", EXCAVATE, "{}", List.of(step),
                 Set.of(key), null, new ProjectQueue.Cleanup(key, done));
@@ -547,7 +549,9 @@ class ProjectQueueTest {
         assertEquals(step, scaffold.work().id());
         assertTrue(restored.finish("house", step, scaffold.lease(), true, "Built scaffold", now++));
         assertNull(restored.claim(WORLD, "helper", Set.of(EXCAVATE), now++));
-        var placement = restored.claim(WORLD, "builder", Set.of(BUILD), now++).job();
+        var assignment = restored.claim(WORLD, "builder", Set.of(BUILD), now++);
+        assertEquals(List.of(new ProjectQueue.ResourceSite(6, 65, 1)), assignment.accessRoute());
+        var placement = assignment.job();
         assertEquals("place-1", placement.work().id());
         assertTrue(restored.finish("house", "place-1", placement.lease(), true, "Built wall", now++));
         assertEquals(cleanup.id(), restored.claim(WORLD, "helper", Set.of(EXCAVATE), now).job().work().id());

@@ -71,6 +71,8 @@ final class ProjectWorker {
     private static final Set<BlockPos> triedCanopyStands = new HashSet<>();
     private static long nextInteractionStandSearch;
     private static long canopyApproachEnds;
+    private static int scaffoldWaypoint;
+    private static long scaffoldStepEnds;
     private static long jumpEnds;
     private static boolean jumpPressed;
     private static BlockPos openingJumpHeadroom;
@@ -190,6 +192,7 @@ final class ProjectWorker {
         rejectedInteractionStands.clear();
         triedJumpStands.clear();
         triedCanopyStands.clear();
+        scaffoldWaypoint = 0;
         attemptedJumpHeadroom = false;
         nextInteractionStandSearch = 0;
         approachAge = 0;
@@ -242,6 +245,7 @@ final class ProjectWorker {
         }
         recoveryOrigin = null;
         canopyApproachEnds = 0;
+        scaffoldStepEnds = 0;
     }
 
     static boolean blocksRecoveryBreak(BlockPos pos) {
@@ -492,6 +496,7 @@ final class ProjectWorker {
         boolean canBuildHere = ordinaryBuild && targetLoaded && player.isOnGround() && !centering
                 && !player.getBoundingBox().intersects(new Box(target))
                 && ProjectPlacement.supportHit(client, block) != null;
+        if (ordinaryBuild && targetLoaded && !canBuildHere && tryScaffoldRoute(client, now)) return;
         if (ordinaryBuild && targetLoaded && !canBuildHere && player.isOnGround() && !centering
                 && !player.isSneaking() && client.world.isAir(target) && canJumpToPlace(client, player.getPos(), currentCell)) {
             halt(client);
@@ -771,6 +776,56 @@ final class ProjectWorker {
         }
         status = assignment.project() + "/" + assignment.job().work().id() + ": Approaching through natural foliage";
         BotEvents.add("info", "movement", "Opening a protected canopy approach to " + stand.toShortString());
+        return true;
+    }
+
+    private static boolean tryScaffoldRoute(MinecraftClient client, long now) {
+        var route = assignment.accessRoute();
+        if (scaffoldWaypoint >= route.size()) return false;
+        var feet = client.player.getBlockPos();
+        if (SubsurfaceAccess.hasFooting(client)) {
+            for (int i = route.size() - 1; i >= scaffoldWaypoint; i--) {
+                var step = route.get(i);
+                if (feet.getX() == step.x() && feet.getY() == step.y() && feet.getZ() == step.z()) {
+                    halt(client);
+                    scaffoldWaypoint = i + 1;
+                    break;
+                }
+            }
+        }
+        if (scaffoldWaypoint >= route.size()) return false;
+        var step = route.get(scaffoldWaypoint);
+        var next = new BlockPos(step.x(), step.y(), step.z());
+        var world = client.world;
+        if (!world.isChunkLoaded(next.getX() >> 4, next.getZ() >> 4)) return false;
+        if (!world.getBlockState(next.down()).isOf(Blocks.COBBLESTONE)
+                || !world.isAir(next) || !world.isAir(next.up())
+                || scaffoldStepEnds != 0 && now >= scaffoldStepEnds) {
+            halt(client);
+            scaffoldWaypoint = route.size();
+            return false;
+        }
+        if (scaffoldStepEnds == 0) {
+            halt(client);
+            try {
+                approach = new BaritoneSettings(false, true);
+            } catch (ReflectiveOperationException | LinkageError unavailable) {
+                scaffoldWaypoint = route.size();
+                return false;
+            }
+            if (!BaritoneClient.goTo(next)) {
+                halt(client);
+                scaffoldWaypoint = route.size();
+                return false;
+            }
+            scaffoldStepEnds = now + seconds(scaffoldWaypoint == 0 ? 18 : 8);
+            retryApproach = now + seconds(3);
+        } else if (now >= retryApproach && !BaritoneClient.pursuing(next)) {
+            BaritoneClient.goTo(next);
+            retryApproach = now + seconds(3);
+        }
+        status = assignment.project() + "/" + assignment.job().work().id() + ": Scaffold step "
+                + (scaffoldWaypoint + 1) + "/" + route.size();
         return true;
     }
 

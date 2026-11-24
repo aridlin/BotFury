@@ -119,8 +119,11 @@ final class ProjectQueue {
             return new Project(id, world, updated, repeat, supplyChest, supplyRecoveries);
         }
     }
-    record Assignment(String project, String world, Job job, FuelUse fuelFor) {
-        Assignment(String project, String world, Job job) { this(project, world, job, null); }
+    record Assignment(String project, String world, Job job, FuelUse fuelFor, List<ResourceSite> accessRoute) {
+        Assignment {
+            accessRoute = accessRoute == null ? List.of() : List.copyOf(accessRoute);
+        }
+        Assignment(String project, String world, Job job) { this(project, world, job, null, List.of()); }
     }
     record FuelUse(String job, String recipe, String input, String expectedFuel, int count) {}
     private record SmeltFuel(String recipe, String input, String fuel, String plannedFuel, int count) {}
@@ -129,7 +132,7 @@ final class ProjectQueue {
     record BlockedAccess(String project, Work job, String builder) {}
     record ScaffoldClearance(String project, Work job) {}
     private static final java.util.regex.Pattern SCHEMATIC_PLACEMENT = java.util.regex.Pattern.compile("place-[0-9]+");
-    private record StationTarget(ProjectBlock.Position target, String block) {}
+    private record StationTarget(ProjectBlock.Position target, ProjectBlock.Position stand, String block) {}
     private record Board(int schema, Map<String, Project> projects) {}
     private record PickupTarget(String direction, String item, int stock) {}
     private record ToolRecipe(String recipe) {}
@@ -1120,7 +1123,34 @@ final class ProjectQueue {
     }
 
     private static Assignment assignment(Project project, Job job) {
-        return new Assignment(project.id, project.world, job, fuelUse(project, job));
+        return new Assignment(project.id, project.world, job, fuelUse(project, job), accessRoute(project, job));
+    }
+
+    private static List<ResourceSite> accessRoute(Project project, Job job) {
+        if (job.work.kind != Kind.BUILD || !project.supplyRecoveries.containsKey("access:" + job.work.id)) return List.of();
+        String stage = "access-repair-" + job.work.id + "-";
+        var walk = new LinkedHashMap<ResourceSite, ResourceSite>();
+        for (var step : project.jobs) {
+            if (step.work.id.startsWith("remove-" + stage) && step.state != State.WAITING) return List.of();
+            if (!step.work.id.startsWith("place-" + stage)) continue;
+            if (step.state != State.DONE) return List.of();
+            var location = JSON.fromJson(step.work.payload, StationTarget.class).target;
+            if (location == null) return List.of();
+            var column = new ResourceSite(location.x(), 0, location.z());
+            var feet = new ResourceSite(location.x(), location.y() + 1, location.z());
+            walk.merge(column, feet, (lower, upper) -> upper.y > lower.y ? upper : lower);
+        }
+        if (walk.isEmpty() || walk.size() > 4) return List.of();
+        var route = List.copyOf(walk.values());
+        var stand = JSON.fromJson(job.work.payload, StationTarget.class).stand;
+        var last = route.get(route.size() - 1);
+        if (stand == null || stand.x() != last.x || stand.y() != last.y || stand.z() != last.z) return List.of();
+        for (int i = 1; i < route.size(); i++) {
+            var a = route.get(i - 1);
+            var b = route.get(i);
+            if (b.y - a.y != 1 || Math.abs(a.x - b.x) + Math.abs(a.z - b.z) != 1) return List.of();
+        }
+        return route;
     }
 
     private static FuelUse fuelUse(Project project, Job gather) {

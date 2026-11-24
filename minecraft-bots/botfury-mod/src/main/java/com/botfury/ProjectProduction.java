@@ -43,6 +43,8 @@ final class ProjectProduction {
 
     ProjectProduction(Spec spec) { this.spec = spec; }
 
+    Identifier recipe() { return spec.recipe; }
+
     ProjectProduction atStation(ProjectBlock station) {
         return new ProjectProduction(new Spec(station, spec.kind, spec.recipe, spec.input, spec.fuel, spec.count));
     }

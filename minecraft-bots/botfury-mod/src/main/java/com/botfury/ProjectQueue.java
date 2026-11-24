@@ -1365,7 +1365,8 @@ final class ProjectQueue {
     synchronized void recordRouteBenchReceipt(String projectId, String jobId, UUID token, long now) throws IOException {
         var project = projects.get(projectId);
         var receiver = find(project, jobId);
-        if (!owns(receiver, token, now) || receiver.work.kind != Kind.TRANSFER || !depositTarget(receiver)) return;
+        if (!owns(receiver, token, now) || receiver.work.kind != Kind.CRAFT
+                && (receiver.work.kind != Kind.TRANSFER || !depositTarget(receiver))) return;
         String id = "route-tool-" + token;
         var supply = find(project, id + "-retry");
         if (supply == null) supply = find(project, id);
@@ -1425,8 +1426,10 @@ final class ProjectQueue {
             for (var deposit : project.jobs) {
                 if (deposit.state != State.LEASED || deposit.expiresAt <= now || !routeToolRequests.containsKey(deposit.lease)
                         || worker.equalsIgnoreCase(deposit.worker)) continue;
-                boolean requestBench = spare == null && !canCraftPickaxe && !reservedWood && routeToolRequests.get(deposit.lease);
-                if (spare == null && !canCraftPickaxe && !requestBench) continue;
+                boolean crafting = deposit.work.kind == Kind.CRAFT;
+                boolean requestBench = !reservedWood && routeToolRequests.get(deposit.lease)
+                        && (crafting || spare == null && !canCraftPickaxe);
+                if (!requestBench && (crafting || spare == null && !canCraftPickaxe)) continue;
                 String id = "route-tool-" + deposit.lease;
                 var destination = position.apply(deposit.worker);
                 if (destination == null) continue;
@@ -2422,7 +2425,8 @@ final class ProjectQueue {
         Job job = find(project, jobId);
         if (!owns(job, token, now) || cancelled(project) || BATCH_RESERVED.equals(job.evidence) || handoffWorker(job) != null
                 || GATHER_STOCK_CONFIRMED.equals(job.evidence)) return null;
-        if (needsRouteTool && job.work.kind == Kind.TRANSFER && depositTarget(job)) routeToolRequests.put(token, needsRouteBench);
+        if (needsRouteTool && job.work.kind == Kind.TRANSFER && depositTarget(job)
+                || needsRouteBench && job.work.kind == Kind.CRAFT) routeToolRequests.put(token, needsRouteBench);
         else routeToolRequests.remove(token);
         Job renewed = new Job(job.work, State.LEASED, job.attempts, job.worker,
                 job.lease, now + LEASE_MS, job.evidence, job.chest, gatheringSite(job, site), job.gatheringAfterPickup);

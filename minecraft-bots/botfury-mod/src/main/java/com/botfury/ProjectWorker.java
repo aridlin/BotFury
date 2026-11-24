@@ -101,7 +101,7 @@ final class ProjectWorker {
     private static BlockPos stationToolAttempt;
     private static boolean needsRouteTool;
     private static boolean allowedResupplyWait;
-    private static boolean needsRouteBench;
+    private static boolean needsRouteBench, needsCraftBench;
     private static boolean receivedRouteBench;
     private static RouteWorkbench routeWorkbench;
     private static final int TOOL_DROP_RADIUS = 5;
@@ -257,7 +257,7 @@ final class ProjectWorker {
         approachAge = 0;
         stationReturn.reset();
         stationToolAttempt = null;
-        needsRouteTool = needsRouteBench = receivedRouteBench = allowedResupplyWait = false;
+        needsRouteTool = needsRouteBench = needsCraftBench = receivedRouteBench = allowedResupplyWait = false;
         craftingRouteDelivery = null;
         inspection = null;
         fill = null;
@@ -515,12 +515,12 @@ final class ProjectWorker {
     }
 
     private static boolean pickupRouteTool(MinecraftClient client) {
-        if (needsRouteBench && client.player.getInventory().contains(net.minecraft.item.Items.CRAFTING_TABLE.getDefaultStack())) {
-            needsRouteBench = false;
+        if ((needsRouteBench || needsCraftBench) && client.player.getInventory().contains(net.minecraft.item.Items.CRAFTING_TABLE.getDefaultStack())) {
+            needsRouteBench = needsCraftBench = false;
             receivedRouteBench = true;
             stationToolAttempt = null;
         }
-        if (!needsRouteTool || SubsurfaceAccess.canDigRoute(client)) {
+        if (!needsCraftBench && (!needsRouteTool || SubsurfaceAccess.canDigRoute(client))) {
             if (pickingUpRouteTool) {
                 routeToolPickup.reset();
                 pickingUpRouteTool = false;
@@ -544,8 +544,9 @@ final class ProjectWorker {
     }
 
     private static boolean usableRouteTool(net.minecraft.item.ItemStack stack) {
-        return needsRouteBench && stack.isOf(net.minecraft.item.Items.CRAFTING_TABLE)
-                || stack.getItem() instanceof net.minecraft.item.PickaxeItem && stack.getMaxDamage() - stack.getDamage() >= 21;
+        return (needsRouteBench || needsCraftBench) && stack.isOf(net.minecraft.item.Items.CRAFTING_TABLE)
+                || needsRouteTool && stack.getItem() instanceof net.minecraft.item.PickaxeItem
+                        && stack.getMaxDamage() - stack.getDamage() >= 21;
     }
 
     private static boolean prepareMiningWeapon(MinecraftClient client, long now) {
@@ -682,6 +683,10 @@ final class ProjectWorker {
                 && !block.target().isWithinDistance(client.player.getBlockPos(), 16)) {
             nextWorkstationSearch = now + seconds(8);
             var nearby = FieldWorkstation.find(client, now, kind);
+            if (kind == ProjectQueue.Kind.CRAFT) {
+                needsCraftBench = nearby == null && ProjectProduction.canCraft(client, production.recipe())
+                        && !client.player.getInventory().contains(net.minecraft.item.Items.CRAFTING_TABLE.getDefaultStack());
+            }
             if (nearby != null) {
                 halt(client);
                 fieldWorkstation = nearby;
@@ -1525,7 +1530,9 @@ final class ProjectWorker {
             if (receivedRouteBench) args.put("receivedRouteBench", true);
             if (needsRouteTool && !SubsurfaceAccess.canDigRoute(client)) {
                 args.put("needsRouteTool", true);
-                if (needsRouteBench) args.put("needsRouteBench", true);
+            }
+            if (needsCraftBench || needsRouteTool && needsRouteBench && !SubsurfaceAccess.canDigRoute(client)) {
+                args.put("needsRouteBench", true);
             }
             if (gatherSite != null && !gather.fromDrops()) args.put("resourceSite", gatherSite);
             boolean resupply = assignment.job().work().kind() == ProjectQueue.Kind.RESUPPLY;

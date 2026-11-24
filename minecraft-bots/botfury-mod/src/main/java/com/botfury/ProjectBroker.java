@@ -26,7 +26,7 @@ final class ProjectBroker {
     private record Request(String action, String project, String worker, Set<ProjectQueue.Kind> kinds,
                            List<ProjectQueue.Work> work, String job, UUID token, Boolean success,
                            String evidence, ProjectQueue.ChestReport chest, ProjectQueue.ResourceSite resourceSite,
-                           boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool) {}
+                           boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool, int routeCraftTarget) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
         if (queue == null) {
@@ -329,7 +329,7 @@ final class ProjectBroker {
                             request.project, now, position, material -> hasExcavationTool(request.toolUses, material),
                             ProjectBroker::heldCount, request.toolUses, returnRevision);
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.RESUPPLY)) {
-                        assignment = board.offerRouteTool(world, request.worker, request.project, now, request.toolUses,
+                        assignment = board.offerRouteTool(world, request.worker, request.project, now, request.toolUses, request.routeCraftTarget,
                                 ProjectBroker::workerPosition, ProjectBroker::heldCount);
                     }
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.TRANSFER)) {

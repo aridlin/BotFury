@@ -253,20 +253,30 @@ class ProjectQueueTest {
         var returnLease = queue.claim(WORLD, "miner", Set.of(TRANSFER), 1).job();
         var tool = java.util.Map.of("minecraft:stone_pickaxe", 180);
         var mine = new ProjectQueue.ResourceSite(0, -30, 0);
-        assertNull(queue.offerRouteTool(WORLD, "helper", null, 2, tool, name -> mine, (bot, item) -> 2));
+        assertNull(queue.offerRouteTool(WORLD, "helper", null, 2, tool, 0, name -> mine, (bot, item) -> 2));
         assertNotNull(queue.renew("order", "return", returnLease.lease(), null, 3, true));
-        assertNull(queue.offerRouteTool(WORLD, "helper", null, 4, tool, name -> mine, (bot, item) -> 1));
-        var help = queue.offerRouteTool(WORLD, "helper", null, 5, tool, name -> mine, (bot, item) -> 2).job();
+        assertNull(queue.offerRouteTool(WORLD, "helper", null, 4, tool, 0, name -> mine, (bot, item) -> 1));
+        var help = queue.offerRouteTool(WORLD, "helper", null, 5, tool, 0, name -> mine, (bot, item) -> 2).job();
         assertEquals(ProjectQueue.Kind.RESUPPLY, help.work().kind());
         var delivery = new com.google.gson.Gson().fromJson(help.work().payload(), ProjectQueue.RouteToolDelivery.class);
         assertEquals("miner", delivery.recipient());
         assertEquals(mine, delivery.position());
         queue = new ProjectQueue(journal);
         assertNotNull(queue.renew("order", "return", returnLease.lease(), null, 6, true));
-        assertNull(queue.offerRouteTool(WORLD, "second", null, 7, tool, name -> mine, (bot, item) -> 2));
+        assertNull(queue.offerRouteTool(WORLD, "second", null, 7, tool, 0, name -> mine, (bot, item) -> 2));
         assertTrue(queue.finish("order", help.work().id(), help.lease(), false, "Could not deliver", 8));
-        assertNull(queue.offerRouteTool(WORLD, "second", null, 9, tool, name -> mine, (bot, item) -> 2));
+        assertNull(queue.offerRouteTool(WORLD, "second", null, 9, tool, 0, name -> mine, (bot, item) -> 2));
         assertEquals(returnLease.lease(), queue.claim(WORLD, "miner", Set.of(TRANSFER), 10).job().lease());
+        var newJournal = directory.resolve("route-tool-crafting.json");
+        var craftQueue = new ProjectQueue(newJournal);
+        craftQueue.submit("order", WORLD, List.of(deposit));
+        var returned = craftQueue.claim(WORLD, "miner", Set.of(TRANSFER), 1).job();
+        assertNotNull(craftQueue.renew("order", "return", returned.lease(), null, 2, true));
+        var made = craftQueue.offerRouteTool(WORLD, "crafter", null, 3, null, 1,
+                name -> mine, (bot, item) -> 0).job();
+        var spec = new com.google.gson.Gson().fromJson(made.work().payload(), ProjectQueue.RouteToolDelivery.class);
+        assertEquals(1, spec.craftTarget());
+        assertEquals("minecraft:stone_pickaxe", spec.item());
     }
 
     @Test void aNewReturnRouteGetsOneRetryWithTheSameCargoAndPosition() throws Exception {

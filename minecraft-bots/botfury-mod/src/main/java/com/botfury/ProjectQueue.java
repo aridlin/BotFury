@@ -156,7 +156,7 @@ final class ProjectQueue {
         }
         Assignment(String project, String world, Job job) { this(project, world, job, null, List.of(), 0); }
     }
-    record RouteToolDelivery(String recipient, ResourceSite position, String item, int previousCount) {}
+    record RouteToolDelivery(String recipient, ResourceSite position, String item, int previousCount, int craftTarget) {}
     private final Set<UUID> routeToolRequests = new HashSet<>();
 
     record FuelUse(String job, String recipe, String input, String expectedFuel, int count) {}
@@ -958,15 +958,18 @@ final class ProjectQueue {
     }
 
     synchronized Assignment offerRouteTool(String world, String worker, String projectId, long now,
-                                           Map<String, Integer> tools,
+                                           Map<String, Integer> tools, int routeCraftTarget,
                                            java.util.function.Function<String, ResourceSite> position,
                                            java.util.function.ToIntBiFunction<String, String> held) throws IOException {
-        if (tools == null || tools.isEmpty() || routeToolRequests.isEmpty()
+        if (routeToolRequests.isEmpty()
                 || projects.values().stream().flatMap(project -> project.jobs.stream())
                     .anyMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker))) return null;
-        var item = PICKAXE_TIERS.stream().skip(1).filter(tool -> tools.get(tool) != null && tools.get(tool) >= 64
-                && held.applyAsInt(worker, tool) >= 2).findFirst().orElse(null);
-        if (item == null) return null;
+        var spare = tools == null ? null : PICKAXE_TIERS.stream().skip(1)
+                .filter(tool -> tools.get(tool) != null && tools.get(tool) >= 64 && held.applyAsInt(worker, tool) >= 2)
+                .findFirst().orElse(null);
+        if (spare == null && (routeCraftTarget < 1 || routeCraftTarget > 36)) return null;
+        String item = spare == null ? "minecraft:stone_pickaxe" : spare;
+        int craftTarget = spare == null ? routeCraftTarget : 0;
         for (var project : projects.values()) {
             if (!world.equals(project.world) || cancelled(project) || project.jobs.size() >= MAX_JOBS
                     || projectId != null && !project.id.equals(projectId)) continue;
@@ -978,7 +981,7 @@ final class ProjectQueue {
                 if (destination == null || find(project, id) != null) continue;
                 int previousCount = held.applyAsInt(deposit.worker, item);
                 if (previousCount < 0) continue;
-                var delivery = new RouteToolDelivery(deposit.worker, destination, item, previousCount);
+                var delivery = new RouteToolDelivery(deposit.worker, destination, item, previousCount, craftTarget);
                 var work = new Work(id, Kind.RESUPPLY, JSON.toJson(delivery),
                         List.of(), Set.of());
                 var loan = new Job(work, State.LEASED, 1, worker, UUID.randomUUID(),

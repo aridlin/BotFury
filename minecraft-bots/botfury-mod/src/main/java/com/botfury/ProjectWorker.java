@@ -52,6 +52,7 @@ final class ProjectWorker {
     private static BaritoneSettings approach;
     private static BlockPos recoveryOrigin;
     private static BlockPos interactionStand;
+    private static List<BlockPos> interactionGoals = List.of();
     private static final Set<BlockPos> rejectedInteractionStands = new HashSet<>();
     private static long nextInteractionStandSearch;
     private static final StallRecovery approachRecovery = new StallRecovery();
@@ -162,6 +163,7 @@ final class ProjectWorker {
         assignment = null;
         block = null;
         interactionStand = null;
+        interactionGoals = List.of();
         rejectedInteractionStands.clear();
         nextInteractionStandSearch = 0;
         approachAge = 0;
@@ -214,6 +216,7 @@ final class ProjectWorker {
                 || pos.equals(block.target()) || pos.equals(block.support()) || pos.equals(block.target().down())
                 || pos.equals(block.stand().down())
                 || (interactionStand != null && pos.equals(interactionStand.down()))
+                || interactionGoals.contains(pos.up())
                 || !BaritoneSettings.recoverableTerrain(client.world.getBlockState(pos).getBlock())) return true;
         return client.world.getPlayers().stream().anyMatch(player -> player.isAlive() && !player.isSpectator()
                 && player.getBlockPos().down().equals(pos));
@@ -342,11 +345,12 @@ final class ProjectWorker {
                 && (!usableInteractionStand(client, stand, target) || !centering && player.getBlockPos().equals(stand)
                     || routeFailed)) {
             nextInteractionStandSearch = now + seconds(1);
-            var alternate = nextInteractionStand(client, target, stand, kind);
-            if (alternate != null) {
+            var alternatives = nextInteractionStands(client, target, stand, kind);
+            if (!alternatives.isEmpty()) {
                 rejectedInteractionStands.add(stand);
                 halt(client);
-                interactionStand = stand = alternate;
+                interactionStand = stand = alternatives.get(0);
+                interactionGoals = excavate || ordinaryBuild ? alternatives : List.of();
                 status = assignment.project() + "/" + work.id() + ": Approaching from another side";
             }
         }
@@ -400,7 +404,8 @@ final class ProjectWorker {
                     if (approach == null) approach = new BaritoneSettings(false, true);
                     approachProgress = current;
                     retryApproach = now + seconds(5);
-                    if (!BaritoneClient.pursuing(pos) && !BaritoneClient.goTo(pos)) {
+                    var goals = interactionGoals.isEmpty() ? List.of(pos) : interactionGoals;
+                    if (!BaritoneClient.pursuing(pos) && !BaritoneClient.goToAny(goals)) {
                         finish(client, false, "Baritone could not start project approach");
                     }
                 } catch (ReflectiveOperationException error) {
@@ -577,28 +582,24 @@ final class ProjectWorker {
                 && expected.with(LeavesBlock.DISTANCE, state.get(LeavesBlock.DISTANCE)).equals(state);
     }
 
-    private static BlockPos nextInteractionStand(MinecraftClient client, BlockPos target, BlockPos previous,
-                                                ProjectQueue.Kind kind) {
-        BlockPos nearest = null;
-        double bestDistance = Double.POSITIVE_INFINITY;
+    private static List<BlockPos> nextInteractionStands(MinecraftClient client, BlockPos target, BlockPos previous,
+                                                       ProjectQueue.Kind kind) {
+        var candidates = new ArrayList<BlockPos>();
         for (var pos : BlockPos.iterateOutwards(target, 4, 4, 4)) {
             if (pos.equals(previous) || rejectedInteractionStands.contains(pos)
                     || !client.world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)
                     || !usableInteractionStand(client, pos, target)) continue;
             var feet = Vec3d.ofBottomCenter(pos);
-            double distance = client.player.squaredDistanceTo(feet);
-            if (distance >= bestDistance) continue;
             var eye = feet.add(0, 1.62, 0);
             var hit = switch (kind) {
                 case EXCAVATE -> excavationHit(client, target, eye);
                 case BUILD -> ProjectPlacement.supportHit(client, block, eye);
                 default -> ProjectProduction.workstationHit(client, target, eye);
             };
-            if (hit == null) continue;
-            bestDistance = distance;
-            nearest = pos.toImmutable();
+            if (hit != null) candidates.add(pos.toImmutable());
         }
-        return nearest;
+        candidates.sort(Comparator.comparingDouble(pos -> client.player.squaredDistanceTo(Vec3d.ofBottomCenter(pos))));
+        return candidates.stream().limit(24).toList();
     }
 
     private static boolean usableInteractionStand(MinecraftClient client, BlockPos pos, BlockPos target) {

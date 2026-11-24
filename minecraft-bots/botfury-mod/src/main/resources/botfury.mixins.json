@@ -8,7 +8,8 @@
     "BotPushMixin",
     "ProtectedBlockMixin",
     "BotTransparencyMixin",
-    "ProjectileGroundAccess"
+    "ProjectileGroundAccess",
+    "FurnaceProgressAccess"
   ],
   "injectors": {
     "defaultRequire": 1

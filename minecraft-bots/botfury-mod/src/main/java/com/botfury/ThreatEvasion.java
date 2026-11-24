@@ -3,6 +3,7 @@ package com.botfury;
 import com.botfury.mixin.ProjectileGroundAccess;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.mob.CreeperEntity;
+import net.minecraft.entity.mob.WardenEntity;
 import net.minecraft.entity.projectile.PersistentProjectileEntity;
 import net.minecraft.util.math.*;
 import net.minecraft.util.hit.HitResult;
@@ -10,15 +11,22 @@ import net.minecraft.world.RaycastContext;
 import java.util.*;
 
 final class ThreatEvasion {
-    record Action(Vec3d walkingDirection) {}
+    record Action(Vec3d walkingDirection, boolean wardensNearby) {}
     private record Blast(Vec3d center,double radius) {}
     private record Flight(Vec3d from,Vec3d to,int tick) {}
-    private record Threats(List<Blast> blasts,List<Flight> flights) {
+    private record Threats(List<Blast> blasts,List<Flight> flights,List<Vec3d> wardens) {
+        boolean wardensNearby() { return !wardens.isEmpty(); }
+
         double risk(Box body,Vec3d movement){
             double score=0;
+            var projected = body.getCenter().add(movement.multiply(5));
             for(Blast blast:blasts){
-                double gap=Math.max(0,blast.radius-body.getCenter().distanceTo(blast.center));
+                double gap=Math.max(0,blast.radius-projected.distanceTo(blast.center));
                 score+=gap*gap*25;
+            }
+            for (var warden : wardens) {
+                double gap = Math.max(0, 18 - Math.hypot(projected.x - warden.x, projected.z - warden.z));
+                if (Math.abs(projected.y - warden.y) < 21) score += gap * gap * 12;
             }
             for(Flight flight:flights){
                 Box future=body.offset(movement.multiply(flight.tick-.5)).expand(.25);
@@ -55,16 +63,24 @@ final class ThreatEvasion {
                 velocity=velocity.multiply(drag).add(0,arrow.hasNoGravity()?0:-.05,0);
             }
         }
-        return new Threats(blasts,flights);
+        var origin = client.player.getPos();
+        var wardens = client.world.getEntitiesByClass(WardenEntity.class, client.player.getBoundingBox().expand(22),
+                warden -> warden.isAlive() && Math.abs(warden.getY() - origin.y) < 21
+                        && Math.hypot(warden.getX() - origin.x, warden.getZ() - origin.z) < 18)
+                .stream().map(WardenEntity::getPos).toList();
+        return new Threats(blasts,flights,wardens);
     }
     static Action dodge(MinecraftClient client){
         Threats threats=scan(client);
         Box body=client.player.getBoundingBox();
-        double current=threats.risk(body,client.player.getVelocity());
+        var referenceMovement = threats.wardensNearby() ? Vec3d.ZERO : client.player.getVelocity();
+        double current=threats.risk(body,referenceMovement);
         if(current<=0)return null;
-        if(LocalFormation.canEvade()&&teleport(client,threats,body,current))return new Action(null);
+        if(!threats.wardensNearby()&&LocalFormation.canEvade()&&teleport(client,threats,body,current))
+            return new Action(null, false);
         var direction=walkDirection(client,threats,body,current);
-        return direction==null?null:new Action(direction);
+        if (direction == null && !threats.wardensNearby()) return null;
+        return new Action(direction, threats.wardensNearby());
     }
 
     private static boolean teleport(MinecraftClient client, Threats threats, Box body, double current) {
@@ -93,7 +109,7 @@ final class ThreatEvasion {
             double angle = index * Math.PI / 4;
             var heading = new Vec3d(Math.cos(angle), 0, Math.sin(angle));
             if (!walkable(client, body, heading)) continue;
-            double risk = threats.risk(body, heading.multiply(.16));
+            double risk = threats.risk(body, heading.multiply(threats.wardensNearby() ? .07 : .16));
             if (risk < bestRisk) {
                 bestRisk = risk;
                 best = heading;

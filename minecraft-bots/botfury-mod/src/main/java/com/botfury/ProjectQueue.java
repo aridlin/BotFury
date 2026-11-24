@@ -336,8 +336,6 @@ final class ProjectQueue {
         var result = new ArrayList<BlockedAccess>();
         for (var project : projects.values()) {
             if (!project.world.equals(world) || project.supplyChest == null || project.repeat != null) continue;
-            boolean openCleanup = project.jobs.stream().anyMatch(job -> job.state != State.DONE
-                    && job.work.id.startsWith("remove-access-repair-"));
             boolean activeCleanup = project.jobs.stream().anyMatch(job -> (job.state == State.LEASED || job.state == State.WAITING)
                     && job.work.id.startsWith("remove-access-repair-"));
             for (var job : project.jobs) {
@@ -347,9 +345,8 @@ final class ProjectQueue {
                 boolean replanned = project.supplyRecoveries.containsKey("pose:" + job.work.id);
                 boolean priorScaffold = project.supplyRecoveries.containsKey("access:" + job.work.id);
                 boolean replacement = !alternatePose && priorScaffold;
-                if (alternatePose && replanned || !alternatePose && !priorScaffold && openCleanup
-                        || replacement && (!replanned || activeCleanup
-                            || project.supplyRecoveries.containsKey("access:" + job.work.id + "-v2"))) continue;
+                if (alternatePose ? replanned : activeCleanup || replacement && (!replanned
+                        || project.supplyRecoveries.containsKey("access:" + job.work.id + "-v2"))) continue;
                 var cargo = find(project, job.work.sameWorkerAs);
                 if (cargo.state == State.DONE && cargo.worker != null && cargo.work.constructionMaterial != null) {
                     result.add(new BlockedAccess(project.id, job.work, cargo.worker, replacement));
@@ -828,10 +825,11 @@ final class ProjectQueue {
                         || retryDelayedFor(job, worker, now)
                         || !kinds.contains(job.work.kind)) continue;
                 boolean nearbyPickup = canRetryConstructionPickup(job, position);
+                boolean nearbyCleanup = canRetryScaffoldCleanup(job, position, hasExcavationTool);
                 var excavationMaterial = excavationToolMaterial(job);
                 boolean equippedRetry = excavationMaterial != null && hasExcavationTool.test(excavationMaterial);
                 if (excavationMaterial != null && !equippedRetry) continue;
-                if (job.state != State.WAITING && !nearbyPickup
+                if (job.state != State.WAITING && !nearbyPickup && !nearbyCleanup
                         && !(equippedRetry && job.state == State.FAILED && job.attempts == MAX_ATTEMPTS)) continue;
                 if (!done.containsAll(job.work.needs)) {
                     if (job.work.kind == Kind.TRANSFER && job.work.needs.size() > 1 && !blocked.contains(job.work.id)
@@ -858,7 +856,7 @@ final class ProjectQueue {
                         || CONSTRUCTION_PICKUP.equals(job.evidence) && job.expiresAt > now) {
                     return assign(project, job, worker, now, position);
                 }
-                if (fallbackJob == null || nearbyPickup && fallbackJob.state != State.FAILED) {
+                if (fallbackJob == null || (nearbyPickup || nearbyCleanup) && fallbackJob.state != State.FAILED) {
                     fallbackProject = project;
                     fallbackJob = job;
                 }
@@ -902,6 +900,15 @@ final class ProjectQueue {
         var target = JSON.fromJson(job.work.payload, StationTarget.class).target;
         return target != null && target.y() - position.y <= CONSTRUCTION_PICKUP_RETRY_CLIMB
                 && distance(position, target) <= CONSTRUCTION_PICKUP_RETRY_RADIUS;
+    }
+
+    private static boolean canRetryScaffoldCleanup(Job job, ResourceSite position,
+                                                   java.util.function.Predicate<String> hasExcavationTool) {
+        if (position == null || job.work.cleanup == null || job.state != State.FAILED
+                || job.attempts >= MAX_ATTEMPTS + 2 || !TARGET_TIMEOUT.equals(job.evidence)) return false;
+        var block = JSON.fromJson(job.work.payload, StationTarget.class);
+        return block != null && block.target != null && block.block != null && distance(position, block.target) <= 8
+                && Math.abs((long) position.y - block.target.y()) <= 3 && hasExcavationTool.test(block.block);
     }
 
     private static boolean earlierDepositInProgress(Job deposit, Map<String, Job> jobs, Set<String> done) {

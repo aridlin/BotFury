@@ -1023,7 +1023,9 @@ class ProjectQueueTest {
                 List.of("ready"), Set.of(chest), null, null, "minecraft:oak_planks");
         var original = new ProjectQueue.Work("place-1", BUILD, "{\"target\":{\"x\":6,\"y\":65,\"z\":0}}",
                 List.of("pickup"), Set.of(wall, originalStand), "pickup");
-        queue.submitSupplied("house", WORLD, List.of(job("ready", ProjectQueue.Kind.BARRIER, List.of()), cargo, original), chest);
+        var later = new ProjectQueue.Work("place-2", BUILD, "{}", List.of("pickup", "place-1"),
+                Set.of("block:10,65,0"), "pickup");
+        queue.submitSupplied("house", WORLD, List.of(job("ready", ProjectQueue.Kind.BARRIER, List.of()), cargo, original, later), chest);
         assertTrue(queue.accessReservations(WORLD).contains(originalStand));
         var stock = new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:cobblestone", 4));
         var taken = queue.claim(WORLD, "builder", Set.of(TRANSFER), 1).job();
@@ -1047,7 +1049,8 @@ class ProjectQueueTest {
         var moved = new ProjectQueue.Work("place-1", BUILD, "{\"stand\":{\"x\":6,\"y\":65,\"z\":1}}",
                 List.of("pickup", step), Set.of("wall"), "pickup");
         var barrier = job(done, ProjectQueue.Kind.SETTLEMENT_BARRIER, List.of("place-1"));
-        var cleanup = new ProjectQueue.Work("remove-access-repair-place-1-0", EXCAVATE, "{}", List.of(step),
+        var cleanup = new ProjectQueue.Work("remove-access-repair-place-1-0", EXCAVATE,
+                "{\"target\":{\"x\":6,\"y\":64,\"z\":1},\"block\":\"minecraft:cobblestone\"}", List.of(step),
                 Set.of(key), null, new ProjectQueue.Cleanup(key, done));
         var repair = new StructureProject.AccessRepair(moved, List.of(verification, temporary), List.of(barrier, cleanup), 1);
         assertTrue(queue.installAccess(WORLD, request, repair, now++));
@@ -1072,7 +1075,28 @@ class ProjectQueueTest {
         var placement = assignment.job();
         assertEquals("place-1", placement.work().id());
         assertTrue(restored.finish("house", "place-1", placement.lease(), true, "Built wall", now++));
-        assertEquals(cleanup.id(), restored.claim(WORLD, "helper", Set.of(EXCAVATE), now).job().work().id());
+        for (int attempt = 0; attempt < 3; attempt++) {
+            var next = restored.claim(WORLD, "builder", Set.of(BUILD), now++).job();
+            assertEquals(later.id(), next.work().id());
+            assertTrue(restored.finish("house", later.id(), next.lease(), false, ProjectQueue.TARGET_TIMEOUT, now++));
+            now += ProjectQueue.PLACEMENT_HANDOFF_WINDOW_MS;
+        }
+        assertTrue(restored.blockedAccess(WORLD).isEmpty());
+        for (int attempt = 0; attempt < 3; attempt++) {
+            var removal = restored.claim(WORLD, "helper", Set.of(EXCAVATE), now++).job();
+            assertEquals(cleanup.id(), removal.work().id());
+            assertTrue(restored.finish("house", cleanup.id(), removal.lease(), false, ProjectQueue.TARGET_TIMEOUT, now++));
+        }
+        assertEquals(later, restored.blockedAccess(WORLD).get(0).job());
+        var distant = new ProjectQueue.ResourceSite(6, 54, 1);
+        var local = new ProjectQueue.ResourceSite(7, 64, 1);
+        assertNull(restored.claim(WORLD, "remote", Set.of(EXCAVATE), null, now++, distant, item -> true));
+        assertNull(restored.claim(WORLD, "local", Set.of(EXCAVATE), null, now++, local, item -> false));
+        var recovered = restored.claim(WORLD, "local", Set.of(EXCAVATE), null, now++, local,
+                "minecraft:cobblestone"::equals).job();
+        assertEquals(cleanup.id(), recovered.work().id());
+        assertTrue(restored.finish("house", cleanup.id(), recovered.lease(), true, "Observed air", now++));
+        assertEquals(later, restored.blockedAccess(WORLD).get(0).job());
     }
 
     @Test void placementHandoffAccountsForCargoInTheBatchesItUnblocks() throws Exception {

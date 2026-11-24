@@ -89,12 +89,26 @@ final class ProjectBroker {
             checkOwnedPlacements(client, board, world);
             confirmLocalScaffoldClearance(client, board, world);
             resumeCarriedSmelting(client, board, world);
+            useCarriedCraftingIngredients(client, board, world);
             if (now >= nextAccessCheck) {
                 nextAccessCheck = now + java.time.Duration.ofSeconds(20).toNanos();
                 repairBlockedAccess(client, board, world);
             }
         } catch (IOException | IllegalArgumentException failure) {
             BotEvents.add("warn", "projects", "Could not check owned project work. " + failure.getMessage());
+        }
+    }
+
+    private static void useCarriedCraftingIngredients(net.minecraft.client.MinecraftClient client, ProjectQueue board,
+                                                       String world) throws IOException {
+        for (var request : board.craftableToolPreparation(world, System.currentTimeMillis())) {
+            var bot = liveWorker(request.worker());
+            if (bot == null || bot.items().isEmpty()) continue;
+            var inputs = ProjectProduction.carriedCraftingIngredients(client, request.work().payload(), bot.items());
+            if (board.useCarriedCraftingIngredients(world, request, inputs, System.currentTimeMillis())) {
+                BotEvents.add("info", "projects", bot.name() + " already carries the ingredients for " + request.work().id());
+                return;
+            }
         }
     }
 

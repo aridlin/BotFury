@@ -166,6 +166,7 @@ final class ProjectQueue {
     record OwnedStation(String project, String job, String payload) {}
     record OwnedPlacement(String project, String job, String payload) {}
     record CarriedSmelt(String project, Work work) {}
+    record CarriedCraft(String project, Work work, String worker, UUID gatheringLease) {}
     record BlockedAccess(String project, Work job, String builder, boolean replacementScaffold) {
         String repairId() { return job.id + (replacementScaffold ? "-v2" : ""); }
     }
@@ -1354,15 +1355,77 @@ final class ProjectQueue {
             stages.add(job.work.id);
             failed |= job.state == State.FAILED;
         }
-        if (!failed) return Set.of();
+        return failed && privatePreparationReady(project, consumer, stages) ? stages : Set.of();
+    }
+
+    private static boolean privatePreparationReady(Project project, Job consumer, Set<String> stages) {
         for (var job : project.jobs) {
             if (stages.contains(job.work.id)) {
                 if (job.work.needs.stream().anyMatch(id -> !stages.contains(id) && find(project, id).state != State.DONE)) {
-                    return Set.of();
+                    return false;
                 }
-            } else if (job != consumer && job.work.needs.stream().anyMatch(stages::contains)) return Set.of();
+            } else if (job != consumer && job.work.needs.stream().anyMatch(stages::contains)) return false;
         }
-        return stages;
+        return true;
+    }
+
+    synchronized List<CarriedCraft> craftableToolPreparation(String world, long now) {
+        var result = new ArrayList<CarriedCraft>();
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || project.supplyChest == null || cancelled(project)) continue;
+            var toolConsumers = new HashSet<String>();
+            for (var job : project.jobs) {
+                if (job.work.kind == Kind.GATHER && job.state == State.WAITING && job.work.sameWorkerAs != null) {
+                    toolConsumers.add(job.work.sameWorkerAs);
+                }
+            }
+            for (var craft : project.jobs) {
+                if (craft.work.kind != Kind.CRAFT || craft.state != State.WAITING || craft.work.sameWorkerAs == null
+                        || craft.work.needs.size() != 1 || !toolConsumers.contains(craft.work.id)
+                        || project.supplyRecoveries.containsKey("carried-craft:" + craft.work.id)) continue;
+                var recipe = JSON.fromJson(craft.work.payload, ToolRecipe.class);
+                if (recipe == null || recipe.recipe == null || !PICKAXE_TIERS.contains(recipe.recipe)) continue;
+                var path = privateActiveCraftPreparation(project, craft, now);
+                if (path.isEmpty()) continue;
+                var gathering = path.get(path.size() - 1);
+                result.add(new CarriedCraft(project.id, craft.work, gathering.worker, gathering.lease));
+            }
+        }
+        return result;
+    }
+
+    private List<Job> privateActiveCraftPreparation(Project project, Job craft, long now) {
+        var path = new ArrayList<Job>();
+        for (var stage = find(project, craft.work.sameWorkerAs); stage != null;
+             stage = stage.work.sameWorkerAs == null ? null : find(project, stage.work.sameWorkerAs)) {
+            if (stage.work.kind != Kind.GATHER && stage.work.kind != Kind.CRAFT) return List.of();
+            path.add(stage);
+            if (stage.state == State.WAITING) continue;
+            if (stage.state != State.LEASED || stage.expiresAt <= now || stage.work.kind != Kind.GATHER
+                    || handoffWorker(stage) != null || routeToolRequests.containsKey(stage.lease)) return List.of();
+            var ids = path.stream().map(job -> job.work.id).collect(java.util.stream.Collectors.toSet());
+            return privatePreparationReady(project, craft, ids) ? path : List.of();
+        }
+        return List.of();
+    }
+
+    synchronized boolean useCarriedCraftingIngredients(String world, CarriedCraft request, Set<String> inputs,
+                                                         long now) throws IOException {
+        if (inputs.isEmpty() || !craftableToolPreparation(world, now).contains(request)) return false;
+        var project = projects.get(request.project);
+        var craft = find(project, request.work.id);
+        if (!Collections.disjoint(inputs, pendingBuildMaterials(world, request.worker))
+                || inputs.stream().anyMatch(item -> hasPendingDepositOf(world, request.worker, item))) return false;
+        var path = privateActiveCraftPreparation(project, craft, now);
+        var jobs = project.jobs.stream().map(job -> {
+            if (!path.contains(job)) return job;
+            return new Job(job.work, State.DONE, job.attempts, request.worker, null, 0,
+                    "Preparation satisfied by observed crafting ingredients", job.chest, job.resourceSite);
+        }).toList();
+        var counts = new HashMap<>(project.supplyRecoveries);
+        counts.put("carried-craft:" + craft.work.id, 1);
+        commit(project.withRecovery(jobs, counts));
+        return true;
     }
 
     synchronized List<CarriedSmelt> resumableSmelting(String world) {

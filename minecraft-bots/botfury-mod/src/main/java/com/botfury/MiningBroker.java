@@ -1,11 +1,13 @@
 package com.botfury;
 import com.google.gson.Gson;
 import com.sun.net.httpserver.HttpExchange;
+import net.minecraft.util.math.BlockPos;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 final class MiningBroker {
     private static final Gson JSON=new Gson();
-    private static final MiningClaims CLAIMS=new MiningClaims();
+    private static final MiningClaims CLAIMS = new MiningClaims(request ->
+            BuildProtection.blocked(request.world(), new BlockPos(request.x(), request.y(), request.z()), null));
     static void handle(HttpExchange exchange)throws IOException{
         String host=exchange.getRequestHeaders().getFirst("Host");
         if(host==null||!host.matches("(127\\.0\\.0\\.1|localhost)(:[0-9]+)?")||exchange.getRequestHeaders().containsKey("Origin")||!exchange.getRequestMethod().equals("POST")){reply(exchange,403,"Local mining clients only");return;}

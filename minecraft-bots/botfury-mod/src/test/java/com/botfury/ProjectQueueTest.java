@@ -1016,11 +1016,15 @@ class ProjectQueueTest {
         var queue = new ProjectQueue(journal);
         String chest = "block:3,64,0";
         String key = "block:6,64,1";
+        String wall = "block:6,65,0";
+        String originalStand = "block:7,65,0";
         var cargo = new ProjectQueue.Work("pickup", TRANSFER,
                 "{\"direction\":\"TAKE\",\"item\":\"minecraft:oak_planks\",\"stock\":1}",
                 List.of("ready"), Set.of(chest), null, null, "minecraft:oak_planks");
-        var original = new ProjectQueue.Work("place-1", BUILD, "{}", List.of("pickup"), Set.of("wall"), "pickup");
+        var original = new ProjectQueue.Work("place-1", BUILD, "{\"target\":{\"x\":6,\"y\":65,\"z\":0}}",
+                List.of("pickup"), Set.of(wall, originalStand), "pickup");
         queue.submitSupplied("house", WORLD, List.of(job("ready", ProjectQueue.Kind.BARRIER, List.of()), cargo, original), chest);
+        assertTrue(queue.accessReservations(WORLD).contains(originalStand));
         var stock = new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:cobblestone", 4));
         var taken = queue.claim(WORLD, "builder", Set.of(TRANSFER), 1).job();
         assertTrue(queue.finish("house", "pickup", taken.lease(), true, "Taken", stock, 2));
@@ -1031,6 +1035,8 @@ class ProjectQueueTest {
             now += ProjectQueue.PLACEMENT_HANDOFF_WINDOW_MS;
         }
         var request = queue.blockedAccess(WORLD).get(0);
+        assertTrue(queue.accessReservations(WORLD).contains(wall));
+        assertFalse(queue.accessReservations(WORLD).contains(originalStand));
         String intake = "repair-place-1-stock";
         String check = "check-access-repair-place-1-0";
         String step = "place-access-repair-place-1-0";

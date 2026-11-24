@@ -397,7 +397,17 @@ final class ProjectQueue {
         var reserved = new HashSet<String>();
         for (var project : projects.values()) {
             if (project.world.equals(world)) {
-                for (var job : project.jobs) reserved.addAll(job.work.locks);
+                for (var job : project.jobs) {
+                    // Finished jobs no longer need their former standing and interaction space.
+                    if (job.state == State.WAITING || job.state == State.LEASED) {
+                        reserved.addAll(job.work.locks);
+                    } else if (job.work.kind == Kind.BUILD && SCHEMATIC_PLACEMENT.matcher(job.work.id).matches()) {
+                        var placement = JSON.fromJson(job.work.payload, StationTarget.class);
+                        if (placement != null && placement.target != null) {
+                            reserved.add(ProjectBlock.key(placement.target.checked()));
+                        }
+                    }
+                }
             }
         }
         return reserved;

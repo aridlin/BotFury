@@ -1,5 +1,6 @@
 package com.botfury;
 
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
@@ -30,6 +31,15 @@ record ProjectItem(String key, List<Identifier> ids) {
     }
     int count(Map<String, Integer> stock) {
         return ids.stream().mapToInt(id -> stock.getOrDefault(id.toString(), 0)).sum();
+    }
+    int count(MinecraftClient client) {
+        int total = 0;
+        var inventory = client.player.getInventory();
+        for (int slot = 0; slot < 36; slot++) {
+            var stack = inventory.getStack(slot);
+            if (matches(stack)) total += stack.getCount();
+        }
+        return total;
     }
     @Override public String toString() { return key; }
 }

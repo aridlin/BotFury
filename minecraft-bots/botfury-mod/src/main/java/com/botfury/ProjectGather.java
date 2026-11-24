@@ -41,12 +41,7 @@ record ProjectGather(String resource, String variant, ProjectItem item, int coun
     }
 
     int inventoryCount(MinecraftClient client) {
-        int total = 0;
-        for (int i = 0; i < 36; i++) {
-            var stack = client.player.getInventory().getStack(i);
-            if (item.matches(stack)) total += stack.getCount();
-        }
-        return total;
+        return item.count(client);
     }
 
     boolean fromDrops() { return resource.equals("dropped"); }

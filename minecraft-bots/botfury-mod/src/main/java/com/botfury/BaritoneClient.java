@@ -4,6 +4,7 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.util.math.BlockPos;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Array;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
@@ -47,6 +48,28 @@ final class BaritoneClient {
             }
         }
         return execute("goto " + destination.getX() + " " + destination.getY() + " " + destination.getZ());
+    }
+
+    static boolean goToAny(List<BlockPos> destinations) {
+        if (destinations.isEmpty()) return false;
+        var api = GoalApi.INSTANCE;
+        if (available() && api != null && destinations.size() > 1) {
+            try {
+                var goalType = api.start.getParameterTypes()[0];
+                var goals = Array.newInstance(goalType, destinations.size());
+                for (int i = 0; i < destinations.size(); i++) {
+                    var pos = destinations.get(i);
+                    Array.set(goals, i, api.block.newInstance(pos.getX(), pos.getY(), pos.getZ()));
+                }
+                var composite = Class.forName("baritone.api.pathing.goals.GoalComposite")
+                        .getConstructor(goals.getClass()).newInstance(goals);
+                api.start.invoke(api.process, composite);
+                return true;
+            } catch (ReflectiveOperationException | LinkageError unavailable) {
+                BotEvents.add("warn", "movement", "Baritone multi-goal routing unavailable");
+            }
+        }
+        return goTo(destinations.get(0));
     }
 
     private record GoalApi(Object process, Constructor<?> block, Method start) {

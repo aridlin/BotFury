@@ -919,7 +919,8 @@ final class ProjectQueue {
     }
 
     synchronized int retryInterruptedGathering(String world, String id) throws IOException {
-        return retryFailures(world, id, job -> job.work.kind == Kind.GATHER && LEASE_EXPIRED.equals(job.evidence));
+        return retryFailures(world, id, job -> job.work.kind == Kind.GATHER
+                && (LEASE_EXPIRED.equals(job.evidence) || GATHER_STALLED.equals(job.evidence)));
     }
 
     synchronized int retryPlacementApproaches(String world, String id) throws IOException {

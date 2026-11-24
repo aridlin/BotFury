@@ -2253,9 +2253,17 @@ final class ProjectQueue {
     }
 
     private static boolean rebuildingSmeltingOutput(Job job) {
-        return job.work.kind == Kind.SMELT && job.work.sameWorkerAs != null && job.state == State.WAITING
+        return job.work.kind == Kind.SMELT && job.work.sameWorkerAs != null && (timedOutSmelt(job) || job.state == State.WAITING
                 && job.evidence != null && job.evidence.endsWith("; reacquiring materials")
-                && (job.evidence.startsWith("Missing ingredients for ") || job.evidence.startsWith("Missing furnace "));
+                && (job.evidence.startsWith("Missing ingredients for ") || job.evidence.startsWith("Missing furnace ")));
+    }
+
+    private static boolean timedOutSmelt(Job job) {
+        return job.work.kind == Kind.SMELT && job.state == State.FAILED && TARGET_TIMEOUT.equals(job.evidence);
+    }
+
+    private static String timedOutSmeltKey(Job job) {
+        return "timed-out-smelting:" + job.work.id;
     }
 
     synchronized boolean reuseCarriedSmeltingOutput(String world, CarriedSmelt candidate, String worker,
@@ -2309,10 +2317,11 @@ final class ProjectQueue {
 
     private static boolean canReassignSmelting(Project project, Job job, long now) {
         if (job.state == State.WAITING && CARRIED_SMELT_ASSIGNED.equals(job.evidence)) return job.expiresAt <= now;
-        if (job.state != State.FAILED) return false;
+        if (job.state != State.FAILED || job.evidence == null
+                || job.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) return false;
+        if (timedOutSmelt(job)) return !project.supplyRecoveries.containsKey(timedOutSmeltKey(job));
         int suffix = job.evidence.indexOf(" after ");
-        return suffix >= 0 && missingProductionInput(job, job.evidence.substring(0, suffix))
-                && job.work.needs.stream().allMatch(id -> find(project, id).state == State.DONE);
+        return suffix >= 0 && missingProductionInput(job, job.evidence.substring(0, suffix));
     }
 
     synchronized boolean resumeCarriedSmelting(String world, CarriedSmelt request, String worker, String fuel,
@@ -2332,8 +2341,13 @@ final class ProjectQueue {
         var work = new Work(smelt.work.id, smelt.work.kind, JSON.toJson(payload), smelt.work.needs,
                 smelt.work.locks, smelt.work.sameWorkerAs);
         if (canReassignSmelting(project, smelt, now)) {
-            replace(project, new Job(work, State.WAITING, 0, worker, null, now + WORKER_RECONNECT_GRACE_MS,
-                    CARRIED_SMELT_ASSIGNED, smelt.chest, smelt.resourceSite));
+            var assigned = new Job(work, State.WAITING, 0, worker, null, now + WORKER_RECONNECT_GRACE_MS,
+                    CARRIED_SMELT_ASSIGNED, smelt.chest, smelt.resourceSite);
+            if (timedOutSmelt(smelt)) {
+                var counts = new HashMap<>(project.supplyRecoveries);
+                counts.put(timedOutSmeltKey(smelt), 1);
+                commit(project.withRecovery(project.jobs.stream().map(job -> job == smelt ? assigned : job).toList(), counts));
+            } else replace(project, assigned);
             return true;
         }
         var jobs = project.jobs.stream().map(job -> {
@@ -2356,10 +2370,14 @@ final class ProjectQueue {
             if (project.supplyChest == null || !world.equals(project.world) || cancelled(project)
                     || projectId != null && !projectId.equals(project.id)
                     || !availableProjectWorker(project, worker, now)) continue;
+            var unavailableStations = unavailableOwnedStations(project);
             for (var smelt : project.jobs) {
                 if (smelt.work.kind != Kind.SMELT || smelt.state != State.FAILED || smelt.work.sameWorkerAs == null
-                        || smelt.evidence == null || !smelt.evidence.startsWith("Missing furnace input ")
-                        || !canReassignSmelting(project, smelt, now)) continue;
+                        || smelt.evidence == null || !Collections.disjoint(unavailableStations, smelt.work.locks)) continue;
+                boolean exhaustedInputs = smelt.evidence.startsWith("Missing furnace input ") && canReassignSmelting(project, smelt, now);
+                boolean timedOut = timedOutSmelt(smelt)
+                        && smelt.work.needs.stream().allMatch(id -> find(project, id).state == State.DONE);
+                if (!exhaustedInputs && !timedOut) continue;
                 String recoveryKey = "smelting-refill:" + smelt.work.id;
                 if (project.supplyRecoveries.containsKey(recoveryKey)) continue;
                 var input = JSON.fromJson(smelt.work.payload, SmeltFuel.class).input;

@@ -78,6 +78,9 @@ final class ProjectWorker {
     private static final Set<BlockPos> triedCanopyStands = new HashSet<>();
     private static long nextInteractionStandSearch;
     private static long canopyApproachEnds;
+    private static BlockPos elevatedPlacementStand;
+    private static long lowerPlacementEnds;
+    private static boolean triedLowerPlacement;
     private static int waypoint;
     private static long waypointEnds;
     private static long jumpEnds;
@@ -237,6 +240,9 @@ final class ProjectWorker {
         waypoint = 0;
         returnWaypoints = null;
         attemptedJumpHeadroom = false;
+        triedLowerPlacement = false;
+        elevatedPlacementStand = null;
+        lowerPlacementEnds = 0;
         nextInteractionStandSearch = 0;
         approachAge = 0;
         stationReturn.reset();
@@ -724,8 +730,28 @@ final class ProjectWorker {
         if (ordinaryBuild && targetLoaded && !canBuildHere && client.world.isAir(target)
                 && (openingJumpHeadroom != null || !attemptedJumpHeadroom && (routeFailed || reachedAlternative))
                 && openJumpHeadroom(client, currentCell)) return;
+        if (elevatedPlacementStand != null && !canBuildHere && (routeFailed || now >= lowerPlacementEnds)) {
+            halt(client);
+            interactionStand = stand = elevatedPlacementStand;
+            elevatedPlacementStand = null;
+            interactionGoals = List.of();
+            routeFailed = false;
+        }
         boolean belowPlacement = ordinaryBuild && targetLoaded && !canBuildHere && client.world.isAir(target)
                 && stand.getY() - currentCell.getY() >= 3 && currentCell.isWithinDistance(stand, 16);
+        if (belowPlacement && !triedLowerPlacement && (routeFailed || stationReturn.active())) {
+            triedLowerPlacement = true;
+            var lower = nextInteractionStands(client, target, stand, kind, currentCell.getY() + 1);
+            if (!lower.isEmpty()) {
+                halt(client);
+                elevatedPlacementStand = stand;
+                lowerPlacementEnds = now + seconds(20);
+                interactionStand = stand = lower.get(0);
+                interactionGoals = lower;
+                belowPlacement = routeFailed = false;
+                BotEvents.add("info", "movement", "Trying a lower stand for the placement face");
+            }
+        }
         if ((canopyApproachEnds != 0 || belowPlacement)
                 && tryCanopyApproach(client, stand, now, searchingForStand)) return;
         if (belowPlacement && tryElevatedApproach(client, stand, now, true)) {
@@ -736,7 +762,7 @@ final class ProjectWorker {
         // Try a protected exit once after both the planned and an alternate approach fail.
         boolean recoverBeforeSwitching = (excavate || ordinaryBuild) && interactionStand != null
                 && recoveryOrigin == null && routeFailed;
-        if (searchingForStand && !recoverBeforeSwitching && !belowStation && !stationReturn.active()
+        if (searchingForStand && elevatedPlacementStand == null && !recoverBeforeSwitching && !belowStation && !stationReturn.active()
                 && targetLoaded && now >= nextInteractionStandSearch
                 && client.world.isChunkLoaded(stand.getX() >> 4, stand.getZ() >> 4)
                 && (!usableInteractionStand(client, stand, target) || !centering && player.getBlockPos().equals(stand)
@@ -1133,9 +1159,14 @@ final class ProjectWorker {
 
     private static List<BlockPos> nextInteractionStands(MinecraftClient client, BlockPos target, BlockPos previous,
                                                        ProjectQueue.Kind kind) {
+        return nextInteractionStands(client, target, previous, kind, Integer.MAX_VALUE);
+    }
+
+    private static List<BlockPos> nextInteractionStands(MinecraftClient client, BlockPos target, BlockPos previous,
+                                                       ProjectQueue.Kind kind, int highestStand) {
         var candidates = new ArrayList<BlockPos>();
         for (var pos : BlockPos.iterateOutwards(target, 4, 4, 4)) {
-            if (pos.equals(previous) || rejectedInteractionStands.contains(pos)
+            if (pos.getY() > highestStand || pos.equals(previous) || rejectedInteractionStands.contains(pos)
                     || !client.world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)
                     || !usableInteractionStand(client, pos, target)) continue;
             var feet = Vec3d.ofBottomCenter(pos);

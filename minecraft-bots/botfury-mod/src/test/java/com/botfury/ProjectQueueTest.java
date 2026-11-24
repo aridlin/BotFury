@@ -135,22 +135,26 @@ class ProjectQueueTest {
     }
 
     @Test void expiredGatheringWithASavedSiteAllowsTheOriginalWorkerToReconnect() throws Exception {
-        var journal = directory.resolve("gather-reconnect.json");
-        var queue = new ProjectQueue(journal);
-        queue.submit("timber", WORLD, List.of(new ProjectQueue.Work("logs", GATHER,
-                "{\"resource\":\"any_logs\",\"variant\":\"both\",\"item\":\"any_logs\"}", List.of(), Set.of(), null)));
-        var lease = queue.claim(WORLD, "gatherer", Set.of(GATHER), 1).job();
-        var site = new ProjectQueue.ResourceSite(16, 100, 42);
-        var renewed = queue.renew("timber", "logs", lease.lease(), site, 2);
-        assertNull(queue.claim(WORLD, "replacement", Set.of(GATHER), renewed.expiresAt()));
-        var restored = new ProjectQueue(journal);
-        var resumed = restored.claim(WORLD, "gatherer", Set.of(GATHER), renewed.expiresAt() + 1).job();
-        assertEquals(site, resumed.resourceSite());
-        assertNotEquals(lease.lease(), resumed.lease());
-        resumed = restored.renew("timber", "logs", resumed.lease(), site, renewed.expiresAt() + 2);
-        assertNull(restored.claim(WORLD, "replacement", Set.of(GATHER), resumed.expiresAt() + 29_999));
-        assertEquals("replacement", restored.claim(WORLD, "replacement", Set.of(GATHER),
-                resumed.expiresAt() + 30_000).job().worker());
+        for (boolean coordinatorRestart : new boolean[]{false, true}) {
+            var journal = directory.resolve("gather-reconnect-" + coordinatorRestart + ".json");
+            var queue = new ProjectQueue(journal);
+            queue.submit("timber", WORLD, List.of(new ProjectQueue.Work("logs", GATHER,
+                    "{\"resource\":\"any_logs\",\"variant\":\"both\",\"item\":\"any_logs\"}", List.of(), Set.of(), null)));
+            var lease = queue.claim(WORLD, "gatherer", Set.of(GATHER), 1).job();
+            var site = new ProjectQueue.ResourceSite(16, 100, 42);
+            var renewed = queue.renew("timber", "logs", lease.lease(), site, 2);
+            if (coordinatorRestart) queue = new ProjectQueue(journal);
+            assertNull(queue.claim(WORLD, "replacement", Set.of(GATHER), renewed.expiresAt()));
+            var restored = new ProjectQueue(journal);
+            var resumed = restored.claim(WORLD, "gatherer", Set.of(GATHER), renewed.expiresAt() + 1).job();
+            assertEquals(site, resumed.resourceSite());
+            assertEquals(coordinatorRestart ? 1 : 2, resumed.attempts());
+            assertNotEquals(lease.lease(), resumed.lease());
+            resumed = restored.renew("timber", "logs", resumed.lease(), site, renewed.expiresAt() + 2);
+            assertNull(restored.claim(WORLD, "replacement", Set.of(GATHER), resumed.expiresAt() + 29_999));
+            assertEquals("replacement", restored.claim(WORLD, "replacement", Set.of(GATHER),
+                    resumed.expiresAt() + 30_000).job().worker());
+        }
     }
 
     @Test void stationaryGathererYieldsClaimToAnotherWorkerAfterRestart() throws Exception {

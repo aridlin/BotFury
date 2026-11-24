@@ -107,6 +107,33 @@ class ProjectQueueTest {
         assertEquals("ingredients", restored.claim(WORLD, "miner", Set.of(GATHER), now).job().work().id());
     }
 
+    @Test void deeperProspectingRenewsTheToolBudgetWhileSameDepthRemainsBounded() throws Exception {
+        var journal = directory.resolve("prospecting-tools.json");
+        var queue = new ProjectQueue(journal);
+        queue.submitSupplied("ore-stock", WORLD, List.of(job("ingredients", GATHER, List.of()),
+                new ProjectQueue.Work("tools", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\"}",
+                        List.of("ingredients"), Set.of(), "ingredients"),
+                new ProjectQueue.Work("ore", GATHER,
+                        "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\"}",
+                        List.of("tools"), Set.of(), "tools")), "block:3,64,0");
+        long now = 1;
+        for (int depth : new int[]{8, 8, 0, 0, 0}) {
+            for (var kind : List.of(GATHER, CRAFT)) {
+                var supply = queue.claim(WORLD, "miner", Set.of(kind), now++).job();
+                assertTrue(queue.finish("ore-stock", supply.work().id(), supply.lease(), true, "Done", now++));
+            }
+            var ore = queue.claim(WORLD, "miner", Set.of(GATHER), now++).job();
+            assertTrue(queue.finish("ore-stock", "ore", ore.lease(), false, ProjectQueue.GATHER_TOOLS_NEEDED,
+                    null, new ProjectQueue.ResourceSite(6, depth, 8), now++));
+            queue = new ProjectQueue(journal);
+        }
+        var exhausted = queue.snapshot(now).get(0).jobs().get(2);
+        assertEquals(ProjectQueue.State.FAILED, exhausted.state());
+        assertEquals(new ProjectQueue.ResourceSite(6, 0, 8), exhausted.resourceSite());
+        assertEquals(1, queue.retryInterruptedGathering(WORLD, "ore-stock"));
+        assertEquals("ingredients", queue.claim(WORLD, "replacement", Set.of(GATHER), now).job().work().id());
+    }
+
     @Test void stationaryGathererYieldsClaimToAnotherWorkerAfterRestart() throws Exception {
         var journal = directory.resolve("stalled-gather.json");
         var queue = new ProjectQueue(journal);

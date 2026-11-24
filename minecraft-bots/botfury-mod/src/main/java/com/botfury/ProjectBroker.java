@@ -104,6 +104,7 @@ final class ProjectBroker {
             if (now >= nextAccessCheck) {
                 nextAccessCheck = now + java.time.Duration.ofSeconds(20).toNanos();
                 repairBlockedAccess(client, board, world);
+                recoverScaffoldCleanups(client, board, world);
             }
         } catch (IOException | IllegalArgumentException failure) {
             BotEvents.add("warn", "projects", "Could not check owned project work. " + failure.getMessage());
@@ -169,6 +170,30 @@ final class ProjectBroker {
             if (!client.world.getChunkManager().isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
                     || !block.desired().isAir() || !client.world.isAir(target)) continue;
             board.confirmScaffoldClearance(world, check, "Observed clear scaffold cell at " + target.toShortString());
+        }
+    }
+
+    private static void recoverScaffoldCleanups(net.minecraft.client.MinecraftClient client, ProjectQueue board,
+                                               String world) throws IOException {
+        for (var request : board.failedScaffoldCleanups(world)) {
+            var target = ProjectBlock.parse(request.job().payload());
+            if (BuildProtection.blocked(world, target.target(), request.project())) continue;
+            var temporary = board.temporaryFooting(request.project());
+            var nearby = BotTracker.all().stream().filter(bot -> bot.fresh() && bot.connected() && bot.alive()
+                    && bot.sameWorld() && bot.baritone() && bot.health() > 4)
+                    .sorted(java.util.Comparator.comparing(bot -> !hasExcavationTool(bot.items(), target.block().toString())))
+                    .toList();
+            for (var bot : nearby) {
+                var position = workerPosition(bot.name());
+                if (position == null) continue;
+                var stand = StructureProject.groundedScaffoldCleanup(client, target, temporary, position);
+                if (stand != null && board.recoverScaffoldCleanup(world, request,
+                        new ProjectQueue.ResourceSite(stand.getX(), stand.getY(), stand.getZ()),
+                        bot.name(), System.currentTimeMillis())) {
+                    BotEvents.add("info", "projects", bot.name() + " is clearing temporary scaffold " + target.target().toShortString());
+                    return;
+                }
+            }
         }
     }
 

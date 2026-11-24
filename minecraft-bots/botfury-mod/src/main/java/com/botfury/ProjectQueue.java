@@ -172,6 +172,7 @@ final class ProjectQueue {
     }
     record ScaffoldClearance(String project, Work job) {}
     record LocalInspection(String project, Work job) {}
+    record CleanupRecovery(String project, Work job) {}
     private static final java.util.regex.Pattern SCHEMATIC_PLACEMENT = java.util.regex.Pattern.compile("place-[0-9]+");
     private record StationTarget(ProjectBlock.Position target, ProjectBlock.Position stand, String block) {}
     private record Board(int schema, Map<String, Project> projects) {}
@@ -407,6 +408,65 @@ final class ProjectQueue {
             }
         }
         return result;
+    }
+
+    synchronized List<CleanupRecovery> failedScaffoldCleanups(String world) {
+        var result = new ArrayList<CleanupRecovery>();
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || cancelled(project)) continue;
+            var done = new HashSet<String>();
+            for (var job : project.jobs) if (job.state == State.DONE) done.add(job.work.id);
+            var blocked = blockedJobs(project);
+            for (var job : project.jobs) {
+                if (job.state != State.FAILED || job.work.cleanup == null
+                        || !(TARGET_TIMEOUT.equals(job.evidence) || job.evidence != null
+                            && job.evidence.startsWith(EXCAVATION_TOOL_NEEDED)
+                            || "Target obstructed or out of reach from the approved stand".equals(job.evidence))
+                        || project.supplyRecoveries.getOrDefault("cleanup-pose:" + job.work.id, 0) >= MAX_SUPPLY_RECOVERIES
+                        || !done.containsAll(job.work.needs)
+                        || !settled(job.work.cleanup.afterSettled, done, blocked)
+                        || job.work.cleanup.alsoSettled.stream().anyMatch(id -> !settled(id, done, blocked))
+                        || !ownsCobblestoneScaffold(project, job.work)) continue;
+                result.add(new CleanupRecovery(project.id, job.work));
+            }
+        }
+        return result;
+    }
+
+    private static boolean ownsCobblestoneScaffold(Project project, Work cleanup) {
+        var placement = find(project, cleanup.needs.get(0));
+        var expected = JSON.fromJson(cleanup.payload, StationTarget.class);
+        if (expected == null || expected.target == null || !"minecraft:cobblestone".equals(expected.block)
+                || !cleanup.cleanup.site.equals(ProjectBlock.key(expected.target.checked()))
+                || placement.work.kind != Kind.BUILD) return false;
+        var placed = JSON.fromJson(placement.work.payload, StationTarget.class);
+        return placed != null && expected.target.equals(placed.target) && expected.block.equals(placed.block);
+    }
+
+    synchronized boolean recoverScaffoldCleanup(String world, CleanupRecovery request, ResourceSite stand,
+                                                String worker, long now) throws IOException {
+        if (!failedScaffoldCleanups(world).contains(request)) return false;
+        var project = projects.get(request.project);
+        if (!availableProjectWorker(project, worker, now)) return false;
+        var current = find(project, request.job.id);
+        var payload = JSON.fromJson(current.work.payload, com.google.gson.JsonObject.class);
+        payload.add("stand", JSON.toJsonTree(stand));
+        var locks = new HashSet<>(current.work.locks);
+        for (int y = stand.y - 1; y <= stand.y + 1; y++) locks.add("block:" + stand.x + "," + y + "," + stand.z);
+        for (var other : projects.values()) {
+            if (!world.equals(other.world)) continue;
+            if (!Collections.disjoint(locks, temporaryFooting(other.id)) && !other.id.equals(project.id)) return false;
+            if (other.jobs.stream().anyMatch(job -> job.state == State.LEASED
+                    && !Collections.disjoint(locks, job.work.locks))) return false;
+        }
+        var work = new Work(current.work.id, current.work.kind, JSON.toJson(payload), current.work.needs,
+                locks, null, current.work.cleanup);
+        var lease = new Job(work, State.LEASED, current.attempts + 1, worker, UUID.randomUUID(),
+                now + LEASE_MS, "Assigned scaffold cleanup from reachable footing", null);
+        var counts = new HashMap<>(project.supplyRecoveries);
+        counts.merge("cleanup-pose:" + work.id, 1, Integer::sum);
+        commit(project.withRecovery(project.jobs.stream().map(job -> job == current ? lease : job).toList(), counts));
+        return true;
     }
 
     synchronized Set<String> temporaryFooting(String projectId) {

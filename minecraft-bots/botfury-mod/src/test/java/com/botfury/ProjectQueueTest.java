@@ -1026,6 +1026,38 @@ class ProjectQueueTest {
         }
     }
 
+    @Test void stalledIndependentStockGatherGetsOneFreshAttemptAcrossRestarts() throws Exception {
+        var journal = directory.resolve("stalled-independent-stock.json");
+        String chest = "block:3,64,0";
+        var failedSite = new ProjectQueue.ResourceSite(12, 64, 0);
+        var gather = new ProjectQueue.Work("gather", GATHER,
+                "{\"resource\":\"any_logs\",\"variant\":\"both\",\"item\":\"any_logs\",\"count\":4}", List.of(), Set.of());
+        var deposit = new ProjectQueue.Work("deposit", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"any_logs\",\"stock\":4}", List.of(gather.id()), Set.of(chest), gather.id());
+        var queue = new ProjectQueue(journal);
+        queue.submitSupplied("stock", WORLD, List.of(gather, deposit), chest);
+
+        for (int attempt = 0; attempt < 3; attempt++) {
+            long now = 1 + attempt * 31_000L;
+            var lease = queue.claim(WORLD, "initial", Set.of(GATHER), now).job();
+            assertTrue(queue.finish("stock", gather.id(), lease.lease(), false, ProjectQueue.GATHER_STALLED,
+                    null, failedSite, now + 1));
+        }
+
+        var restored = new ProjectQueue(journal);
+        assertNull(restored.claim(WORLD, "replacement", Set.of(GATHER), 92_001));
+        var retry = restored.claim(WORLD, "replacement", Set.of(GATHER), 93_000).job();
+        assertEquals(gather.id(), retry.work().id());
+        assertNull(retry.resourceSite());
+        assertEquals(1, restored.snapshot(93_000).get(0).supplyRecoveries().get("stalled-stock-gather:gather"));
+        assertTrue(restored.finish("stock", gather.id(), retry.lease(), false, ProjectQueue.GATHER_STALLED,
+                null, failedSite, 93_001));
+
+        var exhausted = new ProjectQueue(journal);
+        assertNull(exhausted.claim(WORLD, "third", Set.of(GATHER, TRANSFER), 125_000));
+        assertEquals(ProjectQueue.State.FAILED, exhausted.snapshot(125_000).get(0).jobs().get(0).state());
+    }
+
     @Test void twoWorkersCanCompleteOneStockBatchFromTheirPartialInventories() throws Exception {
         var journal = directory.resolve("partial-stock.json");
         var queue = new ProjectQueue(journal);

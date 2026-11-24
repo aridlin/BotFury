@@ -110,6 +110,17 @@ final class ProjectBroker {
 
     private static void repairBlockedAccess(net.minecraft.client.MinecraftClient client, ProjectQueue board, String world)
             throws IOException {
+        for (var request : board.blockedPlacementPoses(world)) {
+            var placement = ProjectBlock.parse(request.job().payload());
+            if (BuildProtection.blocked(world, placement.target(), request.project())) continue;
+            var pose = StructureProject.repairPlacementPose(client, request.job(), board.temporaryFooting(request.project()));
+            if (pose != null && board.installPlacementPose(world, request, pose,
+                    heldCount(request.builder(), Registries.ITEM.getId(ProjectPlacement.material(placement.desired())).toString()),
+                    System.currentTimeMillis())) {
+                BotEvents.add("info", "projects", "Found another support face for " + request.job().id());
+                return;
+            }
+        }
         var blocked = board.blockedAccess(world);
         if (blocked.isEmpty()) return;
         var reservations = board.accessReservations(world);

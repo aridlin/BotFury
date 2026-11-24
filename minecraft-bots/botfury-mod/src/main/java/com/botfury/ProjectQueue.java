@@ -321,14 +321,23 @@ final class ProjectQueue {
     }
 
     synchronized List<BlockedAccess> blockedAccess(String world) {
+        return blockedAccess(world, false);
+    }
+
+    synchronized List<BlockedAccess> blockedPlacementPoses(String world) {
+        return blockedAccess(world, true);
+    }
+
+    private List<BlockedAccess> blockedAccess(String world, boolean alternatePose) {
         var result = new ArrayList<BlockedAccess>();
         for (var project : projects.values()) {
             if (!project.world.equals(world) || project.supplyChest == null || project.repeat != null
-                    || project.jobs.stream().anyMatch(job -> job.state != State.DONE && job.work.id.startsWith("remove-access-repair-"))) continue;
+                    || !alternatePose && project.jobs.stream().anyMatch(job -> job.state != State.DONE
+                        && job.work.id.startsWith("remove-access-repair-"))) continue;
             for (var job : project.jobs) {
                 if (job.state != State.FAILED || !placementApproachFailure(job) || job.work.kind != Kind.BUILD
                         || !SCHEMATIC_PLACEMENT.matcher(job.work.id).matches() || job.work.sameWorkerAs == null
-                        || project.supplyRecoveries.containsKey("access:" + job.work.id)
+                        || project.supplyRecoveries.containsKey((alternatePose ? "pose:" : "access:") + job.work.id)
                         || job.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) continue;
                 var cargo = find(project, job.work.sameWorkerAs);
                 if (cargo.state == State.DONE && cargo.worker != null && cargo.work.constructionMaterial != null) {
@@ -337,6 +346,40 @@ final class ProjectQueue {
             }
         }
         return result;
+    }
+
+    synchronized Set<String> temporaryFooting(String projectId) {
+        var project = projects.get(projectId);
+        if (project == null) return Set.of();
+        var cells = new HashSet<String>();
+        for (var job : project.jobs) {
+            if (job.work.cleanup != null && job.state != State.DONE) cells.add(job.work.cleanup.site);
+        }
+        return cells;
+    }
+
+    synchronized boolean installPlacementPose(String world, BlockedAccess request, Work replacement,
+                                              int held, long now) throws IOException {
+        var project = projects.get(request.project);
+        if (!blockedPlacementPoses(world).contains(request) || !replacement.id.equals(request.job.id)
+                || !replacement.needs.equals(request.job.needs)
+                || !Objects.equals(replacement.sameWorkerAs, request.job.sameWorkerAs) || held < 0) return false;
+        var waiting = find(project, request.job.id);
+        var pickup = find(project, waiting.work.sameWorkerAs);
+        var batch = project.jobs.stream().filter(job -> job.state != State.DONE
+                && pickup.work.id.equals(job.work.sameWorkerAs)).toList();
+        if (batch.stream().anyMatch(job -> job.state == State.LEASED)) return false;
+        var freshPickup = held >= batch.size() ? pickup
+                : replacementConstructionPickup(project, pickup, request.builder, batch.size(), held, now);
+        if (freshPickup == null) return false;
+        var jobs = new ArrayList<>(project.jobs);
+        jobs.set(jobs.indexOf(pickup), freshPickup);
+        jobs.set(jobs.indexOf(waiting), new Job(replacement, State.WAITING, 0, null, null, 0,
+                "Retrying placement from a newly observed support face", waiting.chest, waiting.resourceSite));
+        var recoveries = new HashMap<>(project.supplyRecoveries);
+        recoveries.put("pose:" + waiting.work.id, 1);
+        commit(project.withRecovery(jobs, recoveries));
+        return true;
     }
 
     synchronized Set<String> accessReservations(String world) {
@@ -1419,7 +1462,8 @@ final class ProjectQueue {
     }
 
     private static List<ResourceSite> accessRoute(Project project, Job job) {
-        if (job.work.kind != Kind.BUILD || !project.supplyRecoveries.containsKey("access:" + job.work.id)) return List.of();
+        if (job.work.kind != Kind.BUILD || !project.supplyRecoveries.containsKey("access:" + job.work.id)
+                || project.supplyRecoveries.containsKey("pose:" + job.work.id)) return List.of();
         String stage = "access-repair-" + job.work.id + "-";
         var walk = new LinkedHashMap<ResourceSite, ResourceSite>();
         for (var step : project.jobs) {

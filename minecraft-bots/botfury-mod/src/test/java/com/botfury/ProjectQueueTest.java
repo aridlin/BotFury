@@ -146,18 +146,23 @@ class ProjectQueueTest {
     @Test void retriesOnlyPlacementsWithExhaustedApproaches() throws Exception {
         var journal = directory.resolve("placement-approaches.json");
         var board = new ProjectQueue(journal);
-        board.submit("house", WORLD, List.of(job("first", BUILD, List.of()), job("second", BUILD, List.of())));
-        for (long now = 1; now <= 11; now += 2) {
+        board.submit("house", WORLD, List.of(job("first", BUILD, List.of()), job("second", BUILD, List.of()),
+                job("third", BUILD, List.of())));
+        for (long now = 1; now <= 17; now += 2) {
             var lease = board.claim(WORLD, "worker", Set.of(BUILD), now).job();
-            String evidence = lease.work().id().equals("first") ? "No reachable solid support face for 1, 2, 3"
-                    : "Build target is occupied";
+            String evidence = switch (lease.work().id()) {
+                case "first" -> "No reachable solid support face for 1, 2, 3";
+                case "second" -> "Build target is occupied";
+                default -> ProjectQueue.TARGET_TIMEOUT;
+            };
             assertTrue(board.finish("house", lease.work().id(), lease.lease(), false, evidence, now + 1));
         }
-        assertEquals(1, board.retryPlacementApproaches(WORLD, "house"));
+        assertEquals(2, board.retryPlacementApproaches(WORLD, "house"));
         var restored = new ProjectQueue(journal);
-        var jobs = restored.snapshot(13).get(0).jobs();
+        var jobs = restored.snapshot(19).get(0).jobs();
         assertEquals(ProjectQueue.State.WAITING, jobs.get(0).state());
         assertEquals(ProjectQueue.State.FAILED, jobs.get(1).state());
+        assertEquals(ProjectQueue.State.WAITING, jobs.get(2).state());
     }
 
     @Test void repairedFootingGatesStationAndReopensItsFailedConsumer() throws Exception {

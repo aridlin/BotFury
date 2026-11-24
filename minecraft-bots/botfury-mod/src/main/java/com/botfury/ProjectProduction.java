@@ -19,6 +19,7 @@ import net.minecraft.util.Identifier;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
 import java.time.Duration;
@@ -27,6 +28,7 @@ import java.util.Map;
 
 /** A workstation job with a bounded inventory target. Uses the server's own recipe and slot rules. */
 final class ProjectProduction {
+    private static final double[] OUTLINE_SAMPLES = {.2, .8};
     record Spec(ProjectBlock station, ProjectQueue.Kind kind, Identifier recipe, Identifier input,
                 Identifier fuel, int count) {}
     record Result(boolean success, String detail) {}
@@ -90,10 +92,28 @@ final class ProjectProduction {
     static BlockHitResult workstationHit(MinecraftClient client, BlockPos target, Vec3d eye) {
         var center = Vec3d.ofCenter(target);
         double reach = client.interactionManager.getReachDistance() - .1;
-        if (eye.squaredDistanceTo(center) > reach * reach) return null;
-        var hit = client.world.raycast(new RaycastContext(eye, center, RaycastContext.ShapeType.OUTLINE,
+        if (eye.squaredDistanceTo(center) > (reach + .9) * (reach + .9)) return null;
+        var hit = traceWorkstation(client, target, eye, center, reach);
+        if (hit != null) return hit;
+        var outline = client.world.getBlockState(target).getOutlineShape(client.world, target);
+        for (var box : outline.getBoundingBoxes()) {
+            for (double x : OUTLINE_SAMPLES) for (double y : OUTLINE_SAMPLES) for (double z : OUTLINE_SAMPLES) {
+                var point = new Vec3d(target.getX() + MathHelper.lerp(x, box.minX, box.maxX),
+                        target.getY() + MathHelper.lerp(y, box.minY, box.maxY),
+                        target.getZ() + MathHelper.lerp(z, box.minZ, box.maxZ));
+                hit = traceWorkstation(client, target, eye, point, reach);
+                if (hit != null) return hit;
+            }
+        }
+        return null;
+    }
+
+    private static BlockHitResult traceWorkstation(MinecraftClient client, BlockPos target, Vec3d eye, Vec3d point,
+                                                   double reach) {
+        var hit = client.world.raycast(new RaycastContext(eye, point, RaycastContext.ShapeType.OUTLINE,
                 RaycastContext.FluidHandling.NONE, client.player));
-        return hit.getType() == HitResult.Type.BLOCK && target.equals(hit.getBlockPos()) ? hit : null;
+        return hit.getType() == HitResult.Type.BLOCK && target.equals(hit.getBlockPos())
+                && eye.squaredDistanceTo(hit.getPos()) <= reach * reach ? hit : null;
     }
 
     Result tick(MinecraftClient client, long now) {

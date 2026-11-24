@@ -130,6 +130,7 @@ final class ProjectQueue {
     private static final int MAX_PROJECTS = 32;
     private static final int MAX_DEPENDENCIES = 250_000;
     private static final String LEASE_EXPIRED = "Worker lease expired";
+    static final String TARGET_TIMEOUT = "Timed out approaching or changing the target";
     static final String GATHER_STALLED = "Gathering stalled without item or route progress";
     static final String GATHER_TOOLS_NEEDED = "Gathering needs renewed tools";
     private static final String RECOVERING_TOOLS = GATHER_TOOLS_NEEDED + "; reacquiring materials";
@@ -923,7 +924,7 @@ final class ProjectQueue {
 
     synchronized int retryPlacementApproaches(String world, String id) throws IOException {
         return retryFailures(world, id, job -> job.work.kind == Kind.BUILD && job.evidence != null
-                && job.evidence.startsWith("No reachable solid support face for "));
+                && (TARGET_TIMEOUT.equals(job.evidence) || job.evidence.startsWith("No reachable solid support face for ")));
     }
 
     private int retryFailures(String world, String id, java.util.function.Predicate<Job> applicable) throws IOException {

@@ -180,6 +180,8 @@ final class ProjectQueue {
     private static final String BATCH_RESERVED = "Reserved for batch";
     static final int MAX_BATCH_STEPS = 8;
     private static final java.util.regex.Pattern SCHEMATIC_PLACEMENT = java.util.regex.Pattern.compile("place-[0-9]+");
+    private static final java.util.regex.Pattern PRODUCED_INVENTORY = java.util.regex.Pattern.compile(
+            "Observed [0-9]+ ([a-z0-9_.-]+:[a-z0-9_./-]+) in worker inventory");
     private record StationTarget(ProjectBlock.Position target, ProjectBlock.Position stand, String block) {}
     private record Board(int schema, Map<String, Project> projects) {}
     private record PickupTarget(String direction, String item, int stock) {}
@@ -1174,7 +1176,8 @@ final class ProjectQueue {
                 var mining = offerEquippedMiner(world, worker, projectId, toolUses, now, true);
                 if (mining != null) return mining;
             }
-            if (recoverStalledGathering(world, projectId, now) || heldCount != null && recoverToolsAfterBanking(world, projectId)) {
+            if (recoverStalledGathering(world, projectId, now, heldCount)
+                    || heldCount != null && recoverToolsAfterBanking(world, projectId)) {
                 return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
                         returnRevision, supportsPickupReserve);
             }
@@ -2938,7 +2941,8 @@ final class ProjectQueue {
                 && GATHER_STALLED.equals(job.evidence);
     }
 
-    private boolean recoverStalledGathering(String world, String projectId, long now) throws IOException {
+    private boolean recoverStalledGathering(String world, String projectId, long now,
+                                            java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
         for (var project : projects.values()) {
             if (!world.equals(project.world) || project.supplyChest == null && project.repeat == null
                     || cancelled(project) || projectId != null && !projectId.equals(project.id)) continue;
@@ -2955,10 +2959,37 @@ final class ProjectQueue {
                 var jobs = new HashMap<String, Job>();
                 project.jobs.forEach(job -> jobs.put(job.work.id, job));
                 var supplier = jobs.get(gather.work.sameWorkerAs);
+                if (retryWithRetainedProduction(project, gather, supplier, heldCount, now)) return true;
                 if (rewindSupply(project, gather, supplier, jobs, GATHER_STALLED, gather.chest)) return true;
             }
         }
         return false;
+    }
+
+    private boolean retryWithRetainedProduction(Project project, Job gather, Job supplier,
+                                                 java.util.function.ToIntBiFunction<String, String> heldCount,
+                                                 long now) throws IOException {
+        String key = "stalled-retained-production:" + gather.work.id;
+        if (heldCount == null || project.supplyRecoveries.containsKey(key) || supplier.state != State.DONE
+                || !productionWork(supplier.work) || supplier.evidence == null || supplier.worker == null
+                || !supplier.worker.equalsIgnoreCase(gather.worker) || !availableProjectWorker(project, supplier.worker, now)) {
+            return false;
+        }
+        var output = PRODUCED_INVENTORY.matcher(supplier.evidence);
+        var required = JSON.fromJson(supplier.work.payload, GatherQuantity.class);
+        if (!output.matches() || required == null || required.count == null || required.count < 1) return false;
+        try {
+            if (heldCount.applyAsInt(supplier.worker, output.group(1)) < required.count) return false;
+        } catch (IllegalArgumentException invalidItem) {
+            return false;
+        }
+        var retry = new Job(gather.work, State.WAITING, MAX_ATTEMPTS - 1, supplier.worker, null, 0,
+                GATHER_STALLED, gather.chest, gather.resourceSite);
+        var jobs = project.jobs.stream().map(job -> job == gather ? retry : job).toList();
+        var recoveries = new HashMap<>(project.supplyRecoveries);
+        recoveries.put(key, 1);
+        commit(project.withRecovery(jobs, recoveries));
+        return true;
     }
 
     private static String stalledSupplyKey(Job job) {

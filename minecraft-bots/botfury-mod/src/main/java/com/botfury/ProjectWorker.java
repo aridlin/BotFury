@@ -278,9 +278,10 @@ final class ProjectWorker {
                 if (observation != null) gatherSite = observation;
                 if (MiningTask.toolShortfall()) finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
             }
-        } else if (production != null && block == null) {
-            var result = production.tick(client, now);
+        } else if (production != null) {
+            var result = block == null ? production.tick(client, now) : production.finishedFromInventory(client);
             if (result != null) finish(client, result.success(), result.detail());
+            else if (block != null) execute(client, now);
         } else execute(client, now);
     }
 
@@ -765,7 +766,7 @@ final class ProjectWorker {
                         block = spec.location();
                         chest = new ProjectChest(spec);
                     } else if (work.kind() == ProjectQueue.Kind.CRAFT || work.kind() == ProjectQueue.Kind.SMELT) {
-                        var spec = ProjectProduction.parse(work.payload(), work.kind());
+                        var spec = ProjectProduction.useInventoryGrid(client, ProjectProduction.parse(work.payload(), work.kind()));
                         block = spec.station();
                         production = new ProjectProduction(spec);
                     } else if (work.kind() == ProjectQueue.Kind.FILL_BUCKETS) {

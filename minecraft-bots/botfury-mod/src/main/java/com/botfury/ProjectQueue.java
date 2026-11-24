@@ -2775,11 +2775,15 @@ final class ProjectQueue {
         return "rebuilt-storage-retry:" + deposit.work.id;
     }
 
-    private boolean ownChestContributionBlocked(Project project, Job gather, Job deposit) {
+    private static boolean depositPrerequisitesReady(Project project, Job gather, Job deposit) {
         var storage = find(project, "setup-storage");
-        if (storage != null && storage.state != State.DONE && Objects.equals(project.supplyChest, stationKey(storage))) return true;
-        if (deposit.work.needs.stream().anyMatch(dep -> !dep.equals(gather.work.id)
-                && find(project, dep).state != State.DONE)) return true;
+        if (storage != null && storage.state != State.DONE && Objects.equals(project.supplyChest, stationKey(storage))) return false;
+        return deposit.work.needs.stream().allMatch(dep -> dep.equals(gather.work.id)
+                || find(project, dep).state == State.DONE);
+    }
+
+    private boolean ownChestContributionBlocked(Project project, Job gather, Job deposit) {
+        if (!depositPrerequisitesReady(project, gather, deposit)) return true;
         if (projects.values().stream().anyMatch(other -> other != project && other.world.equals(project.world)
                 && project.supplyChest.equals(reservedStorage(other)))) return true;
         return projects.values().stream().filter(other -> other.world.equals(project.world))
@@ -3702,7 +3706,7 @@ final class ProjectQueue {
                         || project.supplyRecoveries.containsKey(key)) continue;
                 var deposit = contributionDeposit(project, gather);
                 if (deposit == null || !deposit.work.locks.contains(project.supplyChest)
-                        || ownChestContributionBlocked(project, gather, deposit)
+                        || !depositPrerequisitesReady(project, gather, deposit)
                         || gather.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) continue;
                 // Keep the failed site so route selection can pick a different area or search from the worker.
                 var retry = new Job(gather.work, State.WAITING, MAX_ATTEMPTS - 1, null, null, 0,

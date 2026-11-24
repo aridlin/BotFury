@@ -1034,8 +1034,10 @@ class ProjectQueueTest {
                 "{\"resource\":\"any_logs\",\"variant\":\"both\",\"item\":\"any_logs\",\"count\":4}", List.of(), Set.of());
         var deposit = new ProjectQueue.Work("deposit", TRANSFER,
                 "{\"direction\":\"DEPOSIT\",\"item\":\"any_logs\",\"stock\":4}", List.of(gather.id()), Set.of(chest), gather.id());
+        var concurrentDeposit = new ProjectQueue.Work("bank-stone", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:cobblestone\",\"stock\":4}", List.of(), Set.of(chest));
         var queue = new ProjectQueue(journal);
-        queue.submitSupplied("stock", WORLD, List.of(gather, deposit), chest);
+        queue.submitSupplied("stock", WORLD, List.of(gather, deposit, concurrentDeposit), chest);
 
         for (int attempt = 0; attempt < 3; attempt++) {
             long now = 1 + attempt * 31_000L;
@@ -1046,12 +1048,16 @@ class ProjectQueueTest {
 
         var restored = new ProjectQueue(journal);
         assertNull(restored.claim(WORLD, "replacement", Set.of(GATHER), 92_001));
+        var stoneTransfer = restored.claim(WORLD, "carrier", Set.of(TRANSFER), 92_002).job();
+        assertEquals(concurrentDeposit.id(), stoneTransfer.work().id());
         var retry = restored.claim(WORLD, "replacement", Set.of(GATHER), 93_000).job();
         assertEquals(gather.id(), retry.work().id());
         assertNull(retry.resourceSite());
         assertEquals(1, restored.snapshot(93_000).get(0).supplyRecoveries().get("stalled-stock-gather:gather"));
         assertTrue(restored.finish("stock", gather.id(), retry.lease(), false, ProjectQueue.GATHER_STALLED,
                 null, failedSite, 93_001));
+        assertTrue(restored.finish("stock", concurrentDeposit.id(), stoneTransfer.lease(), true, "Banked stone",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:cobblestone", 4)), 93_002));
 
         var exhausted = new ProjectQueue(journal);
         assertNull(exhausted.claim(WORLD, "third", Set.of(GATHER, TRANSFER), 125_000));

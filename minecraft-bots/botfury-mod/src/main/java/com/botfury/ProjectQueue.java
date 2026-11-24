@@ -2286,10 +2286,18 @@ final class ProjectQueue {
         for (var project : projects.values()) {
             if (!world.equals(project.world) || project.supplyChest == null || project.repeat != null || cancelled(project)) continue;
             for (var job : project.jobs) {
-                if (rebuildingSmeltingOutput(job)) result.add(new CarriedSmelt(project.id, job.work));
+                if (canUseCarriedSmeltingOutput(project, job)) result.add(new CarriedSmelt(project.id, job.work));
             }
         }
         return result;
+    }
+
+    private static boolean canUseCarriedSmeltingOutput(Project project, Job job) {
+        if (rebuildingSmeltingOutput(job)) return true;
+        return job.work.kind == Kind.SMELT && job.state == State.WAITING && job.evidence == null
+                && job.work.sameWorkerAs != null && find(project, job.work.sameWorkerAs).state != State.DONE
+                && project.jobs.stream().anyMatch(next -> next.state == State.WAITING
+                    && job.work.id.equals(next.work.sameWorkerAs));
     }
 
     private static boolean rebuildingSmeltingOutput(Job job) {
@@ -2312,7 +2320,7 @@ final class ProjectQueue {
         var project = projects.get(candidate.project);
         var smelt = find(project, candidate.work.id);
         if (smelt == null || !world.equals(project.world) || project.supplyChest == null || project.repeat != null
-                || cancelled(project) || !smelt.work.equals(candidate.work) || !rebuildingSmeltingOutput(smelt)
+                || cancelled(project) || !smelt.work.equals(candidate.work) || !canUseCarriedSmeltingOutput(project, smelt)
                 || !availableProjectWorker(project, worker, now)) return false;
         var spec = JSON.fromJson(smelt.work.payload, SmeltFuel.class);
         if (spec == null || spec.count < 1 || held.applyAsInt(worker, item) < spec.count

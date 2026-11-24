@@ -134,6 +134,25 @@ class ProjectQueueTest {
         assertEquals("ingredients", queue.claim(WORLD, "replacement", Set.of(GATHER), now).job().work().id());
     }
 
+    @Test void expiredGatheringWithASavedSiteAllowsTheOriginalWorkerToReconnect() throws Exception {
+        var journal = directory.resolve("gather-reconnect.json");
+        var queue = new ProjectQueue(journal);
+        queue.submit("timber", WORLD, List.of(new ProjectQueue.Work("logs", GATHER,
+                "{\"resource\":\"any_logs\",\"variant\":\"both\",\"item\":\"any_logs\"}", List.of(), Set.of(), null)));
+        var lease = queue.claim(WORLD, "gatherer", Set.of(GATHER), 1).job();
+        var site = new ProjectQueue.ResourceSite(16, 100, 42);
+        var renewed = queue.renew("timber", "logs", lease.lease(), site, 2);
+        assertNull(queue.claim(WORLD, "replacement", Set.of(GATHER), renewed.expiresAt()));
+        var restored = new ProjectQueue(journal);
+        var resumed = restored.claim(WORLD, "gatherer", Set.of(GATHER), renewed.expiresAt() + 1).job();
+        assertEquals(site, resumed.resourceSite());
+        assertNotEquals(lease.lease(), resumed.lease());
+        resumed = restored.renew("timber", "logs", resumed.lease(), site, renewed.expiresAt() + 2);
+        assertNull(restored.claim(WORLD, "replacement", Set.of(GATHER), resumed.expiresAt() + 29_999));
+        assertEquals("replacement", restored.claim(WORLD, "replacement", Set.of(GATHER),
+                resumed.expiresAt() + 30_000).job().worker());
+    }
+
     @Test void stationaryGathererYieldsClaimToAnotherWorkerAfterRestart() throws Exception {
         var journal = directory.resolve("stalled-gather.json");
         var queue = new ProjectQueue(journal);
@@ -294,6 +313,19 @@ class ProjectQueueTest {
         assertEquals(ProjectQueue.State.WAITING, jobs.get(0).state());
         assertEquals(ProjectQueue.State.FAILED, jobs.get(1).state());
         assertEquals(ProjectQueue.State.WAITING, jobs.get(2).state());
+    }
+
+    @Test void retriesInterruptedProductionWithoutReopeningRecipeFailures() throws Exception {
+        var board = new ProjectQueue(directory.resolve("production-retry.json"));
+        board.submit("tools", WORLD, List.of(job("craft", CRAFT, List.of()), job("smelt", SMELT, List.of())));
+        for (long now = 1; now <= 11; now += 2) {
+            var lease = board.claim(WORLD, "worker", Set.of(CRAFT, SMELT), now).job();
+            var reason = lease.work().kind() == CRAFT ? ProjectQueue.TARGET_TIMEOUT : "Recipe unavailable";
+            assertTrue(board.finish("tools", lease.work().id(), lease.lease(), false, reason, now + 1));
+        }
+        assertEquals(1, board.retryInterruptedProduction(WORLD, "tools"));
+        assertEquals("craft", board.claim(WORLD, "worker", Set.of(CRAFT, SMELT), 13).job().work().id());
+        assertNull(board.claim(WORLD, "other", Set.of(SMELT), 13));
     }
 
     @Test void retriesPlacementAfterItsLastWorkerLeaseExpires() throws Exception {

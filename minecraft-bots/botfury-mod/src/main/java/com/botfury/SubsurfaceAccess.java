@@ -7,8 +7,10 @@ import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.FallingBlock;
+import net.minecraft.block.MultifaceGrowthBlock;
 import net.minecraft.util.Hand;
 import net.minecraft.util.math.Box;
 
@@ -18,7 +20,7 @@ import java.util.List;
 /** Makes short, reversible Baritone approaches when a cave does not reach the ore layer. */
 final class SubsurfaceAccess {
     // Increment when a new return method can recover a previously unreachable route.
-    static final int RETURN_ROUTE_REVISION = 1;
+    static final int RETURN_ROUTE_REVISION = 2;
     private record Passage(BlockPos from, BlockPos to) {
         boolean climbing() { return to.getY() > from.getY(); }
         int clearance() { return 2 + Math.max(0, from.getY() - to.getY()); }
@@ -251,12 +253,12 @@ final class SubsurfaceAccess {
     }
 
     private static boolean passageOpen(MinecraftClient client, Passage passage) {
-        return passage.blocksToClear().stream().allMatch(client.world::isAir);
+        return passage.blocksToClear().stream().allMatch(pos -> passageClear(client, pos, client.world.getBlockState(pos)));
     }
 
     private static net.minecraft.util.hit.BlockHitResult passageHit(MinecraftClient client, Passage passage) {
         for (var pos : passage.blocksToClear()) {
-            if (client.world.isAir(pos)) continue;
+            if (passageClear(client, pos, client.world.getBlockState(pos))) continue;
             var hit = ProjectWorker.excavationHit(client, pos);
             if (hit != null) return hit;
             if (!passage.climbing()) return null;
@@ -308,7 +310,8 @@ final class SubsurfaceAccess {
                     && player.getBlockPos().down().equals(block))) return false;
             var state = world.getBlockState(block);
             if (!state.getFluidState().isEmpty()
-                    || !state.isAir() && (state.hasBlockEntity() || !BaritoneSettings.recoverableTerrain(state.getBlock()))) return false;
+                    || !passageClear(client, block, state)
+                        && (state.hasBlockEntity() || !BaritoneSettings.recoverableTerrain(state.getBlock()))) return false;
             for (var side : Direction.values()) {
                 var neighbor = block.offset(side);
                 if (!world.isChunkLoaded(neighbor.getX() >> 4, neighbor.getZ() >> 4)
@@ -316,6 +319,11 @@ final class SubsurfaceAccess {
             }
         }
         return true;
+    }
+
+    private static boolean passageClear(MinecraftClient client, BlockPos pos, BlockState state) {
+        return state.isAir() || state.getBlock() instanceof MultifaceGrowthBlock
+                && state.getCollisionShape(client.world, pos).isEmpty();
     }
 
     private void stopPassage() {

@@ -929,7 +929,7 @@ final class ProjectQueue {
                 var mining = offerEquippedMiner(world, worker, projectId, toolUses, now, true);
                 if (mining != null) return mining;
             }
-            if (heldCount != null && recoverToolsAfterBanking(world, projectId)) {
+            if (recoverStalledGathering(world, projectId, now) || heldCount != null && recoverToolsAfterBanking(world, projectId)) {
                 return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses, returnRevision);
             }
         }
@@ -1305,7 +1305,9 @@ final class ProjectQueue {
                     || projectId != null && !project.id.equals(projectId)) continue;
             for (var gather : project.jobs) {
                 boolean exhausted = gather.state == State.FAILED && EXHAUSTED_TOOLS.equals(gather.evidence);
-                if ((!exhausted && (exhaustedOnly || gather.state != State.WAITING)) || gather.work.kind != Kind.GATHER
+                boolean stalled = stalledPinnedGathering(gather);
+                boolean reopening = exhausted || stalled;
+                if ((!reopening && (exhaustedOnly || gather.state != State.WAITING)) || gather.work.kind != Kind.GATHER
                         || gather.work.sameWorkerAs == null || gather.work.needs.size() != 1
                         || gatherSource(gather.work.payload) == null || checkpointDepositActive(project, gather)) continue;
                 var craft = find(project, gather.work.sameWorkerAs);
@@ -1317,12 +1319,13 @@ final class ProjectQueue {
                         .filter(tool -> toolUses.get(tool) != null && toolUses.get(tool) >= 32)
                         .findFirst().orElse(null);
                 if (carriedTool == null) continue;
-                var key = equippedRescueKey(gather);
-                if (exhausted && (craft.state != State.DONE || project.supplyRecoveries.containsKey(key))) continue;
-                if (!exhausted && craft.state == State.DONE) continue;
-                if (exhausted && gather.work.needs.stream().anyMatch(need -> find(project, need).state != State.DONE)) continue;
-                var prep = exhausted ? Set.<String>of() : stalledPrivatePreparation(project, gather, craft);
-                if (!exhausted && prep.isEmpty()) continue;
+                var key = stalled ? "stalled-equipped-miner:" + gather.work.id : equippedRescueKey(gather);
+                if (reopening && (craft.state != State.DONE || project.supplyRecoveries.containsKey(key))) continue;
+                if (!reopening && craft.state == State.DONE) continue;
+                if (stalled && (worker.equalsIgnoreCase(craft.worker) || worker.equalsIgnoreCase(gather.worker))) continue;
+                if (reopening && gather.work.needs.stream().anyMatch(need -> find(project, need).state != State.DONE)) continue;
+                var prep = reopening ? Set.<String>of() : stalledPrivatePreparation(project, gather, craft);
+                if (!reopening && prep.isEmpty()) continue;
                 var lease = new Job(gather.work, State.LEASED, gather.attempts + 1, worker, UUID.randomUUID(),
                         now + LEASE_MS, null, gather.chest, gatheringSite(project, gather));
                 var jobs = project.jobs.stream().map(job -> {
@@ -1331,7 +1334,7 @@ final class ProjectQueue {
                     return new Job(job.work, State.DONE, job.attempts, worker, null, 0,
                             "Tool preparation satisfied by carried " + carriedTool, job.chest, job.resourceSite);
                 }).toList();
-                if (exhausted) {
+                if (reopening) {
                     var recoveries = new HashMap<>(project.supplyRecoveries);
                     recoveries.put(key, 1);
                     commit(project.withRecovery(jobs, recoveries));
@@ -2092,6 +2095,10 @@ final class ProjectQueue {
                 && GATHER_STALLED.equals(evidence)) {
             result = new Job(job.work, State.WAITING, job.attempts, job.worker, null,
                     now + STALLED_WORKER_COOLDOWN_MS, evidence, observation, location);
+        } else if (job.attempts >= MAX_ATTEMPTS && job.work.kind == Kind.GATHER && job.work.sameWorkerAs != null
+                && GATHER_STALLED.equals(evidence)) {
+            result = new Job(job.work, State.FAILED, job.attempts, job.worker, null,
+                    now + STALLED_WORKER_COOLDOWN_MS, evidence, observation, location);
         } else if (job.attempts < MAX_ATTEMPTS && project.supplyChest != null && job.work.kind == Kind.BUILD
                 && job.work.sameWorkerAs != null && SCHEMATIC_PLACEMENT.matcher(job.work.id).matches()
                 && find(project, job.work.sameWorkerAs).work.constructionMaterial != null
@@ -2340,6 +2347,38 @@ final class ProjectQueue {
                 || ("Missing unmodified material " + material).equals(job.evidence));
     }
 
+    private static boolean stalledPinnedGathering(Job job) {
+        return job.state == State.FAILED && job.work.kind == Kind.GATHER && job.work.sameWorkerAs != null
+                && GATHER_STALLED.equals(job.evidence);
+    }
+
+    private boolean recoverStalledGathering(String world, String projectId, long now) throws IOException {
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || project.supplyChest == null && project.repeat == null
+                    || cancelled(project) || projectId != null && !projectId.equals(project.id)) continue;
+            for (var gather : project.jobs) {
+                if (!stalledPinnedGathering(gather)
+                        || project.supplyRecoveries.getOrDefault(stalledSupplyKey(gather), 0) >= MAX_SUPPLY_RECOVERIES) continue;
+                if (gather.expiresAt == 0) {
+                    // Old journals did not store the reassignment window. Give their fleet time to respond too.
+                    replace(project, new Job(gather.work, gather.state, gather.attempts, gather.worker, null,
+                            now + STALLED_WORKER_COOLDOWN_MS, gather.evidence, gather.chest, gather.resourceSite));
+                    break;
+                }
+                if (now < gather.expiresAt) continue;
+                var jobs = new HashMap<String, Job>();
+                project.jobs.forEach(job -> jobs.put(job.work.id, job));
+                var supplier = jobs.get(gather.work.sameWorkerAs);
+                if (rewindSupply(project, gather, supplier, jobs, GATHER_STALLED, gather.chest)) return true;
+            }
+        }
+        return false;
+    }
+
+    private static String stalledSupplyKey(Job job) {
+        return "stalled-supply:" + job.work.id;
+    }
+
     private boolean recoverToolsAfterBanking(String world, String projectId) throws IOException {
         for (var project : projects.values()) {
             if (!world.equals(project.world) || project.supplyChest == null || cancelled(project)
@@ -2450,7 +2489,10 @@ final class ProjectQueue {
                 && (rewind.contains(job.work.id) || job.work.kind == Kind.TRANSFER
                 && job.work.needs.stream().anyMatch(rewind::contains)))) return false;
         var recoveries = new HashMap<>(project.supplyRecoveries);
-        String recoveryKey = missingProductionInput(waiting, evidence) ? "production-inputs:" + waiting.work.id : root;
+        boolean stalled = GATHER_STALLED.equals(evidence);
+        if (stalled && !privatePreparationReady(project, waiting, rewind)) return false;
+        String recoveryKey = stalled ? stalledSupplyKey(waiting)
+                : missingProductionInput(waiting, evidence) ? "production-inputs:" + waiting.work.id : root;
         int attempts = recoveries.getOrDefault(recoveryKey, 0);
         if (GATHER_TOOLS_NEEDED.equals(evidence)) {
             var source = gatherSource(waiting.work.payload);
@@ -2487,7 +2529,8 @@ final class ProjectQueue {
             boolean preferred = preferOriginalAt > 0 && job.work.id.equals(root);
             return new Job(job.work, State.WAITING, 0, preferred ? waiting.worker : null, null,
                     preferred ? preferOriginalAt + STALLED_WORKER_COOLDOWN_MS : 0,
-                    evidence + "; reacquiring materials", job == waiting ? observation : job.chest,
+                    stalled && job == waiting ? evidence : evidence + "; reacquiring materials",
+                    job == waiting ? observation : job.chest,
                     job == waiting ? site : job.resourceSite);
         }).toList();
         commit(project.withRecovery(updated, recoveries));

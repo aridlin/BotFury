@@ -244,6 +244,73 @@ class ProjectQueueTest {
         assertEquals("ingredients", queue.claim(WORLD, "replacement", Set.of(GATHER), now).job().work().id());
     }
 
+    @Test void equippedReplacementRescuesStalledPinnedGatheringAcrossRestarts() throws Exception {
+        var journal = directory.resolve("stalled-equipped.json");
+        var queue = prepareStalledSupply(journal, false);
+        var stone = java.util.Map.of("minecraft:stone_pickaxe", 75);
+        assertNull(queue.offerEquippedMiner(WORLD, "original", null, stone, 15));
+        assertNull(queue.offerEquippedMiner(WORLD, "replacement", null, java.util.Map.of("minecraft:wooden_pickaxe", 75), 15));
+        var iron = queue.offerEquippedMiner(WORLD, "replacement", null, stone, 15).job();
+        assertEquals("iron", iron.work().id());
+        assertNull(iron.resourceSite());
+        assertNull(queue.offerEquippedMiner(WORLD, "third", null, stone, 16));
+        queue = new ProjectQueue(journal);
+        assertTrue(queue.finish("stock", "iron", iron.lease(), true, "Observed raw iron", 17));
+        assertNull(queue.claim(WORLD, "original", Set.of(SMELT), 18));
+        assertEquals("smelt", queue.claim(WORLD, "replacement", Set.of(SMELT), 18).job().work().id());
+        var jobs = queue.snapshot(19).get(0).jobs();
+        assertEquals(ProjectQueue.State.DONE, jobs.get(0).state());
+        assertEquals("original", jobs.get(2).worker());
+    }
+
+    @Test void stalledSupplyRewindsOnlyWhenItsPreparationIsPrivate() throws Exception {
+        for (boolean shared : List.of(false, true)) {
+            var journal = directory.resolve("stalled-fallback-" + shared + ".json");
+            var queue = prepareStalledSupply(journal, shared);
+            assertNull(queue.claim(WORLD, "helper", Set.of(GATHER), 15));
+            queue = new ProjectQueue(journal);
+            var replacement = queue.claim(WORLD, "helper", Set.of(GATHER), 40_000);
+            if (shared) {
+                assertNull(replacement);
+                assertEquals(ProjectQueue.State.FAILED, queue.snapshot(40_001).get(0).jobs().get(3).state());
+            } else {
+                assertEquals("logs", replacement.job().work().id());
+                var project = queue.snapshot(40_001).get(0);
+                assertEquals(ProjectQueue.State.DONE, project.jobs().get(0).state());
+                assertEquals(ProjectQueue.State.WAITING, project.jobs().get(2).state());
+                assertEquals(1, project.supplyRecoveries().get("stalled-supply:iron"));
+                assertNull(queue.claim(WORLD, "third", Set.of(GATHER), 40_001));
+            }
+        }
+    }
+
+    private ProjectQueue prepareStalledSupply(Path journal, boolean shared) throws Exception {
+        var queue = new ProjectQueue(journal);
+        var work = new java.util.ArrayList<>(List.of(
+                job("previous", VERIFY, List.of()),
+                job("logs", GATHER, List.of("previous")),
+                new ProjectQueue.Work("tools", CRAFT, "{\"recipe\":\"minecraft:stone_pickaxe\"}",
+                        List.of("logs"), Set.of(), "logs"),
+                new ProjectQueue.Work("iron", GATHER,
+                        "{\"resource\":\"iron\",\"variant\":\"both\",\"item\":\"minecraft:raw_iron\",\"count\":3}",
+                        List.of("tools"), Set.of(), "tools"),
+                new ProjectQueue.Work("smelt", SMELT, "{}",
+                        List.of("iron"), Set.of(), "iron")));
+        if (shared) work.add(job("shared-consumer", VERIFY, List.of("tools")));
+        queue.submitSupplied("stock", WORLD, work, "block:7,64,0");
+        long now = 1;
+        for (var kind : List.of(VERIFY, GATHER, CRAFT)) {
+            var stage = queue.claim(WORLD, "original", Set.of(kind), now++).job();
+            assertTrue(queue.finish("stock", stage.work().id(), stage.lease(), true, "Done", now++));
+        }
+        for (int attempt = 0; attempt < 3; attempt++) {
+            var lease = queue.claim(WORLD, "original", Set.of(GATHER), now++).job();
+            assertTrue(queue.finish("stock", "iron", lease.lease(), false, ProjectQueue.GATHER_STALLED, null,
+                    new ProjectQueue.ResourceSite(8, 21, 9), now++));
+        }
+        return queue;
+    }
+
     @Test void bankedOreRestartsExhaustedToolProductionOnceEvenWithoutAnEquippedMiner() throws Exception {
         var journal = directory.resolve("banked-ore-tool-rearm.json");
         String chest = "block:3,64,0";

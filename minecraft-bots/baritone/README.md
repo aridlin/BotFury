@@ -18,6 +18,8 @@ Use the remapped Fabric jar from `fabric/build/libs` (exclude the dev and dev-sh
 
 Scaffold recovery currently reserves up to eight steps together. Each observed step still goes back to the coordinator for an atomic completion and handoff. This is the first migration.
 
+Alto Clef is a reference for local task composition and interruption. Its task runner selects the highest-priority active chain on each tick and notifies the prior chain when control changes. BotFury can apply that pattern inside a worker to pause an assignment for safety or material preparation, with fleet reservations and completion evidence owned by the coordinator. [Alto Clef task runner](https://github.com/gaucho-matrero/altoclef/blob/main/src/main/java/adris/altoclef/tasksystem/TaskRunner.java) · [Meloweh’s schematic and macro fork](https://github.com/Meloweh/altoclef/releases)
+
 ## Workstation access
 
 A chest or table job needs a reachable interaction face. Its saved stand is a starting suggestion. The worker can test line of sight from its current position and pass several usable stands to one Baritone search. After walk-only routes fail near the station, the worker can open a short passage through permitted terrain with the tools it has. Protect the station, its support, reserved footing, occupied footing and exclusion zones. Treating every candidate floor as reserved can make the worker veto the path it just found.

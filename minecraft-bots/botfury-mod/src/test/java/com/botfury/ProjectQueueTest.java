@@ -2011,6 +2011,39 @@ class ProjectQueueTest {
         assertNull(retry.resourceSite());
     }
 
+    @Test void nearbySurplusCanReplacePreparationGatheringWhileProtectingOutputAndFallingBack() throws Exception {
+        var journal = directory.resolve("preparation-stock.json");
+        var queue = new ProjectQueue(journal);
+        String chest = "block:3,64,0";
+        String item = "minecraft:cobblestone";
+        String inspect = "{\"target\":{\"x\":3,\"y\":64,\"z\":0},\"direction\":\"INSPECT\"}";
+        var output = new ProjectQueue.Work("target", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:cobblestone\",\"stock\":5}",
+                List.of("inventory"), Set.of(chest));
+        queue.submitSupplied("supplies", WORLD, List.of(
+                new ProjectQueue.Work("inventory", TRANSFER, inspect, List.of(), Set.of(chest)), output), chest);
+        var observationJob = queue.claim(WORLD, "observer", Set.of(TRANSFER), "supplies", 1).job();
+        assertTrue(queue.finish("supplies", "inventory", observationJob.lease(), true, "Observed 8 cobblestone",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(item, 8)), 2));
+        var gather = new ProjectQueue.Work("gather", GATHER,
+                "{\"resource\":\"stone\",\"item\":\"minecraft:cobblestone\",\"variant\":\"both\",\"count\":3}",
+                List.of(), Set.of());
+        var craft = new ProjectQueue.Work("craft", CRAFT, "{}", List.of("gather"), Set.of(), "gather");
+        queue.submitSupplied("tools", WORLD, List.of(gather, craft), "block:4,64,0");
+        var position = new ProjectQueue.ResourceSite(0, 64, 0);
+        var kinds = Set.of(GATHER, CRAFT, TRANSFER);
+        var pickup = queue.claim(WORLD, "worker", kinds, "tools", 3, position, x -> true, (w,i) -> 0, null).job();
+        assertEquals(TRANSFER, pickup.work().kind());
+        assertEquals(5, com.google.gson.JsonParser.parseString(pickup.work().payload())
+                .getAsJsonObject().get("stockReserve").getAsInt());
+        assertNull(queue.claim(WORLD, "observer", Set.of(TRANSFER), "supplies", 4));
+        assertTrue(queue.finish("tools", "gather", pickup.lease(), false, "Insufficient unreserved cobblestone",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(item, 7)), 5));
+        var mining = queue.claim(WORLD, "worker", kinds, "tools", 6, position, x -> true, (w,i) -> 0, null).job();
+        assertEquals(GATHER, mining.work().kind());
+        assertEquals(1, mining.attempts());
+    }
+
     @Test void carriedAndStockedInputsRecoverAStalledGatherWithoutBreakingCraftOwnership() throws Exception {
         checkGatheringStockRecovery(false);
     }

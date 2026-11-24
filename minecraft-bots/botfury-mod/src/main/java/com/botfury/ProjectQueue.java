@@ -202,6 +202,7 @@ final class ProjectQueue {
     private static final String COORDINATOR_RESTARTED = "Coordinator restarted during work";
     private static final String GATHER_STOCK_CONFIRMED = "Gathering target confirmed by chest stock";
     private static final String GATHER_HANDOFF = "Gathering handoff to ";
+    private static final String PREPARATION_STOCK_PICKUP = "Collecting available preparation stock";
     private static final String CARRIED_SMELT_ASSIGNED = "Assigned smelting to a worker with observed supplies";
     private static final String GATHER_REASSIGNED = "Gathering reassigned to a worker with cargo";
     private static final String CONTRIBUTION_ACTIVE = "Delivering a partial stock contribution";
@@ -1143,7 +1144,7 @@ final class ProjectQueue {
                 // Finish using inventory already gathered for a chain before starting unrelated work.
                 if (job.work.sameWorkerAs != null || ownedOrder != null || gatherReconnectPending(job, now)
                         || CONSTRUCTION_PICKUP.equals(job.evidence) && job.expiresAt > now) {
-                    return assign(project, job, worker, now, position);
+                    return assignWithPreparationStock(project, job, worker, now, position, kinds, heldCount);
                 }
                 if (fallbackJob == null || (nearbyPickup || nearbyCleanup) && fallbackJob.state != State.FAILED) {
                     fallbackProject = project;
@@ -1169,7 +1170,8 @@ final class ProjectQueue {
                 return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses, returnRevision);
             }
         }
-        return fallbackJob == null ? null : assign(fallbackProject, fallbackJob, worker, now, position);
+        return fallbackJob == null ? null
+                : assignWithPreparationStock(fallbackProject, fallbackJob, worker, now, position, kinds, heldCount);
     }
 
     private static String excavationToolMaterial(Job job) {
@@ -2227,6 +2229,83 @@ final class ProjectQueue {
                 ? job.evidence.substring(GATHER_HANDOFF.length()) : null;
     }
 
+    private Assignment assignWithPreparationStock(Project project, Job gather, String worker, long now, ResourceSite position,
+                                                   Set<Kind> kinds, java.util.function.ToIntBiFunction<String, String> heldCount)
+            throws IOException {
+        if (heldCount != null && position != null && kinds.contains(Kind.TRANSFER) && gather.state == State.WAITING
+                && gather.work.kind == Kind.GATHER && project.repeat == null && project.supplyChest != null
+                && project.jobs.stream().anyMatch(job -> productionWork(job.work) && gather.work.id.equals(job.work.sameWorkerAs))) {
+            var pickup = offerPreparationStock(project, gather, worker, now, position, heldCount);
+            if (pickup != null) return pickup;
+        }
+        return assign(project, gather, worker, now, position);
+    }
+
+    private Assignment offerPreparationStock(Project project, Job gather, String worker, long now, ResourceSite position,
+                                              java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
+        String key = "prep-stock:" + gather.work.id;
+        var source = gatherSource(gather.work.payload);
+        if (source == null || !source.item.contains(":") || project.supplyRecoveries.containsKey(key)
+                || pendingBuildMaterials(project.world, worker).contains(source.item)
+                || hasPendingDepositOf(project.world, worker, source.item)) return null;
+        var quantity = JSON.fromJson(gather.work.payload, GatherQuantity.class);
+        if (quantity.count == null || quantity.count < 1 || quantity.count > 32) return null;
+        int held = heldCount.applyAsInt(worker, source.item);
+        if (held < 0 || held >= quantity.count) return null;
+
+        var observed = new HashMap<String, ChestObservation>();
+        for (var supplier : projects.values()) collectChestStock(project.world, supplier, observed);
+        var busy = leasedKeys(project.world, now);
+        Work best = null;
+        double bestDistance = STOCK_RECOVERY_RADIUS;
+        for (var supplier : projects.values()) {
+            if (!project.world.equals(supplier.world) || supplier.supplyChest == null || supplier.repeat != null
+                    || cancelled(supplier)) continue;
+            var stock = observed.get(supplier.supplyChest);
+            if (stock == null) continue;
+            var station = supplier.jobs.stream().filter(job -> job.state == State.DONE && job.work.kind == Kind.TRANSFER
+                    && job.work.locks.contains(supplier.supplyChest) && job.chest != null).findFirst().orElse(null);
+            if (station == null || !Collections.disjoint(station.work.locks, busy)
+                    || projects.values().stream().anyMatch(other -> other != supplier && project.world.equals(other.world)
+                            && supplier.supplyChest.equals(reservedStorage(other)))) continue;
+            int outputFloor = supplier.jobs.stream().filter(job -> job.work.kind == Kind.TRANSFER
+                    && job.work.locks.contains(supplier.supplyChest)).map(ProjectQueue::transferTarget)
+                    .filter(target -> target != null && "DEPOSIT".equals(target.direction) && source.item.equals(target.item))
+                    .mapToInt(PickupTarget::stock).max().orElse(0);
+            int reserve = Math.max(outputFloor, constructionStockReserve(supplier, source.item));
+            if (stockCount(stock.report, source.item) - reserve < quantity.count - held
+                    || supplier.jobs.stream().anyMatch(job -> job.work.kind == Kind.TRANSFER
+                    && job.work.locks.contains(supplier.supplyChest) && usesGroupedStock(job))) continue;
+            var payload = JSON.fromJson(station.work.payload, com.google.gson.JsonObject.class);
+            var location = JSON.fromJson(payload, StationTarget.class).target;
+            if (location == null || location.y() - position.y > CONSTRUCTION_PICKUP_RETRY_CLIMB) continue;
+            double distance = distance(position, location);
+            if (distance >= bestDistance) continue;
+            payload.addProperty("direction", "TAKE");
+            payload.addProperty("item", source.item);
+            payload.addProperty("stock", quantity.count);
+            payload.addProperty("stockReserve", reserve);
+            var locks = new HashSet<>(station.work.locks);
+            locks.addAll(gather.work.locks);
+            best = new Work(gather.work.id, Kind.TRANSFER, payload.toString(), gather.work.needs, locks, gather.work.sameWorkerAs);
+            bestDistance = distance;
+        }
+        if (best == null) return null;
+        var lease = new Job(best, State.LEASED, gather.attempts, worker, UUID.randomUUID(), now + LEASE_MS,
+                PREPARATION_STOCK_PICKUP, gather.chest, gatheringSite(project, gather), gather.work);
+        var recoveries = new HashMap<>(project.supplyRecoveries);
+        recoveries.put(key, 1);
+        commit(project.withRecovery(project.jobs.stream().map(job -> job == gather ? lease : job).toList(), recoveries));
+        return assignment(project, lease);
+    }
+
+    private static boolean usesGroupedStock(Job job) {
+        var transfer = transferTarget(job);
+        return transfer != null && transfer.item != null && !transfer.item.contains(":")
+                && ("VERIFY_STOCK".equals(transfer.direction) || "DEPOSIT".equals(transfer.direction) || job.state != State.DONE
+                && ("TAKE".equals(transfer.direction) || "WITHDRAW".equals(transfer.direction)));
+    }
+
     private Assignment assign(Project project, Job job, String worker, long now, ResourceSite position) throws IOException {
         var site = job.work.kind == Kind.GATHER && GATHER_STALLED.equals(job.evidence)
                 ? nearestRetrySite(project, job, position) : gatheringSite(project, job);
@@ -2519,9 +2598,11 @@ final class ProjectQueue {
         }
         var observation = chest == null ? job.chest : new ChestObservation(chest, now);
         if (job.gatheringAfterPickup != null) {
-            replace(project, new Job(job.gatheringAfterPickup, success ? State.DONE : State.FAILED, job.attempts,
+            boolean preparationStock = PREPARATION_STOCK_PICKUP.equals(job.evidence);
+            State nextState = success ? State.DONE : preparationStock ? State.WAITING : State.FAILED;
+            replace(project, new Job(job.gatheringAfterPickup, nextState, job.attempts,
                     success ? job.worker : null, success ? job.lease : null, 0,
-                    success ? evidence : GATHER_STALLED, observation));
+                    success || preparationStock ? evidence : GATHER_STALLED, observation, job.resourceSite));
             markAssignmentSeen(project, job.worker, now);
             restoredLeases.remove(token);
             return true;
@@ -3060,8 +3141,11 @@ final class ProjectQueue {
                         continue;
                     }
                     if (job.gatheringAfterPickup != null) {
-                        waiting = new Job(job.gatheringAfterPickup, State.FAILED, job.attempts, null, null, 0,
-                                GATHER_STALLED, job.chest);
+                        waiting = PREPARATION_STOCK_PICKUP.equals(job.evidence)
+                                ? new Job(job.gatheringAfterPickup, State.WAITING, job.attempts, null, null, 0,
+                                        LEASE_EXPIRED, job.chest, job.resourceSite)
+                                : new Job(job.gatheringAfterPickup, State.FAILED, job.attempts, null, null, 0,
+                                        GATHER_STALLED, job.chest);
                     } else if (productionWork(job.work) && job.attempts > MAX_ATTEMPTS) {
                         waiting = retry(job, LEASE_EXPIRED, job.chest, job.resourceSite);
                     } else if (restored && job.attempts == MAX_ATTEMPTS + 1 && job.work.constructionMaterial != null) {

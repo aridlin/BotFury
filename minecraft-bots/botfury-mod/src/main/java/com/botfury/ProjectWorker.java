@@ -581,7 +581,8 @@ final class ProjectWorker {
             stationToolAttempt = null;
         }
         boolean needsSticks = stickPreparation != null && stickPreparation.needsSticks(client);
-        if (!needsSticks && !needsProductionBench && (!needsRouteTool || SubsurfaceAccess.canDigRoute(client))) {
+        boolean needsMeal = TaskDefense.requestsMeal(client);
+        if (!needsSticks && !needsMeal && !needsProductionBench && (!needsRouteTool || SubsurfaceAccess.canDigRoute(client))) {
             if (pickingUpRouteTool) {
                 routeToolPickup.reset();
                 pickingUpRouteTool = false;
@@ -592,12 +593,13 @@ final class ProjectWorker {
             var player = client.player;
             if (client.world.getEntitiesByClass(net.minecraft.entity.ItemEntity.class,
                     player.getBoundingBox().expand(TOOL_DROP_RADIUS),
-                    entity -> entity.isAlive() && usableRouteTool(entity.getStack(), needsSticks)).isEmpty()) return false;
-            if (needsSticks) stickPreparation.pauseGathering();
+                    entity -> entity.isAlive() && usableRouteTool(entity.getStack(), needsSticks, needsMeal)).isEmpty()) return false;
+            if (stickPreparation != null) stickPreparation.pauseGathering();
             else halt(client);
             pickingUpRouteTool = true;
         }
-        if (routeToolPickup.tick(client, stack -> usableRouteTool(stack, needsSticks), null) == DroppedItemSearch.State.APPROACHING) {
+        if (routeToolPickup.tick(client, stack -> usableRouteTool(stack, needsSticks, needsMeal), null)
+                == DroppedItemSearch.State.APPROACHING) {
             status = assignment.project() + "/" + assignment.job().work().id() + ": Collecting emergency supplies";
             return true;
         }
@@ -605,8 +607,9 @@ final class ProjectWorker {
         return false;
     }
 
-    private static boolean usableRouteTool(net.minecraft.item.ItemStack stack, boolean needsSticks) {
+    private static boolean usableRouteTool(net.minecraft.item.ItemStack stack, boolean needsSticks, boolean needsMeal) {
         return needsSticks && stack.isOf(Items.STICK)
+                || needsMeal && TaskDefense.nourishing(stack.getItem())
                 || (needsRouteBench || needsProductionBench) && stack.isOf(net.minecraft.item.Items.CRAFTING_TABLE)
                 || needsRouteTool && stack.getItem() instanceof net.minecraft.item.PickaxeItem
                         && stack.getMaxDamage() - stack.getDamage() >= 21;
@@ -1630,6 +1633,8 @@ final class ProjectWorker {
             args.put("kinds", KINDS);
             args.put("returnRouteRevision", SubsurfaceAccess.RETURN_ROUTE_REVISION);
             args.put("supportsStickResupply", true);
+            var meal = TaskDefense.spareMeal(client);
+            if (meal != null) args.put("spareMeal", meal);
             args.put("supportsPickupReserve", true);
             var tools = new HashMap<String, Integer>();
             var inventory = client.player.getInventory();
@@ -1650,6 +1655,10 @@ final class ProjectWorker {
             args.put("project", assignment.project());
             args.put("job", assignment.job().work().id());
             args.put("token", assignment.job().lease());
+            if (action.equals("renew")) {
+                if (TaskDefense.requestsMeal(client)) args.put("needsMeal", true);
+                if (TaskDefense.hasMeal(client)) args.put("carryingMeal", true);
+            }
             if (receivedRouteBench) args.put("receivedRouteBench", true);
             if (needsRouteTool && !SubsurfaceAccess.canDigRoute(client)) {
                 args.put("needsRouteTool", true);

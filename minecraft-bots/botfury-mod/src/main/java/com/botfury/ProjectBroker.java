@@ -32,7 +32,8 @@ final class ProjectBroker {
     private record Request(String action, String project, String worker, Set<ProjectQueue.Kind> kinds,
                            List<ProjectQueue.Work> work, String job, UUID token, Boolean success,
                            String evidence, ProjectQueue.ChestReport chest, ProjectQueue.ChestReport routeStock, ProjectQueue.ResourceSite resourceSite,
-                           boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool, int routeCraftTarget, boolean needsRouteBench, boolean canSupplyBench, boolean receivedRouteBench, boolean supportsPickupReserve, boolean supportsStickResupply) {}
+                           boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool, int routeCraftTarget, boolean needsRouteBench, boolean canSupplyBench, boolean receivedRouteBench,
+                           boolean supportsPickupReserve, boolean supportsStickResupply, boolean needsMeal, boolean carryingMeal, String spareMeal) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
         if (queue == null) {
@@ -511,6 +512,12 @@ final class ProjectBroker {
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.RESUPPLY)) {
                         assignment = board.offerRouteTool(world, request.worker, request.project, now, request.toolUses, request.routeCraftTarget, request.canSupplyBench,
                                 ProjectBroker::workerPosition, ProjectBroker::heldCount, returnRevision >= 8);
+                        var meal = request.spareMeal == null ? null : Identifier.tryParse(request.spareMeal);
+                        if (assignment == null && meal != null && Registries.ITEM.getOrEmpty(meal)
+                                .filter(TaskDefense::nourishing).isPresent()) {
+                            assignment = board.offerMealResupply(world, request.worker, request.project, now, meal.toString(),
+                                    ProjectBroker::workerPosition, ProjectBroker::heldCount);
+                        }
                         if (assignment == null && request.supportsStickResupply) {
                             assignment = board.offerStickResupply(world, request.worker, request.project, now,
                                     ProjectBroker::workerPosition, ProjectBroker::heldCount);
@@ -549,6 +556,7 @@ final class ProjectBroker {
                 }
                 case "renew" -> {
                     board.recordRouteStock(request.project, request.job, request.token, now, request.routeStock);
+                    board.recordMealNeed(request.project, request.job, request.token, request.needsMeal, request.carryingMeal, now);
                     var renewed = board.renew(request.project, request.job, request.token, request.resourceSite, now, request.needsRouteTool, request.needsRouteBench);
                     reply(exchange, renewed == null ? 409 : 200, renewed);
                 }

@@ -15,6 +15,32 @@ class ProjectQueueTest {
     @TempDir Path directory;
     private static final String WORLD = "test|overworld";
 
+    @Test void anActiveWorkerCanRequestOneMealAndAcknowledgeReceipt() throws Exception {
+        var journal = directory.resolve("food-resupply.json");
+        var queue = new ProjectQueue(journal);
+        queue.submit("mine", WORLD, List.of(new ProjectQueue.Work("ore", GATHER,
+                "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":4}",
+                List.of(), Set.of())));
+        var miner = queue.claim(WORLD, "miner", Set.of(GATHER), 1).job();
+        var field = new ProjectQueue.ResourceSite(8, 24, 0);
+        assertNull(queue.claim(WORLD, "courier", Set.of(RESUPPLY), "mine", 2, field));
+        assertNull(queue.offerMealResupply(WORLD, "courier", "mine", 3, "minecraft:bread", name -> field,
+                (name, item) -> name.equals("courier") ? 3 : 0));
+        queue.recordMealNeed("mine", "ore", miner.lease(), true, false, 4);
+        assertNull(queue.offerMealResupply(WORLD, "courier", "mine", 5, "minecraft:bread", name -> field,
+                (name, item) -> name.equals("courier") ? 2 : 0));
+        var delivery = queue.offerMealResupply(WORLD, "courier", "mine", 6, "minecraft:bread", name -> field,
+                (name, item) -> name.equals("courier") ? 3 : 0).job();
+        assertEquals(1, queue.routeToolDelivery("mine", delivery.work().id(), delivery.lease(), 7).quantity());
+        queue = new ProjectQueue(journal);
+        queue.recordMealNeed("mine", "ore", miner.lease(), false, true, 8);
+        var jobs = queue.snapshot(9).get(0).jobs();
+        assertEquals(miner.lease(), jobs.get(0).lease());
+        assertEquals(ProjectQueue.State.LEASED, jobs.get(0).state());
+        assertEquals(ProjectQueue.State.DONE, jobs.get(1).state());
+        assertEquals("Recipient confirmed food in inventory", jobs.get(1).evidence());
+    }
+
     @Test void spareSticksCanBeDeliveredOnceWithoutMovingTheToolLease() throws Exception {
         var journal = directory.resolve("stick-resupply.json");
         var queue = new ProjectQueue(journal);

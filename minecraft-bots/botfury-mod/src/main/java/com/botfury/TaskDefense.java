@@ -35,6 +35,42 @@ final class TaskDefense {
     }
     static void configure(Config next){config=next;receivedAt=System.nanoTime();}
     static boolean enabled(){return config!=null&&config.enabled&&System.nanoTime()-receivedAt<8_000_000_000L;}
+
+    static boolean hasMeal(MinecraftClient client) {
+        var inventory = client.player.getInventory();
+        for (int slot = 0; slot < 36; slot++) {
+            var stack = inventory.getStack(slot);
+            if (!stack.isEmpty() && nourishing(stack.getItem())) return true;
+        }
+        return false;
+    }
+
+    static boolean requestsMeal(MinecraftClient client) {
+        var player = client.player;
+        if (!enabled() || !player.isAlive()) return false;
+        int hunger = player.getHungerManager().getFoodLevel();
+        return (hunger <= 6 || hunger < 18 && player.getHealth() <= player.getMaxHealth() / 2)
+                && !hasMeal(client);
+    }
+
+    static boolean nourishing(net.minecraft.item.Item item) {
+        var food = item.getFoodComponent();
+        return food != null && food.getHunger() >= 4
+                && food.getStatusEffects().stream().allMatch(effect -> effect.getFirst().getEffectType().isBeneficial());
+    }
+
+    static String spareMeal(MinecraftClient client) {
+        var player = client.player;
+        if (player.getHungerManager().getFoodLevel() < 15 || player.getHealth() <= player.getMaxHealth() / 2) return null;
+        var inventory = player.getInventory();
+        for (int slot = 0; slot < 36; slot++) {
+            var stack = inventory.getStack(slot);
+            if (!stack.isEmpty() && nourishing(stack.getItem()) && inventory.count(stack.getItem()) >= 3) {
+                return net.minecraft.registry.Registries.ITEM.getId(stack.getItem()).toString();
+            }
+        }
+        return null;
+    }
     private static boolean eligible(MinecraftClient client,boolean working){
         var here=LocalFormation.here();
         return working&&Boolean.getBoolean("botfury.managedHttp")&&enabled()&&here!=null

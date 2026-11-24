@@ -169,6 +169,7 @@ final class ProjectQueue {
         int quantity() { return Math.max(1, count); }
     }
     private final Map<UUID, Boolean> routeToolRequests = new HashMap<>();
+    private final Set<UUID> mealRequests = new HashSet<>();
 
     record FuelUse(String job, String recipe, String input, String expectedFuel, int count) {}
     private record SmeltFuel(String recipe, String input, String fuel, String plannedFuel, int count) {}
@@ -1451,15 +1452,65 @@ final class ProjectQueue {
                 int missing = preparation.count - existing;
                 if (existing < 0 || missing < 1 || missing > spare) continue;
                 var payload = new RouteToolDelivery(gather.worker, destination, item, existing, 0, null, missing);
-                var work = new Work(id, Kind.RESUPPLY, JSON.toJson(payload), List.of(), Set.of());
-                var loan = new Job(work, State.LEASED, 1, worker, UUID.randomUUID(), now + LEASE_MS, null, null);
-                var jobs = new ArrayList<>(project.jobs);
-                jobs.add(loan);
-                commit(project.withJobs(jobs));
-                return assignment(project, loan);
+                return assignMealOrSticks(project, id, worker, now, payload);
             }
         }
         return null;
+    }
+
+    synchronized void recordMealNeed(String projectId, String jobId, UUID token, boolean needsMeal,
+                                      boolean carryingMeal, long now) throws IOException {
+        var project = projects.get(projectId);
+        var job = find(project, jobId);
+        if (!owns(job, token, now) || job.work.kind == Kind.RESUPPLY) return;
+        if (needsMeal) {
+            mealRequests.add(token);
+            return;
+        }
+        mealRequests.remove(token);
+        if (!carryingMeal) return;
+        var delivery = find(project, "food-resupply-" + token);
+        if (delivery == null || delivery.state != State.LEASED) return;
+        replace(project, new Job(delivery.work, State.DONE, delivery.attempts, delivery.worker, delivery.lease, 0,
+                "Recipient confirmed food in inventory", null));
+    }
+
+    synchronized Assignment offerMealResupply(String world, String worker, String projectId, long now, String item,
+                                               java.util.function.Function<String, ResourceSite> position,
+                                               java.util.function.ToIntBiFunction<String, String> held) throws IOException {
+        if (mealRequests.isEmpty() || item == null || held.applyAsInt(worker, item) < 3
+                || pendingBuildMaterials(world, worker).contains(item) || hasPendingDepositOf(world, worker, item)) return null;
+        var origin = position.apply(worker);
+        if (origin == null) return null;
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || cancelled(project) || project.jobs.size() >= MAX_JOBS
+                    || projectId != null && !projectId.equals(project.id)
+                    || !availableProjectWorker(project, worker, now)) continue;
+            for (var recipient : project.jobs) {
+                if (recipient.state != State.LEASED || recipient.expiresAt <= now || !mealRequests.contains(recipient.lease)
+                        || worker.equalsIgnoreCase(recipient.worker)) continue;
+                String id = "food-resupply-" + recipient.lease;
+                if (find(project, id) != null) continue;
+                var destination = position.apply(recipient.worker);
+                if (destination == null || Math.abs(destination.y - origin.y) > 12
+                        || gatheringDistance(origin, destination) > 32) continue;
+                int existing = held.applyAsInt(recipient.worker, item);
+                if (existing != 0) continue;
+                return assignMealOrSticks(project, id, worker, now,
+                        new RouteToolDelivery(recipient.worker, destination, item, existing, 0, null));
+            }
+        }
+        return null;
+    }
+
+    private Assignment assignMealOrSticks(Project project, String id, String worker, long now,
+                                           RouteToolDelivery payload) throws IOException {
+        var work = new Work(id, Kind.RESUPPLY, JSON.toJson(payload), List.of(), Set.of());
+        var loan = new Job(work, State.LEASED, 1, worker, UUID.randomUUID(), now + LEASE_MS, null, null);
+        var jobs = new ArrayList<>(project.jobs);
+        jobs.add(loan);
+        commit(project.withJobs(jobs));
+        return assignment(project, loan);
     }
 
     synchronized Assignment offerRouteTool(String world, String worker, String projectId, long now,
@@ -2758,6 +2809,7 @@ final class ProjectQueue {
         if (BATCH_RESERVED.equals(job.evidence)) return false;
         if (BATCH_ACTIVE.equals(job.evidence)) return finishBatchStep(project, job, success, evidence, now);
         routeToolRequests.remove(token);
+        mealRequests.remove(token);
         if (success && PREPARED_COMPATIBLE_STICKS.equals(evidence)) {
             var plan = stickPreparation(project, job);
             if (plan == null || chest != null) return false;
@@ -3362,6 +3414,7 @@ final class ProjectQueue {
                     boolean restored = restoredLeases.contains(job.lease);
                     if (restored) interrupted.add(job.lease);
                     routeToolRequests.remove(job.lease);
+                    mealRequests.remove(job.lease);
                     if (job.work.kind == Kind.RESUPPLY) {
                         jobs.set(i, retry(job, LEASE_EXPIRED, job.chest, null));
                         continue;

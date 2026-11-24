@@ -53,6 +53,7 @@ final class ProjectWorker {
     private static Identifier miningRecipe;
     private static ProjectProduction miningCraft;
     private static boolean checkedMiningWeapon;
+    private static boolean checkedExcavationTool;
     private static ProjectGather gather;
     private static boolean checkedCarriedFuel;
     private static ProjectQueue.ResourceSite gatherSite;
@@ -234,6 +235,7 @@ final class ProjectWorker {
         miningRecipe = null;
         miningCraft = null;
         checkedMiningWeapon = false;
+        checkedExcavationTool = false;
         gather = null;
         checkedCarriedFuel = false;
         gatherSite = null;
@@ -422,6 +424,7 @@ final class ProjectWorker {
 
     private static void tickMiningCraft(MinecraftClient client, long now) {
         boolean replacement = miningRecipe.equals(ROUTE_PICKAXE);
+        boolean excavation = assignment.job().work().kind() == ProjectQueue.Kind.EXCAVATE;
         if (miningCraft == null) {
             var state = fieldWorkstation.tick(client, now);
             if (state == FieldWorkstation.State.WORKING) {
@@ -441,6 +444,7 @@ final class ProjectWorker {
                     miningRecipe, null, null, 1));
         }
         status = !replacement ? "Making a stone sword before prospecting"
+                : excavation ? "Crafting a pickaxe for excavation"
                 : gather == null ? "Crafting a pickaxe for the return route" : "Crafting a replacement prospecting pickaxe";
         var result = miningCraft.tick(client, now);
         if (result == null) return;
@@ -450,8 +454,8 @@ final class ProjectWorker {
         if (replacement) {
             if (result.success() && SubsurfaceAccess.canDigRoute(client)) {
                 lastGatherProgress = now;
-                BotEvents.add("info", "mining", gather == null ? "Crafted a pickaxe for the return route"
-                        : "Crafted a replacement prospecting pickaxe");
+                BotEvents.add("info", "mining", excavation ? "Crafted a pickaxe for excavation"
+                        : gather == null ? "Crafted a pickaxe for the return route" : "Crafted a replacement prospecting pickaxe");
             } else if (gather != null) finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
         } else if (result.success()) BotEvents.add("info", "defense", "Crafted a stone sword before prospecting");
     }
@@ -785,7 +789,13 @@ final class ProjectWorker {
             int slot = 0;
             while (slot < 36 && !inventory.getStack(slot).isSuitableFor(state)) slot++;
             if (slot == 36) {
-                finish(client, false, "No suitable tool in inventory for " + actual);
+                if (!checkedExcavationTool) {
+                    checkedExcavationTool = true;
+                    if (net.minecraft.item.Items.STONE_PICKAXE.getDefaultStack().isSuitableFor(state)
+                            && startMiningCraft(client, now, ROUTE_PICKAXE,
+                                StructureSupply.union(new ProjectGather.Area(target, target), block))) return;
+                }
+                finish(client, false, ProjectQueue.EXCAVATION_TOOL_NEEDED + actual);
                 return;
             }
             if (slot >= 9) {
@@ -1188,7 +1198,7 @@ final class ProjectWorker {
             var inventory = client.player.getInventory();
             for (int slot = 0; slot < 36; slot++) {
                 var stack = inventory.getStack(slot);
-                if (stack.getItem() instanceof net.minecraft.item.PickaxeItem) {
+                if (stack.isDamageable()) {
                     tools.merge(Registries.ITEM.getId(stack.getItem()).toString(),
                             stack.getMaxDamage() - stack.getDamage(), Integer::sum);
                 }

@@ -187,6 +187,7 @@ final class ProjectQueue {
     static final String ALTERNATIVE_FUEL = "Using carried smelting fuel ";
     static final String TARGET_TIMEOUT = "Timed out approaching or changing the target";
     static final String GATHER_STALLED = "Gathering stalled without item or route progress";
+    static final String EXCAVATION_TOOL_NEEDED = "No suitable tool in inventory for ";
     static final String GATHER_TOOLS_NEEDED = "Gathering needs renewed tools";
     private static final String RECOVERING_TOOLS = GATHER_TOOLS_NEEDED + "; reacquiring materials";
     private static final Set<String> PICKAXE_RECIPES = Set.of("minecraft:wooden_pickaxe", "minecraft:stone_pickaxe",
@@ -649,6 +650,11 @@ final class ProjectQueue {
 
     synchronized Assignment claim(String world, String worker, Set<Kind> kinds, String projectId,
                                   long now, ResourceSite position) throws IOException {
+        return claim(world, worker, kinds, projectId, now, position, material -> false);
+    }
+
+    synchronized Assignment claim(String world, String worker, Set<Kind> kinds, String projectId, long now,
+                                  ResourceSite position, java.util.function.Predicate<String> hasExcavationTool) throws IOException {
         if (world == null || !validId(worker) || kinds == null || kinds.isEmpty()
                 || projectId != null && !validId(projectId)) {
             throw new IllegalArgumentException("Invalid worker or world");
@@ -731,7 +737,11 @@ final class ProjectQueue {
                         || retryDelayedFor(job, worker, now)
                         || !kinds.contains(job.work.kind)) continue;
                 boolean nearbyPickup = canRetryConstructionPickup(job, position);
-                if (job.state != State.WAITING && !nearbyPickup) continue;
+                var excavationMaterial = excavationToolMaterial(job);
+                boolean equippedRetry = excavationMaterial != null && hasExcavationTool.test(excavationMaterial);
+                if (excavationMaterial != null && !equippedRetry) continue;
+                if (job.state != State.WAITING && !nearbyPickup
+                        && !(equippedRetry && job.state == State.FAILED && job.attempts == MAX_ATTEMPTS)) continue;
                 if (!done.containsAll(job.work.needs)) {
                     if (job.work.kind == Kind.TRANSFER && job.work.needs.size() > 1 && !blocked.contains(job.work.id)
                             && job.work.sameWorkerAs != null && done.contains(job.work.sameWorkerAs)
@@ -764,6 +774,14 @@ final class ProjectQueue {
             }
         }
         return fallbackJob == null || waitingWithCargo ? null : assign(fallbackProject, fallbackJob, worker, now, position);
+    }
+
+    private static String excavationToolMaterial(Job job) {
+        if (job.work.kind != Kind.EXCAVATE || job.evidence == null || !job.evidence.startsWith(EXCAVATION_TOOL_NEEDED)) {
+            return null;
+        }
+        String material = job.evidence.substring(EXCAVATION_TOOL_NEEDED.length());
+        return material.matches("[a-z0-9_.-]+:[a-z0-9_./-]+") ? material : null;
     }
 
     private static boolean canRetryConstructionPickup(Job job, ResourceSite position) {

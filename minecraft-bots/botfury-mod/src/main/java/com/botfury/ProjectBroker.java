@@ -3,6 +3,9 @@ package com.botfury;
 import com.google.gson.Gson;
 import com.google.gson.JsonParseException;
 import com.sun.net.httpserver.HttpExchange;
+import net.minecraft.item.ItemStack;
+import net.minecraft.registry.Registries;
+import net.minecraft.util.Identifier;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -319,7 +322,7 @@ final class ProjectBroker {
                             ? board.offerCheckpointDeposit(world, request.worker, request.project, now,
                                 position, ProjectBroker::heldCount) : null;
                     if (assignment == null) assignment = board.claim(world, request.worker, request.kinds,
-                            request.project, now, position);
+                            request.project, now, position, material -> hasExcavationTool(request.toolUses, material));
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.TRANSFER)) {
                         assignment = board.offerInterruptedDeposit(world, request.worker, request.project, now,
                                 position, ProjectBroker::heldCount);
@@ -337,7 +340,8 @@ final class ProjectBroker {
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.BUILD)
                             && board.offerConstructionHandoff(world, request.worker, request.project,
                                     request.kinds, now, ProjectBroker::workerPosition, ProjectBroker::heldCount)) {
-                        assignment = board.claim(world, request.worker, request.kinds, request.project, now);
+                        assignment = board.claim(world, request.worker, request.kinds, request.project, now, position,
+                                material -> hasExcavationTool(request.toolUses, material));
                     }
                     reply(exchange, 200, assignment);
                 }
@@ -359,6 +363,18 @@ final class ProjectBroker {
             BotEvents.add("warn", "projects", "Could not read or save the project journal");
             reply(exchange, 503, "Project journal unavailable");
         }
+    }
+
+    private static boolean hasExcavationTool(Map<String, Integer> uses, String material) {
+        if (uses == null || uses.isEmpty() || uses.size() > 36) return false;
+        var block = Registries.BLOCK.getOrEmpty(new Identifier(material)).orElse(null);
+        if (block == null) return false;
+        var state = block.getDefaultState();
+        return uses.entrySet().stream().anyMatch(tool -> {
+            var id = Identifier.tryParse(tool.getKey());
+            return id != null && tool.getValue() != null && tool.getValue() > 0
+                    && Registries.ITEM.getOrEmpty(id).map(item -> new ItemStack(item).isSuitableFor(state)).orElse(false);
+        });
     }
 
     private static int heldCount(String worker, String item) {

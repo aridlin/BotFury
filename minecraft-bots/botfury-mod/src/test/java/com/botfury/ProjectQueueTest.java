@@ -82,6 +82,28 @@ class ProjectQueueTest {
         assertEquals(List.of("second", "deliver-first"), jobs.get(3).work().needs());
     }
 
+    @Test void equippedMinerCanResumeAStalledPrivateToolChainAndStillRestock() throws Exception {
+        var journal = directory.resolve("equipped-miner.json");
+        var queue = new ProjectQueue(journal);
+        queue.submitSupplied("stock", WORLD, List.of(job("ingredients", GATHER, List.of()),
+                new ProjectQueue.Work("tools", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\"}",
+                        List.of("ingredients"), Set.of(), "ingredients"),
+                new ProjectQueue.Work("ore", GATHER,
+                        "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\"}",
+                        List.of("tools"), Set.of(), "tools")), "block:3,64,0");
+        for (long now = 1; now <= 5; now += 2) {
+            var lease = queue.claim(WORLD, "supplier", Set.of(GATHER), now).job();
+            assertNull(queue.offerEquippedMiner(WORLD, "miner", null, java.util.Map.of("minecraft:iron_pickaxe", 200), now));
+            assertTrue(queue.finish("stock", "ingredients", lease.lease(), false, "Stalled", now + 1));
+        }
+        assertNull(queue.offerEquippedMiner(WORLD, "miner", null, java.util.Map.of("minecraft:iron_pickaxe", 1), 7));
+        var assignment = queue.offerEquippedMiner(WORLD, "miner", null, java.util.Map.of("minecraft:iron_pickaxe", 200), 7);
+        assertEquals("ore", assignment.job().work().id());
+        var restored = new ProjectQueue(journal);
+        assertTrue(restored.finish("stock", "ore", assignment.job().lease(), false, ProjectQueue.GATHER_TOOLS_NEEDED, 8));
+        assertEquals("ingredients", restored.claim(WORLD, "miner", Set.of(GATHER), 9).job().work().id());
+    }
+
     @Test void wornToolsReopenOnlyTheGatherersProductionChain() throws Exception {
         var journal = directory.resolve("mining-tools.json");
         var queue = new ProjectQueue(journal);

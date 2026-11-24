@@ -672,6 +672,60 @@ final class ProjectQueue {
         return true;
     }
 
+    synchronized Assignment offerEquippedMiner(String world, String worker, String projectId,
+                                                Map<String, Integer> toolUses, long now) throws IOException {
+        if (toolUses == null || toolUses.isEmpty() || projects.values().stream().flatMap(project -> project.jobs.stream())
+                .anyMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker))) return null;
+        for (var project : projects.values()) {
+            if (project.supplyChest == null || !world.equals(project.world) || cancelled(project)
+                    || projectId != null && !project.id.equals(projectId)) continue;
+            for (var gather : project.jobs) {
+                if (gather.state != State.WAITING || gather.work.kind != Kind.GATHER || gather.work.sameWorkerAs == null
+                        || gather.work.needs.size() != 1 || gatherSource(gather.work.payload) == null) continue;
+                var craft = find(project, gather.work.sameWorkerAs);
+                if (craft.state == State.DONE || craft.work.kind != Kind.CRAFT) continue;
+                var recipe = JSON.fromJson(craft.work.payload, ToolRecipe.class);
+                if (recipe == null || recipe.recipe == null || !PICKAXE_RECIPES.contains(recipe.recipe)) continue;
+                Integer remaining = toolUses.get(recipe.recipe);
+                if (remaining == null || remaining < 32) continue;
+                var prep = stalledToolPreparation(project, gather, craft);
+                if (prep.isEmpty()) continue;
+                var lease = new Job(gather.work, State.LEASED, gather.attempts + 1, worker, UUID.randomUUID(),
+                        now + LEASE_MS, null, gather.chest, gatheringSite(project, gather));
+                var jobs = project.jobs.stream().map(job -> {
+                    if (job == gather) return lease;
+                    if (!prep.contains(job.work.id)) return job;
+                    return new Job(job.work, State.DONE, job.attempts, worker, null, 0,
+                            "Tool preparation satisfied by carried " + recipe.recipe, job.chest, job.resourceSite);
+                }).toList();
+                commit(project.withJobs(jobs));
+                return new Assignment(project.id, project.world, lease);
+            }
+        }
+        return null;
+    }
+
+    private static Set<String> stalledToolPreparation(Project project, Job gather, Job craft) {
+        var stages = new HashSet<String>();
+        boolean failed = false;
+        for (var job = craft; job != null && job.state != State.DONE;
+             job = job.work.sameWorkerAs == null ? null : find(project, job.work.sameWorkerAs)) {
+            if (job.state == State.LEASED || (job.work.kind != Kind.GATHER && job.work.kind != Kind.CRAFT
+                    && job.work.kind != Kind.SMELT)) return Set.of();
+            stages.add(job.work.id);
+            failed |= job.state == State.FAILED;
+        }
+        if (!failed) return Set.of();
+        for (var job : project.jobs) {
+            if (stages.contains(job.work.id)) {
+                if (job.work.needs.stream().anyMatch(id -> !stages.contains(id) && find(project, id).state != State.DONE)) {
+                    return Set.of();
+                }
+            } else if (job != gather && job.work.needs.stream().anyMatch(stages::contains)) return Set.of();
+        }
+        return stages;
+    }
+
     synchronized Assignment offerGatheringHandoff(String world, String worker, String projectId, long now,
                                                   java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
         if (projects.values().stream().flatMap(project -> project.jobs.stream()).anyMatch(job ->

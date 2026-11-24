@@ -86,6 +86,7 @@ final class ProjectWorker {
     private static final SubsurfaceAccess stationReturn = new SubsurfaceAccess();
     private static BlockPos stationToolAttempt;
     private static boolean needsRouteTool;
+    private static boolean allowedResupplyWait;
     private static boolean needsRouteBench;
     private static boolean receivedRouteBench;
     private static RouteWorkbench routeWorkbench;
@@ -235,7 +236,7 @@ final class ProjectWorker {
         approachAge = 0;
         stationReturn.reset();
         stationToolAttempt = null;
-        needsRouteTool = needsRouteBench = receivedRouteBench = false;
+        needsRouteTool = needsRouteBench = receivedRouteBench = allowedResupplyWait = false;
         craftingRouteDelivery = null;
         inspection = null;
         fill = null;
@@ -358,7 +359,9 @@ final class ProjectWorker {
             return;
         }
         if (now >= taskEnd) {
-            finish(client, false, ProjectQueue.TARGET_TIMEOUT);
+            String reason = craftingRouteDelivery == null ? ProjectQueue.TARGET_TIMEOUT
+                    : ProjectQueue.ROUTE_PREPARATION_FAILED + "timed out sourcing or crafting the item";
+            finish(client, false, reason);
             return;
         }
         if (TaskDefense.evade(client, true)) {
@@ -378,7 +381,7 @@ final class ProjectWorker {
             routeWorkbench.close(client);
             routeWorkbench = null;
             if (result.success()) startRouteDelivery(client, craftingRouteDelivery);
-            else finish(client, false, result.detail());
+            else finish(client, false, ProjectQueue.ROUTE_PREPARATION_FAILED + result.detail());
             craftingRouteDelivery = null;
         } else if (deliveringRouteTool) {
             BotInventory.tick(client);
@@ -510,7 +513,7 @@ final class ProjectWorker {
             fieldWorkstation = null;
             if (state != FieldWorkstation.State.READY) {
                 miningRecipe = null;
-                if (delivery != null) finish(client, false, "Could not prepare a workbench for the replacement pickaxe");
+                if (delivery != null) finish(client, false, ProjectQueue.ROUTE_PREPARATION_FAILED + "could not prepare a workbench");
                 else if (replacement && gather != null) finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
                 return;
             }
@@ -529,7 +532,7 @@ final class ProjectWorker {
         if (delivery != null) {
             craftingRouteDelivery = null;
             if (result.success()) startRouteDelivery(client, delivery);
-            else finish(client, false, result.detail());
+            else finish(client, false, ProjectQueue.ROUTE_PREPARATION_FAILED + result.detail());
         } else if (replacement) {
             if (result.success() && SubsurfaceAccess.canDigRoute(client)) {
                 lastGatherProgress = now;
@@ -557,6 +560,7 @@ final class ProjectWorker {
         var item = Registries.ITEM.get(new Identifier(delivery.item()));
         BotInventory.startProjectDelivery(client, item, delivery.recipient(), destination);
         deliveringRouteTool = true;
+        taskEnd = System.nanoTime() + seconds(180);
     }
 
     private static boolean prepareFieldWorkstation(MinecraftClient client, long now) {
@@ -1054,6 +1058,10 @@ final class ProjectWorker {
                 return true;
             }
             needsRouteTool = chest != null && chest.depositing();
+            if (needsRouteTool && !allowedResupplyWait) {
+                allowedResupplyWait = true;
+                taskEnd = Math.max(taskEnd, Math.min(stationReturnDeadline, now + seconds(390)));
+            }
             needsRouteBench = needsRouteTool && ProjectProduction.canCraft(client, ROUTE_PICKAXE)
                     && !client.player.getInventory().contains(net.minecraft.item.Items.CRAFTING_TABLE.getDefaultStack());
         }
@@ -1380,7 +1388,7 @@ final class ProjectWorker {
                         case GATHER -> 1800;
                         case SMELT -> 300;
                         case CRAFT, TRANSFER, FILL_BUCKETS -> 180;
-                        case RESUPPLY -> 180;
+                        case RESUPPLY -> 90;
                         default -> 90;
                     });
                     if (work.kind() == ProjectQueue.Kind.RESUPPLY) {
@@ -1392,7 +1400,7 @@ final class ProjectWorker {
                             routeWorkbench = new RouteWorkbench();
                         } else if (freshToolCount(client, item) < delivery.craftTarget()) {
                             if (startMiningCraft(client, started, ROUTE_PICKAXE, null)) craftingRouteDelivery = delivery;
-                            else finish(client, false, "Replacement pickaxe ingredients or workbench became unavailable");
+                            else finish(client, false, ProjectQueue.ROUTE_PREPARATION_FAILED + "ingredients or workbench became unavailable");
                         } else startRouteDelivery(client, delivery);
                     } else if (work.kind() == ProjectQueue.Kind.GATHER) {
                         gather = ProjectGather.parse(work.payload());

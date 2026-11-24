@@ -84,12 +84,24 @@ final class ProjectBroker {
                 }
             }
             checkOwnedPlacements(client, board, world);
+            confirmLocalScaffoldClearance(client, board, world);
             if (now >= nextAccessCheck) {
                 nextAccessCheck = now + java.time.Duration.ofSeconds(20).toNanos();
                 repairBlockedAccess(client, board, world);
             }
         } catch (IOException | IllegalArgumentException failure) {
             BotEvents.add("warn", "projects", "Could not check owned project work. " + failure.getMessage());
+        }
+    }
+
+    private static void confirmLocalScaffoldClearance(net.minecraft.client.MinecraftClient client, ProjectQueue board,
+                                                       String world) throws IOException {
+        for (var check : board.scaffoldClearances(world)) {
+            var block = ProjectBlock.parse(check.job().payload());
+            var target = block.target();
+            if (!client.world.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
+                    || !block.desired().isAir() || !client.world.isAir(target)) continue;
+            board.confirmScaffoldClearance(world, check, "Observed clear scaffold cell at " + target.toShortString());
         }
     }
 

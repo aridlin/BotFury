@@ -220,12 +220,20 @@ final class MiningTask {
                 }
                 if (age - approachProgress >= 250) {
                     rejectedStands.put(p, age + 600);
-                    if (localApproachTried) rejected.put(target, age + 600);
+                    boolean prospectAgain = prospectingAltitude(client) != null;
+                    if (prospectAgain) rejected.put(target, age + 1200);
                     stopPath();
                     clearReservation();
                     client.interactionManager.cancelBlockBreaking();
                     status = "Trying another approach to " + job.resource;
                     nextSearch = age + 1;
+                    if (prospectAgain) {
+                        // A different stand for the same vein can still be on the other side of the wall.
+                        rememberedSite = null;
+                        pendingCandidates.clear();
+                        nextSearch = age + 20;
+                        explore(client);
+                    }
                     return;
                 }
                 if (recoverRoute(client, p)) return;

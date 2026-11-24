@@ -90,6 +90,7 @@ final class ProjectWorker {
     private static final DroppedItemSearch routeToolPickup = new DroppedItemSearch(TOOL_DROP_RADIUS);
     private static boolean pickingUpRouteTool;
     private static boolean deliveringRouteTool;
+    private static ProjectQueue.RouteToolDelivery craftingRouteDelivery;
     private static int approachAge;
     private static Vec3d approachProgress;
     private static long retryApproach;
@@ -232,6 +233,7 @@ final class ProjectWorker {
         stationReturn.reset();
         stationToolAttempt = null;
         needsRouteTool = false;
+        craftingRouteDelivery = null;
         inspection = null;
         fill = null;
         chest = null;
@@ -472,6 +474,7 @@ final class ProjectWorker {
     }
 
     private static void tickMiningCraft(MinecraftClient client, long now) {
+        var delivery = craftingRouteDelivery;
         boolean replacement = miningRecipe.equals(ROUTE_PICKAXE);
         boolean excavation = assignment.job().work().kind() == ProjectQueue.Kind.EXCAVATE;
         if (miningCraft == null) {
@@ -486,13 +489,15 @@ final class ProjectWorker {
             fieldWorkstation = null;
             if (state != FieldWorkstation.State.READY) {
                 miningRecipe = null;
-                if (replacement && gather != null) finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
+                if (delivery != null) finish(client, false, "Could not prepare a workbench for the replacement pickaxe");
+                else if (replacement && gather != null) finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
                 return;
             }
             miningCraft = new ProjectProduction(new ProjectProduction.Spec(station, ProjectQueue.Kind.CRAFT,
-                    miningRecipe, null, null, 1));
+                    miningRecipe, null, null, delivery == null ? 1 : delivery.craftTarget()));
         }
         status = !replacement ? "Making a stone sword before prospecting"
+                : delivery != null ? "Crafting a replacement pickaxe for " + delivery.recipient()
                 : excavation ? "Crafting a pickaxe for excavation"
                 : gather == null ? "Crafting a pickaxe for the return route" : "Crafting a replacement prospecting pickaxe";
         var result = miningCraft.tick(client, now);
@@ -500,13 +505,37 @@ final class ProjectWorker {
         miningCraft.close(client);
         miningCraft = null;
         miningRecipe = null;
-        if (replacement) {
+        if (delivery != null) {
+            craftingRouteDelivery = null;
+            if (result.success()) startRouteDelivery(client, delivery);
+            else finish(client, false, result.detail());
+        } else if (replacement) {
             if (result.success() && SubsurfaceAccess.canDigRoute(client)) {
                 lastGatherProgress = now;
                 BotEvents.add("info", "mining", excavation ? "Crafted a pickaxe for excavation"
                         : gather == null ? "Crafted a pickaxe for the return route" : "Crafted a replacement prospecting pickaxe");
             } else if (gather != null) finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
         } else if (result.success()) BotEvents.add("info", "defense", "Crafted a stone sword before prospecting");
+    }
+
+    private static int freshToolCount(MinecraftClient client, net.minecraft.item.Item item) {
+        var inventory = client.player.getInventory();
+        var output = item.getDefaultStack();
+        int count = 0;
+        for (int slot = 0; slot < 36; slot++) {
+            if (net.minecraft.item.ItemStack.canCombine(inventory.getStack(slot), output)) count++;
+        }
+        return count;
+    }
+
+    private static void startRouteDelivery(MinecraftClient client, ProjectQueue.RouteToolDelivery delivery) {
+        var here = LocalFormation.here();
+        var position = delivery.position();
+        var destination = new BotInventory.Destination(here.server(), here.dimension(),
+                new Vec3d(position.x() + .5, position.y(), position.z() + .5), port);
+        var item = Registries.ITEM.get(new Identifier(delivery.item()));
+        BotInventory.startProjectDelivery(client, item, delivery.recipient(), destination);
+        deliveringRouteTool = true;
     }
 
     private static boolean prepareFieldWorkstation(MinecraftClient client, long now) {
@@ -1272,6 +1301,10 @@ final class ProjectWorker {
                 }
             }
             if (!tools.isEmpty()) args.put("toolUses", tools);
+            if (ProjectProduction.canCraft(client, ROUTE_PICKAXE)
+                    && FieldWorkstation.findForMiningTool(client, now, null) != null) {
+                args.put("routeCraftTarget", freshToolCount(client, net.minecraft.item.Items.STONE_PICKAXE) + 1);
+            }
         } else {
             args.put("project", assignment.project());
             args.put("job", assignment.job().work().id());
@@ -1324,12 +1357,11 @@ final class ProjectWorker {
                     });
                     if (work.kind() == ProjectQueue.Kind.RESUPPLY) {
                         var delivery = JSON.fromJson(work.payload(), ProjectQueue.RouteToolDelivery.class);
-                        var position = delivery.position();
-                        var destination = new BotInventory.Destination(here.server(), here.dimension(),
-                                new Vec3d(position.x() + .5, position.y(), position.z() + .5), port);
                         var item = Registries.ITEM.get(new Identifier(delivery.item()));
-                        BotInventory.startProjectDelivery(client, item, delivery.recipient(), destination);
-                        deliveringRouteTool = true;
+                        if (freshToolCount(client, item) < delivery.craftTarget()) {
+                            if (startMiningCraft(client, started, ROUTE_PICKAXE, null)) craftingRouteDelivery = delivery;
+                            else finish(client, false, "Replacement pickaxe ingredients or workbench became unavailable");
+                        } else startRouteDelivery(client, delivery);
                     } else if (work.kind() == ProjectQueue.Kind.GATHER) {
                         gather = ProjectGather.parse(work.payload());
                         gatherSite = assignment.job().resourceSite();

@@ -237,18 +237,25 @@ final class BotInventory {
     private static int dropProjectTool(MinecraftClient client, Item item) {
         var player = client.player;
         var inventory = player.getInventory();
+        int selected = -1;
+        int bestUses = 20;
         for (int slot = 0; slot < 36; slot++) {
-            if (!inventory.getStack(slot).isOf(item)) continue;
-            if (slot >= 9) {
-                client.interactionManager.clickSlot(player.playerScreenHandler.syncId, slot,
-                        inventory.selectedSlot, SlotActionType.SWAP, player);
-                return 0;
+            var stack = inventory.getStack(slot);
+            int uses = stack.getMaxDamage() - stack.getDamage();
+            if (stack.isOf(item) && uses > bestUses) {
+                selected = slot;
+                bestUses = uses;
             }
-            inventory.selectedSlot = slot;
-            player.networkHandler.sendPacket(new net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket(slot));
-            return player.dropSelectedItem(false) ? 1 : 0;
         }
-        return 0;
+        if (selected < 0) return 0;
+        if (selected >= 9) {
+            client.interactionManager.clickSlot(player.playerScreenHandler.syncId, selected,
+                    inventory.selectedSlot, SlotActionType.SWAP, player);
+            return 0;
+        }
+        inventory.selectedSlot = selected;
+        player.networkHandler.sendPacket(new net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket(selected));
+        return player.dropSelectedItem(false) ? 1 : 0;
     }
 
     private static int drop(MinecraftClient client, Item item, int amount, boolean otherItems) {

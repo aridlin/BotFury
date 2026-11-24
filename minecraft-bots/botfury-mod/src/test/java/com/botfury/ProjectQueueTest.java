@@ -520,21 +520,29 @@ class ProjectQueueTest {
         }
         var request = queue.blockedAccess(WORLD).get(0);
         String intake = "repair-place-1-stock";
+        String check = "check-access-repair-place-1-0";
         String step = "place-access-repair-place-1-0";
         String done = "repair-place-1-settled";
-        var temporary = new ProjectQueue.Work(step, BUILD, "{}", List.of(intake), Set.of(key), intake);
+        var verification = new ProjectQueue.Work(check, ProjectQueue.Kind.VERIFY, "{}", List.of(intake), Set.of(key));
+        var temporary = new ProjectQueue.Work(step, BUILD, "{}", List.of(intake, check), Set.of(key), intake);
         var moved = new ProjectQueue.Work("place-1", BUILD, "{}", List.of("pickup", step), Set.of("wall"), "pickup");
         var barrier = job(done, ProjectQueue.Kind.SETTLEMENT_BARRIER, List.of("place-1"));
         var cleanup = new ProjectQueue.Work("remove-access-repair-place-1-0", EXCAVATE, "{}", List.of(step),
                 Set.of(key), null, new ProjectQueue.Cleanup(key, done));
-        var repair = new StructureProject.AccessRepair(moved, List.of(temporary), List.of(barrier, cleanup), 1);
+        var repair = new StructureProject.AccessRepair(moved, List.of(verification, temporary), List.of(barrier, cleanup), 1);
         assertTrue(queue.installAccess(WORLD, request, repair, now++));
         assertFalse(queue.installAccess(WORLD, request, repair, now++));
         var restored = new ProjectQueue(journal);
+        assertTrue(restored.scaffoldClearances(WORLD).isEmpty());
         assertNull(restored.claim(WORLD, "builder", Set.of(BUILD, EXCAVATE), now++));
         var gather = restored.claim(WORLD, "builder", Set.of(TRANSFER), now++).job();
         assertEquals(intake, gather.work().id());
         assertTrue(restored.finish("house", intake, gather.lease(), true, "Took scaffold stock", stock, now++));
+        var remote = restored.claim(WORLD, "remote", Set.of(ProjectQueue.Kind.VERIFY), now++).job();
+        assertEquals(check, remote.work().id());
+        var clearance = restored.scaffoldClearances(WORLD).get(0);
+        assertTrue(restored.confirmScaffoldClearance(WORLD, clearance, "Observed clear cell"));
+        assertFalse(restored.finish("house", check, remote.lease(), false, ProjectQueue.TARGET_TIMEOUT, now++));
         var scaffold = restored.claim(WORLD, "builder", Set.of(BUILD), now++).job();
         assertEquals(step, scaffold.work().id());
         assertTrue(restored.finish("house", step, scaffold.lease(), true, "Built scaffold", now++));

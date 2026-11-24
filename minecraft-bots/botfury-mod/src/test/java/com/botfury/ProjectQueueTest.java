@@ -14,6 +14,37 @@ class ProjectQueueTest {
     @TempDir Path directory;
     private static final String WORLD = "test|overworld";
 
+    @Test void savedManifestGathersInParallelAndKeepsCumulativeDepositsOrdered() throws Exception {
+        var journal = directory.resolve("parallel-manifest.json");
+        var queue = new ProjectQueue(journal);
+        String chest = "block:3,64,0";
+        String stock = "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:dirt\",\"stock\":";
+        queue.submitSupplied("manifest-test", WORLD, List.of(job("first", GATHER, List.of()),
+                new ProjectQueue.Work("deliver-first", TRANSFER, stock + "64}", List.of("first"), Set.of(chest), "first"),
+                job("second", GATHER, List.of("deliver-first")),
+                new ProjectQueue.Work("deliver-second", TRANSFER, stock + "128}", List.of("second"), Set.of(chest), "second"),
+                job("other-work", EXCAVATE, List.of())), chest);
+        var first = queue.claim(WORLD, "miner", Set.of(GATHER), 1).job();
+        var restored = new ProjectQueue(journal);
+        var second = restored.claim(WORLD, "hauler", Set.of(GATHER), 2).job();
+        assertEquals("second", second.work().id());
+        assertTrue(restored.finish("manifest-test", "second", second.lease(), true, "Gathered", 3));
+        assertNull(restored.claim(WORLD, "hauler", Set.of(TRANSFER, EXCAVATE), 4));
+        assertTrue(restored.finish("manifest-test", "first", first.lease(), true, "Gathered", 5));
+        var receipt = new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:dirt", 64));
+        var firstDeposit = restored.claim(WORLD, "miner", Set.of(TRANSFER), 6).job();
+        assertEquals("deliver-first", firstDeposit.work().id());
+        assertTrue(restored.finish("manifest-test", "deliver-first", firstDeposit.lease(), true, "Deposited", receipt, 7));
+        var secondDeposit = restored.claim(WORLD, "hauler", Set.of(TRANSFER), 8).job();
+        assertEquals("deliver-second", secondDeposit.work().id());
+        assertTrue(restored.finish("manifest-test", "deliver-second", secondDeposit.lease(), false,
+                "Missing cargo", receipt, null, true, 9));
+        var jobs = new ProjectQueue(journal).snapshot(10).get(0).jobs();
+        assertEquals(ProjectQueue.State.DONE, jobs.get(1).state());
+        assertEquals(ProjectQueue.State.WAITING, jobs.get(2).state());
+        assertEquals(List.of("second", "deliver-first"), jobs.get(3).work().needs());
+    }
+
     @Test void wornToolsReopenOnlyTheGatherersProductionChain() throws Exception {
         var journal = directory.resolve("mining-tools.json");
         var queue = new ProjectQueue(journal);

@@ -41,6 +41,7 @@ final class MiningTask {
     private static int generation,age,nextSearch,nextPath,nextRenew,exploration;
     private static long leaseUntil;
     private static boolean requesting,dead,paused,pathActive,projectMining;
+    private static boolean localOnly;
     private static final Deque<BlockPos> pendingCandidates = new ArrayDeque<>();
     private static boolean scanNeedsTool;
     private static boolean toolShortfall;
@@ -137,6 +138,22 @@ final class MiningTask {
         }
     }
 
+    static void startLocalProject(MinecraftClient client, Job next, ProjectGather.Area exclude, ProjectItem drop) {
+        startProject(client, next, exclude, null, drop);
+        localOnly = job != null;
+    }
+
+    static boolean hasExposedLocalBlock(MinecraftClient client, String resource) {
+        var wanted = Set.copyOf(ResourceCatalog.blocks(resource, "both"));
+        var world = client.world;
+        for (var pos : BlockPos.iterateOutwards(client.player.getBlockPos(), 8, 4, 8)) {
+            if (!world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4) || BuildProtection.blocked(pos)) continue;
+            if (wanted.contains(Registries.BLOCK.getId(world.getBlockState(pos).getBlock()).toString())
+                    && !completelyCovered(world, pos)) return true;
+        }
+        return false;
+    }
+
     private static void startMining(MinecraftClient client, Job next, boolean project, ProjectGather.Area exclude) {
         if(client.player==null||client.world==null||LocalFormation.here()==null){fail("Not in game");return;}
         if(!BaritoneClient.available()){fail("Install Baritone for mining");return;}
@@ -145,6 +162,7 @@ final class MiningTask {
         for(String id:ids){var state=Registries.BLOCK.get(new Identifier(id)).getDefaultState();if(state.isAir()||state.getHardness(client.world,client.player.getBlockPos())<0){fail("Choose a breakable mining block");return;}}
         try{settings=new BaritoneSettings(exclude == null, project);}catch(ReflectiveOperationException|LinkageError e){fail("Could not configure mining approach");return;}
         projectMining=project;
+        localOnly = false;
         surfaceResource = project && ids.stream().map(id -> Registries.BLOCK.get(new Identifier(id)))
                 .allMatch(block -> block.getDefaultState().isIn(BlockTags.LOGS)
                         || block instanceof FlowerBlock || block instanceof TallFlowerBlock);
@@ -465,6 +483,10 @@ final class MiningTask {
     }
 
     private static void explore(MinecraftClient client) {
+        if (localOnly) {
+            status = "Looking for reachable local " + job.resource;
+            return;
+        }
         // A nearby cave exit is more useful than a distant surface waypoint while buried.
         if (surfaceResource && seekSurface(client)) return;
         if (returnToResourceSite(client)) return;

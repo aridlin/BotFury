@@ -24,7 +24,7 @@ final class FieldWorkstation {
     enum State { WORKING, READY, UNAVAILABLE }
 
     private static final Identifier TABLE = Identifier.of("minecraft", "crafting_table");
-    private static final Identifier FURNACE = Identifier.of("minecraft", "furnace");
+    static final Identifier FURNACE = Identifier.of("minecraft", "furnace");
     private static final int WORKBENCH_COST = 4;
     private static final int PLANK_BUDGET = 8;
     private final ProjectBlock station;

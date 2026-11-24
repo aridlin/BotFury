@@ -120,6 +120,7 @@ final class ProjectWorker {
     private static long retryApproach;
     private static long nextRequest, deadline, taskEnd, stableSince, nextPlacement, inspectionStarted;
     private static long stationReturnDeadline;
+    private static long fieldStoneUntil, nextFieldStoneSearch;
     private static int stationReturnHeight;
     private static Boolean success;
     private static String evidence;
@@ -278,6 +279,7 @@ final class ProjectWorker {
         fieldWorkstation = null;
         rejectedFieldWorkbenches.clear();
         nextWorkstationSearch = 0;
+        nextFieldStoneSearch = 0;
         miningRecipe = null;
         miningCraft = null;
         preparingMiningSticks = false;
@@ -331,7 +333,8 @@ final class ProjectWorker {
         if (miningCraft != null) miningCraft.close(client);
         if (workbenchPickup != null) workbenchPickup.close(client);
         if (pickup != null) pickup.stop();
-        if (gather != null && MiningTask.active()) MiningTask.stop();
+        if ((gather != null || fieldStoneUntil != 0) && MiningTask.active()) MiningTask.stop();
+        fieldStoneUntil = 0;
         if (breaking && client.interactionManager != null) client.interactionManager.cancelBlockBreaking();
         breaking = false;
         if (approach != null) {
@@ -748,6 +751,17 @@ final class ProjectWorker {
     private static boolean prepareFieldWorkstation(MinecraftClient client, long now) {
         var kind = assignment.job().work().kind();
         String stationName = kind == ProjectQueue.Kind.SMELT ? "furnace" : "workbench";
+        if (fieldStoneUntil != 0) {
+            if (now < fieldStoneUntil && production.carryingUnstartedSmeltingInput(client)
+                    && MiningTask.active() && !MiningTask.toolShortfall()
+                    && !ProjectProduction.canCraft(client, FieldWorkstation.FURNACE)) {
+                status = assignment.project() + "/" + assignment.job().work().id() + ": Gathering stone for a field furnace";
+                MiningTask.tick(client);
+                return true;
+            }
+            MiningTask.stop();
+            fieldStoneUntil = nextWorkstationSearch = 0;
+        }
         if (fieldWorkstation == null && now >= nextWorkstationSearch
                 && !block.target().isWithinDistance(client.player.getBlockPos(), 16)) {
             nextWorkstationSearch = now + seconds(8);
@@ -756,6 +770,8 @@ final class ProjectWorker {
             if (nearby != null) {
                 halt(client);
                 fieldWorkstation = nearby;
+            } else if (kind == ProjectQueue.Kind.SMELT && startFieldStoneGather(client, now)) {
+                return true;
             }
         }
         if (fieldWorkstation == null) return false;
@@ -781,6 +797,26 @@ final class ProjectWorker {
         fieldWorkstation = null;
         nextWorkstationSearch = now + seconds(15);
         return false;
+    }
+
+    private static boolean startFieldStoneGather(MinecraftClient client, long now) {
+        if (now < nextFieldStoneSearch || !production.carryingUnstartedSmeltingInput(client)
+                || client.player.getInventory().contains(Items.FURNACE.getDefaultStack())
+                || !SubsurfaceAccess.hasFooting(client) || client.player.isTouchingWater()
+                || client.player.currentScreenHandler != client.player.playerScreenHandler
+                || !SubsurfaceAccess.canDigRoute(client) || ProjectProduction.canCraft(client, FieldWorkstation.FURNACE)) {
+            return false;
+        }
+        nextFieldStoneSearch = now + seconds(90);
+        var resource = ResourceCatalog.FURNACE_STONE;
+        if (!MiningTask.hasExposedLocalBlock(client, resource)) return false;
+        halt(client);
+        var area = new ProjectGather.Area(block.target(), block.target());
+        MiningTask.startLocalProject(client, new MiningTask.Job(resource, "both", port), area, ProjectItem.parse(resource));
+        if (!MiningTask.active()) return false;
+        fieldStoneUntil = now + seconds(35);
+        BotEvents.add("info", "projects", "Gathering local stone for a field furnace");
+        return true;
     }
 
     private static boolean gatherProgress(MinecraftClient client, int held, long now) {

@@ -13,6 +13,9 @@ record ProjectItem(String key, List<Identifier> ids) {
         if ("any_logs".equals(key)) {
             return new ProjectItem(key, ResourceCatalog.blocks(key, "both").stream().map(Identifier::new).toList());
         }
+        if (ResourceCatalog.FURNACE_STONE.equals(key)) {
+            return new ProjectItem(key, ResourceCatalog.FURNACE_STONE_DROPS.stream().map(Identifier::new).toList());
+        }
         var id = key == null ? null : Identifier.tryParse(key);
         if (id == null || !Registries.ITEM.containsId(id) || id.equals(Identifier.of("minecraft", "air"))) {
             throw new IllegalArgumentException("Unknown project item " + key);

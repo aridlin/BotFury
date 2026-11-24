@@ -389,7 +389,8 @@ final class ProjectWorker {
             stableSince = 0;
         }
         var currentCell = player.getBlockPos();
-        if (interactionGoals.contains(currentCell)) interactionStand = currentCell;
+        boolean reachedAlternative = interactionGoals.contains(currentCell);
+        if (reachedAlternative) interactionStand = currentCell;
         BlockPos stand = interactionStand == null ? block.stand() : interactionStand;
         boolean canExcavateHere = excavate && targetLoaded && player.isOnGround() && !centering
                 && !player.getBlockPos().down().equals(target) && excavationHit(client, target) != null;
@@ -425,7 +426,7 @@ final class ProjectWorker {
         }
         boolean routeFailed = approach != null && now >= retryApproach && !BaritoneClient.pursuing(stand);
         if (ordinaryBuild && targetLoaded && !canBuildHere && client.world.isAir(target)
-                && (openingJumpHeadroom != null || routeFailed && !attemptedJumpHeadroom)
+                && (openingJumpHeadroom != null || !attemptedJumpHeadroom && (routeFailed || reachedAlternative))
                 && openJumpHeadroom(client, currentCell)) return;
         // Try a protected exit once after both the planned and an alternate approach fail.
         boolean recoverBeforeSwitching = (excavate || ordinaryBuild) && interactionStand != null
@@ -691,7 +692,8 @@ final class ProjectWorker {
                 case BUILD -> ProjectPlacement.supportHit(client, block, eye);
                 default -> ProjectProduction.workstationHit(client, target, eye);
             };
-            if (hit != null || kind == ProjectQueue.Kind.BUILD && canJumpToPlace(client, feet, pos)) {
+            if (hit != null || kind == ProjectQueue.Kind.BUILD && (canJumpToPlace(client, feet, pos)
+                    || !attemptedJumpHeadroom && canClearJumpHeadroom(client, pos))) {
                 candidates.add(pos.toImmutable());
             }
         }
@@ -718,36 +720,14 @@ final class ProjectWorker {
 
     private static boolean openJumpHeadroom(MinecraftClient client, BlockPos feet) {
         var player = client.player;
-        var world = client.world;
         var obstacle = feet.up(2);
-        if (openingJumpHeadroom != null && (!obstacle.equals(openingJumpHeadroom) || world.isAir(obstacle))) {
-            halt(client);
-            return false;
-        }
-        var state = world.getBlockState(obstacle);
-        boolean naturalLeaves = state.getBlock() instanceof LeavesBlock && !state.get(LeavesBlock.PERSISTENT);
-        if (!player.isOnGround() || !usableInteractionStand(client, feet, block.target())
-                || ProjectWater.source(block.desired()) || obstacle.equals(block.target())
-                || !naturalLeaves && !BaritoneSettings.recoverableTerrain(state.getBlock())
-                || state.hasBlockEntity() || !state.getFluidState().isEmpty() || state.getHardness(world, obstacle) < 0
-                || BuildProtection.blocked(obstacle)
-                || world.getBlockState(obstacle.up()).getBlock() instanceof FallingBlock
-                || !world.getOtherEntities(player, new Box(obstacle).stretch(0, 1, 0), entity -> entity.isAlive()).isEmpty()) {
+        if (!player.isOnGround() || openingJumpHeadroom != null && !obstacle.equals(openingJumpHeadroom)
+                || !canClearJumpHeadroom(client, feet)) {
             if (openingJumpHeadroom != null) halt(client);
             return false;
         }
-        for (var side : Direction.values()) {
-            var neighbor = obstacle.offset(side);
-            if (!world.isChunkLoaded(neighbor.getX() >> 4, neighbor.getZ() >> 4)
-                    || !world.getFluidState(neighbor).isEmpty()) {
-                if (openingJumpHeadroom != null) halt(client);
-                return false;
-            }
-        }
-        var position = Vec3d.ofBottomCenter(feet);
-        var sight = position.add(0, 2.62, 0);
         var ray = excavationHit(client, obstacle);
-        if (ray == null || !StructureProject.clearBuildFace(client, sight, block, Map.of(obstacle, Blocks.AIR.getDefaultState()))) {
+        if (ray == null) {
             if (openingJumpHeadroom != null) halt(client);
             return false;
         }
@@ -764,6 +744,30 @@ final class ProjectWorker {
             player.swingHand(Hand.MAIN_HAND);
         }
         return true;
+    }
+
+    private static boolean canClearJumpHeadroom(MinecraftClient client, BlockPos feet) {
+        var world = client.world;
+        var obstacle = feet.up(2);
+        if (block.edgePlacement() || !feet.isWithinDistance(block.target(), 5)
+                || !world.isInBuildLimit(obstacle.up()) || !world.getWorldBorder().contains(obstacle)
+                || !usableInteractionStand(client, feet, block.target())
+                || ProjectWater.source(block.desired()) || obstacle.equals(block.target())) return false;
+        var state = world.getBlockState(obstacle);
+        boolean naturalLeaves = state.getBlock() instanceof LeavesBlock && !state.get(LeavesBlock.PERSISTENT);
+        if (!naturalLeaves && !BaritoneSettings.recoverableTerrain(state.getBlock())
+                || state.hasBlockEntity() || !state.getFluidState().isEmpty() || state.getHardness(world, obstacle) < 0
+                || BuildProtection.blocked(obstacle)
+                || world.getBlockState(obstacle.up()).getBlock() instanceof FallingBlock
+                || !world.getOtherEntities(client.player, new Box(obstacle).stretch(0, 1, 0),
+                    entity -> entity instanceof net.minecraft.entity.LivingEntity && entity.isAlive()).isEmpty()) return false;
+        for (var side : Direction.values()) {
+            var neighbor = obstacle.offset(side);
+            if (!world.isChunkLoaded(neighbor.getX() >> 4, neighbor.getZ() >> 4)
+                    || !world.getFluidState(neighbor).isEmpty()) return false;
+        }
+        var sight = Vec3d.ofBottomCenter(feet).add(0, 2.62, 0);
+        return StructureProject.clearBuildFace(client, sight, block, Map.of(obstacle, Blocks.AIR.getDefaultState()));
     }
 
     private static boolean canCenterForInteraction(MinecraftClient client, BlockPos target, BlockPos stand,

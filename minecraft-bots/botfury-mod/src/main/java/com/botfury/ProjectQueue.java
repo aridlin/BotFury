@@ -133,12 +133,13 @@ final class ProjectQueue {
             return new Project(id, world, updated, value, supplyChest, supplyRecoveries, contributionOrigins);
         }
 
-        Project withContribution(List<Job> updated, String key, int count, ResourceSite origin, int stock) {
+        Project withContribution(List<Job> updated, String key, int count, ResourceSite origin, int stock, int returnRevision) {
             var amounts = new HashMap<>(supplyRecoveries);
             var origins = new HashMap<>(contributionOrigins);
             if (count > 0) {
                 amounts.put(key, count);
                 amounts.put(key + ":stock", stock);
+                if (returnRevision > 0) amounts.merge(key + ":route", returnRevision, Math::max);
             } else {
                 amounts.remove(key);
                 amounts.remove(key + ":stock");
@@ -671,6 +672,13 @@ final class ProjectQueue {
                                   ResourceSite position, java.util.function.Predicate<String> hasExcavationTool,
                                   java.util.function.ToIntBiFunction<String, String> heldCount,
                                   Map<String, Integer> toolUses) throws IOException {
+        return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses, 0);
+    }
+
+    synchronized Assignment claim(String world, String worker, Set<Kind> kinds, String projectId, long now,
+                                  ResourceSite position, java.util.function.Predicate<String> hasExcavationTool,
+                                  java.util.function.ToIntBiFunction<String, String> heldCount,
+                                  Map<String, Integer> toolUses, int returnRevision) throws IOException {
         if (world == null || !validId(worker) || kinds == null || kinds.isEmpty()
                 || projectId != null && !validId(projectId)) {
             throw new IllegalArgumentException("Invalid worker or world");
@@ -792,9 +800,9 @@ final class ProjectQueue {
         if (waitingWithCargo) return null;
         // Existing leases and ready handoffs were checked above. Prefer rescuing mining work over a new independent job.
         if (heldCount != null && kinds.contains(Kind.TRANSFER)) {
-            var deposit = offerInterruptedDeposit(world, worker, projectId, now, position, heldCount, CargoRecovery.TOOL_FAILURE);
+            var deposit = offerInterruptedDeposit(world, worker, projectId, now, position, heldCount, CargoRecovery.TOOL_FAILURE, returnRevision);
             if (deposit == null) {
-                deposit = offerInterruptedDeposit(world, worker, projectId, now, position, heldCount, CargoRecovery.CARRIED_GOAL);
+                deposit = offerInterruptedDeposit(world, worker, projectId, now, position, heldCount, CargoRecovery.CARRIED_GOAL, returnRevision);
             }
             if (deposit != null) return deposit;
         }
@@ -1038,7 +1046,7 @@ final class ProjectQueue {
                 if (deposit == null) continue;
                 if (candidate < current + 16 || candidate <= 2 * current) {
                     var contribution = offerContribution(project, job, deposit, source.item, worker, current + candidate,
-                            false, now, null, false);
+                            false, now, null, false, 0);
                     if (contribution != null) return contribution;
                     continue;
                 }
@@ -1059,19 +1067,33 @@ final class ProjectQueue {
     synchronized Assignment offerInterruptedDeposit(String world, String worker, String projectId, long now,
                                                      ResourceSite position,
                                                      java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
-        return offerInterruptedDeposit(world, worker, projectId, now, position, heldCount, CargoRecovery.ANY);
+        return offerInterruptedDeposit(world, worker, projectId, now, position, heldCount, 0);
+    }
+
+    synchronized Assignment offerInterruptedDeposit(String world, String worker, String projectId, long now,
+                                                     ResourceSite position,
+                                                     java.util.function.ToIntBiFunction<String, String> heldCount,
+                                                     int returnRevision) throws IOException {
+        return offerInterruptedDeposit(world, worker, projectId, now, position, heldCount, CargoRecovery.ANY, returnRevision);
     }
 
     synchronized Assignment offerCheckpointDeposit(String world, String worker, String projectId, long now,
                                                    ResourceSite position,
                                                    java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
-        return offerInterruptedDeposit(world, worker, projectId, now, position, heldCount, CargoRecovery.CHECKPOINT);
+        return offerCheckpointDeposit(world, worker, projectId, now, position, heldCount, 0);
+    }
+
+    synchronized Assignment offerCheckpointDeposit(String world, String worker, String projectId, long now,
+                                                     ResourceSite position,
+                                                     java.util.function.ToIntBiFunction<String, String> heldCount,
+                                                     int returnRevision) throws IOException {
+        return offerInterruptedDeposit(world, worker, projectId, now, position, heldCount, CargoRecovery.CHECKPOINT, returnRevision);
     }
 
     private Assignment offerInterruptedDeposit(String world, String worker, String projectId, long now,
                                                ResourceSite position,
                                                java.util.function.ToIntBiFunction<String, String> heldCount,
-                                               CargoRecovery mode) throws IOException {
+                                               CargoRecovery mode, int returnRevision) throws IOException {
         if (projects.values().stream().flatMap(project -> project.jobs.stream())
                 .anyMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker))) return null;
         var reserved = pendingBuildMaterials(world, worker);
@@ -1098,7 +1120,7 @@ final class ProjectQueue {
                 int held = heldCount.applyAsInt(worker, source.item);
                 var cargo = contributionCargo(deposit, worker);
                 if (held == 0 && CONTRIBUTION_SETTLED.equals(deposit.evidence) && project.supplyRecoveries.containsKey(cargo)) {
-                    commit(project.withContribution(project.jobs, cargo, 0, null, 0));
+                    commit(project.withContribution(project.jobs, cargo, 0, null, 0, 0));
                     return null;
                 }
                 if (held <= 0) continue;
@@ -1110,7 +1132,7 @@ final class ProjectQueue {
                     if (missing < 1 || held < missing || originalHeld < 0 || originalHeld >= missing) continue;
                 }
                 var assignment = offerContribution(project, gather, deposit, source.item, worker,
-                        held, true, now, position, coveringActiveGather);
+                        held, true, now, position, coveringActiveGather, returnRevision);
                 if (assignment != null) return assignment;
             }
         }
@@ -1217,41 +1239,46 @@ final class ProjectQueue {
 
     private Assignment offerContribution(Project project, Job gather, Job deposit, String item, String worker,
                                          int carriedTotal, boolean interrupted, long now, ResourceSite position,
-                                         boolean coveringActiveGather) throws IOException {
+                                         boolean coveringActiveGather, int returnRevision) throws IOException {
         // Older journals used the settled marker even when the worker never reached the chest.
         boolean legacyRetry = deposit.attempts == 0 && CONTRIBUTION_SETTLED.equals(deposit.evidence);
         boolean retry = legacyRetry || (deposit.attempts == 1 && CONTRIBUTION_RETRY.equals(deposit.evidence));
         boolean additionalCargo = interrupted && deposit.chest != null && CONTRIBUTION_SETTLED.equals(deposit.evidence);
+        var target = transferTarget(deposit);
+        var payload = JSON.fromJson(gather.work.payload, com.google.gson.JsonObject.class);
+        if (target == null || !item.equals(target.item) || payload == null || !payload.has("count")) return null;
+        String cargo = contributionCargo(deposit, worker);
+        int earlierCount = project.supplyRecoveries.getOrDefault(cargo, 0);
+        var origin = project.contributionOrigins.get(cargo);
+        var station = position == null ? null : JSON.fromJson(deposit.work.payload, StationTarget.class).target;
+        // A newer uphill return method gets one chance with retained cargo, even at the same origin.
+        boolean upgradedReturn = interrupted && CONTRIBUTION_SETTLED.equals(deposit.evidence)
+                && earlierCount > 0 && origin != null && station != null && station.y() - position.y >= 5
+                && returnRevision > project.supplyRecoveries.getOrDefault(cargo + ":route", 0);
         if (project.repeat != null || project.supplyChest == null
-                || !additionalCargo && (deposit.chest != null
+                || !additionalCargo && !upgradedReturn && (deposit.chest != null
                     || !retry && (deposit.attempts != 0 || CONTRIBUTION_SETTLED.equals(deposit.evidence)))
                 || now < deposit.expiresAt || !deposit.work.locks.contains(project.supplyChest)
                 || project.jobs.stream().anyMatch(job -> job != deposit && job.work.needs.contains(gather.work.id))) return null;
-        var target = transferTarget(deposit);
-        var payload = JSON.fromJson(gather.work.payload, com.google.gson.JsonObject.class);
-        if (target == null || !item.equals(target.item) || !payload.has("count")) return null;
-        String cargo = contributionCargo(deposit, worker);
         int stock = deposit.chest == null ? 0 : stockCount(deposit.chest.report, item);
         if (additionalCargo) {
             if (stock >= target.stock) return null;
-            int earlierCount = project.supplyRecoveries.getOrDefault(cargo, 0);
-            var origin = project.contributionOrigins.get(cargo);
             // Older journals recorded the count but lacked a location. Let a live position anchor one new attempt.
             boolean missingOldOrigin = origin == null && position != null;
             // A smaller stack can cover the remainder after the chest advanced since this carrier's attempt.
             Integer earlierStock = project.supplyRecoveries.get(cargo + ":stock");
             boolean newCargoAfterDeposit = coveringActiveGather && carriedTotal < earlierCount
                     && earlierStock != null && stock > earlierStock;
-            if (carriedTotal <= earlierCount && !missingOldOrigin && !newCargoAfterDeposit
+            if (carriedTotal <= earlierCount && !missingOldOrigin && !newCargoAfterDeposit && !upgradedReturn
                     && !differentContributionApproach(deposit, origin, position)) return null;
         }
         int goal = payload.get("count").getAsInt();
         if (!interrupted && carriedTotal < goal || ownChestContributionBlocked(project, gather, deposit)) return null;
-        var assigned = new Job(deposit.work, State.LEASED, retry || additionalCargo ? 1 : 0, worker,
+        var assigned = new Job(deposit.work, State.LEASED, retry || additionalCargo || upgradedReturn ? 1 : 0, worker,
                 UUID.randomUUID(), now + LEASE_MS, CONTRIBUTION_ACTIVE, deposit.chest);
         if (interrupted) {
             var jobs = project.jobs.stream().map(job -> job == deposit ? assigned : job).toList();
-            commit(project.withContribution(jobs, cargo, carriedTotal, position, stock));
+            commit(project.withContribution(jobs, cargo, carriedTotal, position, stock, returnRevision));
         } else replace(project, assigned);
         return new Assignment(project.id, project.world, assigned);
     }

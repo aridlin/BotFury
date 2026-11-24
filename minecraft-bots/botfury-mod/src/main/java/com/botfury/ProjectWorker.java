@@ -1198,6 +1198,7 @@ final class ProjectWorker {
             args.put("worker", here.name());
             if (enrollment.project() != null) args.put("project", enrollment.project());
             args.put("kinds", KINDS);
+            args.put("returnRouteRevision", SubsurfaceAccess.RETURN_ROUTE_REVISION);
             var tools = new HashMap<String, Integer>();
             var inventory = client.player.getInventory();
             for (int slot = 0; slot < 36; slot++) {

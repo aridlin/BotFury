@@ -465,8 +465,9 @@ final class MiningTask {
     }
 
     private static void explore(MinecraftClient client) {
-        if (returnToResourceSite(client)) return;
+        // A nearby cave exit is more useful than a distant surface waypoint while buried.
         if (surfaceResource && seekSurface(client)) return;
+        if (returnToResourceSite(client)) return;
         Integer depth = prospectingAltitude(client);
         if (depth != null) {
             var feet = client.player.getBlockPos();

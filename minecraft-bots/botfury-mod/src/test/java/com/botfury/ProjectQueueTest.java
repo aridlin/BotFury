@@ -1135,7 +1135,7 @@ class ProjectQueueTest {
                 .getAsJsonObject().get("count").getAsInt());
     }
 
-    @Test void freshDeepMinersReuseAnUnoccupiedSiteInterruptedByToolRecovery() throws Exception {
+    @Test void deepMinersPreferUnoccupiedInterruptedSitesOverShallowCheckpoints() throws Exception {
         var journal = directory.resolve("interrupted-deep-site.json");
         var ore = """
                 {"resource":"diamond","variant":"both","item":"minecraft:diamond","count":4}
@@ -1152,9 +1152,11 @@ class ProjectQueueTest {
             jobs.add(new ProjectQueue.Job(work, ProjectQueue.State.WAITING, 0, null, null, 0,
                     ProjectQueue.GATHER_TOOLS_NEEDED + "; reacquiring materials", null, sites.get(i)));
         }
+        var shallow = new ProjectQueue.ResourceSite(3, 4, 0);
         for (String id : List.of("first", "second", "third")) {
             var work = new ProjectQueue.Work(id, GATHER, ore, List.of(), Set.of());
-            jobs.add(new ProjectQueue.Job(work, ProjectQueue.State.WAITING, 0, null, null, 0, null, null));
+            jobs.add(new ProjectQueue.Job(work, ProjectQueue.State.WAITING, 0, null, null, 0, null, null,
+                    "second".equals(id) ? null : shallow));
         }
         var project = new ProjectQueue.Project("stock", WORLD, jobs, null, null, java.util.Map.of());
         Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
@@ -1164,7 +1166,7 @@ class ProjectQueueTest {
         for (int i = 0; i < 3; i++) {
             var assignment = queue.claim(WORLD, "miner-" + i, Set.of(GATHER), "stock", i + 1, position);
             assertEquals(List.of("first", "second", "third").get(i), assignment.job().work().id());
-            assertEquals(i == 2 ? null : sites.get(1 - i), assignment.job().resourceSite());
+            assertEquals(i == 2 ? shallow : sites.get(1 - i), assignment.job().resourceSite());
         }
     }
 

@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicLong;
 final class BotTracker {
     record Bot(int port, String name, boolean reachable, boolean connected, boolean alive,
                double x, double y, double z, float health, float maxHealth, String server, String dimension,
-               String mode, String state, String inventory, String mining, String build, boolean baritone,boolean defenseCapable,
+               String mode, String state, String inventory, String mining, String build, boolean baritone,boolean defenseCapable, boolean scaffoldCleanupCapable,
                Map<String,Integer> items, List<BlockPos> route, boolean inventoryCoordinates, long contactAt, long positionAt, String error, String task) {
         boolean fresh() { return reachable && System.currentTimeMillis() - contactAt < 3000; }
         boolean sameWorld() {
@@ -120,7 +120,7 @@ final class BotTracker {
             Bot value=new Bot(port,name,true,connected,bool(s,"alive",true),x,y,z,(float)number(s,"health",0),(float)number(s,"maxHealth",20),
                 position?text(p,"server",""):old==null?"":old.server,position?text(p,"dimension",""):old==null?"":old.dimension,
                 text(s,"formation","idle"),text(s,"movementState",""),text(s,"inventoryTask",""),text(s,"miningTask",""),text(s,"build","0.2"),
-                p!=null&&bool(p,"baritone",false),bool(s,"taskDefenseCapable",false),s.has("items")?itemCounts(s):connected?null:old==null?null:old.items,
+                p!=null&&bool(p,"baritone",false),bool(s,"taskDefenseCapable",false),bool(s,"scaffoldCleanupCapable",false),s.has("items")?itemCounts(s):connected?null:old==null?null:old.items,
                 position ? route(s) : List.of(),bool(s,"inventoryCoordinates",false),now,position?now:old==null?0:old.positionAt,text(s,"lastEventLevel","info").equals("info")?"":text(s,"lastEvent",""), text(s,"taskKind",""));
             bots.put(port,value);return null;
         }).whenComplete((ignored,error)->{if(error!=null)offline(port);inflight.remove(port);});
@@ -157,7 +157,7 @@ final class BotTracker {
                 });
     }
 
-    private static void offline(int port){bots.computeIfPresent(port,(p,b)->new Bot(b.port,b.name,false,b.connected,b.alive,b.x,b.y,b.z,b.health,b.maxHealth,b.server,b.dimension,b.mode,b.state,b.inventory,b.mining,b.build,b.baritone,b.defenseCapable,b.items,List.of(),b.inventoryCoordinates,b.contactAt,b.positionAt,"Unreachable",b.task));}
+    private static void offline(int port){bots.computeIfPresent(port,(p,b)->new Bot(b.port,b.name,false,b.connected,b.alive,b.x,b.y,b.z,b.health,b.maxHealth,b.server,b.dimension,b.mode,b.state,b.inventory,b.mining,b.build,b.baritone,b.defenseCapable,b.scaffoldCleanupCapable,b.items,List.of(),b.inventoryCoordinates,b.contactAt,b.positionAt,"Unreachable",b.task));}
     static void command(int port,String command){command(port,command,true);}
     private static void command(int port,String command,boolean report){
         Bot bot=bots.get(port);if(bot==null||!bot.fresh()){if(report)BotEvents.add("warn","bots","Bot is offline");return;}

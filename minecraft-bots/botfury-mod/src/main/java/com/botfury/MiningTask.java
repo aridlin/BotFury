@@ -2,14 +2,18 @@ package com.botfury;
 
 import com.google.gson.Gson;
 import net.minecraft.block.BlockState;
+import net.minecraft.block.FlowerBlock;
+import net.minecraft.block.TallFlowerBlock;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.ItemEntity;
 import net.minecraft.registry.Registries;
+import net.minecraft.registry.tag.BlockTags;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.Hand;
 import net.minecraft.util.math.*;
 import net.minecraft.world.RaycastContext;
+import net.minecraft.world.Heightmap;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.screen.slot.SlotActionType;
@@ -25,6 +29,7 @@ final class MiningTask {
     private static final int MAX_ALTERNATE_STANDS = 3;
     private static final int MAX_PROTECTED_APPROACH_STEPS = 16;
     private static final int MAX_EXPLORATION_EXITS = 3;
+    private static final int SURFACE_ROUTE_DEPTH = 12;
     private static final Gson JSON=new Gson();
     private static final ExecutorService IO=Executors.newFixedThreadPool(2,r->{var t=new Thread(r,"BotFury-mining");t.setDaemon(true);return t;});
     private static final HttpClient HTTP=HttpClient.newBuilder().executor(IO).connectTimeout(Duration.ofMillis(300)).build();
@@ -64,6 +69,8 @@ final class MiningTask {
     private static BlockPos rememberedSite;
     private static BlockPos deepExplorationGoal;
     private static BlockPos surfaceSearchAnchor, lastExplorationExit;
+    private static BlockPos surfaceRouteGoal;
+    private static boolean surfaceResource;
     private static int surfaceSearchFailures, explorationExits;
     private static BaritoneSettings caveSettings;
     private static int lastCaveProbeY, nextCaveProbe;
@@ -134,6 +141,10 @@ final class MiningTask {
         for(String id:ids){var state=Registries.BLOCK.get(new Identifier(id)).getDefaultState();if(state.isAir()||state.getHardness(client.world,client.player.getBlockPos())<0){fail("Choose a breakable mining block");return;}}
         try{settings=new BaritoneSettings(exclude == null, project);}catch(ReflectiveOperationException|LinkageError e){fail("Could not configure mining approach");return;}
         projectMining=project;
+        surfaceResource = project && ids.stream().map(id -> Registries.BLOCK.get(new Identifier(id)))
+                .allMatch(block -> block.getDefaultState().isIn(BlockTags.LOGS)
+                        || block instanceof FlowerBlock || block instanceof TallFlowerBlock);
+        surfaceRouteGoal = null;
         toolShortfall = false;
         routeToolShortfall = false;
         subsurface.reset();
@@ -451,6 +462,7 @@ final class MiningTask {
 
     private static void explore(MinecraftClient client) {
         if (returnToResourceSite(client)) return;
+        if (surfaceResource && seekSurface(client)) return;
         Integer depth = prospectingAltitude(client);
         if (depth != null) {
             var feet = client.player.getBlockPos();
@@ -494,6 +506,35 @@ final class MiningTask {
                 path(deepExplorationGoal);
             } else path("explore " + x + " " + z);
         }
+    }
+
+    private static boolean seekSurface(MinecraftClient client) {
+        if (!client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)) return false;
+        var feet = client.player.getBlockPos();
+        if (surfaceRouteGoal == null && client.world.getTopY(Heightmap.Type.MOTION_BLOCKING,
+                feet.getX(), feet.getZ()) - feet.getY() >= SURFACE_ROUTE_DEPTH) {
+            for (var column : BlockPos.iterateOutwards(feet, 8, 0, 8)) {
+                if (!client.world.isChunkLoaded(column.getX() >> 4, column.getZ() >> 4)) continue;
+                int top = client.world.getTopY(Heightmap.Type.MOTION_BLOCKING, column.getX(), column.getZ());
+                var exit = column.withY(top);
+                if (top <= feet.getY() || !client.world.isInBuildLimit(exit.up())
+                        || !client.world.getWorldBorder().contains(exit)
+                        || !client.world.getFluidState(exit.down()).isEmpty()
+                        || BuildProtection.blocked(exit) || excluded != null && excluded.contains(exit)) continue;
+                if (surfaceRouteGoal == null || top < surfaceRouteGoal.getY()) surfaceRouteGoal = exit;
+            }
+        }
+        if (surfaceRouteGoal == null) return false;
+        if (feet.getY() >= surfaceRouteGoal.getY() - 2 || client.world.isSkyVisible(feet)) {
+            surfaceRouteGoal = null;
+            subsurface.stop();
+            return false;
+        }
+        if (pathActive) stopPath();
+        if (!subsurface.tryNaturalAscent(client, age, surfaceRouteGoal.getY(), 3)
+                && !subsurface.advanceToward(client, age, surfaceRouteGoal, excluded, true)) return false;
+        status = "Climbing toward the surface for " + job.resource;
+        return true;
     }
 
     private static boolean recoverExploration(MinecraftClient client) {

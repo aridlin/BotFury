@@ -245,12 +245,16 @@ final class SubsurfaceAccess {
     }
 
     boolean tryNaturalAscent(MinecraftClient client, int age, int destinationY) {
+        return tryNaturalAscent(client, age, destinationY, ASCENT_CHECKPOINT);
+    }
+
+    boolean tryNaturalAscent(MinecraftClient client, int age, int destinationY, int minimumGain) {
         var position = client.player.getBlockPos();
         int y = position.getY();
-        if (active() || age < retryAt || !hasFooting(client) || destinationY - y < ASCENT_CHECKPOINT
+        if (active() || age < retryAt || !hasFooting(client) || destinationY - y < minimumGain
                 || y < lastAscentProbe + ASCENT_CHECKPOINT - 2) return false;
         lastAscentProbe = y;
-        int height = y + ASCENT_CHECKPOINT;
+        int height = Math.min(destinationY, y + ASCENT_CHECKPOINT);
         try {
             settings = new BaritoneSettings(false, true);
         } catch (ReflectiveOperationException | LinkageError unavailable) {

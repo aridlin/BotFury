@@ -384,7 +384,8 @@ final class ProjectWorker {
         long now = System.nanoTime();
         if (enrollment.matches(here.name(), world(here)) && client.player.isAlive() && client.player.isOnGround()
                 && !client.player.isTouchingWater() && (returnWaypoints == null || waypoint >= returnWaypoints.size())) {
-            returnTrail.record(routePoint(client.player.getBlockPos()));
+            var feet = client.player.getBlockPos();
+            if (knownTrailFooting(client, feet)) returnTrail.record(routePoint(feet));
             if (now >= nextTrailSave) {
                 saveTrail();
                 nextTrailSave = now + seconds(15);

@@ -951,13 +951,16 @@ final class ProjectQueue {
         return new Job(work, State.WAITING, 0, worker, null, now + LEASE_MS, CONSTRUCTION_PICKUP, pickup.chest);
     }
 
+    static final String ROUTE_PREPARATION_FAILED = "Could not prepare route resupply: ";
     private static final String ROUTE_BENCH_RECEIVED = "Recipient picked up the emergency workbench";
 
     synchronized void recordRouteBenchReceipt(String projectId, String jobId, UUID token, long now) throws IOException {
         var project = projects.get(projectId);
         var receiver = find(project, jobId);
         if (!owns(receiver, token, now) || receiver.work.kind != Kind.TRANSFER || !depositTarget(receiver)) return;
-        var supply = find(project, "route-tool-" + token);
+        String id = "route-tool-" + token;
+        var supply = find(project, id + "-retry");
+        if (supply == null) supply = find(project, id);
         if (supply == null || supply.state != State.LEASED || supply.work.kind != Kind.RESUPPLY
                 || ROUTE_BENCH_RECEIVED.equals(supply.evidence)) return;
         var delivery = JSON.fromJson(supply.work.payload, RouteToolDelivery.class);
@@ -996,7 +999,15 @@ final class ProjectQueue {
                 int craftTarget = sendBench || spare != null ? 0 : routeCraftTarget;
                 String id = "route-tool-" + deposit.lease;
                 var destination = position.apply(deposit.worker);
-                if (destination == null || find(project, id) != null) continue;
+                if (destination == null) continue;
+                var first = find(project, id);
+                if (first != null) {
+                    if (first.state != State.FAILED || first.evidence == null
+                            || !first.evidence.startsWith(ROUTE_PREPARATION_FAILED)
+                            || worker.equalsIgnoreCase(first.worker)) continue;
+                    id += "-retry";
+                    if (find(project, id) != null) continue;
+                }
                 int previousCount = held.applyAsInt(deposit.worker, item);
                 if (previousCount < 0) continue;
                 var delivery = new RouteToolDelivery(deposit.worker, destination, item, previousCount, craftTarget);
@@ -1658,6 +1669,9 @@ final class ProjectQueue {
         Job result;
         if (success) {
             result = new Job(job.work, State.DONE, job.attempts, job.worker, job.lease, 0, evidence, observation, location);
+        } else if (job.work.kind == Kind.RESUPPLY && evidence.startsWith(ROUTE_PREPARATION_FAILED)
+                && !ROUTE_BENCH_RECEIVED.equals(job.evidence)) {
+            result = new Job(job.work, State.FAILED, job.attempts, job.worker, null, 0, evidence, null);
         } else if (CARGO_CHECKPOINT.equals(evidence) && cargoCheckpoint(project, job) > 0) {
             result = new Job(job.work, State.WAITING, Math.max(0, job.attempts - 1), job.worker, null,
                     now + STALLED_WORKER_COOLDOWN_MS, evidence, observation, location);

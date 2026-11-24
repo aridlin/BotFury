@@ -132,13 +132,27 @@ final class ProjectPlacement {
     }
 
     static BlockHitResult supportHit(MinecraftClient client, ProjectBlock block, Vec3d eye) {
-        var support = block.support();
         var desired = block.desired();
-        var state = client.world.getBlockState(support);
-        if (!support(state, desired, block.face(), client.world, support)) return null;
         double reach = client.interactionManager.getReachDistance() - .1;
-        return findSupportHit(client.world, support, block.face(), state, desired,
-                point -> traceSupport(client, block, eye, point, reach));
+        var hit = supportHit(client, block.support(), block.face(), desired, eye, reach);
+        if (hit != null || block.edgePlacement() || !supported(desired)
+                || desired.getBlock().getStateManager().getStates().size() != 1) return hit;
+        // A plain block can use any visible support that produces the same state.
+        for (var face : faces(desired)) {
+            if (face == block.face()) continue;
+            var alternate = block.target().offset(face.getOpposite());
+            hit = supportHit(client, alternate, face, desired, eye, reach);
+            if (hit != null) return hit;
+        }
+        return null;
+    }
+
+    private static BlockHitResult supportHit(MinecraftClient client, BlockPos support, Direction face,
+                                             BlockState desired, Vec3d eye, double reach) {
+        var state = client.world.getBlockState(support);
+        if (!support(state, desired, face, client.world, support)) return null;
+        return findSupportHit(client.world, support, face, state, desired,
+                point -> traceSupport(client, support, face, eye, point, reach));
     }
 
     static <T> T findSupportHit(BlockView world, BlockPos support, Direction face, BlockState state, BlockState desired,
@@ -163,13 +177,13 @@ final class ProjectPlacement {
         return null;
     }
 
-    private static BlockHitResult traceSupport(MinecraftClient client, ProjectBlock block, Vec3d eye,
-                                               Vec3d point, double reach) {
+    private static BlockHitResult traceSupport(MinecraftClient client, BlockPos support, Direction face,
+                                               Vec3d eye, Vec3d point, double reach) {
         if (eye.squaredDistanceTo(point) > reach * reach) return null;
         var hit = client.world.raycast(new RaycastContext(eye, point, RaycastContext.ShapeType.OUTLINE,
                 RaycastContext.FluidHandling.NONE, client.player));
-        return hit.getType() == HitResult.Type.BLOCK && block.support().equals(hit.getBlockPos())
-                && hit.getSide() == block.face() ? hit : null;
+        return hit.getType() == HitResult.Type.BLOCK && support.equals(hit.getBlockPos())
+                && hit.getSide() == face ? hit : null;
     }
 
     /** Null means a placement packet was accepted for processing, or an inventory swap is pending. */
@@ -186,10 +200,10 @@ final class ProjectPlacement {
         var observed = client.world.getBlockState(target);
         if (ProjectShapedBlock.canOpen(observed, desired)) return open(client, target, desired);
         if (!observed.isAir() && !(ProjectWater.source(desired) && ProjectWater.water(observed))) return "Build target is occupied";
-        var support = block.support();
-        var supportState = client.world.getBlockState(support);
         var hit = supportHit(client, block);
         if (hit == null) return "No reachable solid support face for " + target.toShortString();
+        var support = hit.getBlockPos();
+        var supportState = client.world.getBlockState(support);
 
         boolean container = container(desired);
         int slot = 0;

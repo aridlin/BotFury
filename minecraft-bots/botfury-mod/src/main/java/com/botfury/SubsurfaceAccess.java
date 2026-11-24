@@ -29,6 +29,14 @@ final class SubsurfaceAccess {
 
     static boolean canDigRoute(MinecraftClient client) { return diggingToolSlot(client, false) >= 0; }
 
+    static boolean hasFooting(MinecraftClient client) {
+        var player = client.player;
+        if (player.isOnGround()) return true;
+        if (player.isTouchingWater() || player.isClimbing() || Math.abs(player.getVelocity().y) > .12) return false;
+        // A stationary client can briefly clear its ground flag while standing on a block edge.
+        return client.world.getBlockCollisions(player, player.getBoundingBox().offset(0, -.08, 0)).iterator().hasNext();
+    }
+
     boolean advance(MinecraftClient client, int age, int depth, ProjectGather.Area area) {
         return advance(client, age, depth, area, null);
     }
@@ -46,7 +54,7 @@ final class SubsurfaceAccess {
             stop();
         }
         if (age < retryAt) return true;
-        if (!client.player.isOnGround()) return false;
+        if (!hasFooting(client)) return false;
         if (area != null && (area.contains(position) || area.contains(position.down()))) return false;
 
         int initial = destinationHint == null ? Math.floorMod(client.player.getUuid().hashCode(), HEADINGS.length)

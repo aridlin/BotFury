@@ -171,8 +171,12 @@ final class MiningTask {
             if(System.currentTimeMillis()>=leaseUntil){stopPath();client.interactionManager.cancelBlockBreaking();status="Waiting for mining reservation";return;}
             double reach=Math.min(4.3,client.interactionManager.getReachDistance()-.1);
             var ray = miningHit(client, target, client.player.getEyePos(), reach);
-            if(client.player.squaredDistanceTo(stand)<=1.44&&ray!=null
-                    && !client.player.getBlockPos().down().equals(target)){
+            var feet = client.player.getBlockPos();
+            boolean atPlannedStand = client.player.squaredDistanceTo(stand) <= 1.44;
+            // The stand is a route, not a requirement when a project worker already has a safe hit.
+            boolean safeProjectFooting = projectMining && client.player.isOnGround()
+                    && (excluded == null || !excluded.contains(feet) && !excluded.contains(feet.up()));
+            if (ray != null && (atPlannedStand || safeProjectFooting) && !feet.down().equals(target)) {
                 approachProgress = age;
                 stopPath();
                 if (!equip(client, target)) {
@@ -181,7 +185,6 @@ final class MiningTask {
                     return;
                 }
                 if (projectMining) {
-                    var feet = client.player.getBlockPos();
                     if (excluded == null || !excluded.contains(feet)) {
                         observedSite = new ProjectQueue.ResourceSite(feet.getX(), feet.getY(), feet.getZ());
                     }

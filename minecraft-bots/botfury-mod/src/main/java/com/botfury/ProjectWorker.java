@@ -88,6 +88,7 @@ final class ProjectWorker {
     private static BlockPos openingJumpHeadroom;
     private static boolean attemptedJumpHeadroom;
     private static final StallRecovery approachRecovery = new StallRecovery();
+    private static final StallRecovery idleRecovery = new StallRecovery();
     private static final WorkerReturnTrail returnTrail = new WorkerReturnTrail();
     private static List<ProjectQueue.ResourceSite> returnWaypoints;
     private static long nextTrailSave;
@@ -229,6 +230,7 @@ final class ProjectWorker {
     }
 
     private static void reset(MinecraftClient client) {
+        idleRecovery.reset();
         halt(client);
         assignment = null;
         block = null;
@@ -359,8 +361,16 @@ final class ProjectWorker {
         }
         if (assignment == null) {
             if (TaskDefense.evade(client, false)) {
+                idleRecovery.reset();
                 status = "Sheltering from a nearby Phantom";
                 return;
+            }
+            if (!pending && idleRecovery.yieldWhileIdle(client)) {
+                status = "Yielding the work area";
+                return;
+            }
+            if (status.equals("Yielding the work area") || status.equals("Sheltering from a nearby Phantom")) {
+                status = "Waiting for project jobs";
             }
             if (!pending && now >= nextRequest) request(client, here, "claim", now);
             return;

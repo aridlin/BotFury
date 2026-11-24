@@ -40,6 +40,7 @@ final class TaskDefense {
         var client = MinecraftClient.getInstance();
         stopWalking(client);
         stopEating(client);
+        ThreatEvasion.clearWardenDetour();
         protectingWork = false;
         pathPaused=false;
         holdUntil=0;

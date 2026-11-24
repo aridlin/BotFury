@@ -14,6 +14,10 @@ final class ThreatEvasion {
     record Action(Vec3d walkingDirection, boolean wardensNearby) {}
     private record Blast(Vec3d center,double radius) {}
     private record Flight(Vec3d from,Vec3d to,int tick) {}
+    private record RetreatStep(BlockPos cell, RetreatStep previous, int distance) {}
+    private static final int WARDEN_DETOUR_STEPS = 10;
+    private static final Deque<BlockPos> wardenDetour = new ArrayDeque<>();
+    private static long nextWardenSearch;
     private record Threats(List<Blast> blasts,List<Flight> flights,List<Vec3d> wardens) {
         boolean wardensNearby() { return !wardens.isEmpty(); }
 
@@ -72,15 +76,85 @@ final class ThreatEvasion {
     }
     static Action dodge(MinecraftClient client){
         Threats threats=scan(client);
+        if (!threats.wardensNearby()) clearWardenDetour();
         Box body=client.player.getBoundingBox();
         var referenceMovement = threats.wardensNearby() ? Vec3d.ZERO : client.player.getVelocity();
         double current=threats.risk(body,referenceMovement);
         if(current<=0)return null;
         if(!threats.wardensNearby()&&LocalFormation.canEvade()&&teleport(client,threats,body,current))
             return new Action(null, false);
-        var direction=walkDirection(client,threats,body,current);
+        boolean canDetour = threats.wardensNearby() && threats.blasts.isEmpty() && threats.flights.isEmpty();
+        var direction = canDetour ? followWardenDetour(client, threats, body, current) : null;
+        if (direction == null) direction = walkDirection(client, threats, body, current);
+        if (direction == null && canDetour && client.player.isOnGround() && !client.player.isTouchingWater()
+                && client.currentScreen == null && System.nanoTime() >= nextWardenSearch) {
+            nextWardenSearch = System.nanoTime() + 1_000_000_000L;
+            searchWardenDetour(client, threats, body, current);
+            direction = followWardenDetour(client, threats, body, current);
+        }
         if (direction == null && !threats.wardensNearby()) return null;
         return new Action(direction, threats.wardensNearby());
+    }
+
+    static void clearWardenDetour() {
+        wardenDetour.clear();
+        nextWardenSearch = 0;
+    }
+
+    private static Vec3d followWardenDetour(MinecraftClient client, Threats threats, Box body, double current) {
+        if (!client.player.isOnGround() || client.player.isTouchingWater() || client.currentScreen != null) return null;
+        var center = body.getCenter();
+        var goal = wardenDetour.peekLast();
+        if (goal != null && threats.risk(body.offset(goal.getX() + .5 - center.x, 0, goal.getZ() + .5 - center.z),
+                Vec3d.ZERO) >= current) wardenDetour.clear();
+        while (!wardenDetour.isEmpty()) {
+            var cell = wardenDetour.getFirst();
+            var delta = new Vec3d(cell.getX() + .5 - center.x, 0, cell.getZ() + .5 - center.z);
+            if (cell.getY() != client.player.getBlockY() || delta.lengthSquared() > 3
+                    || !walkable(client, body, delta)) {
+                wardenDetour.clear();
+                return null;
+            }
+            if (delta.lengthSquared() > .04) return delta.normalize();
+            wardenDetour.removeFirst();
+        }
+        return null;
+    }
+
+    private static void searchWardenDetour(MinecraftClient client, Threats threats, Box body, double current) {
+        var origin = body.getCenter();
+        var queue = new ArrayDeque<RetreatStep>();
+        var seen = new HashSet<BlockPos>();
+        var initial = client.player.getBlockPos();
+        queue.add(new RetreatStep(initial, null, 0));
+        seen.add(initial);
+        RetreatStep best = null;
+        double bestRisk = current;
+        while (!queue.isEmpty()) {
+            var step = queue.removeFirst();
+            var cell = step.cell;
+            var from = step.distance == 0 ? origin : new Vec3d(cell.getX() + .5, origin.y, cell.getZ() + .5);
+            var at = body.offset(from.subtract(origin));
+            double risk = threats.risk(at, Vec3d.ZERO);
+            if (risk < bestRisk) {
+                bestRisk = risk;
+                best = step;
+                if (risk == 0) break;
+            }
+            if (step.distance >= WARDEN_DETOUR_STEPS) continue;
+            for (var side : Direction.Type.HORIZONTAL) {
+                var next = cell.offset(side);
+                if (seen.contains(next) || !client.world.isChunkLoaded(next.getX() >> 4, next.getZ() >> 4)) continue;
+                var delta = new Vec3d(next.getX() + .5 - from.x, 0, next.getZ() + .5 - from.z);
+                if (!walkable(client, at, delta)) continue;
+                seen.add(next);
+                queue.addLast(new RetreatStep(next, step, step.distance + 1));
+            }
+        }
+        // Keep the first turn even if it temporarily reduces distance to the Warden.
+        for (var step = best; step != null && step.previous != null; step = step.previous) {
+            wardenDetour.addFirst(step.cell);
+        }
     }
 
     private static boolean teleport(MinecraftClient client, Threats threats, Box body, double current) {

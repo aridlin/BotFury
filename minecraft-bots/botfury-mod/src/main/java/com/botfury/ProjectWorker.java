@@ -897,9 +897,19 @@ final class ProjectWorker {
         if (chest != null) {
             var result = chest.tick(client, now);
             if (result != null) {
-                pickupShortfall = result.pickupShortfall();
                 if (result.stock() != null) chestReport = new ProjectQueue.ChestReport(ProjectBlock.key(target), result.stock(), result.free());
-                finish(client, result.success(), result.detail());
+                if (work.kind() == ProjectQueue.Kind.RESUPPLY) {
+                    chest.close(client);
+                    chest = null;
+                    block = null;
+                    if (result.success()) {
+                        routeWorkbench = new RouteWorkbench();
+                        taskEnd = now + seconds(90);
+                    } else finish(client, false, ProjectQueue.ROUTE_PREPARATION_FAILED + result.detail());
+                } else {
+                    pickupShortfall = result.pickupShortfall();
+                    finish(client, result.success(), result.detail());
+                }
             }
             return;
         }
@@ -1431,10 +1441,12 @@ final class ProjectWorker {
                 if (needsRouteBench) args.put("needsRouteBench", true);
             }
             if (gatherSite != null && !gather.fromDrops()) args.put("resourceSite", gatherSite);
+            boolean resupply = assignment.job().work().kind() == ProjectQueue.Kind.RESUPPLY;
+            if (chestReport != null && resupply) args.put("routeStock", chestReport);
             if (success != null && action.equals("finish")) {
                 args.put("success", success);
                 args.put("evidence", evidence);
-                if (chestReport != null) args.put("chest", chestReport);
+                if (chestReport != null && !resupply) args.put("chest", chestReport);
                 if (pickupShortfall) args.put("pickupShortfall", true);
             }
         }
@@ -1478,7 +1490,12 @@ final class ProjectWorker {
                     if (work.kind() == ProjectQueue.Kind.RESUPPLY) {
                         var delivery = JSON.fromJson(work.payload(), ProjectQueue.RouteToolDelivery.class);
                         var item = Registries.ITEM.get(new Identifier(delivery.item()));
-                        if (item == net.minecraft.item.Items.CRAFTING_TABLE
+                        if (delivery.benchStock() != null) {
+                            craftingRouteDelivery = delivery;
+                            var spec = ProjectChest.parse(delivery.benchStock().payload());
+                            block = spec.location();
+                            chest = new ProjectChest(spec, delivery.benchStock().reserve());
+                        } else if (item == net.minecraft.item.Items.CRAFTING_TABLE
                                 && !client.player.getInventory().contains(item.getDefaultStack())) {
                             craftingRouteDelivery = delivery;
                             routeWorkbench = new RouteWorkbench();

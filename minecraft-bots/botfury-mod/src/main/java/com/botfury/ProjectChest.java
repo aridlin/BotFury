@@ -83,11 +83,17 @@ final class ProjectChest {
     private static final Gson JSON = new Gson();
     private static final long SETTLE = Duration.ofMillis(750).toNanos();
     private final Spec spec;
+    private final int reserve;
     private GenericContainerScreenHandler screen;
     private boolean opening;
     private long nextAction;
 
-    ProjectChest(Spec spec) { this.spec = spec; }
+    ProjectChest(Spec spec) { this(spec, 0); }
+
+    ProjectChest(Spec spec, int reserve) {
+        this.spec = spec;
+        this.reserve = reserve;
+    }
 
     boolean depositing() { return spec.direction == Direction.DEPOSIT; }
 
@@ -180,6 +186,9 @@ final class ProjectChest {
                     ? "Observed " + carried + " " + spec.item + " in worker inventory"
                     : "Observed " + held + " " + spec.item + " in chest";
             return new Result(true, observation, stock);
+        }
+        if (spec.direction == Direction.TAKE && reserve > 0 && held - remaining < reserve) {
+            return new Result(false, "Chest no longer has enough unreserved " + spec.item, stock);
         }
         int fromStart = deposit ? containerSize : 0;
         int fromEnd = deposit ? screen.slots.size() : containerSize;

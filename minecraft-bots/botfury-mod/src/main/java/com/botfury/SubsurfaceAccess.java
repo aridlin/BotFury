@@ -85,6 +85,16 @@ final class SubsurfaceAccess {
 
     static boolean canDigRoute(MinecraftClient client) { return diggingToolSlot(client, false) >= 0; }
 
+    static boolean hasBasicRoutePickaxe(MinecraftClient client) {
+        var inventory = client.player.getInventory();
+        for (int slot = 0; slot < 36; slot++) {
+            var stack = inventory.getStack(slot);
+            if (stack.getItem() instanceof PickaxeItem pickaxe && pickaxe.getMaterial().getMiningLevel() < 2
+                    && stack.getMaxDamage() - stack.getDamage() >= 12) return true;
+        }
+        return false;
+    }
+
     static boolean hasFooting(MinecraftClient client) {
         var player = client.player;
         if (player.isOnGround()) return true;

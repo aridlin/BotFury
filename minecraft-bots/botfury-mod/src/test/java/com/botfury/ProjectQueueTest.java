@@ -1028,6 +1028,46 @@ class ProjectQueueTest {
                 .getAsJsonObject().get("count").getAsInt());
     }
 
+    @Test void interruptedMinerBanksAgainstTheEarliestUnmetQuotaOfTheSameChest() throws Exception {
+        String chest = "block:3,64,0";
+        String item = "minecraft:diamond";
+        var journal = directory.resolve("ordered-mining-contributions.json");
+        var work = new ArrayList<ProjectQueue.Work>();
+        for (int lane = 0; lane < 3; lane++) {
+            String gather = "gather-" + lane;
+            work.add(new ProjectQueue.Work(gather, GATHER,
+                    "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":32}",
+                    List.of(), Set.of()));
+            var needs = lane == 0 ? List.of(gather) : List.of(gather, "bank-" + (lane - 1));
+            work.add(new ProjectQueue.Work("bank-" + lane, TRANSFER,
+                    "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":" + ((lane + 1) * 32) + "}",
+                    needs, Set.of(chest), gather));
+        }
+        var waiting = work.stream().map(stage -> new ProjectQueue.Job(stage, ProjectQueue.State.WAITING,
+                0, null, null, 0, stage.id().equals("gather-2")
+                ? ProjectQueue.GATHER_TOOLS_NEEDED + "; reacquiring materials" : null, null)).toList();
+        var project = new ProjectQueue.Project("stock", WORLD, waiting, null, chest, java.util.Map.of());
+        Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                "projects", java.util.Map.of("stock", project))));
+        var queue = new ProjectQueue(journal);
+        var position = new ProjectQueue.ResourceSite(3, -50, 0);
+        var carrier = queue.offerUrgentMiningDeposit(WORLD, "later-miner", null, 10, position,
+                (worker, material) -> item.equals(material) ? 8 : 0, 8).job();
+        assertEquals("bank-0", carrier.work().id());
+        assertNull(queue.offerUrgentMiningDeposit(WORLD, "another-miner", null, 11, position,
+                (worker, material) -> 8, 8));
+        queue = new ProjectQueue(journal);
+        assertTrue(queue.finish("stock", "bank-0", carrier.lease(), false, "Partial delivery",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(item, 8)), null, true, 12));
+        var jobs = queue.snapshot(13).get(0).jobs();
+        assertEquals(24, com.google.gson.JsonParser.parseString(jobs.get(0).work().payload())
+                .getAsJsonObject().get("count").getAsInt());
+        assertEquals(ProjectQueue.State.WAITING, jobs.get(1).state());
+        assertEquals(ProjectQueue.State.WAITING, jobs.get(5).state());
+        assertEquals(32, com.google.gson.JsonParser.parseString(jobs.get(4).work().payload())
+                .getAsJsonObject().get("count").getAsInt());
+    }
+
     @Test void deepMinerBanksACheckpointBeforeResumingItsOutstandingOrder() throws Exception {
         var journal = directory.resolve("mining-checkpoint.json");
         var queue = new ProjectQueue(journal);

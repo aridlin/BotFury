@@ -18,11 +18,12 @@ final class DroppedItemSearch {
     enum State { SEARCHING, APPROACHING, UNAVAILABLE }
 
     private static final int RADIUS = 32;
+    private static final int ROUTE_RETRY_TICKS = 30;
     private final Map<UUID, Integer> retry = new HashMap<>();
     private ItemEntity target;
     private BlockPos goal;
     private Vec3d progress;
-    private int age, started, lastProgress, nextScan;
+    private int age, started, lastProgress, nextScan, nextPath;
     private BaritoneSettings settings;
 
     State tick(MinecraftClient client, Item item) {
@@ -67,8 +68,15 @@ final class DroppedItemSearch {
         if (target == null) return State.SEARCHING;
         if (minedAt != null && !target.isOnGround() && age - started < 20) return State.APPROACHING;
         var next = target.getBlockPos();
-        if (next.equals(goal) || (goal != null && age % 5 != 0)) return State.APPROACHING;
+        if (next.equals(goal)) {
+            if (age < nextPath || next.equals(player.getBlockPos()) || BaritoneClient.pursuing(next)) {
+                return State.APPROACHING;
+            }
+        } else if (goal != null && age % 5 != 0) {
+            return State.APPROACHING;
+        }
         goal = next;
+        nextPath = age + ROUTE_RETRY_TICKS;
         if (BaritoneClient.goTo(goal)) return State.APPROACHING;
         stop();
         return State.UNAVAILABLE;

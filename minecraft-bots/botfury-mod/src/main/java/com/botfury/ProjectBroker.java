@@ -7,6 +7,8 @@ import net.minecraft.client.world.ClientWorld;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
@@ -109,6 +111,7 @@ final class ProjectBroker {
             if (board.reopenLostManifestStock(world, System.currentTimeMillis())) {
                 BotEvents.add("info", "projects", "Reopened completed supply batches missing from rebuilt storage");
             }
+            recoverObservedSurfaceGathering(client.world, board, world);
             reuseCarriedStationWood(board, world);
             checkOwnedPlacements(client, board, world);
             confirmLocalScaffoldClearance(client, board, world);
@@ -258,6 +261,42 @@ final class ProjectBroker {
             if (!client.world.getChunkManager().isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
                     || !block.desired().isAir() || !client.world.isAir(target)) continue;
             board.confirmScaffoldClearance(world, check, "Observed clear scaffold cell at " + target.toShortString());
+        }
+    }
+
+    private static void recoverObservedSurfaceGathering(ClientWorld view, ProjectQueue board, String world) throws IOException {
+        if (!view.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)) return;
+        long now = System.currentTimeMillis();
+        for (var request : board.exhaustedSurfaceGatherings(world, now)) {
+            ProjectGather gather;
+            try {
+                gather = ProjectGather.parse(request.work().payload());
+            } catch (IllegalArgumentException | JsonParseException invalid) {
+                continue;
+            }
+            if (gather.fromDrops()) continue;
+            var blocks = ResourceCatalog.blocks(gather.resource(), gather.variant()).stream()
+                    .map(id -> Registries.BLOCK.get(new Identifier(id))).collect(java.util.stream.Collectors.toSet());
+            if (blocks.isEmpty() || !blocks.stream().allMatch(MiningTask::isSurfaceResource)) continue;
+            for (var bot : BotTracker.all()) {
+                if (!bot.fresh() || !bot.connected() || !bot.alive() || !bot.sameWorld() || !bot.baritone()
+                        || bot.health() <= bot.maxHealth() / 2 || !"Waiting for project jobs".equals(bot.inventory())) continue;
+                var feet = BlockPos.ofFloored(bot.x(), bot.y(), bot.z());
+                if (!view.isChunkLoaded(feet.getX() >> 4, feet.getZ() >> 4) || !view.isSkyVisible(feet)
+                        || !view.getBlockState(feet.down()).isSideSolidFullSquare(view, feet.down(), Direction.UP)) continue;
+                for (var target : BlockPos.iterateOutwards(feet, 16, 6, 16)) {
+                    if (!view.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
+                            || !blocks.contains(view.getBlockState(target).getBlock())
+                            || gather.exclude() != null && gather.exclude().contains(target)
+                            || BuildProtection.blocked(world, target, null)) continue;
+                    if (board.recoverObservedGather(world, request, bot.name(),
+                            new ProjectQueue.ResourceSite(feet.getX(), feet.getY(), feet.getZ()), now)) {
+                        BotEvents.add("info", "projects", bot.name() + " is retrying " + gather.resource() + " near observed blocks");
+                        return;
+                    }
+                    break;
+                }
+            }
         }
     }
 

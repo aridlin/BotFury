@@ -1062,6 +1062,19 @@ class ProjectQueueTest {
         var exhausted = new ProjectQueue(journal);
         assertNull(exhausted.claim(WORLD, "third", Set.of(GATHER, TRANSFER), 125_000));
         assertEquals(ProjectQueue.State.FAILED, exhausted.snapshot(125_000).get(0).jobs().get(0).state());
+        var observation = exhausted.exhaustedSurfaceGatherings(WORLD, 125_000).get(0);
+        var feet = new ProjectQueue.ResourceSite(3, 70, 0);
+        assertFalse(exhausted.recoverObservedGather(WORLD, observation, "unenrolled", feet, 125_000));
+        assertTrue(exhausted.recoverObservedGather(WORLD, observation, "third", feet, 125_001));
+        assertFalse(exhausted.recoverObservedGather(WORLD, observation, "third", feet, 125_002));
+        var observedRetry = exhausted.claim(WORLD, "third", Set.of(GATHER), 125_003).job();
+        assertEquals(feet, observedRetry.resourceSite());
+        assertTrue(exhausted.finish("stock", gather.id(), observedRetry.lease(), false, ProjectQueue.GATHER_STALLED,
+                null, feet, 125_004));
+
+        var reloaded = new ProjectQueue(journal);
+        assertTrue(reloaded.exhaustedSurfaceGatherings(WORLD, 160_000).isEmpty());
+        assertNull(reloaded.claim(WORLD, "fourth", Set.of(GATHER), 160_000));
     }
 
     @Test void twoWorkersCanCompleteOneStockBatchFromTheirPartialInventories() throws Exception {

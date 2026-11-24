@@ -181,6 +181,7 @@ final class ProjectQueue {
     private static final String OWNED_STATION_MISSING = "Owned station is missing";
     record OwnedPlacement(String project, String job, String payload) {}
     record CarriedSmelt(String project, Work work) {}
+    record SurfaceGatherRecovery(String project, Work work) {}
     record CarriedCraft(String project, Work work, String worker, UUID gatheringLease) {}
     record FailedWorkstationCraft(String project, Work work, String previousWorker) {}
     record BlockedAccess(String project, Work job, String builder, boolean replacementScaffold) {
@@ -3719,6 +3720,48 @@ final class ProjectQueue {
             }
         }
         return false;
+    }
+
+    synchronized List<SurfaceGatherRecovery> exhaustedSurfaceGatherings(String world, long now) {
+        var candidates = new ArrayList<SurfaceGatherRecovery>();
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || project.supplyChest == null || project.repeat != null || cancelled(project)) continue;
+            for (var gather : project.jobs) {
+                if (canRecoverObservedGather(project, gather, now)) {
+                    candidates.add(new SurfaceGatherRecovery(project.id, gather.work));
+                }
+            }
+        }
+        return candidates;
+    }
+
+    private static boolean canRecoverObservedGather(Project project, Job gather, long now) {
+        if (gather == null || gather.work.kind != Kind.GATHER || gather.state != State.FAILED || gather.work.sameWorkerAs != null
+                || !GATHER_STALLED.equals(gather.evidence) || now < gather.expiresAt
+                || !project.supplyRecoveries.containsKey("stalled-stock-gather:" + gather.work.id)
+                || project.supplyRecoveries.containsKey(observedGatherKey(gather))) return false;
+        var deposit = contributionDeposit(project, gather);
+        return deposit != null && deposit.work.locks.contains(project.supplyChest)
+                && depositPrerequisitesReady(project, gather, deposit)
+                && gather.work.needs.stream().allMatch(id -> find(project, id).state == State.DONE);
+    }
+
+    private static String observedGatherKey(Job gather) { return "observed-stock-gather:" + gather.work.id; }
+
+    synchronized boolean recoverObservedGather(String world, SurfaceGatherRecovery request, String worker,
+                                               ResourceSite position, long now) throws IOException {
+        var project = projects.get(request.project);
+        var gather = find(project, request.work.id);
+        if (project == null || !world.equals(project.world) || project.supplyChest == null || project.repeat != null || cancelled(project)
+                || !canRecoverObservedGather(project, gather, now) || !gather.work.equals(request.work)
+                || !availableProjectWorker(project, worker, now)) return false;
+        var lease = new Job(gather.work, State.LEASED, MAX_ATTEMPTS, worker, UUID.randomUUID(), now + LEASE_MS,
+                null, gather.chest, position);
+        var recoveries = new HashMap<>(project.supplyRecoveries);
+        recoveries.put(observedGatherKey(gather), 1);
+        var jobs = project.jobs.stream().map(job -> job == gather ? lease : job).toList();
+        commit(project.withRecovery(jobs, recoveries));
+        return true;
     }
 
     private boolean recoverToolsAfterBanking(String world, String projectId) throws IOException {

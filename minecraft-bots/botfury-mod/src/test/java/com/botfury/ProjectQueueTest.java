@@ -1602,6 +1602,14 @@ class ProjectQueueTest {
         assertEquals("helper", jobs.get(1).worker());
         assertNotEquals(deposit.lease(), jobs.get(1).lease());
         assertEquals(observation, jobs.get(1).chest().report());
+
+        var failedHandoff = reopened.claim(WORLD, "helper", Set.of(TRANSFER), 7).job();
+        assertTrue(reopened.finish("stock", deliver.id(), failedHandoff.lease(), false, "Chest still short",
+                observation, null, true, List.of(carrier), 8));
+        var again = reopened.claim(WORLD, "old", Set.of(TRANSFER), 9).job();
+        assertTrue(reopened.finish("stock", deliver.id(), again.lease(), false, "Same shortfall",
+                observation, null, true, List.of(carrier), 10));
+        assertEquals(ProjectQueue.State.WAITING, reopened.snapshot(11).get(0).jobs().get(0).state());
     }
 
     @Test void missingCargoReopensOnlyTheAffectedGatheringChain() throws Exception {

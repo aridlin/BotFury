@@ -3544,14 +3544,17 @@ final class ProjectQueue {
         for (var carrier : carriers) {
             String worker = carrier.worker;
             int held = stockCount(carrier.items, target.item);
+            String key = contributionCargo(deposit, worker);
             if (held < target.stock - stock || worker.equalsIgnoreCase(deposit.worker)
+                    || held <= project.supplyRecoveries.getOrDefault(key, 0)
+                        && Objects.equals(project.supplyRecoveries.get(key + ":stock"), stock)
                     || !availableProjectWorker(project, worker, now)
                     || pendingBuildMaterials(project.world, worker).contains(target.item)
                     || hasPendingDepositOf(project.world, worker, target.item)) continue;
             var replacement = new Job(deposit.work, State.LEASED, 1, worker, UUID.randomUUID(),
                     now + LEASE_MS, CONTRIBUTION_ACTIVE, observation);
             var jobs = project.jobs.stream().map(job -> job == deposit ? replacement : job).toList();
-            commit(project.withContribution(jobs, contributionCargo(deposit, worker), held, carrier.position, stock, 0));
+            commit(project.withContribution(jobs, key, held, carrier.position, stock, 0));
             return true;
         }
         return false;

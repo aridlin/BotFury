@@ -269,6 +269,20 @@ class ProjectQueueTest {
         assertEquals(ProjectQueue.State.WAITING, jobs.get(2).state());
     }
 
+    @Test void retriesPlacementAfterItsLastWorkerLeaseExpires() throws Exception {
+        var journal = directory.resolve("placement-worker-lease.json");
+        var queue = new ProjectQueue(journal);
+        queue.submit("house", WORLD, List.of(job("place", BUILD, List.of())));
+        long now = 1;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            now = queue.claim(WORLD, "builder", Set.of(BUILD), now).job().expiresAt();
+        }
+        assertEquals(ProjectQueue.State.FAILED, queue.snapshot(now).get(0).jobs().get(0).state());
+        assertEquals(1, queue.retryPlacementApproaches(WORLD, "house"));
+        var restored = new ProjectQueue(journal);
+        assertEquals("place", restored.claim(WORLD, "builder", Set.of(BUILD), now).job().work().id());
+    }
+
     @Test void repairedFootingGatesStationAndReopensItsFailedConsumer() throws Exception {
         var journal = directory.resolve("station-footing.json");
         var queue = new ProjectQueue(journal);

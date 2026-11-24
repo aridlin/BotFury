@@ -1049,7 +1049,8 @@ final class ProjectQueue {
     }
 
     synchronized int retryPlacementApproaches(String world, String id) throws IOException {
-        return retryFailures(world, id, job -> job.work.kind == Kind.BUILD && placementApproachFailure(job));
+        return retryFailures(world, id, job -> job.work.kind == Kind.BUILD
+                && (LEASE_EXPIRED.equals(job.evidence) || placementApproachFailure(job)));
     }
 
     private static boolean placementApproachFailure(Job job) {

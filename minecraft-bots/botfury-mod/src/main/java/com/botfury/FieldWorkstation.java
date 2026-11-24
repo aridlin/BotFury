@@ -30,6 +30,7 @@ final class FieldWorkstation {
     private ProjectProduction plankPreparation;
     private long nextPlacement;
     private boolean openingRecess;
+    private int heldBeforePlacement;
 
     private FieldWorkstation(ProjectBlock station, long now, ProjectProduction.Spec plankRecipe,
                              FieldWorkstation workbench, BlockState recess) {
@@ -42,6 +43,11 @@ final class FieldWorkstation {
     }
 
     ProjectBlock station() { return station; }
+
+    boolean placedByWorker(MinecraftClient client) {
+        return heldBeforePlacement > stationItemCount(client, station.block())
+                && station.matches(client.world.getBlockState(station.target()));
+    }
 
     static FieldWorkstation find(MinecraftClient client, long now, ProjectQueue.Kind kind) {
         return find(client, now, kind == ProjectQueue.Kind.SMELT ? FURNACE : TABLE, null, PLANK_BUDGET, null);
@@ -134,6 +140,7 @@ final class FieldWorkstation {
         }
         if (now < nextPlacement) return State.WORKING;
         nextPlacement = now + 750_000_000L;
+        heldBeforePlacement = stationItemCount(client, station.block());
         return ProjectPlacement.attempt(client, station) == null ? State.WORKING : State.UNAVAILABLE;
     }
 
@@ -226,11 +233,17 @@ final class FieldWorkstation {
     }
 
     private static boolean hasStationItem(MinecraftClient client, Identifier station) {
+        return stationItemCount(client, station) > 0;
+    }
+
+    private static int stationItemCount(MinecraftClient client, Identifier station) {
+        int count = 0;
         var item = Registries.ITEM.get(station);
         for (int slot = 0; slot < 36; slot++) {
-            if (client.player.getInventory().getStack(slot).isOf(item)) return true;
+            var stack = client.player.getInventory().getStack(slot);
+            if (stack.isOf(item)) count += stack.getCount();
         }
-        return false;
+        return count;
     }
 
     private static int plankCount(MinecraftClient client) {

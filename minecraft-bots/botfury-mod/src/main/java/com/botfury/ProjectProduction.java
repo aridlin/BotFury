@@ -71,10 +71,15 @@ final class ProjectProduction {
     }
 
     static boolean canCraft(MinecraftClient client, Identifier id) {
+        return canCraft(client, id, ItemStack.EMPTY);
+    }
+
+    static boolean canCraft(MinecraftClient client, Identifier id, ItemStack additional) {
         var recipe = client.world.getRecipeManager().get(id).orElse(null);
         if (!(recipe instanceof CraftingRecipe)) return false;
         var matcher = new net.minecraft.recipe.RecipeMatcher();
         client.player.getInventory().populateRecipeFinder(matcher);
+        if (!additional.isEmpty()) matcher.addInput(additional);
         return matcher.match(recipe, null);
     }
 

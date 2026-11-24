@@ -1050,6 +1050,16 @@ final class ProjectQueue {
         return job.work.locks.contains(key) ? key : null;
     }
 
+    private static Set<String> unavailableOwnedStations(Project project) {
+        var unavailable = new HashSet<String>();
+        for (var job : project.jobs) {
+            if (job.state == State.DONE) continue;
+            var key = stationKey(job);
+            if (key != null) unavailable.add(key);
+        }
+        return unavailable;
+    }
+
     synchronized void submit(String id, String world, List<Work> work) throws IOException {
         submit(id, world, work, null, null);
     }
@@ -1293,12 +1303,7 @@ final class ProjectQueue {
                 if (job.state == State.DONE) done.add(job.work.id);
                 if (placementHandoffOpen(job, now)) cargoAwaitingHandoff.add(job.work.sameWorkerAs);
             }
-            var unavailableStations = new HashSet<String>();
-            for (var job : project.jobs) {
-                if (job.state == State.DONE) continue;
-                var key = stationKey(job);
-                if (key != null) unavailableStations.add(key);
-            }
+            var unavailableStations = unavailableOwnedStations(project);
             var blocked = blockedJobs(project);
             String deposit = project.repeat == null ? null : pendingDeposit(project, done);
             for (Job job : project.jobs) {
@@ -1333,8 +1338,8 @@ final class ProjectQueue {
                     if (job.expiresAt <= now || !worker.equalsIgnoreCase(job.worker)) continue;
                 } else if (pinned && !worker.equalsIgnoreCase(byId.get(job.work.sameWorkerAs).worker)) continue;
                 boolean usesStation = job.work.kind == Kind.TRANSFER || job.work.kind == Kind.CRAFT || job.work.kind == Kind.SMELT;
-                if (usesStation && !Collections.disjoint(unavailableStations, job.work.locks)
-                        || !Collections.disjoint(reserved, job.work.locks) || job.work.locks.stream().anyMatch(key ->
+                if (usesStation && !Collections.disjoint(unavailableStations, job.work.locks)) continue;
+                if (!Collections.disjoint(reserved, job.work.locks) || job.work.locks.stream().anyMatch(key ->
                         projectReservations.containsKey(key) && !project.id.equals(projectReservations.get(key)))) {
                     waitingWithCargo |= pinned;
                     continue;
@@ -2153,8 +2158,10 @@ final class ProjectQueue {
         var result = new ArrayList<CarriedSmelt>();
         for (var project : projects.values()) {
             if (!world.equals(project.world) || project.supplyChest == null || cancelled(project)) continue;
+            var unavailableStations = unavailableOwnedStations(project);
             for (var job : project.jobs) {
-                if (job.work.kind != Kind.SMELT || job.work.sameWorkerAs == null || job.evidence == null) continue;
+                if (job.work.kind != Kind.SMELT || job.work.sameWorkerAs == null || job.evidence == null
+                        || !Collections.disjoint(unavailableStations, job.work.locks)) continue;
                 boolean recoveredInputChain = job.state == State.WAITING && job.work.needs.size() == 1
                         && job.evidence.endsWith("; reacquiring materials")
                         && missingProductionInput(job, job.evidence.substring(0, job.evidence.indexOf(';')))
@@ -2330,10 +2337,11 @@ final class ProjectQueue {
         long lastSeen = Math.max(workerSeen.getOrDefault(workerKey(project.world, worker, project.id), 0L),
                 workerSeen.getOrDefault(workerKey(project.world, worker, null), 0L));
         return lastSeen > 0 && lastSeen >= lastSafetyWait(project.world, worker, project.id)
-                && now - lastSeen <= LEASE_MS && projects.values().stream().flatMap(p -> p.jobs.stream())
-                .noneMatch(job -> job != replacedGathering && workerCommittedToLease(job, worker) || job.state == State.WAITING
+                && now - lastSeen <= LEASE_MS && projects.values().stream().noneMatch(p -> p.jobs.stream()
+                .anyMatch(job -> job != replacedGathering && workerCommittedToLease(job, worker) || job.state == State.WAITING
                         && CARRIED_SMELT_ASSIGNED.equals(job.evidence) && job.expiresAt > now
-                        && worker.equalsIgnoreCase(job.worker));
+                        && worker.equalsIgnoreCase(job.worker)
+                        && Collections.disjoint(unavailableOwnedStations(p), job.work.locks)));
     }
 
     synchronized Assignment offerGatheringHandoff(String world, String worker, String projectId, long now,

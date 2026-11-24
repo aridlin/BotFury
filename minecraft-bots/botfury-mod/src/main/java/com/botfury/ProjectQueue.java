@@ -1048,6 +1048,8 @@ final class ProjectQueue {
         }
         for (Project project : projects.values()) {
             for (Job job : project.jobs) {
+                if (pendingRecipeHandoff(job, now) && worker.equalsIgnoreCase(job.worker)
+                        && world.equals(project.world)) return null;
                 if (job.state != State.LEASED) continue;
                 if (world.equals(project.world) && (projectId == null || projectId.equals(project.id))
                         && worker.equalsIgnoreCase(handoffWorker(job))) return null;
@@ -1695,8 +1697,7 @@ final class ProjectQueue {
             }
             for (var craft : project.jobs) {
                 if (craft.work.kind != Kind.CRAFT || craft.state != State.WAITING || craft.work.sameWorkerAs == null
-                        || !craft.work.needs.equals(List.of(craft.work.sameWorkerAs)) || intermediates.contains(craft.work.id)
-                        || project.supplyRecoveries.containsKey("carried-craft:" + craft.work.id)) continue;
+                        || !craft.work.needs.equals(List.of(craft.work.sameWorkerAs)) || intermediates.contains(craft.work.id)) continue;
                 var recipe = JSON.fromJson(craft.work.payload, ToolRecipe.class);
                 if (recipe == null || recipe.recipe == null) continue;
                 var path = privateActiveCraftPreparation(project, craft, now);
@@ -1714,13 +1715,20 @@ final class ProjectQueue {
              stage = stage.work.sameWorkerAs == null ? null : find(project, stage.work.sameWorkerAs)) {
             if (stage.work.kind != Kind.GATHER && stage.work.kind != Kind.CRAFT) return List.of();
             path.add(stage);
-            if (stage.state == State.WAITING) continue;
-            if (stage.state != State.LEASED || stage.expiresAt <= now || stage.work.kind != Kind.GATHER
-                    || handoffWorker(stage) != null || routeToolRequests.containsKey(stage.lease)) return List.of();
+            if (!pendingRecipeHandoff(stage, now)) {
+                if (stage.state == State.WAITING) continue;
+                if (stage.state != State.LEASED || stage.expiresAt <= now || stage.work.kind != Kind.GATHER
+                        || handoffWorker(stage) != null || routeToolRequests.containsKey(stage.lease)) return List.of();
+            }
             var ids = path.stream().map(job -> job.work.id).collect(java.util.stream.Collectors.toSet());
             return privatePreparationReady(project, craft, ids) ? path : List.of();
         }
         return List.of();
+    }
+
+    private static boolean pendingRecipeHandoff(Job job, long now) {
+        return job.state == State.WAITING && job.work.sameWorkerAs != null && job.work.kind == Kind.GATHER
+                && GATHER_REASSIGNED.equals(job.evidence) && job.expiresAt > now;
     }
 
     synchronized boolean offerCarriedCraftHandoff(String world, CarriedCraft request, String helper, Set<String> inputs,
@@ -1735,8 +1743,8 @@ final class ProjectQueue {
         var gather = path.get(path.size() - 1);
         var source = gatherSource(gather.work.payload);
         String key = "carried-handoff:" + craft.work.id;
-        if (source == null || gather.work.sameWorkerAs != null || heldCount.applyAsInt(request.worker, source.item) != 0
-                || project.supplyRecoveries.containsKey(key)
+        if (source == null || gather.state != State.LEASED || heldCount.applyAsInt(request.worker, source.item) != 0
+                || project.supplyRecoveries.containsKey(key) && !project.supplyRecoveries.containsKey("carried-craft:" + craft.work.id)
                 || !Collections.disjoint(inputs, pendingBuildMaterials(world, helper))) return false;
         for (var other : projects.values()) {
             if (!world.equals(other.world) || cancelled(other)) continue;
@@ -1751,6 +1759,7 @@ final class ProjectQueue {
         var handoff = new Job(gather.work, State.LEASED, gather.attempts, gather.worker, gather.lease, gather.expiresAt,
                 GATHER_HANDOFF + helper, gather.chest, gather.resourceSite);
         var counts = new HashMap<>(project.supplyRecoveries);
+        counts.remove("carried-craft:" + craft.work.id);
         counts.put(key, 1);
         commit(project.withRecovery(project.jobs.stream().map(job -> job == gather ? handoff : job).toList(), counts));
         return true;
@@ -1764,12 +1773,15 @@ final class ProjectQueue {
         if (!Collections.disjoint(inputs, pendingBuildMaterials(world, request.worker))
                 || inputs.stream().anyMatch(item -> hasPendingDepositOf(world, request.worker, item))) return false;
         var path = privateActiveCraftPreparation(project, craft, now);
+        var gather = path.get(path.size() - 1);
+        if (pendingRecipeHandoff(gather, now) && !availableProjectWorker(project, request.worker, now)) return false;
         var jobs = project.jobs.stream().map(job -> {
             if (!path.contains(job)) return job;
             return new Job(job.work, State.DONE, job.attempts, request.worker, null, 0,
                     "Preparation satisfied by observed crafting ingredients", job.chest, job.resourceSite);
         }).toList();
         var counts = new HashMap<>(project.supplyRecoveries);
+        counts.remove("carried-handoff:" + craft.work.id);
         counts.put("carried-craft:" + craft.work.id, 1);
         commit(project.withRecovery(jobs, counts));
         return true;

@@ -244,6 +244,27 @@ class ProjectQueueTest {
         assertEquals("ingredients", queue.claim(WORLD, "replacement", Set.of(GATHER), now).job().work().id());
     }
 
+    @Test void coordinatorInspectionRequiresCompletedMutationsAndRetiresAStaleWorkerLease() throws Exception {
+        var path = directory.resolve("local-inspection.json");
+        var queue = new ProjectQueue(path);
+        String cell = "block:8,116,2";
+        var build = new ProjectQueue.Work("place", BUILD, "{}", List.of(), Set.of(cell));
+        var read = new ProjectQueue.Work("scan", INSPECT, "{}", List.of("place"), Set.of(cell));
+        queue.submit("house", WORLD, List.of(build, read));
+        assertTrue(queue.localInspections(WORLD).isEmpty());
+        var placement = queue.claim(WORLD, "builder", Set.of(BUILD), 1).job();
+        assertTrue(queue.localInspections(WORLD).isEmpty());
+        assertTrue(queue.finish("house", "place", placement.lease(), true, "Placed", 2));
+        var old = queue.claim(WORLD, "walker", Set.of(INSPECT), 3).job();
+        var observed = queue.localInspections(WORLD).get(0);
+        assertFalse(queue.confirmLocalInspection("another-world", observed, "Verified"));
+        assertTrue(queue.confirmLocalInspection(WORLD, observed, "Verified loaded cells"));
+        assertNull(queue.renew("house", "scan", old.lease(), 4));
+        queue = new ProjectQueue(path);
+        assertTrue(queue.localInspections(WORLD).isEmpty());
+        assertEquals(ProjectQueue.State.DONE, queue.snapshot(5).get(0).jobs().get(1).state());
+    }
+
     @Test void equippedReplacementRescuesStalledPinnedGatheringAcrossRestarts() throws Exception {
         var journal = directory.resolve("stalled-equipped.json");
         var queue = prepareStalledSupply(journal, false);

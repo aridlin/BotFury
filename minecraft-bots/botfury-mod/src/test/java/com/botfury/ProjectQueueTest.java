@@ -371,7 +371,15 @@ class ProjectQueueTest {
     }
 
     @Test void stalledPlacementCanUseANearbyBuildersExistingMaterials() throws Exception {
-        var journal = directory.resolve("construction-handoff.json");
+        checkConstructionHandoff(false);
+    }
+
+    @Test void stalledPlacementCanUseReplacementMaterialsFromTheCommunityChest() throws Exception {
+        checkConstructionHandoff(true);
+    }
+
+    private void checkConstructionHandoff(boolean stockAvailable) throws Exception {
+        var journal = directory.resolve("construction-handoff-" + stockAvailable + ".json");
         var queue = new ProjectQueue(journal);
         var chest = "block:3,64,0";
         var pickup = new ProjectQueue.Work("pickup", TRANSFER,
@@ -384,7 +392,8 @@ class ProjectQueueTest {
         var done = queue.claim(WORLD, "original", Set.of(EXCAVATE), 1).job();
         assertTrue(queue.finish("house", "clear", done.lease(), true, "Done", 2));
         var cargo = queue.claim(WORLD, "original", Set.of(TRANSFER), 3).job();
-        var stock = new ProjectQueue.ChestReport(chest, java.util.Map.of());
+        var stock = new ProjectQueue.ChestReport(chest, stockAvailable
+                ? java.util.Map.of("minecraft:oak_log", 1) : java.util.Map.of());
         assertTrue(queue.finish("house", "pickup", cargo.lease(), true, "Taken", stock, 4));
         for (long now = 5; now <= 9; now += 2) {
             var lease = queue.claim(WORLD, "original", Set.of(BUILD), now).job();
@@ -392,12 +401,26 @@ class ProjectQueueTest {
         }
         java.util.function.Function<String, ProjectQueue.ResourceSite> locate = name -> name.equals("builder")
                 ? new ProjectQueue.ResourceSite(8, 64, 10) : new ProjectQueue.ResourceSite(8, 14, 8);
-        assertFalse(queue.offerConstructionHandoff(WORLD, "builder", null, locate, (worker, item) -> 0));
-        assertTrue(queue.offerConstructionHandoff(WORLD, "builder", null, locate, (worker, item) -> 1));
+        assertFalse(queue.offerConstructionHandoff(WORLD, "builder", null, Set.of(BUILD), 11, locate, (worker, item) -> 0));
+        assertEquals(stockAvailable, queue.offerConstructionHandoff(WORLD, "builder", null,
+                Set.of(BUILD, TRANSFER), 11, locate, (worker, item) -> 0));
+        if (!stockAvailable) {
+            assertTrue(queue.offerConstructionHandoff(WORLD, "builder", null, Set.of(BUILD), 11, locate, (worker, item) -> 1));
+        }
         var restored = new ProjectQueue(journal);
-        assertTrue(restored.finish("house", "pickup", cargo.lease(), true, "Taken", stock, 11));
-        assertNull(restored.claim(WORLD, "original", Set.of(BUILD), 11));
-        assertEquals("place-1", restored.claim(WORLD, "builder", Set.of(BUILD), 11).job().work().id());
+        if (stockAvailable) {
+            assertFalse(restored.finish("house", "pickup", cargo.lease(), true, "Taken", stock, 12));
+            assertNull(restored.claim(WORLD, "original", Set.of(TRANSFER), 12));
+            assertNull(restored.claim(WORLD, "builder", Set.of(BUILD), 12));
+            var replacement = restored.claim(WORLD, "builder", Set.of(TRANSFER), 12).job();
+            assertEquals("pickup", replacement.work().id());
+            assertTrue(restored.finish("house", "pickup", replacement.lease(), true, "Taken",
+                    new ProjectQueue.ChestReport(chest, java.util.Map.of()), 13));
+        } else {
+            assertTrue(restored.finish("house", "pickup", cargo.lease(), true, "Taken", stock, 13));
+        }
+        assertNull(restored.claim(WORLD, "original", Set.of(BUILD), 14));
+        assertEquals("place-1", restored.claim(WORLD, "builder", Set.of(BUILD), 14).job().work().id());
     }
 
     @Test void retriesOnlyPlacementsWithExhaustedApproaches() throws Exception {

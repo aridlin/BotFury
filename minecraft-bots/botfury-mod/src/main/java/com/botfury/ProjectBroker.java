@@ -290,7 +290,7 @@ final class ProjectBroker {
                     }
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.BUILD)
                             && board.offerConstructionHandoff(world, request.worker, request.project,
-                                    ProjectBroker::workerPosition, ProjectBroker::heldCount)) {
+                                    request.kinds, now, ProjectBroker::workerPosition, ProjectBroker::heldCount)) {
                         assignment = board.claim(world, request.worker, request.kinds, request.project, now);
                     }
                     reply(exchange, 200, assignment);

@@ -720,7 +720,7 @@ final class ProjectWorker {
                 && client.world.isAir(pos) && client.world.isAir(pos.up());
     }
 
-    private static BlockHitResult excavationHit(MinecraftClient client, BlockPos target) {
+    static BlockHitResult excavationHit(MinecraftClient client, BlockPos target) {
         return excavationHit(client, target, client.player.getEyePos());
     }
 

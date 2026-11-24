@@ -177,6 +177,7 @@ final class ProjectQueue {
     record FuelUse(String job, String recipe, String input, String expectedFuel, int count) {}
     private record SmeltFuel(String recipe, String input, String fuel, String plannedFuel, int count) {}
     record OwnedStation(String project, String job, String payload) {}
+    record BlockedDeposit(String project, Work work) {}
     private static final String OWNED_STATION_MISSING = "Owned station is missing";
     record OwnedPlacement(String project, String job, String payload) {}
     record CarriedSmelt(String project, Work work) {}
@@ -392,6 +393,54 @@ final class ProjectQueue {
             }
         }
         return result;
+    }
+
+    synchronized List<BlockedDeposit> blockedDepositStands(String world) {
+        var result = new ArrayList<BlockedDeposit>();
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || project.supplyChest == null || project.repeat != null || cancelled(project)) {
+                continue;
+            }
+            for (var job : project.jobs) {
+                if (blockedDepositStand(project, job)) result.add(new BlockedDeposit(project.id, job.work));
+            }
+        }
+        return result;
+    }
+
+    private static boolean blockedDepositStand(Project project, Job job) {
+        return job != null && job.work.kind == Kind.TRANSFER && job.work.sameWorkerAs != null
+                && job.state == State.WAITING && job.chest == null && job.attempts > 0
+                && CONTRIBUTION_SETTLED.equals(job.evidence) && job.work.locks.contains(project.supplyChest)
+                && depositTarget(job);
+    }
+
+    synchronized boolean installDepositStand(String world, BlockedDeposit request, ProjectBlock.Position replacement,
+                                             long now) throws IOException {
+        var project = projects.get(request.project);
+        var deposit = find(project, request.work.id);
+        if (project == null || !world.equals(project.world) || project.supplyChest == null || cancelled(project)
+                || !blockedDepositStand(project, deposit) || !deposit.work.equals(request.work)) return false;
+        var gather = find(project, deposit.work.sameWorkerAs);
+        if (gather == null || gather.work.kind != Kind.GATHER || ownChestContributionBlocked(project, gather, deposit)) return false;
+        var target = JSON.fromJson(deposit.work.payload, StationTarget.class);
+        var block = target.target.checked();
+        var original = target.stand.checked();
+        var stand = replacement.checked();
+        if (!project.supplyChest.equals(ProjectBlock.key(block))
+                || stand.equals(original) || !ProjectBlock.validStand(block, stand)) return false;
+        var payload = JSON.fromJson(deposit.work.payload, com.google.gson.JsonObject.class);
+        var locks = new HashSet<>(deposit.work.locks);
+        locks.removeAll(ProjectBlock.stationCells(block, original));
+        locks.addAll(ProjectBlock.stationCells(block, stand));
+        var partner = JSON.fromJson(payload.get("partner"), ProjectBlock.Position.class);
+        if (partner != null) locks.add(ProjectBlock.key(partner.checked()));
+        if (!Collections.disjoint(locks, leasedKeys(world, now))) return false;
+        payload.add("stand", JSON.toJsonTree(replacement));
+        var work = new Work(deposit.work.id, deposit.work.kind, payload.toString(), deposit.work.needs,
+                locks, deposit.work.sameWorkerAs, deposit.work.cleanup, deposit.work.constructionMaterial);
+        replace(project, new Job(work, State.WAITING, 1, null, null, 0, CONTRIBUTION_RETRY, null));
+        return true;
     }
 
     synchronized List<BlockedAccess> blockedAccess(String world) {

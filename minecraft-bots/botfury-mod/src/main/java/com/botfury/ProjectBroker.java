@@ -273,6 +273,7 @@ final class ProjectBroker {
 
     private static void repairBlockedAccess(net.minecraft.client.MinecraftClient client, ProjectQueue board, String world)
             throws IOException {
+        repairBlockedDepositStand(client, board, world);
         for (var request : board.blockedPlacementPoses(world)) {
             var placement = ProjectBlock.parse(request.job().payload());
             if (BuildProtection.blocked(world, placement.target(), request.project())) continue;
@@ -325,6 +326,26 @@ final class ProjectBroker {
             if (plan != null && board.installAccess(world, request, plan, System.currentTimeMillis())) {
                 BotEvents.add("info", "projects", "Planned temporary scaffold for " + request.job().id());
                 return;
+            }
+        }
+    }
+
+    private static void repairBlockedDepositStand(net.minecraft.client.MinecraftClient client, ProjectQueue board, String world)
+            throws IOException {
+        for (var request : board.blockedDepositStands(world)) {
+            var spec = ProjectChest.parse(request.work().payload());
+            var target = spec.location().target();
+            for (var bot : BotTracker.all()) {
+                if (!bot.fresh() || !bot.connected() || !bot.alive() || !bot.sameWorld()
+                        || spec.item().count(bot.items()) <= 0) continue;
+                var position = net.minecraft.util.math.BlockPos.ofFloored(bot.x(), bot.y(), bot.z());
+                if (!position.isWithinDistance(target, 16)) continue;
+                var stand = ProjectChest.replacementStand(client, spec, position);
+                if (stand == null) continue;
+                if (board.installDepositStand(world, request, StructureSupply.position(stand), System.currentTimeMillis())) {
+                    BotEvents.add("info", "projects", "Changed the deposit approach to " + stand.toShortString());
+                    return;
+                }
             }
         }
     }

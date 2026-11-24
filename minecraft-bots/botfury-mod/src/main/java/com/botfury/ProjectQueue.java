@@ -612,6 +612,66 @@ final class ProjectQueue {
         return false;
     }
 
+    synchronized boolean offerConstructionHandoff(String world, String worker, String projectId,
+                                                  java.util.function.Function<String, ResourceSite> locate,
+                                                  java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
+        var candidate = locate.apply(worker);
+        if (candidate == null || projects.values().stream().flatMap(project -> project.jobs.stream())
+                .anyMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker))) return false;
+        var reserved = pendingBuildMaterials(world, worker);
+        for (var project : projects.values()) {
+            if (project.supplyChest == null || !world.equals(project.world) || cancelled(project)
+                    || projectId != null && !project.id.equals(projectId)) continue;
+            for (var job : project.jobs) {
+                if (job.state != State.FAILED || job.work.kind != Kind.BUILD || !placementApproachFailure(job)
+                        || job.work.sameWorkerAs == null || !SCHEMATIC_PLACEMENT.matcher(job.work.id).matches()
+                        || job.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) continue;
+                var pickup = find(project, job.work.sameWorkerAs);
+                String material = pickup.work.constructionMaterial;
+                if (material == null || worker.equalsIgnoreCase(pickup.worker) || reserved.contains(material)
+                        || hasPendingDepositOf(world, worker, material)) continue;
+                var target = JSON.fromJson(job.work.payload, StationTarget.class).target;
+                if (target == null) continue;
+                double distance = distance(candidate, target);
+                if (distance > 24) continue;
+                var original = locate.apply(pickup.worker);
+                if (original != null && distance(original, target) < distance + 16) continue;
+                if (reassignConstructionCargo(project, pickup, worker, heldCount.applyAsInt(worker, material))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static double distance(ResourceSite site, ProjectBlock.Position target) {
+        return Math.hypot(Math.hypot((double) site.x - target.x(), (double) site.y - target.y()),
+                (double) site.z - target.z());
+    }
+
+    private boolean reassignConstructionCargo(Project project, Job pickup, String worker, int held) throws IOException {
+        var batch = project.jobs.stream().filter(job -> job.state != State.DONE
+                && pickup.work.id.equals(job.work.sameWorkerAs)).toList();
+        if (held < batch.size() || batch.stream().anyMatch(job -> job.work.kind != Kind.BUILD
+                || job.state == State.LEASED)) return false;
+        String key = "build-handoff:" + pickup.work.id;
+        int handoffs = project.supplyRecoveries.getOrDefault(key, 0);
+        if (handoffs >= MAX_SUPPLY_RECOVERIES) return false;
+        var recovery = new HashMap<>(project.supplyRecoveries);
+        recovery.put(key, handoffs + 1);
+        var jobs = project.jobs.stream().map(job -> {
+            if (job == pickup) return new Job(job.work, State.DONE, job.attempts, worker, job.lease, 0,
+                    job.evidence, job.chest);
+            if (batch.contains(job) && job.state == State.FAILED && placementApproachFailure(job)) {
+                return new Job(job.work, State.WAITING, 0, null, null, 0,
+                        "Reassigned to a nearby builder carrying materials", job.chest, job.resourceSite);
+            }
+            return job;
+        }).toList();
+        commit(new Project(project.id, project.world, jobs, project.repeat, project.supplyChest, recovery));
+        return true;
+    }
+
     synchronized Assignment offerGatheringHandoff(String world, String worker, String projectId, long now,
                                                   java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
         if (projects.values().stream().flatMap(project -> project.jobs.stream()).anyMatch(job ->

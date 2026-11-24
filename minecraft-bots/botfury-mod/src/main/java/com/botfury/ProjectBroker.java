@@ -284,6 +284,11 @@ final class ProjectBroker {
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.GATHER)) {
                         assignment = board.offerGatheringHandoff(world, request.worker, request.project, now, ProjectBroker::heldCount);
                     }
+                    if (assignment == null && request.kinds.contains(ProjectQueue.Kind.BUILD)
+                            && board.offerConstructionHandoff(world, request.worker, request.project,
+                                    ProjectBroker::workerPosition, ProjectBroker::heldCount)) {
+                        assignment = board.claim(world, request.worker, request.kinds, request.project, now);
+                    }
                     reply(exchange, 200, assignment);
                 }
                 case "renew" -> {
@@ -307,9 +312,20 @@ final class ProjectBroker {
     }
 
     private static int heldCount(String worker, String item) {
-        var bot = BotTracker.trackedPlayer(worker);
-        if (bot == null || !bot.fresh() || !bot.connected() || !bot.alive() || bot.items() == null) return -1;
+        var bot = liveWorker(worker);
+        if (bot == null || bot.items() == null) return -1;
         return ProjectItem.parse(item).count(bot.items());
+    }
+
+    private static ProjectQueue.ResourceSite workerPosition(String worker) {
+        var bot = liveWorker(worker);
+        return bot == null ? null : new ProjectQueue.ResourceSite(
+                (int)Math.floor(bot.x()), (int)Math.floor(bot.y()), (int)Math.floor(bot.z()));
+    }
+
+    private static BotTracker.Bot liveWorker(String worker) {
+        var bot = BotTracker.trackedPlayer(worker);
+        return bot != null && bot.fresh() && bot.connected() && bot.alive() ? bot : null;
     }
 
     private static String summarize(List<ProjectQueue.Project> projects) {

@@ -133,6 +133,8 @@ final class ProjectQueue {
     private static final int MAX_DEPENDENCIES = 250_000;
     private static final String LEASE_EXPIRED = "Worker lease expired";
     private static final String COORDINATOR_RESTARTED = "Coordinator restarted during work";
+    private static final String GATHER_HANDOFF = "Gathering handoff to ";
+    private static final String GATHER_REASSIGNED = "Gathering reassigned to a worker with cargo";
     static final String TARGET_TIMEOUT = "Timed out approaching or changing the target";
     static final String GATHER_STALLED = "Gathering stalled without item or route progress";
     static final String GATHER_TOOLS_NEEDED = "Gathering needs renewed tools";
@@ -608,6 +610,59 @@ final class ProjectQueue {
         return false;
     }
 
+    synchronized void offerGatheringHandoff(String world, String worker, String projectId, long now,
+                                           java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
+        if (projects.values().stream().flatMap(project -> project.jobs.stream()).anyMatch(job ->
+                job.state == State.LEASED && (worker.equalsIgnoreCase(job.worker)
+                        || worker.equalsIgnoreCase(handoffWorker(job))))) return;
+        for (Project project : projects.values()) {
+            if (!world.equals(project.world) || cancelled(project)
+                    || projectId != null && !projectId.equals(project.id)) continue;
+            for (Job job : project.jobs) {
+                if (job.state != State.LEASED || job.expiresAt <= now || job.work.kind != Kind.GATHER
+                        || job.work.sameWorkerAs != null || handoffWorker(job) != null) continue;
+                var source = gatherSource(job.work.payload);
+                if (source == null || pendingBuildMaterials(world, worker).contains(source.item)
+                        || hasPendingDepositOf(world, worker, source.item)) continue;
+                int candidate = heldCount.applyAsInt(worker, source.item);
+                if (candidate < 16) continue;
+                int current = heldCount.applyAsInt(job.worker, source.item);
+                if (current < 0 || candidate < current + 16 || candidate <= 2 * current) continue;
+                if (project.jobs.stream().noneMatch(deposit -> deposit.state == State.WAITING
+                        && deposit.work.kind == Kind.TRANSFER && job.work.id.equals(deposit.work.sameWorkerAs)
+                        && depositTarget(deposit))) continue;
+                // Keep the current lease valid through its signed deadline. The new worker must wait.
+                replace(project, new Job(job.work, State.LEASED, job.attempts, job.worker, job.lease, job.expiresAt,
+                        GATHER_HANDOFF + worker, job.chest, job.resourceSite));
+                return;
+            }
+        }
+    }
+
+    private static boolean depositTarget(Job job) {
+        var transfer = JSON.fromJson(job.work.payload, PickupTarget.class);
+        return transfer != null && "DEPOSIT".equals(transfer.direction);
+    }
+
+    private boolean hasPendingDepositOf(String world, String worker, String item) {
+        for (Project project : projects.values()) {
+            if (!world.equals(project.world) || cancelled(project)) continue;
+            for (Job job : project.jobs) {
+                if (job.state != State.WAITING || job.work.kind != Kind.TRANSFER || job.work.sameWorkerAs == null) continue;
+                var cargo = find(project, job.work.sameWorkerAs);
+                if (cargo == null || cargo.state != State.DONE || !worker.equalsIgnoreCase(cargo.worker)) continue;
+                var transfer = JSON.fromJson(job.work.payload, PickupTarget.class);
+                if (transfer != null && "DEPOSIT".equals(transfer.direction) && item.equals(transfer.item)) return true;
+            }
+        }
+        return false;
+    }
+
+    private static String handoffWorker(Job job) {
+        return job.evidence != null && job.evidence.startsWith(GATHER_HANDOFF)
+                ? job.evidence.substring(GATHER_HANDOFF.length()) : null;
+    }
+
     private Assignment assign(Project project, Job job, String worker, long now) throws IOException {
         var assigned = new Job(job.work, State.LEASED, job.attempts + 1, worker,
                 UUID.randomUUID(), now + LEASE_MS, null, job.chest, gatheringSite(project, job));
@@ -671,7 +726,7 @@ final class ProjectQueue {
     synchronized Job renew(String projectId, String jobId, UUID token, ResourceSite site, long now) throws IOException {
         Project project = projects.get(projectId);
         Job job = find(project, jobId);
-        if (!owns(job, token, now) || cancelled(project)) return null;
+        if (!owns(job, token, now) || cancelled(project) || handoffWorker(job) != null) return null;
         Job renewed = new Job(job.work, State.LEASED, job.attempts, job.worker,
                 job.lease, now + LEASE_MS, null, job.chest, gatheringSite(job, site));
         replace(project, renewed);
@@ -709,7 +764,7 @@ final class ProjectQueue {
                     && Objects.equals(job.chest == null ? null : job.chest.report, chest)
                     && (site == null || site.equals(job.resourceSite));
         }
-        if (!owns(job, token, now)) return false;
+        if (!owns(job, token, now) || !success && handoffWorker(job) != null) return false;
         if (chest != null && (job.work.kind != Kind.TRANSFER || !job.work.locks.contains(chest.location)
                 || project.repeat != null && !project.repeat.chest.equals(chest.location))) {
             throw new IllegalArgumentException("Chest report does not match the leased transfer");
@@ -1021,9 +1076,16 @@ final class ProjectQueue {
                 Job job = project.jobs.get(i);
                 if (job.state == State.LEASED && job.expiresAt <= now) {
                     if (jobs == null) jobs = new ArrayList<>(project.jobs);
+                    String handoff = handoffWorker(job);
                     Job waiting;
-                    if (restoredLeases.contains(job.lease)) {
-                        interrupted.add(job.lease);
+                    boolean restored = restoredLeases.contains(job.lease);
+                    if (restored) interrupted.add(job.lease);
+                    if (handoff != null) {
+                        jobs.set(i, new Job(job.work, State.WAITING, Math.max(0, job.attempts - 1), handoff, null,
+                                job.expiresAt + GATHER_RECONNECT_GRACE_MS, GATHER_REASSIGNED, job.chest, job.resourceSite));
+                        continue;
+                    }
+                    if (restored) {
                         waiting = new Job(job.work, State.WAITING, Math.max(0, job.attempts - 1), null, null, 0,
                                 COORDINATOR_RESTARTED, job.chest, job.resourceSite);
                     } else {
@@ -1059,11 +1121,7 @@ final class ProjectQueue {
     }
 
     synchronized int retryDeliveries(String world, String id) throws IOException {
-        return retryFailures(world, id, job -> {
-            if (job.work.kind != Kind.TRANSFER) return false;
-            var transfer = JSON.fromJson(job.work.payload, PickupTarget.class);
-            return transfer != null && "DEPOSIT".equals(transfer.direction);
-        });
+        return retryFailures(world, id, job -> job.work.kind == Kind.TRANSFER && depositTarget(job));
     }
 
     synchronized int retryInterruptedGathering(String world, String id) throws IOException {
@@ -1135,7 +1193,8 @@ final class ProjectQueue {
 
     private static boolean gatherReconnectPending(Job job, long now) {
         return job.work.kind == Kind.GATHER && job.worker != null && job.expiresAt > now
-                && (LEASE_EXPIRED.equals(job.evidence) || COORDINATOR_RESTARTED.equals(job.evidence));
+                && (LEASE_EXPIRED.equals(job.evidence) || COORDINATOR_RESTARTED.equals(job.evidence)
+                        || GATHER_REASSIGNED.equals(job.evidence));
     }
 
     private static boolean cancelled(Project project) {

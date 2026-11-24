@@ -157,6 +157,30 @@ class ProjectQueueTest {
         }
     }
 
+    @Test void gatheringHandoffWaitsForTheOldLeaseAndKeepsTheSavedSite() throws Exception {
+        var journal = directory.resolve("gather-cargo-handoff.json");
+        var queue = new ProjectQueue(journal);
+        String chest = "block:3,64,0";
+        queue.submitSupplied("timber", WORLD, List.of(new ProjectQueue.Work("logs", GATHER,
+                "{\"resource\":\"any_logs\",\"variant\":\"both\",\"item\":\"any_logs\"}", List.of(), Set.of(), null),
+                new ProjectQueue.Work("deposit", TRANSFER, "{\"direction\":\"DEPOSIT\",\"item\":\"any_logs\"}",
+                        List.of("logs"), Set.of(chest), "logs")), chest);
+        var lease = queue.claim(WORLD, "new-miner", Set.of(GATHER), 1).job();
+        var site = new ProjectQueue.ResourceSite(16, 100, 42);
+        lease = queue.renew("timber", "logs", lease.lease(), site, 2);
+        queue.offerGatheringHandoff(WORLD, "old-miner", null, 3, (name, item) -> name.equals("old-miner") ? 44 : 2);
+        var restored = new ProjectQueue(journal);
+        assertNull(restored.renew("timber", "logs", lease.lease(), site, 4));
+        assertNull(restored.claim(WORLD, "old-miner", Set.of(GATHER), lease.expiresAt() - 1));
+        assertNull(restored.claim(WORLD, "new-miner", Set.of(GATHER), lease.expiresAt()));
+        var assigned = restored.claim(WORLD, "old-miner", Set.of(GATHER), lease.expiresAt()).job();
+        assertEquals(site, assigned.resourceSite());
+        assertEquals(1, assigned.attempts());
+        assertTrue(restored.finish("timber", "logs", assigned.lease(), true, "Gathered", lease.expiresAt() + 1));
+        assertEquals("deposit", restored.claim(WORLD, "old-miner", Set.of(TRANSFER),
+                lease.expiresAt() + 2).job().work().id());
+    }
+
     @Test void stationaryGathererYieldsClaimToAnotherWorkerAfterRestart() throws Exception {
         var journal = directory.resolve("stalled-gather.json");
         var queue = new ProjectQueue(journal);

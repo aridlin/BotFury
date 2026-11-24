@@ -690,6 +690,29 @@ final class StructureProject {
 
     static ProjectQueue.Work repairPlacementPose(MinecraftClient client, ProjectQueue.Work work,
                                                 Set<String> temporaryFooting) {
+        return repairPlacementPose(client, work, temporaryFooting, null);
+    }
+
+    static ProjectQueue.Work groundedPlacementPose(MinecraftClient client, ProjectQueue.Work work,
+                                                  Set<String> temporaryFooting, ProjectQueue.ResourceSite worker) {
+        var start = new BlockPos(worker.x(), worker.y(), worker.z());
+        if (!start.isWithinDistance(ProjectBlock.parse(work.payload()).target(), 10)) return null;
+        var reachable = locallyReachableStands(client, start);
+        return reachable.isEmpty() ? null : repairPlacementPose(client, work, temporaryFooting, reachable);
+    }
+
+    static boolean betterPlacementFooting(MinecraftClient client, BlockPos target,
+                                          ProjectQueue.ResourceSite candidate, ProjectQueue.ResourceSite previous) {
+        if (previous == null) return false;
+        var stand = new BlockPos(candidate.x(), candidate.y(), candidate.z());
+        var oldStand = new BlockPos(previous.x(), previous.y(), previous.z());
+        return stand.isWithinDistance(target, 6) && stand.getSquaredDistance(target) < oldStand.getSquaredDistance(target)
+                && Math.abs(stand.getY() - target.getY()) < Math.abs(oldStand.getY() - target.getY())
+                && loaded(client, stand.up()) && safeStand(client, stand, Map.of());
+    }
+
+    private static ProjectQueue.Work repairPlacementPose(MinecraftClient client, ProjectQueue.Work work,
+                                                         Set<String> temporaryFooting, Set<BlockPos> reachable) {
         var original = ProjectBlock.parse(work.payload());
         var target = original.target();
         var desired = original.desired();
@@ -698,13 +721,14 @@ final class StructureProject {
         ProjectBlock best = null;
         double bestScore = Double.POSITIVE_INFINITY;
         for (var face : ProjectPlacement.faces(desired)) {
-            if (face == original.face()) continue;
+            if (reachable == null && face == original.face()) continue;
             var support = target.offset(face.getOpposite());
             if (!loaded(client, support) || temporaryFooting.contains(ProjectBlock.key(support))
                     || !ProjectPlacement.support(client.world.getBlockState(support), desired, face, client.world, support)) continue;
             for (var candidate : BlockPos.iterateOutwards(target, 4, 4, 4)) {
                 var stand = candidate.toImmutable();
-                if (target.getSquaredDistance(stand) > 16 || target.equals(stand) || target.equals(stand.up())
+                if (reachable != null && !reachable.contains(stand) || target.getSquaredDistance(stand) > 16
+                        || target.equals(stand) || target.equals(stand.up())
                         || target.equals(stand.down()) || stand.equals(support.up()) && face.getAxis().isHorizontal()
                         || !loaded(client, stand.up()) || temporaryFooting.contains(ProjectBlock.key(stand.down()))
                         || !safeStand(client, stand, Map.of())) continue;

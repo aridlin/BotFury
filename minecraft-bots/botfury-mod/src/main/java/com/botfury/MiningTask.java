@@ -53,6 +53,7 @@ final class MiningTask {
     private static ProjectItem projectDrop;
     private static final DroppedItemSearch minedDrops = new DroppedItemSearch();
     private static BlockPos rememberedSite;
+    private static BlockPos deepExplorationGoal;
     private static int rememberedUntil;
     private static ProjectQueue.ResourceSite observedSite;
 
@@ -306,7 +307,12 @@ final class MiningTask {
         boolean deep = projectMining && client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)
                 && client.world.getBottomY() <= depth && SubsurfaceAccess.deepResource(job.resource);
         if (deep) {
-            if (pathActive) stopPath();
+            if (pathActive) {
+                if (deepExplorationGoal != null && age < nextPath && BaritoneClient.pursuing(deepExplorationGoal)) {
+                    return;
+                }
+                stopPath();
+            }
             if (subsurface.advance(client, age, depth, excluded)) {
                 status = "Prospecting for " + job.resource + " toward Y " + depth;
                 return;
@@ -328,7 +334,8 @@ final class MiningTask {
             int z = (int)(origin.z + Math.sin(angle) * radius);
             if (deep) {
                 status = "Searching for " + job.resource + " around " + x + ", " + depth + ", " + z;
-                path(new BlockPos(x, depth, z));
+                deepExplorationGoal = new BlockPos(x, depth, z);
+                path(deepExplorationGoal);
             } else path("explore " + x + " " + z);
         }
     }
@@ -363,6 +370,7 @@ final class MiningTask {
     private static void stopPath() {
         routeRecovery.reset();
         subsurface.stop();
+        deepExplorationGoal = null;
         if (pathActive) {
             BaritoneClient.execute("stop");
             pathActive = false;

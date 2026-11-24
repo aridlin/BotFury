@@ -358,7 +358,10 @@ final class ProjectWorker {
             }
         }
         if (assignment == null) {
-            TaskDefense.evade(client, false);
+            if (TaskDefense.evade(client, false)) {
+                status = "Sheltering from a nearby Phantom";
+                return;
+            }
             if (!pending && now >= nextRequest) request(client, here, "claim", now);
             return;
         }

@@ -201,7 +201,7 @@ final class ThreatEvasion {
         return best;
     }
 
-    private static boolean walkableStep(MinecraftClient client, Box body, Vec3d direction, BlockPos next, int height) {
+    static boolean walkableStep(MinecraftClient client, Box body, Vec3d direction, BlockPos next, int height) {
         if (height == 0) return walkable(client, body, direction);
         var world = client.world;
         if (!world.getWorldBorder().contains(next) || !world.getFluidState(next).isEmpty()

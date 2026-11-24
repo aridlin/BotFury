@@ -1538,6 +1538,38 @@ class ProjectQueueTest {
         assertEquals("missing", restored.claim(WORLD, "replacement", Set.of(BUILD), 13).job().work().id());
     }
 
+    @Test void bankingAnEarlierBatchRefreshesAnOutdatedCompletedGatheringQuota() throws Exception {
+        var journal = directory.resolve("refresh-stock-gather.json");
+        String chest = "block:3,64,0";
+        var firstBank = new ProjectQueue.Work("first-bank", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"any_logs\",\"stock\":64}", List.of(), Set.of(chest));
+        var gather = new ProjectQueue.Work("gather", GATHER,
+                "{\"resource\":\"any_logs\",\"variant\":\"both\",\"item\":\"any_logs\",\"count\":20}", List.of(), Set.of());
+        var lastBank = new ProjectQueue.Work("last-bank", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"any_logs\",\"stock\":128}",
+                List.of(firstBank.id(), gather.id()), Set.of(chest), gather.id());
+        var queue = new ProjectQueue(journal);
+        queue.submitSupplied("stock", WORLD, List.of(firstBank, gather, lastBank), chest);
+        var collected = queue.claim(WORLD, "old", Set.of(GATHER), 1).job();
+        assertTrue(queue.finish("stock", gather.id(), collected.lease(), true, "Gathered", 2));
+        assertFalse(queue.refreshUnderfilledStockGather(WORLD, (worker, item) -> 20));
+        var first = queue.claim(WORLD, "carrier", Set.of(TRANSFER), 3).job();
+        var receipt = new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:oak_log", 50, "minecraft:birch_log", 14));
+        assertTrue(queue.finish("stock", firstBank.id(), first.lease(), true, "Banked", receipt, 4));
+
+        assertFalse(queue.refreshUnderfilledStockGather(WORLD, (worker, item) -> -1));
+        assertFalse(queue.refreshUnderfilledStockGather(WORLD, (worker, item) -> 64));
+        assertTrue(queue.refreshUnderfilledStockGather(WORLD, (worker, item) -> 20));
+        var restored = new ProjectQueue(journal);
+        assertFalse(restored.refreshUnderfilledStockGather(WORLD, (worker, item) -> 20));
+        var jobs = restored.snapshot(5).get(0).jobs();
+        assertEquals(first.lease(), jobs.get(0).lease());
+        assertEquals(receipt, jobs.get(2).chest().report());
+        var refill = restored.claim(WORLD, "new", Set.of(GATHER), 6).job();
+        assertEquals(gather.id(), refill.work().id());
+        assertEquals(64, com.google.gson.JsonParser.parseString(refill.work().payload()).getAsJsonObject().get("count").getAsInt());
+    }
+
     @Test void observedReplacementCargoCanFinishAnAlreadyGatheredStockBatch() throws Exception {
         var journal = directory.resolve("replacement-deposit.json");
         String project = "stock";

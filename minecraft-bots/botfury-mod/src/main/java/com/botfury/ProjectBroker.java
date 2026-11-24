@@ -111,6 +111,9 @@ final class ProjectBroker {
             if (board.reopenLostManifestStock(world, System.currentTimeMillis())) {
                 BotEvents.add("info", "projects", "Reopened completed supply batches missing from rebuilt storage");
             }
+            if (board.refreshUnderfilledStockGather(world, ProjectBroker::heldCount)) {
+                BotEvents.add("info", "projects", "Refreshed a gathering quota using observed chest stock");
+            }
             recoverObservedSurfaceGathering(client.world, board, world);
             reuseCarriedStationWood(board, world);
             checkOwnedPlacements(client, board, world);

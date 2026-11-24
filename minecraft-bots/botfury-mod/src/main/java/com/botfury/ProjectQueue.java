@@ -878,6 +878,10 @@ final class ProjectQueue {
             if (job.work.kind != Kind.TRANSFER || !job.work.locks.contains(project.supplyChest)) continue;
             var transfer = transferTarget(job);
             if (transfer == null) continue;
+            if ("VERIFY_STOCK".equals(transfer.direction)
+                    && (item.equals(transfer.item) || "any_logs".equals(transfer.item)
+                    && ResourceCatalog.blocks("any_logs", "both").contains(item))
+                    && stockCount(stock.report, transfer.item) - missing < transfer.stock) return null;
             if (job.state != State.DONE && ("TAKE".equals(transfer.direction) || "WITHDRAW".equals(transfer.direction))
                     && (item.equals(transfer.item) || transfer.item == null || !transfer.item.contains(":"))) return null;
             if (job.state == State.DONE && job.chest != null) station = job;

@@ -22,6 +22,7 @@ final class MiningTask {
     record Job(String resource,String variant,int broker) {}
     private static final int STANDS_PER_TICK = 8;
     private static final int MAX_ALTERNATE_STANDS = 3;
+    private static final int MAX_EXPLORATION_EXITS = 3;
     private static final Gson JSON=new Gson();
     private static final ExecutorService IO=Executors.newFixedThreadPool(2,r->{var t=new Thread(r,"BotFury-mining");t.setDaemon(true);return t;});
     private static final HttpClient HTTP=HttpClient.newBuilder().executor(IO).connectTimeout(Duration.ofMillis(300)).build();
@@ -57,6 +58,8 @@ final class MiningTask {
     private static final DroppedItemSearch minedDrops = new DroppedItemSearch();
     private static BlockPos rememberedSite;
     private static BlockPos deepExplorationGoal;
+    private static BlockPos surfaceSearchAnchor, lastExplorationExit;
+    private static int surfaceSearchFailures, explorationExits;
     private static BaritoneSettings caveSettings;
     private static int lastCaveProbeY, nextCaveProbe;
     private static int lastProspectingCheckpointY;
@@ -132,6 +135,8 @@ final class MiningTask {
         lastProspectingCheckpointY = client.player.getBlockY();
         rememberedSite = null;
         observedSite = null;
+        surfaceSearchAnchor = lastExplorationExit = null;
+        surfaceSearchFailures = explorationExits = 0;
         excluded=exclude;
         job=next;blocks=Set.copyOf(ids);generation++;owner=UUID.randomUUID()+"-"+client.player.getGameProfile().getName();
         var here=LocalFormation.here();world=here.server()+"|"+here.dimension();
@@ -276,6 +281,10 @@ final class MiningTask {
             status = "Opening a short prospecting passage";
             return;
         }
+        if (subsurface.continueExplorationExit(client, age)) {
+            status = "Opening a local exit to continue gathering " + job.resource;
+            return;
+        }
         if (pathActive && recoverRoute(client, rememberedSite)) return;
         if (requesting) return;
         if (pendingCandidates.isEmpty()) {
@@ -378,6 +387,7 @@ final class MiningTask {
         }
         status = "Exploring for " + job.resource;
         if(age>=nextPath){
+            if (depth == null && projectMining && recoverExploration(client)) return;
             nextPath = age + (projectMining ? 400 : 200);
             double angle = (client.player.getUuid().hashCode() & 1023) * Math.PI / 512
                     + exploration * (projectMining ? .32 : .8);
@@ -391,6 +401,25 @@ final class MiningTask {
                 path(deepExplorationGoal);
             } else path("explore " + x + " " + z);
         }
+    }
+
+    private static boolean recoverExploration(MinecraftClient client) {
+        var feet = client.player.getBlockPos();
+        if (surfaceSearchAnchor == null || !surfaceSearchAnchor.isWithinDistance(feet, 3)) {
+            surfaceSearchAnchor = feet;
+            surfaceSearchFailures = 0;
+            return false;
+        }
+        if (++surfaceSearchFailures < 2 || explorationExits >= MAX_EXPLORATION_EXITS
+                || lastExplorationExit != null && lastExplorationExit.isWithinDistance(feet, 4)) return false;
+        stopPath();
+        lastExplorationExit = feet;
+        if (!subsurface.escapeExploration(client, age, excluded)) return false;
+        explorationExits++;
+        surfaceSearchFailures = 0;
+        status = "Opening a local exit to continue gathering " + job.resource;
+        BotEvents.add("info", "mining", status + " at " + feet.toShortString());
+        return true;
     }
 
     private static Integer prospectingAltitude(MinecraftClient client) {

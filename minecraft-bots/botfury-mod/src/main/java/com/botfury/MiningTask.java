@@ -192,9 +192,8 @@ final class MiningTask {
             var feet = client.player.getBlockPos();
             boolean atPlannedStand = client.player.squaredDistanceTo(stand) <= 1.44;
             // The stand is a route, not a requirement when a project worker already has a safe hit.
-            boolean safeProjectFooting = projectMining && SubsurfaceAccess.hasFooting(client)
-                    && (excluded == null || !excluded.contains(feet) && !excluded.contains(feet.up()));
-            if (ray != null && (atPlannedStand || safeProjectFooting) && !feet.down().equals(target)) {
+            if (ray != null && (atPlannedStand || canMineFromCurrentFooting(client, feet))
+                    && !feet.down().equals(target)) {
                 approachProgress = age;
                 stopPath();
                 if (!equip(client, target)) {
@@ -234,7 +233,7 @@ final class MiningTask {
                 if (age - approachProgress >= 250) {
                     rejectedStands.put(p, age + 600);
                     boolean prospectAgain = prospectingAltitude(client) != null;
-                    if (prospectAgain) rejected.put(target, age + 1200);
+                    rejected.put(target, age + 1200);
                     stopPath();
                     clearReservation();
                     client.interactionManager.cancelBlockBreaking();
@@ -299,7 +298,7 @@ final class MiningTask {
                 scanNeedsTool = true;
                 continue;
             }
-            var place = supportsAnotherPlayer(client, candidate) ? null : standing(client, candidate);
+            var place = supportsAnotherPlayer(client, candidate) ? null : chooseStand(client, candidate);
             if (place != null) {
                 subsurface.stop();
                 pendingCandidates.clear();
@@ -331,6 +330,8 @@ final class MiningTask {
         boolean preserveTerrain = projectMining && excluded != null;
         var suitability = new HashMap<BlockState, Boolean>();
         var candidates = new ArrayList<BlockPos>();
+        var nearbyHits = new ArrayList<BlockPos>();
+        boolean safeFooting = canMineFromCurrentFooting(client, position);
         scanNeedsTool = false;
         for (var pos : BlockPos.iterateOutwards(position, 12, 10, 12)) {
             if (excluded != null && excluded.contains(pos) || rejected.containsKey(pos)
@@ -342,10 +343,33 @@ final class MiningTask {
                 scanNeedsTool = true;
                 continue;
             }
-            candidates.add(pos.toImmutable());
+            if (safeFooting && canReachFromHere(client, position, pos)) nearbyHits.add(pos.toImmutable());
+            else candidates.add(pos.toImmutable());
         }
-        candidates.sort(Comparator.comparingDouble(p -> p.getSquaredDistance(position)));
+        Comparator<BlockPos> byDistance = Comparator.comparingDouble(p -> p.getSquaredDistance(position));
+        nearbyHits.sort(byDistance);
+        candidates.sort(byDistance);
+        pendingCandidates.addAll(nearbyHits);
         pendingCandidates.addAll(candidates);
+    }
+
+    private static boolean canMineFromCurrentFooting(MinecraftClient client, BlockPos feet) {
+        return projectMining && (excluded == null || !excluded.contains(feet) && !excluded.contains(feet.up()))
+                && SubsurfaceAccess.hasFooting(client);
+    }
+
+    private static boolean canReachFromHere(MinecraftClient client, BlockPos feet, BlockPos target) {
+        var eye = client.player.getEyePos();
+        double reach = Math.min(4.3, client.interactionManager.getReachDistance() - .1);
+        return !feet.down().equals(target) && eye.squaredDistanceTo(Vec3d.ofCenter(target)) <= (reach + 1) * (reach + 1)
+                && miningHit(client, target, eye, reach) != null;
+    }
+
+    private static Vec3d chooseStand(MinecraftClient client, BlockPos target) {
+        var feet = client.player.getBlockPos();
+        if (!rejectedStands.containsKey(feet) && canMineFromCurrentFooting(client, feet)
+                && canReachFromHere(client, feet, target)) return Vec3d.ofBottomCenter(feet);
+        return standing(client, target);
     }
 
     private static boolean completelyCovered(net.minecraft.world.World world, BlockPos pos) {

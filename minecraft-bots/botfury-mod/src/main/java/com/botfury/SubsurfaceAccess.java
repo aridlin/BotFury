@@ -64,6 +64,23 @@ final class SubsurfaceAccess {
         return advance(client, age, destination.getY(), area, destination);
     }
 
+    boolean openLocalApproach(MinecraftClient client, int age, BlockPos destination, ProjectGather.Area area) {
+        var feet = client.player.getBlockPos();
+        if (!hasFooting(client) || !destination.isWithinDistance(feet, 9)
+                || !validDestination(client, destination, area)
+                || (area != null && (area.contains(feet) || area.contains(feet.down())))) return false;
+        return start(client, feet, List.of(destination), area, age, false);
+    }
+
+    boolean continueLocalApproach(MinecraftClient client, int age) {
+        if (!active()) return false;
+        var goal = goals.get(0);
+        if (!client.player.getBlockPos().equals(goal) && age - started < 160
+                && (age - started < 55 || BaritoneClient.pursuing(goal))) return true;
+        stop();
+        return false;
+    }
+
     private boolean advance(MinecraftClient client, int age, int height, ProjectGather.Area area, BlockPos destinationHint) {
         var position = client.player.getBlockPos();
         if (active()) {

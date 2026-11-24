@@ -68,6 +68,7 @@ final class MiningTask {
     private static final Map<BlockPos,Integer> rejectedStands = new HashMap<>();
     private static int approachProgress;
     private static double approachDistance;
+    private static boolean localApproachTried;
     private static volatile String status="";
     static boolean active(){return job!=null;}
     static boolean working(){return job!=null&&!paused&&!dead;}
@@ -181,7 +182,7 @@ final class MiningTask {
             var feet = client.player.getBlockPos();
             boolean atPlannedStand = client.player.squaredDistanceTo(stand) <= 1.44;
             // The stand is a route, not a requirement when a project worker already has a safe hit.
-            boolean safeProjectFooting = projectMining && client.player.isOnGround()
+            boolean safeProjectFooting = projectMining && SubsurfaceAccess.hasFooting(client)
                     && (excluded == null || !excluded.contains(feet) && !excluded.contains(feet.up()));
             if (ray != null && (atPlannedStand || safeProjectFooting) && !feet.down().equals(target)) {
                 approachProgress = age;
@@ -207,8 +208,19 @@ final class MiningTask {
                     approachDistance = distance;
                     approachProgress = age;
                 }
+                if (subsurface.continueLocalApproach(client, age)) return;
+                if (!localApproachTried && age - approachProgress >= 80 && prospectingAltitude(client) != null
+                        && feet.isWithinDistance(p, 9) && !BaritoneClient.pursuing(p)) {
+                    stopPath();
+                    localApproachTried = true;
+                    if (subsurface.openLocalApproach(client, age, p, excluded)) {
+                        status = "Opening a protected approach to reserved " + job.resource;
+                        return;
+                    }
+                }
                 if (age - approachProgress >= 250) {
                     rejectedStands.put(p, age + 600);
+                    if (localApproachTried) rejected.put(target, age + 600);
                     stopPath();
                     clearReservation();
                     client.interactionManager.cancelBlockBreaking();
@@ -572,6 +584,7 @@ final class MiningTask {
                 if(!reply.granted()){status=reply.reason();rejected.put(ore,age+160);if(target!=null)stopPath();clearReservation();client.interactionManager.cancelBlockBreaking();nextSearch=age+1;return;}
                 if (!action.equals("renew")) {
                     approachProgress = age;
+                    localApproachTried = false;
                     approachDistance = client.player.getPos().distanceTo(place);
                     nextPath = age;
                 }

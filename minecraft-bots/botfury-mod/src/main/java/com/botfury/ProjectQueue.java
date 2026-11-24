@@ -977,6 +977,17 @@ final class ProjectQueue {
                 && job.work.needs.stream().anyMatch(rewind::contains)))) return false;
         var recoveries = new HashMap<>(project.supplyRecoveries);
         int attempts = recoveries.getOrDefault(root, 0);
+        if (GATHER_TOOLS_NEEDED.equals(evidence)) {
+            var source = gatherSource(waiting.work.payload);
+            String checkpoint = "tool-depth:" + waiting.work.id;
+            if (site != null && source != null && SubsurfaceAccess.deepResource(source.resource)
+                    && recoveries.getOrDefault(checkpoint, Integer.MAX_VALUE) - (long) site.y >= 8) {
+                // Renew while a miner opens deeper ground, with a fixed limit at each checkpoint.
+                recoveries.put(checkpoint, site.y);
+                attempts = 0;
+            }
+            if (waiting.state == State.FAILED) attempts = 0;
+        }
         if (attempts >= MAX_SUPPLY_RECOVERIES) {
             replace(project, new Job(waiting.work, State.FAILED, waiting.attempts, null, null, 0,
                     evidence + " after " + attempts + " supply recoveries", observation, site));
@@ -1044,8 +1055,19 @@ final class ProjectQueue {
     }
 
     synchronized int retryInterruptedGathering(String world, String id) throws IOException {
-        return retryFailures(world, id, job -> job.work.kind == Kind.GATHER
+        int reopened = retryFailures(world, id, job -> job.work.kind == Kind.GATHER
                 && (LEASE_EXPIRED.equals(job.evidence) || GATHER_STALLED.equals(job.evidence)));
+        var project = projects.get(id);
+        for (var job : project.jobs) {
+            if (job.state != State.FAILED || !(GATHER_TOOLS_NEEDED + " after " + MAX_SUPPLY_RECOVERIES
+                    + " supply recoveries").equals(job.evidence)) continue;
+            project = projects.get(id);
+            var current = find(project, job.work.id);
+            if (current.state != State.FAILED) continue;
+            if (project.supplyChest != null && reservedStorage(project) == null) checkStorage(world, project.supplyChest);
+            if (recoverGatheringTools(project, current, current.resourceSite, 0)) reopened++;
+        }
+        return reopened;
     }
 
     synchronized int retryPlacementApproaches(String world, String id) throws IOException {

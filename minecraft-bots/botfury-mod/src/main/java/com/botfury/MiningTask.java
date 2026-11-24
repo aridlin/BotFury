@@ -21,6 +21,7 @@ import java.util.concurrent.*;
 final class MiningTask {
     record Job(String resource,String variant,int broker) {}
     private static final int STANDS_PER_TICK = 8;
+    private static final int MAX_ALTERNATE_STANDS = 3;
     private static final Gson JSON=new Gson();
     private static final ExecutorService IO=Executors.newFixedThreadPool(2,r->{var t=new Thread(r,"BotFury-mining");t.setDaemon(true);return t;});
     private static final HttpClient HTTP=HttpClient.newBuilder().executor(IO).connectTimeout(Duration.ofMillis(300)).build();
@@ -49,6 +50,7 @@ final class MiningTask {
     }
     private static BlockPos target;
     private static Vec3d stand,origin,pickup;
+    private static int alternateStandAttempts;
     private static int pickupUntil;
     private static ProjectItem projectDrop;
     private static final DroppedItemSearch minedDrops = new DroppedItemSearch();
@@ -218,6 +220,9 @@ final class MiningTask {
                         return;
                     }
                 }
+                if (projectMining && age - approachProgress >= 110
+                        && (age - approachProgress >= 250 || !BaritoneClient.pursuing(p))
+                        && tryAlternateStand(client, p)) return;
                 if (age - approachProgress >= 250) {
                     rejectedStands.put(p, age + 600);
                     boolean prospectAgain = prospectingAltitude(client) != null;
@@ -583,8 +588,22 @@ final class MiningTask {
         return best;
     }
 
+    private static boolean tryAlternateStand(MinecraftClient client, BlockPos previous) {
+        if (requesting) return true;
+        if (alternateStandAttempts >= MAX_ALTERNATE_STANDS) return false;
+        rejectedStands.put(previous, age + 600);
+        var alternative = standing(client, target);
+        if (alternative == null) return false;
+        stopPath();
+        alternateStandAttempts++;
+        status = "Reserving another stand for " + job.resource;
+        request(client, target, alternative, "claim");
+        return true;
+    }
+
     private static void request(MinecraftClient client,BlockPos ore,Vec3d place,String action){
         if(job==null||place==null)return;requesting=true;
+        boolean switchingStand = action.equals("claim") && ore.equals(target);
         Job current=job;String token=action.equals("renew")&&leaseToken!=null?leaseToken:owner+":"+(++claimSerial);int epoch=generation;
         var body=new MiningClaims.Request(action,token,world,ore.getX(),ore.getY(),ore.getZ(),place.x,place.y,place.z);
         HTTP.sendAsync(HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+current.broker+"/mining-claim")).timeout(Duration.ofMillis(800))
@@ -593,8 +612,16 @@ final class MiningTask {
             requesting=false;
             if(error!=null||response.statusCode()!=200){status="Mining coordinator unavailable";nextSearch=age+40;leaseUntil=0;stopPath();if(client.interactionManager!=null)client.interactionManager.cancelBlockBreaking();return;}
             try{var reply=JSON.fromJson(response.body(),MiningClaims.Reply.class);
+                if (!reply.granted() && switchingStand && "Mining stand is reserved".equals(reply.reason())) {
+                    rejectedStands.put(BlockPos.ofFloored(place), age + 600);
+                    return;
+                }
                 if(!reply.granted()){status=reply.reason();rejected.put(ore,age+160);if(target!=null)stopPath();clearReservation();client.interactionManager.cancelBlockBreaking();nextSearch=age+1;return;}
                 if (!action.equals("renew")) {
+                    if (switchingStand) {
+                        BotEvents.add("info", "mining", "Reserved another stand at " + BlockPos.ofFloored(place).toShortString()
+                                + " for " + ore.toShortString());
+                    } else alternateStandAttempts = 0;
                     approachProgress = age;
                     localApproachTried = false;
                     approachDistance = client.player.getPos().distanceTo(place);

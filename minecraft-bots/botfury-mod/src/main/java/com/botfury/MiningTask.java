@@ -158,6 +158,11 @@ final class MiningTask {
         return false;
     }
 
+    static boolean isSurfaceResource(net.minecraft.block.Block block) {
+        return block.getDefaultState().isIn(BlockTags.LOGS)
+                || block instanceof FlowerBlock || block instanceof TallFlowerBlock;
+    }
+
     private static void startMining(MinecraftClient client, Job next, boolean project, ProjectGather.Area exclude) {
         if(client.player==null||client.world==null||LocalFormation.here()==null){fail("Not in game");return;}
         if(!BaritoneClient.available()){fail("Install Baritone for mining");return;}
@@ -166,8 +171,7 @@ final class MiningTask {
         for(String id:ids){var state=Registries.BLOCK.get(new Identifier(id)).getDefaultState();if(state.isAir()||state.getHardness(client.world,client.player.getBlockPos())<0){fail("Choose a breakable mining block");return;}}
         boolean surface = project && client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)
                 && ids.stream().map(id -> Registries.BLOCK.get(new Identifier(id)))
-                .allMatch(block -> block.getDefaultState().isIn(BlockTags.LOGS)
-                        || block instanceof FlowerBlock || block instanceof TallFlowerBlock);
+                .allMatch(MiningTask::isSurfaceResource);
         try {
             settings = surface ? BaritoneSettings.surfaceGathering() : new BaritoneSettings(exclude == null, project);
         } catch (ReflectiveOperationException | LinkageError error) {

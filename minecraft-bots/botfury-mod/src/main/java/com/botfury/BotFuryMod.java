@@ -181,6 +181,7 @@ public class BotFuryMod implements ClientModInitializer {
         status.put("coordinatedMining", true);
         status.put("taskDefenseCapable", true);
         status.put("scaffoldCleanupCapable", true);
+        status.put("scaffoldBatchCapable", BaritoneClient.cooperativeTravelAvailable());
         status.put("inventoryCoordinates", true);
         status.put("taskDefenseEnabled", TaskDefense.enabled());
         if (client.player != null) {

@@ -1,0 +1,317 @@
+diff --git a/src/api/java/baritone/api/pathing/goals/GoalCooperative.java b/src/api/java/baritone/api/pathing/goals/GoalCooperative.java
+new file mode 100644
+index 0000000..ba3e445
+--- /dev/null
++++ b/src/api/java/baritone/api/pathing/goals/GoalCooperative.java
+@@ -0,0 +1,75 @@
++/*
++ * This file is part of Baritone.
++ *
++ * Baritone is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU Lesser General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * Baritone is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public License
++ * along with Baritone.  If not, see <https://www.gnu.org/licenses/>.
++ */
++
++package baritone.api.pathing.goals;
++
++import net.minecraft.core.BlockPos;
++
++import java.util.Collection;
++import java.util.Objects;
++import java.util.Set;
++import java.util.stream.Collectors;
++
++/** Read-only travel with the cells assigned to other workers excluded from the route. */
++public final class GoalCooperative implements Goal {
++    private final Goal destination;
++    private final Set<Long> reservations;
++
++    public GoalCooperative(Goal destination, Collection<BlockPos> reservations) {
++        this.destination = Objects.requireNonNull(destination);
++        this.reservations = reservations.stream().map(BlockPos::asLong).collect(Collectors.toUnmodifiableSet());
++    }
++
++    @Override
++    public boolean isInGoal(int x, int y, int z) {
++        return !reserved(x, y, z) && !reserved(x, y + 1, z) && destination.isInGoal(x, y, z);
++    }
++
++    @Override
++    public double heuristic(int x, int y, int z) {
++        return destination.heuristic(x, y, z);
++    }
++
++    @Override
++    public double heuristic() {
++        return destination.heuristic();
++    }
++
++    public boolean permitsMove(int x, int y, int z, int endX, int endY, int endZ) {
++        if (reservations.isEmpty()) return true;
++        // Also check cells crossed by diagonal moves, jumps, and falls. A worker already
++        // inside a reserved column may move out without occupying another reserved cell.
++        for (int mx = Math.min(x, endX); mx <= Math.max(x, endX); mx++) {
++            for (int mz = Math.min(z, endZ); mz <= Math.max(z, endZ); mz++) {
++                for (int my = Math.min(y, endY); my <= Math.max(y, endY) + 1; my++) {
++                    if (mx == x && mz == z && (endX != x || endZ != z) && (my == y || my == y + 1)) continue;
++                    if (reserved(mx, my, mz)) return false;
++                }
++            }
++        }
++        return true;
++    }
++
++    private boolean reserved(int x, int y, int z) {
++        return reservations.contains(BlockPos.asLong(x, y, z));
++    }
++
++    @Override
++    public String toString() {
++        return "Cooperative travel to " + destination;
++    }
++}
+diff --git a/src/api/java/baritone/api/process/ICustomGoalProcess.java b/src/api/java/baritone/api/process/ICustomGoalProcess.java
+index 5084aff..9df485c 100644
+--- a/src/api/java/baritone/api/process/ICustomGoalProcess.java
++++ b/src/api/java/baritone/api/process/ICustomGoalProcess.java
+@@ -19,6 +19,9 @@ package baritone.api.process;
+ 
+ import baritone.api.pathing.goals.Goal;
+ 
++import java.util.List;
++import java.util.UUID;
++
+ public interface ICustomGoalProcess extends IBaritoneProcess {
+ 
+     /**
+@@ -47,4 +50,23 @@ public interface ICustomGoalProcess extends IBaritoneProcess {
+         this.setGoal(goal);
+         this.path();
+     }
++
++    /**
++     * Starts an ordered sequence of goals on the client thread. Arrival pauses the sequence
++     * until the owner confirms that work at the current goal has been verified.
++     */
++    void setGoalSequence(UUID sequenceId, List<? extends Goal> goals);
++
++    /**
++     * @return current sequence progress, or null when the process has no active sequence
++     */
++    GoalSequenceProgress getGoalSequenceProgress();
++
++    /**
++     * Advances an arrived sequence on the client thread. The id and zero-based step prevent
++     * stale or repeated confirmations from advancing a different step.
++     */
++    boolean confirmGoalSequenceStep(UUID sequenceId, int step);
++
++    record GoalSequenceProgress(UUID sequenceId, int step, int totalSteps, boolean awaitingConfirmation) {}
+ }
+diff --git a/src/main/java/baritone/behavior/PathingBehavior.java b/src/main/java/baritone/behavior/PathingBehavior.java
+index 9a8c4d1..46333e9 100644
+--- a/src/main/java/baritone/behavior/PathingBehavior.java
++++ b/src/main/java/baritone/behavior/PathingBehavior.java
+@@ -22,6 +22,7 @@ import baritone.api.behavior.IPathingBehavior;
+ import baritone.api.event.events.*;
+ import baritone.api.pathing.calc.IPath;
+ import baritone.api.pathing.goals.Goal;
++import baritone.api.pathing.goals.GoalCooperative;
+ import baritone.api.pathing.goals.GoalXZ;
+ import baritone.api.process.PathingCommand;
+ import baritone.api.utils.BetterBlockPos;
+@@ -259,7 +260,7 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
+         if (command instanceof PathingCommandContext) {
+             context = ((PathingCommandContext) command).desiredCalcContext;
+         } else {
+-            context = new CalculationContext(baritone, true);
++            context = new CalculationContext(baritone, true, goal instanceof GoalCooperative);
+         }
+         if (goal == null) {
+             return false;
+diff --git a/src/main/java/baritone/pathing/calc/AStarPathFinder.java b/src/main/java/baritone/pathing/calc/AStarPathFinder.java
+index b37b598..bd8584e 100644
+--- a/src/main/java/baritone/pathing/calc/AStarPathFinder.java
++++ b/src/main/java/baritone/pathing/calc/AStarPathFinder.java
+@@ -20,6 +20,7 @@ package baritone.pathing.calc;
+ import baritone.Baritone;
+ import baritone.api.pathing.calc.IPath;
+ import baritone.api.pathing.goals.Goal;
++import baritone.api.pathing.goals.GoalCooperative;
+ import baritone.api.pathing.movement.ActionCosts;
+ import baritone.api.utils.BetterBlockPos;
+ import baritone.pathing.calc.openset.BinaryHeapOpenSet;
+@@ -78,6 +79,7 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
+         int timeCheckInterval = 1 << 6;
+         int pathingMaxChunkBorderFetch = Baritone.settings().pathingMaxChunkBorderFetch.value; // grab all settings beforehand so that changing settings during pathing doesn't cause a crash or unpredictable behavior
+         double minimumImprovement = Baritone.settings().minimumImprovementRepropagation.value ? MIN_IMPROVEMENT : 0;
++        var cooperative = goal instanceof GoalCooperative shared ? shared : null;
+         Moves[] allMoves = Moves.values();
+         while (!openSet.isEmpty() && numEmptyChunk < pathingMaxChunkBorderFetch && !cancelRequested) {
+             if ((numNodes & (timeCheckInterval - 1)) == 0) { // only call this once every 64 nodes (about half a millisecond)
+@@ -134,6 +136,8 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
+                 if (!moves.dynamicY && res.y != currentNode.y + moves.yOffset) {
+                     throw new IllegalStateException(moves + " " + res.y + " " + (currentNode.y + moves.yOffset));
+                 }
++                if (cooperative != null && !cooperative.permitsMove(currentNode.x, currentNode.y, currentNode.z,
++                        res.x, res.y, res.z)) continue;
+                 long hashCode = BetterBlockPos.longHash(res.x, res.y, res.z);
+                 if (isFavoring) {
+                     // see issue #18
+diff --git a/src/main/java/baritone/pathing/movement/CalculationContext.java b/src/main/java/baritone/pathing/movement/CalculationContext.java
+index c1cc0da..1606d89 100644
+--- a/src/main/java/baritone/pathing/movement/CalculationContext.java
++++ b/src/main/java/baritone/pathing/movement/CalculationContext.java
+@@ -86,6 +86,10 @@ public class CalculationContext {
+     }
+ 
+     public CalculationContext(IBaritone baritone, boolean forUseOnAnotherThread) {
++        this(baritone, forUseOnAnotherThread, false);
++    }
++
++    public CalculationContext(IBaritone baritone, boolean forUseOnAnotherThread, boolean readOnlyTravel) {
+         this.precomputedData = new PrecomputedData();
+         this.safeForThreadedUse = forUseOnAnotherThread;
+         this.baritone = baritone;
+@@ -94,12 +98,12 @@ public class CalculationContext {
+         this.worldData = (WorldData) baritone.getWorldProvider().getCurrentWorld();
+         this.bsi = new BlockStateInterface(world, worldData, forUseOnAnotherThread);
+         this.toolSet = new ToolSet(player);
+-        this.hasThrowaway = Baritone.settings().allowPlace.value && ((Baritone) baritone).getInventoryBehavior().hasGenericThrowaway();
+-        this.hasWaterBucket = Baritone.settings().allowWaterBucketFall.value && Inventory.isHotbarSlot(player.getInventory().findSlotMatchingItem(STACK_BUCKET_WATER)) && world.dimension() != Level.NETHER;
++        this.hasThrowaway = !readOnlyTravel && Baritone.settings().allowPlace.value && ((Baritone) baritone).getInventoryBehavior().hasGenericThrowaway();
++        this.hasWaterBucket = !readOnlyTravel && Baritone.settings().allowWaterBucketFall.value && Inventory.isHotbarSlot(player.getInventory().findSlotMatchingItem(STACK_BUCKET_WATER)) && world.dimension() != Level.NETHER;
+         this.canSprint = Baritone.settings().allowSprint.value && player.getFoodData().getFoodLevel() > 6;
+         this.placeBlockCost = Baritone.settings().blockPlacementPenalty.value;
+-        this.allowBreak = Baritone.settings().allowBreak.value;
+-        this.allowBreakAnyway = new ArrayList<>(Baritone.settings().allowBreakAnyway.value);
++        this.allowBreak = !readOnlyTravel && Baritone.settings().allowBreak.value;
++        this.allowBreakAnyway = readOnlyTravel ? List.of() : new ArrayList<>(Baritone.settings().allowBreakAnyway.value);
+         this.allowParkour = Baritone.settings().allowParkour.value;
+         this.allowParkourPlace = Baritone.settings().allowParkourPlace.value;
+         this.allowJumpAt256 = Baritone.settings().allowJumpAt256.value;
+diff --git a/src/main/java/baritone/process/CustomGoalProcess.java b/src/main/java/baritone/process/CustomGoalProcess.java
+index 3ee3e7b..40cd3b7 100644
+--- a/src/main/java/baritone/process/CustomGoalProcess.java
++++ b/src/main/java/baritone/process/CustomGoalProcess.java
+@@ -24,6 +24,10 @@ import baritone.api.process.PathingCommand;
+ import baritone.api.process.PathingCommandType;
+ import baritone.utils.BaritoneProcessHelper;
+ 
++import java.util.List;
++import java.util.Objects;
++import java.util.UUID;
++
+ /**
+  * As set by ExampleBaritoneControl or something idk
+  *
+@@ -42,6 +46,9 @@ public final class CustomGoalProcess extends BaritoneProcessHelper implements IC
+      * @see State
+      */
+     private State state;
++    private UUID sequenceId;
++    private List<Goal> sequence = List.of();
++    private int nextStep;
+ 
+     public CustomGoalProcess(Baritone baritone) {
+         super(baritone);
+@@ -49,8 +56,9 @@ public final class CustomGoalProcess extends BaritoneProcessHelper implements IC
+ 
+     @Override
+     public void setGoal(Goal goal) {
++        clearGoalSequence();
+         this.goal = goal;
+-        if (this.state == State.NONE) {
++        if (this.state == State.NONE || this.state == State.AWAITING_CONFIRMATION) {
+             this.state = State.GOAL_SET;
+         }
+         if (this.state == State.EXECUTING) {
+@@ -68,6 +76,43 @@ public final class CustomGoalProcess extends BaritoneProcessHelper implements IC
+         return this.goal;
+     }
+ 
++    @Override
++    public void setGoalSequence(UUID id, List<? extends Goal> goals) {
++        Objects.requireNonNull(id, "sequence id");
++        var submitted = List.<Goal>copyOf(goals);
++        if (submitted.isEmpty()) throw new IllegalArgumentException("A goal sequence needs at least one step");
++        sequenceId = id;
++        sequence = submitted;
++        nextStep = 0;
++        goal = sequence.get(0);
++        state = State.PATH_REQUESTED;
++    }
++
++    @Override
++    public GoalSequenceProgress getGoalSequenceProgress() {
++        return sequenceId == null ? null : new GoalSequenceProgress(
++                sequenceId, nextStep, sequence.size(), state == State.AWAITING_CONFIRMATION);
++    }
++
++    @Override
++    public boolean confirmGoalSequenceStep(UUID id, int step) {
++        if (sequenceId == null || !sequenceId.equals(id) || nextStep != step
++                || state != State.AWAITING_CONFIRMATION) return false;
++        if (++nextStep == sequence.size()) {
++            onLostControl();
++        } else {
++            goal = sequence.get(nextStep);
++            state = State.PATH_REQUESTED;
++        }
++        return true;
++    }
++
++    private void clearGoalSequence() {
++        sequenceId = null;
++        sequence = List.of();
++        nextStep = 0;
++    }
++
+     @Override
+     public boolean isActive() {
+         return this.state != State.NONE;
+@@ -83,12 +128,18 @@ public final class CustomGoalProcess extends BaritoneProcessHelper implements IC
+                 PathingCommand ret = new PathingCommand(this.goal, PathingCommandType.FORCE_REVALIDATE_GOAL_AND_PATH);
+                 this.state = State.EXECUTING;
+                 return ret;
++            case AWAITING_CONFIRMATION:
++                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+             case EXECUTING:
+                 if (calcFailed) {
+                     onLostControl();
+                     return new PathingCommand(this.goal, PathingCommandType.CANCEL_AND_SET_GOAL);
+                 }
+                 if (this.goal == null || (this.goal.isInGoal(ctx.playerFeet()) && this.goal.isInGoal(baritone.getPathingBehavior().pathStart()))) {
++                    if (sequenceId != null) {
++                        state = State.AWAITING_CONFIRMATION;
++                        return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
++                    }
+                     onLostControl(); // we're there xd
+                     if (Baritone.settings().disconnectOnArrival.value) {
+                         ctx.world().disconnect();
+@@ -106,6 +157,7 @@ public final class CustomGoalProcess extends BaritoneProcessHelper implements IC
+ 
+     @Override
+     public void onLostControl() {
++        clearGoalSequence();
+         this.state = State.NONE;
+         this.goal = null;
+     }
+@@ -119,6 +171,7 @@ public final class CustomGoalProcess extends BaritoneProcessHelper implements IC
+         NONE,
+         GOAL_SET,
+         PATH_REQUESTED,
+-        EXECUTING
++        EXECUTING,
++        AWAITING_CONFIRMATION
+     }
+ }

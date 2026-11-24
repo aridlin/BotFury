@@ -244,6 +244,59 @@ class ProjectQueueTest {
         assertEquals("ingredients", queue.claim(WORLD, "replacement", Set.of(GATHER), now).job().work().id());
     }
 
+    @Test void scaffoldBatchKeepsOneLeaseAndNeverReplaysACompletedStep() throws Exception {
+        var path = directory.resolve("scaffold-batch.json");
+        var queue = new ProjectQueue(path);
+        var work = new ArrayList<ProjectQueue.Work>();
+        for (int index = 0; index < 3; index++) {
+            int x = 8 + index;
+            String cell = "block:" + x + ",116,2";
+            String payload = """
+                    {"target":{"x":%d,"y":116,"z":2},"stand":{"x":%d,"y":116,"z":3},"block":"minecraft:cobblestone"}
+                    """.formatted(x, x);
+            String placement = "place-" + index;
+            work.add(new ProjectQueue.Work(placement, BUILD, payload, List.of(), Set.of(cell)));
+            work.add(new ProjectQueue.Work("remove-" + index, EXCAVATE, payload, List.of(placement), Set.of(cell),
+                    null, new ProjectQueue.Cleanup(cell, placement)));
+        }
+        queue.submit("house", WORLD, work);
+        long now = 1;
+        for (int i = 0; i < 3; i++) {
+            var placement = queue.claim(WORLD, "writer", Set.of(BUILD), now++).job();
+            assertTrue(queue.finish("house", placement.work().id(), placement.lease(), true, "Placed", now++));
+        }
+        for (int i = 0; i < 9; i++) {
+            var removal = queue.claim(WORLD, "writer", Set.of(EXCAVATE), now++).job();
+            assertTrue(queue.finish("house", removal.work().id(), removal.lease(), false, ProjectQueue.TARGET_TIMEOUT, now++));
+        }
+        assertNull(queue.claim(WORLD, "cleaner", Set.of(EXCAVATE), now++));
+        var peerStand = new ProjectQueue.ResourceSite(20, 116, 3);
+        var peerWork = new ProjectQueue.Work("nearby", BUILD,
+                "{\"stand\":{\"x\":20,\"y\":116,\"z\":3}}", List.of(), Set.of("block:20,116,3"));
+        queue.submit("nearby-house", WORLD, List.of(peerWork));
+        assertNotNull(queue.claim(WORLD, "neighbor", Set.of(BUILD), "nearby-house", now++));
+        var steps = queue.failedScaffoldCleanups(WORLD).stream()
+                .map(job -> new ProjectQueue.CleanupStep(job, new ProjectQueue.ResourceSite(9, 116, 3))).toList();
+        assertEquals(3, queue.recoverScaffoldBatch(WORLD, steps, "cleaner", now++));
+        var assigned = queue.claim(WORLD, "cleaner", Set.of(EXCAVATE), now++);
+        assertEquals(List.of(peerStand), assigned.peerStands());
+        var head = assigned.job();
+        assertEquals("remove-0", head.work().id());
+        assertNull(queue.claim(WORLD, "other", Set.of(EXCAVATE), now++));
+        assertFalse(queue.finish("house", "remove-1", head.lease(), true, "Air", now++));
+        assertTrue(queue.finish("house", "remove-0", head.lease(), true, "Air", now++));
+        queue = new ProjectQueue(path);
+        assertTrue(queue.finish("house", "remove-0", head.lease(), true, "Air", now++));
+        var next = queue.batchContinuation("house", head.lease(), now++).job();
+        assertEquals("remove-1", next.work().id());
+        assertEquals(head.lease(), next.lease());
+        queue.snapshot(now + 20_000);
+        var restored = queue.snapshot(now + 20_001).get(0).jobs();
+        assertEquals(ProjectQueue.State.DONE, restored.get(1).state());
+        assertEquals(ProjectQueue.State.FAILED, restored.get(3).state());
+        assertEquals(3, restored.get(5).attempts());
+    }
+
     @Test void recoveryKeepsScaffoldOwnershipAndRestoresTheNewCleanerLease() throws Exception {
         var path = directory.resolve("cleanup-pose.json");
         var queue = new ProjectQueue(path);

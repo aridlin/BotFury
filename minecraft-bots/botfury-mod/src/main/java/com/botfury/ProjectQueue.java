@@ -150,11 +150,12 @@ final class ProjectQueue {
         }
     }
     record Assignment(String project, String world, Job job, FuelUse fuelFor, List<ResourceSite> accessRoute,
-                      int cargoCheckpoint) {
+                      int cargoCheckpoint, List<ResourceSite> peerStands) {
         Assignment {
+            peerStands = peerStands == null ? List.of() : List.copyOf(peerStands);
             accessRoute = accessRoute == null ? List.of() : List.copyOf(accessRoute);
         }
-        Assignment(String project, String world, Job job) { this(project, world, job, null, List.of(), 0); }
+        Assignment(String project, String world, Job job) { this(project, world, job, null, List.of(), 0, List.of()); }
     }
     record RouteBenchStock(String payload, String location, int reserve, Set<String> locks) {}
     record RouteToolDelivery(String recipient, ResourceSite position, String item, int previousCount, int craftTarget,
@@ -173,6 +174,10 @@ final class ProjectQueue {
     record ScaffoldClearance(String project, Work job) {}
     record LocalInspection(String project, Work job) {}
     record CleanupRecovery(String project, Work job, String placementPayload) {}
+    record CleanupStep(CleanupRecovery request, ResourceSite stand) {}
+    private static final String BATCH_ACTIVE = "Executing reserved batch";
+    private static final String BATCH_RESERVED = "Reserved for batch";
+    static final int MAX_BATCH_STEPS = 8;
     private static final java.util.regex.Pattern SCHEMATIC_PLACEMENT = java.util.regex.Pattern.compile("place-[0-9]+");
     private record StationTarget(ProjectBlock.Position target, ProjectBlock.Position stand, String block) {}
     private record Board(int schema, Map<String, Project> projects) {}
@@ -452,25 +457,101 @@ final class ProjectQueue {
         var project = projects.get(request.project);
         if (!availableProjectWorker(project, worker, now)) return false;
         var current = find(project, request.job.id);
-        var payload = JSON.fromJson(current.work.payload, com.google.gson.JsonObject.class);
-        var target = JSON.fromJson(current.work.payload, StationTarget.class).target.checked();
-        if (!ProjectBlock.validStand(target, new net.minecraft.util.math.BlockPos(stand.x, stand.y, stand.z))) return false;
-        payload.add("stand", JSON.toJsonTree(stand));
-        var locks = new HashSet<>(current.work.locks);
-        for (int y = stand.y - 1; y <= stand.y + 1; y++) locks.add("block:" + stand.x + "," + y + "," + stand.z);
-        for (var other : projects.values()) {
-            if (!world.equals(other.world)) continue;
-            if (!Collections.disjoint(locks, temporaryFooting(other.id)) && !other.id.equals(project.id)) return false;
-            if (other.jobs.stream().anyMatch(job -> job.state == State.LEASED
-                    && !Collections.disjoint(locks, job.work.locks))) return false;
-        }
-        var work = new Work(current.work.id, current.work.kind, JSON.toJson(payload), current.work.needs,
-                locks, null, current.work.cleanup);
+        var work = scaffoldRecoveryWork(project, current, stand);
+        if (work == null) return false;
         var lease = new Job(work, State.LEASED, current.attempts + 1, worker, UUID.randomUUID(),
                 now + LEASE_MS, "Assigned scaffold cleanup from reachable footing", null);
         var counts = new HashMap<>(project.supplyRecoveries);
         counts.merge("validated-cleanup-pose:" + work.id, 1, Integer::sum);
         commit(project.withRecovery(project.jobs.stream().map(job -> job == current ? lease : job).toList(), counts));
+        return true;
+    }
+
+    private Work scaffoldRecoveryWork(Project project, Job current, ResourceSite stand) {
+        var payload = JSON.fromJson(current.work.payload, com.google.gson.JsonObject.class);
+        var target = JSON.fromJson(current.work.payload, StationTarget.class).target.checked();
+        if (!ProjectBlock.validStand(target, new net.minecraft.util.math.BlockPos(stand.x, stand.y, stand.z))) return null;
+        payload.add("stand", JSON.toJsonTree(stand));
+        var locks = new HashSet<>(current.work.locks);
+        for (int y = stand.y - 1; y <= stand.y + 1; y++) locks.add("block:" + stand.x + "," + y + "," + stand.z);
+        for (var other : projects.values()) {
+            if (!project.world.equals(other.world)) continue;
+            if (!Collections.disjoint(locks, temporaryFooting(other.id)) && !other.id.equals(project.id)) return null;
+            if (other.jobs.stream().anyMatch(job -> job.state == State.LEASED
+                    && !Collections.disjoint(locks, job.work.locks))) return null;
+        }
+        return new Work(current.work.id, current.work.kind, JSON.toJson(payload), current.work.needs,
+                locks, null, current.work.cleanup);
+    }
+
+    synchronized int recoverScaffoldBatch(String world, List<CleanupStep> steps, String worker, long now) throws IOException {
+        if (steps.isEmpty() || steps.size() > MAX_BATCH_STEPS) return 0;
+        var project = projects.get(steps.get(0).request.project);
+        if (project == null || !availableProjectWorker(project, worker, now)) return 0;
+        var candidates = new HashMap<String, Work>();
+        var ready = Set.copyOf(failedScaffoldCleanups(world));
+        for (var step : steps) {
+            if (!project.id.equals(step.request.project) || !ready.contains(step.request)) continue;
+            var job = find(project, step.request.job.id);
+            var work = scaffoldRecoveryWork(project, job, step.stand);
+            if (work != null) candidates.put(work.id, work);
+        }
+        if (candidates.size() < 2) return 0;
+        var token = UUID.randomUUID();
+        var jobs = new ArrayList<Job>();
+        var counts = new HashMap<>(project.supplyRecoveries);
+        boolean first = true;
+        for (var job : project.jobs) {
+            var work = candidates.get(job.work.id);
+            if (work == null) {
+                jobs.add(job);
+            } else {
+                jobs.add(new Job(work, State.LEASED, job.attempts + (first ? 1 : 0), worker, token,
+                        now + LEASE_MS, first ? BATCH_ACTIVE : BATCH_RESERVED, job.chest));
+                if (first) counts.merge("validated-cleanup-pose:" + work.id, 1, Integer::sum);
+                first = false;
+            }
+        }
+        commit(project.withRecovery(jobs, counts));
+        return candidates.size();
+    }
+
+    synchronized Assignment batchContinuation(String projectId, UUID token, long now) {
+        var project = projects.get(projectId);
+        if (project == null || cancelled(project)) return null;
+        for (var job : project.jobs) {
+            if (BATCH_ACTIVE.equals(job.evidence) && owns(job, token, now)) return assignment(project, job);
+        }
+        return null;
+    }
+
+    private static Job releasedBatchStep(Job job) {
+        return new Job(job.work, State.FAILED, job.attempts, null, null, 0, TARGET_TIMEOUT, job.chest);
+    }
+
+    private boolean finishBatchStep(Project project, Job current, boolean success, String evidence, long now) throws IOException {
+        var jobs = new ArrayList<Job>();
+        var counts = new HashMap<>(project.supplyRecoveries);
+        boolean promote = success;
+        for (var job : project.jobs) {
+            if (job == current) {
+                jobs.add(success ? new Job(job.work, State.DONE, job.attempts, job.worker, job.lease, 0, evidence, job.chest)
+                        : new Job(job.work, State.FAILED, job.attempts, null, null, 0, evidence, job.chest));
+            } else if (BATCH_RESERVED.equals(job.evidence) && current.lease.equals(job.lease)) {
+                if (promote) {
+                    jobs.add(new Job(job.work, State.LEASED, job.attempts + 1, job.worker, job.lease,
+                            now + LEASE_MS, BATCH_ACTIVE, job.chest));
+                    counts.merge("validated-cleanup-pose:" + job.work.id, 1, Integer::sum);
+                    promote = false;
+                } else {
+                    jobs.add(success ? new Job(job.work, State.LEASED, job.attempts, job.worker, job.lease,
+                            now + LEASE_MS, BATCH_RESERVED, job.chest) : releasedBatchStep(job));
+                }
+            } else jobs.add(job);
+        }
+        commit(project.withRecovery(jobs, counts));
+        restoredLeases.remove(current.lease);
+        markAssignmentSeen(project, current.worker, now);
         return true;
     }
 
@@ -932,7 +1013,7 @@ final class ProjectQueue {
         for (Project project : projects.values()) {
             for (Job job : project.jobs) {
                 if (job.state != State.LEASED) continue;
-                if (worker.equalsIgnoreCase(job.worker)) {
+                if (worker.equalsIgnoreCase(job.worker) && !BATCH_RESERVED.equals(job.evidence)) {
                     // A claim response can be lost. Repeating a claim returns the original assignment.
                     return world.equals(project.world) && kinds.contains(job.work.kind) && !cancelled(project)
                             && (projectId == null || projectId.equals(project.id))
@@ -1909,9 +1990,30 @@ final class ProjectQueue {
         return assignment(project, assigned);
     }
 
-    private static Assignment assignment(Project project, Job job) {
+    private Assignment assignment(Project project, Job job) {
         return new Assignment(project.id, project.world, job, fuelUse(project, job), accessRoute(project, job),
-                cargoCheckpoint(project, job));
+                cargoCheckpoint(project, job), batchPeerStands(project, job));
+    }
+
+    static boolean reservedBatchStep(Job job) {
+        return BATCH_ACTIVE.equals(job.evidence);
+    }
+
+    private List<ResourceSite> batchPeerStands(Project project, Job job) {
+        if (!reservedBatchStep(job)) return List.of();
+        var stands = new LinkedHashSet<ResourceSite>();
+        for (var other : projects.values()) {
+            if (!project.world.equals(other.world)) continue;
+            for (var peer : other.jobs) {
+                if (peer.state != State.LEASED || job.worker.equalsIgnoreCase(peer.worker)
+                        || peer.work.kind == Kind.GATHER || peer.work.kind == Kind.RESUPPLY) continue;
+                var payload = com.google.gson.JsonParser.parseString(peer.work.payload);
+                if (!payload.isJsonObject()) continue;
+                var stand = payload.getAsJsonObject().get("stand");
+                if (stand != null && stand.isJsonObject()) stands.add(JSON.fromJson(stand, ResourceSite.class));
+            }
+        }
+        return List.copyOf(stands);
     }
 
     private static List<ResourceSite> accessRoute(Project project, Job job) {
@@ -2082,13 +2184,22 @@ final class ProjectQueue {
                            boolean needsRouteTool, boolean needsRouteBench) throws IOException {
         Project project = projects.get(projectId);
         Job job = find(project, jobId);
-        if (!owns(job, token, now) || cancelled(project) || handoffWorker(job) != null
+        if (!owns(job, token, now) || cancelled(project) || BATCH_RESERVED.equals(job.evidence) || handoffWorker(job) != null
                 || GATHER_STOCK_CONFIRMED.equals(job.evidence)) return null;
         if (needsRouteTool && job.work.kind == Kind.TRANSFER && depositTarget(job)) routeToolRequests.put(token, needsRouteBench);
         else routeToolRequests.remove(token);
         Job renewed = new Job(job.work, State.LEASED, job.attempts, job.worker,
                 job.lease, now + LEASE_MS, job.evidence, job.chest, gatheringSite(job, site), job.gatheringAfterPickup);
-        replace(project, renewed);
+        if (BATCH_ACTIVE.equals(job.evidence)) {
+            commit(project.withJobs(project.jobs.stream().map(step -> {
+                if (step == job) return renewed;
+                if (BATCH_RESERVED.equals(step.evidence) && token.equals(step.lease)) {
+                    return new Job(step.work, State.LEASED, step.attempts, step.worker, token,
+                            renewed.expiresAt, step.evidence, step.chest);
+                }
+                return step;
+            }).toList()));
+        } else replace(project, renewed);
         restoredLeases.remove(token);
         markAssignmentSeen(project, job.worker, now);
         return renewed;
@@ -2126,6 +2237,8 @@ final class ProjectQueue {
         }
         if (!owns(job, token, now) || !success && handoffWorker(job) != null
                 || GATHER_STOCK_CONFIRMED.equals(job.evidence)) return false;
+        if (BATCH_RESERVED.equals(job.evidence)) return false;
+        if (BATCH_ACTIVE.equals(job.evidence)) return finishBatchStep(project, job, success, evidence, now);
         routeToolRequests.remove(token);
         var fuelPlan = success ? fuelUse(project, job) : null;
         boolean substituted = success && evidence.startsWith(ALTERNATIVE_FUEL);
@@ -2658,6 +2771,11 @@ final class ProjectQueue {
                 Job job = project.jobs.get(i);
                 if (job.state == State.LEASED && job.expiresAt <= now) {
                     if (jobs == null) jobs = new ArrayList<>(project.jobs);
+                    if (BATCH_RESERVED.equals(job.evidence) || BATCH_ACTIVE.equals(job.evidence)) {
+                        jobs.set(i, releasedBatchStep(job));
+                        interrupted.add(job.lease);
+                        continue;
+                    }
                     String handoff = handoffWorker(job);
                     Job waiting;
                     boolean restored = restoredLeases.contains(job.lease);

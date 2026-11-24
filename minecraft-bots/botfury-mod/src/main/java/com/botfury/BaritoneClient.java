@@ -7,6 +7,7 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Array;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 
 final class BaritoneClient {
@@ -51,22 +52,44 @@ final class BaritoneClient {
     }
 
     static boolean goToAny(List<BlockPos> destinations) {
+        return goToAny(destinations, null);
+    }
+
+    static boolean cooperativeTravelAvailable() {
+        return available() && GoalApi.INSTANCE != null && GoalApi.COOPERATIVE != null;
+    }
+
+    static boolean goToCooperativeStand(List<BlockPos> destinations, Collection<BlockPos> reservedCells) {
+        return cooperativeTravelAvailable() && goToAny(destinations, reservedCells);
+    }
+
+    private static boolean goToAny(List<BlockPos> destinations, Collection<BlockPos> reservedCells) {
         if (destinations.isEmpty()) return false;
         var api = GoalApi.INSTANCE;
-        if (available() && api != null && destinations.size() > 1) {
+        if (available() && api != null && (destinations.size() > 1 || reservedCells != null)) {
             try {
                 var goalType = api.start.getParameterTypes()[0];
-                var goals = Array.newInstance(goalType, destinations.size());
-                for (int i = 0; i < destinations.size(); i++) {
-                    var pos = destinations.get(i);
-                    Array.set(goals, i, api.block.newInstance(pos.getX(), pos.getY(), pos.getZ()));
+                Object goal;
+                if (destinations.size() == 1) {
+                    var pos = destinations.get(0);
+                    goal = api.block.newInstance(pos.getX(), pos.getY(), pos.getZ());
+                } else {
+                    var goals = Array.newInstance(goalType, destinations.size());
+                    for (int i = 0; i < destinations.size(); i++) {
+                        var pos = destinations.get(i);
+                        Array.set(goals, i, api.block.newInstance(pos.getX(), pos.getY(), pos.getZ()));
+                    }
+                    goal = Class.forName("baritone.api.pathing.goals.GoalComposite")
+                            .getConstructor(goals.getClass()).newInstance(goals);
                 }
-                var composite = Class.forName("baritone.api.pathing.goals.GoalComposite")
-                        .getConstructor(goals.getClass()).newInstance(goals);
-                api.start.invoke(api.process, composite);
+                if (reservedCells != null && GoalApi.COOPERATIVE != null) {
+                    goal = GoalApi.COOPERATIVE.newInstance(goal, reservedCells);
+                }
+                api.start.invoke(api.process, goal);
                 return true;
             } catch (ReflectiveOperationException | LinkageError unavailable) {
-                BotEvents.add("warn", "movement", "Baritone multi-goal routing unavailable");
+                BotEvents.add("warn", "movement", "Baritone work-stand routing unavailable");
+                if (reservedCells != null && GoalApi.COOPERATIVE != null) return false;
             }
         }
         return goTo(destinations.get(0));
@@ -88,6 +111,17 @@ final class BaritoneClient {
     private record GoalApi(Object process, Constructor<?> block, Method start) {
         private static final GoalApi INSTANCE = create();
         private static final Constructor<?> ALTITUDE = altitude();
+        private static final Constructor<?> COOPERATIVE = cooperative();
+
+        private static Constructor<?> cooperative() {
+            try {
+                var goal = Class.forName("baritone.api.pathing.goals.Goal");
+                return Class.forName("baritone.api.pathing.goals.GoalCooperative")
+                        .getConstructor(goal, Collection.class);
+            } catch (ReflectiveOperationException | LinkageError unavailable) {
+                return null;
+            }
+        }
 
         private static Constructor<?> altitude() {
             try {

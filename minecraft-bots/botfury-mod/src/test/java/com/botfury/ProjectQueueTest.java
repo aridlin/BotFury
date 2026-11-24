@@ -1909,6 +1909,22 @@ class ProjectQueueTest {
         assertEquals("stock", queue.claim(WORLD, "other", Set.of(GATHER), 4).project());
     }
 
+    @Test void shelteringSupplierRetainsMaterialsUntilItActuallyGoesOffline() throws Exception {
+        var queue = new ProjectQueue(directory.resolve("sheltering-supplier.json"));
+        queue.submitSupplied("house", WORLD, List.of(job("logs", GATHER, List.of()),
+                new ProjectQueue.Work("planks", CRAFT, "", List.of("logs"), Set.of(), "logs")), "block:2,64,0");
+        var logs = queue.claim(WORLD, "supplier", Set.of(GATHER), "house", 1).job();
+        assertTrue(queue.finish("house", "logs", logs.lease(), true, "Collected logs", 2));
+        for (long now = 10_000; now <= 90_000; now += 10_000) {
+            queue.reportSafetyWait(WORLD, "supplier", "house", now);
+            assertNull(queue.claim(WORLD, "helper", Set.of(GATHER, CRAFT), "house", now + 1));
+        }
+        assertTrue(queue.snapshot(90_001).get(0).supplyRecoveries().isEmpty());
+        queue.reportSafetyWait(WORLD, "supplier", "elsewhere", 145_000);
+        assertNull(queue.claim(WORLD, "helper", Set.of(GATHER, CRAFT), "house", 149_999));
+        assertEquals("logs", queue.claim(WORLD, "helper", Set.of(GATHER), "house", 150_000).job().work().id());
+    }
+
     @Test void anotherProjectsRenewalsKeepAnUnscopedSupplierOnline() throws Exception {
         var queue = new ProjectQueue(directory.resolve("cross-project-heartbeat.json"));
         queue.submit("stock", WORLD, List.of(job("slow", GATHER, List.of())));

@@ -52,6 +52,8 @@ final class TaskDefense {
         holdUntil=0;
         sheltering=false;
     }
+    static boolean sheltering() { return sheltering; }
+
     static boolean evade(MinecraftClient client,boolean working){
         if(!eligible(client,true)){
             if(pathPaused)BaritoneClient.execute("stop");
@@ -66,6 +68,7 @@ final class TaskDefense {
         }
         if((working||sheltering)&&System.nanoTime()<holdUntil){
             if(walkingDirection!=null)walk(client);
+            else if (sheltering) defendInPlace(client);
             return true;
         }
         stopWalking(client);
@@ -77,8 +80,9 @@ final class TaskDefense {
         }
         sheltering = shelter;
         if(action!=null){
-            stopEating(client);
             walkingDirection=action.walkingDirection();
+            if (shelter && walkingDirection == null) defendInPlace(client);
+            else stopEating(client);
             retreatingFromWarden = action.wardensNearby();
             retreatStep = action.step();
             retreatStartY = client.player.getBlockY();
@@ -135,8 +139,7 @@ final class TaskDefense {
         retreatStep = null;
         retreatJump = false;
     }
-    static boolean defendProject(MinecraftClient client) {
-        protectingWork = false;
+    private static boolean defendInPlace(MinecraftClient client) {
         if (eligible(client, true) && client.currentScreen == null && client.interactionManager != null
                 && client.player.currentScreenHandler == client.player.playerScreenHandler
                 && client.player.playerScreenHandler.getCursorStack().isEmpty()) {
@@ -145,12 +148,19 @@ final class TaskDefense {
                             && !(other instanceof net.minecraft.entity.mob.CreeperEntity || other instanceof WardenEntity));
             if (target != null) {
                 stopEating(client);
-                protectingWork = true;
                 if (equipWeapon(client) && client.player.getAttackCooldownProgress(.5f) >= .95f) {
                     LocalFormation.punch(client, target);
                 }
-            } else protectingWork = eatWhenNeeded(client);
+                return true;
+            }
+            if (eatWhenNeeded(client)) return true;
         }
+        stopEating(client);
+        return false;
+    }
+
+    static boolean defendProject(MinecraftClient client) {
+        protectingWork = defendInPlace(client);
         if (protectingWork) {
             if (!pathPaused && BaritoneClient.available()) pathPaused = BaritoneClient.execute("pause");
         } else {

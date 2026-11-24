@@ -332,10 +332,15 @@ final class ProjectWorker {
         boolean searchingForStand = excavate && !canExcavateHere || ordinaryBuild && !canBuildHere
                 && client.world.getBlockState(target).isAir()
                 || stationJob && !stationNearby && block.matches(client.world.getBlockState(target));
-        if (searchingForStand && !belowStation && !stationReturn.active() && targetLoaded && now >= nextInteractionStandSearch
+        boolean routeFailed = approach != null && now >= retryApproach && !BaritoneClient.pursuing(stand);
+        // Try a protected exit once after both the planned and an alternate approach fail.
+        boolean recoverBeforeSwitching = (excavate || ordinaryBuild) && interactionStand != null
+                && recoveryOrigin == null && routeFailed;
+        if (searchingForStand && !recoverBeforeSwitching && !belowStation && !stationReturn.active()
+                && targetLoaded && now >= nextInteractionStandSearch
                 && client.world.isChunkLoaded(stand.getX() >> 4, stand.getZ() >> 4)
                 && (!usableInteractionStand(client, stand, target) || !centering && player.getBlockPos().equals(stand)
-                    || approach != null && now >= retryApproach && !BaritoneClient.pursuing(stand))) {
+                    || routeFailed)) {
             nextInteractionStandSearch = now + seconds(1);
             var alternate = nextInteractionStand(client, target, stand, kind);
             if (alternate != null) {

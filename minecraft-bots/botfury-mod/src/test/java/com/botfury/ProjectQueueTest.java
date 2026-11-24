@@ -940,14 +940,23 @@ class ProjectQueueTest {
                 List.of("ready"), Set.of(chest), null, null, material);
         var placement = new ProjectQueue.Work("place-1", BUILD, "{\"target\":{\"x\":0,\"y\":66,\"z\":0}}",
                 List.of("pickup"), Set.of("wall"), "pickup");
+        var later = new ProjectQueue.Work("place-2", BUILD, "{}", List.of("pickup", "place-1"),
+                Set.of("other-wall"), "pickup");
+        var laterPickup = new ProjectQueue.Work("later-pickup", TRANSFER, pickup.payload(),
+                List.of("ready"), Set.of(chest), null, null, material);
+        var dependent = new ProjectQueue.Work("place-3", BUILD, "{}",
+                List.of(laterPickup.id(), later.id()), Set.of("next-wall"), laterPickup.id());
         var stock = new ProjectQueue.ChestReport(chest, java.util.Map.of(material, 4));
         var ready = job("ready", ProjectQueue.Kind.BARRIER, List.of());
         var initial = List.of(new ProjectQueue.Job(ready, ProjectQueue.State.DONE, 0, null, null, 0, "Ready", null),
                 new ProjectQueue.Job(pickup, ProjectQueue.State.DONE, 1, "original", null, 0,
                         "Materials collected", new ProjectQueue.ChestObservation(stock, 1)),
-                new ProjectQueue.Job(placement, ProjectQueue.State.FAILED, 3, null, null, 0, ProjectQueue.TARGET_TIMEOUT, null));
+                new ProjectQueue.Job(placement, ProjectQueue.State.FAILED, 3, null, null, 0, ProjectQueue.TARGET_TIMEOUT, null),
+                new ProjectQueue.Job(later, ProjectQueue.State.WAITING, 0, null, null, 0, null, null),
+                new ProjectQueue.Job(laterPickup, ProjectQueue.State.DONE, 1, "alternate", null, 0, "Collected", null),
+                new ProjectQueue.Job(dependent, ProjectQueue.State.WAITING, 0, null, null, 0, null, null));
         var project = new ProjectQueue.Project("house", WORLD, initial, null, chest,
-                java.util.Map.of("build-handoff:pickup", 2, "pose:place-1", 1));
+                java.util.Map.of("build-handoff:pickup", 2, "pose-handoff:pickup", 1, "pose:place-1", 1));
         Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
                 "projects", java.util.Map.of(project.id(), project))));
         var queue = new ProjectQueue(journal);
@@ -960,8 +969,11 @@ class ProjectQueueTest {
         queue = new ProjectQueue(journal);
         assertNull(queue.claim(WORLD, "original", Set.of(BUILD), 4));
         var collector = queue.claim(WORLD, "alternate", Set.of(TRANSFER), 5).job();
-        assertEquals("pickup", collector.work().id());
-        assertTrue(queue.finish("house", "pickup", collector.lease(), true, "Plank collected", stock, 6));
+        assertEquals("recovery-place-1-cargo", collector.work().id());
+        assertTrue(queue.finish("house", collector.work().id(), collector.lease(), true, "Plank collected", stock, 6));
+        assertEquals("original", queue.snapshot(6).get(0).jobs().stream()
+                .filter(job -> job.work().id().equals("pickup")).findFirst().orElseThrow().worker());
+        assertTrue(queue.snapshot(6).get(0).jobs().stream().anyMatch(job -> job.work().equals(later)));
         long now = 7;
         for (int attempt = 0; attempt < 3; attempt++) {
             var assigned = queue.claim(WORLD, "alternate", Set.of(BUILD), now++).job();
@@ -972,7 +984,7 @@ class ProjectQueueTest {
         queue = new ProjectQueue(journal);
         assertFalse(queue.offerConstructionHandoff(WORLD, "third", null, Set.of(BUILD, TRANSFER), now,
                 name -> name.equals("alternate") ? originalSite : alternateSite, (bot, item) -> 1));
-        assertEquals(1, queue.snapshot(now).get(0).supplyRecoveries().get("pose-handoff:pickup"));
+        assertEquals(1, queue.snapshot(now).get(0).supplyRecoveries().get("pose-handoff:place-1"));
         assertEquals(2, queue.snapshot(now).get(0).supplyRecoveries().get("build-handoff:pickup"));
     }
 

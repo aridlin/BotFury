@@ -395,7 +395,7 @@ final class ProjectWorker {
             if (recoverBreathing(client)) status = "Swimming toward air";
             else if (TaskDefense.evade(client, true)) {
                 idleRecovery.reset();
-                status = TaskDefense.sheltering() ? "Sheltering from a nearby Phantom" : "Avoiding danger";
+                status = TaskDefense.evasionStatus();
             } else if (TaskDefense.defendProject(client)) {
                 idleRecovery.reset();
                 status = "Defending or recovering";
@@ -453,6 +453,7 @@ final class ProjectWorker {
         if (TaskDefense.evade(client, true)) {
             releaseCentering(client);
             jumpEnds = 0;
+            status = TaskDefense.evasionStatus();
             return;
         }
         if (!centering && TaskDefense.defendProject(client)) {

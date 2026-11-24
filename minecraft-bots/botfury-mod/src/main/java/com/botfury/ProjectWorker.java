@@ -207,9 +207,13 @@ final class ProjectWorker {
         var client = MinecraftClient.getInstance();
         if (stationReturn.blocksBreaking(client, pos)) return true;
         if (recoveryOrigin == null) return false;
-        if (client.world == null || block == null || !pos.isWithinDistance(recoveryOrigin, 9)
-                || pos.getY() < recoveryOrigin.getY() || pos.getY() > block.stand().getY() + 1
-                || pos.equals(block.target()) || pos.equals(block.target().down()) || pos.equals(block.stand().down())
+        boolean stationJob = chest != null || production != null;
+        if (client.world == null || block == null || !pos.isWithinDistance(recoveryOrigin, stationJob ? 9 : 5)
+                || pos.getY() < recoveryOrigin.getY()
+                || pos.getY() > (stationJob ? block.stand().getY() + 1 : recoveryOrigin.getY() + 2)
+                || pos.equals(block.target()) || pos.equals(block.support()) || pos.equals(block.target().down())
+                || pos.equals(block.stand().down())
+                || (interactionStand != null && pos.equals(interactionStand.down()))
                 || !BaritoneSettings.recoverableTerrain(client.world.getBlockState(pos).getBlock())) return true;
         return client.world.getPlayers().stream().anyMatch(player -> player.isAlive() && !player.isSpectator()
                 && player.getBlockPos().down().equals(pos));
@@ -328,10 +332,15 @@ final class ProjectWorker {
         boolean searchingForStand = excavate && !canExcavateHere || ordinaryBuild && !canBuildHere
                 && client.world.getBlockState(target).isAir()
                 || stationJob && !stationNearby && block.matches(client.world.getBlockState(target));
-        if (searchingForStand && !belowStation && !stationReturn.active() && targetLoaded && now >= nextInteractionStandSearch
+        boolean routeFailed = approach != null && now >= retryApproach && !BaritoneClient.pursuing(stand);
+        // Try a protected exit once after both the planned and an alternate approach fail.
+        boolean recoverBeforeSwitching = (excavate || ordinaryBuild) && interactionStand != null
+                && recoveryOrigin == null && routeFailed;
+        if (searchingForStand && !recoverBeforeSwitching && !belowStation && !stationReturn.active()
+                && targetLoaded && now >= nextInteractionStandSearch
                 && client.world.isChunkLoaded(stand.getX() >> 4, stand.getZ() >> 4)
                 && (!usableInteractionStand(client, stand, target) || !centering && player.getBlockPos().equals(stand)
-                    || approach != null && now >= retryApproach && !BaritoneClient.pursuing(stand))) {
+                    || routeFailed)) {
             nextInteractionStandSearch = now + seconds(1);
             var alternate = nextInteractionStand(client, target, stand, kind);
             if (alternate != null) {
@@ -376,15 +385,17 @@ final class ProjectWorker {
                 try {
                     var pos = stand;
                     var feetBlock = player.getBlockPos();
-                    if (approach != null && recoveryOrigin == null && (chest != null || production != null)
-                            && pos.getY() - feetBlock.getY() >= 2 && feetBlock.isWithinDistance(pos, 12)
+                    boolean localWork = excavate || build;
+                    boolean stationClimb = stationJob && pos.getY() - feetBlock.getY() >= 2
+                            && feetBlock.isWithinDistance(pos, 12);
+                    if (approach != null && recoveryOrigin == null && (localWork || stationClimb)
                             && !BaritoneClient.pursuing(pos)) {
                         BaritoneClient.execute("stop");
                         approach.close();
                         approach = null;
                         approach = new BaritoneSettings(true, true, true);
                         recoveryOrigin = feetBlock;
-                        BotEvents.add("info", "movement", "Opening a short return route through natural terrain");
+                        BotEvents.add("info", "movement", "Opening a short approach through natural terrain");
                     }
                     if (approach == null) approach = new BaritoneSettings(false, true);
                     approachProgress = current;

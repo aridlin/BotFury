@@ -978,6 +978,11 @@ final class ProjectQueue {
             restoredLeases.remove(token);
             return true;
         }
+        if (!success && recoverMissingProduction(project, job, evidence)) {
+            markAssignmentSeen(project, job.worker, now);
+            restoredLeases.remove(token);
+            return true;
+        }
         if (pickupShortfall) {
             if (success || chest == null || job.work.kind != Kind.TRANSFER) {
                 throw new IllegalArgumentException("A stock shortfall requires a failed transfer and chest observation");
@@ -1221,6 +1226,32 @@ final class ProjectQueue {
         return false;
     }
 
+    private static boolean missingProductionInput(Job job, String evidence) {
+        if (job.work.kind == Kind.CRAFT) {
+            var recipe = JSON.fromJson(job.work.payload, ToolRecipe.class);
+            return recipe != null && recipe.recipe != null && ("Missing ingredients for " + recipe.recipe).equals(evidence);
+        }
+        if (job.work.kind != Kind.SMELT) return false;
+        var spec = JSON.fromJson(job.work.payload, SmeltFuel.class);
+        return spec != null && ((spec.input != null && ("Missing furnace input " + spec.input).equals(evidence))
+                || (spec.fuel != null && ("Missing furnace fuel " + spec.fuel).equals(evidence)));
+    }
+
+    private boolean recoverMissingProduction(Project project, Job job, String evidence) throws IOException {
+        if (project.supplyChest == null || job.work.sameWorkerAs == null || !missingProductionInput(job, evidence)) return false;
+        var jobs = new HashMap<String, Job>();
+        project.jobs.forEach(stage -> jobs.put(stage.work.id, stage));
+        var supplier = jobs.get(job.work.sameWorkerAs);
+        for (var stage = supplier; stage != null; stage = jobs.get(stage.work.sameWorkerAs)) {
+            if (stage.state != State.DONE) return false;
+            if (stage.work.kind == Kind.GATHER && stage.work.sameWorkerAs == null) {
+                return rewindSupply(project, job, supplier, jobs, evidence, job.chest);
+            }
+            if (stage.work.kind != Kind.CRAFT && stage.work.kind != Kind.SMELT && stage.work.kind != Kind.GATHER) return false;
+        }
+        return false;
+    }
+
     private void recoverMissingSuppliers(String world, long now) throws IOException {
         for (Project project : List.copyOf(projects.values())) {
             if (project.supplyChest == null || !world.equals(project.world)) continue;
@@ -1268,7 +1299,8 @@ final class ProjectQueue {
                 && (rewind.contains(job.work.id) || job.work.kind == Kind.TRANSFER
                 && job.work.needs.stream().anyMatch(rewind::contains)))) return false;
         var recoveries = new HashMap<>(project.supplyRecoveries);
-        int attempts = recoveries.getOrDefault(root, 0);
+        String recoveryKey = missingProductionInput(waiting, evidence) ? "production-inputs:" + waiting.work.id : root;
+        int attempts = recoveries.getOrDefault(recoveryKey, 0);
         if (GATHER_TOOLS_NEEDED.equals(evidence)) {
             var source = gatherSource(waiting.work.payload);
             String checkpoint = "tool-depth:" + waiting.work.id;
@@ -1285,7 +1317,7 @@ final class ProjectQueue {
                     evidence + " after " + attempts + " supply recoveries", observation, site));
             return true;
         }
-        recoveries.put(root, attempts + 1);
+        recoveries.put(recoveryKey, attempts + 1);
         rewind.add(waiting.work.id);
         var updated = project.jobs.stream().map(job -> {
             if (!rewind.contains(job.work.id)) return job;
@@ -1384,8 +1416,18 @@ final class ProjectQueue {
     }
 
     synchronized int retryInterruptedProduction(String world, String id) throws IOException {
-        return retryFailures(world, id, job -> (job.work.kind == Kind.CRAFT || job.work.kind == Kind.SMELT)
+        int reopened = retryFailures(world, id, job -> (job.work.kind == Kind.CRAFT || job.work.kind == Kind.SMELT)
                 && (LEASE_EXPIRED.equals(job.evidence) || TARGET_TIMEOUT.equals(job.evidence)));
+        var project = projects.get(id);
+        for (var job : project.jobs) {
+            if (job.state != State.FAILED || !missingProductionInput(job, job.evidence)) continue;
+            var current = projects.get(id);
+            var failed = find(current, job.work.id);
+            if (failed.state != State.FAILED) continue;
+            if (current.supplyChest != null && reservedStorage(current) == null) checkStorage(world, current.supplyChest);
+            if (recoverMissingProduction(current, failed, failed.evidence)) reopened++;
+        }
+        return reopened;
     }
 
     private static boolean placementApproachFailure(Job job) {

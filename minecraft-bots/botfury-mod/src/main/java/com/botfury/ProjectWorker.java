@@ -41,8 +41,8 @@ final class ProjectWorker {
     private static ProjectWater.Fill fill;
     private static ProjectChest chest;
     private static ProjectProduction production;
-    private static FieldWorkbench fieldWorkbench;
-    private static long nextWorkbenchSearch;
+    private static FieldWorkstation fieldWorkstation;
+    private static long nextWorkstationSearch;
     private static ProjectGather gather;
     private static boolean checkedCarriedFuel;
     private static ProjectQueue.ResourceSite gatherSite;
@@ -177,8 +177,8 @@ final class ProjectWorker {
         fill = null;
         chest = null;
         production = null;
-        fieldWorkbench = null;
-        nextWorkbenchSearch = 0;
+        fieldWorkstation = null;
+        nextWorkstationSearch = 0;
         gather = null;
         checkedCarriedFuel = false;
         gatherSite = null;
@@ -200,7 +200,7 @@ final class ProjectWorker {
         releaseCentering(client);
         if (chest != null) chest.close(client);
         if (production != null) production.close(client);
-        if (fieldWorkbench != null) fieldWorkbench.close(client);
+        if (fieldWorkstation != null) fieldWorkstation.close(client);
         if (pickup != null) pickup.stop();
         if (gather != null && MiningTask.active()) MiningTask.stop();
         if (breaking && client.interactionManager != null) client.interactionManager.cancelBlockBreaking();
@@ -296,38 +296,39 @@ final class ProjectWorker {
         } else if (production != null) {
             var result = block == null ? production.tick(client, now) : production.finishedFromInventory(client);
             if (result != null) finish(client, result.success(), result.detail());
-            else if (block != null && !prepareLocalWorkbench(client, now)) execute(client, now);
+            else if (block != null && !prepareFieldWorkstation(client, now)) execute(client, now);
         } else execute(client, now);
     }
 
-    private static boolean prepareLocalWorkbench(MinecraftClient client, long now) {
-        if (assignment.job().work().kind() != ProjectQueue.Kind.CRAFT) return false;
-        if (fieldWorkbench == null && now >= nextWorkbenchSearch
+    private static boolean prepareFieldWorkstation(MinecraftClient client, long now) {
+        var kind = assignment.job().work().kind();
+        String stationName = kind == ProjectQueue.Kind.SMELT ? "furnace" : "workbench";
+        if (fieldWorkstation == null && now >= nextWorkstationSearch
                 && !block.target().isWithinDistance(client.player.getBlockPos(), 16)) {
-            nextWorkbenchSearch = now + seconds(8);
-            var nearby = FieldWorkbench.find(client, now);
+            nextWorkstationSearch = now + seconds(8);
+            var nearby = FieldWorkstation.find(client, now, kind);
             if (nearby != null) {
                 halt(client);
-                fieldWorkbench = nearby;
+                fieldWorkstation = nearby;
             }
         }
-        if (fieldWorkbench == null) return false;
-        var state = fieldWorkbench.tick(client, now);
-        if (state == FieldWorkbench.State.WORKING) {
-            status = assignment.project() + "/" + assignment.job().work().id() + ": Setting up a nearby workbench";
+        if (fieldWorkstation == null) return false;
+        var state = fieldWorkstation.tick(client, now);
+        if (state == FieldWorkstation.State.WORKING) {
+            status = assignment.project() + "/" + assignment.job().work().id() + ": Setting up a nearby " + stationName;
             return true;
         }
-        if (state == FieldWorkbench.State.READY) {
-            block = fieldWorkbench.station();
+        if (state == FieldWorkstation.State.READY) {
+            block = fieldWorkstation.station();
             production = production.atStation(block);
             interactionStand = null;
             interactionGoals = List.of();
             rejectedInteractionStands.clear();
-            BotEvents.add("info", "projects", "Using nearby workbench at " + block.target().toShortString());
+            BotEvents.add("info", "projects", "Using nearby " + stationName + " at " + block.target().toShortString());
         }
-        fieldWorkbench.close(client);
-        fieldWorkbench = null;
-        nextWorkbenchSearch = now + seconds(15);
+        fieldWorkstation.close(client);
+        fieldWorkstation = null;
+        nextWorkstationSearch = now + seconds(15);
         return false;
     }
 

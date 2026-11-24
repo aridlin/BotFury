@@ -39,8 +39,6 @@ final class SubsurfaceAccess {
     private static final int HARVEST_RESERVE = 20;
     private static final int ASCENT_CHECKPOINT = 12;
     private static final int DESCENT_RECOVERY_TICKS = 240;
-    private static final int DESCENT_BATCH_STEPS = 4;
-    private static final int NO_DESCENT_BATCH = Integer.MAX_VALUE;
     private static final int[] ROUTE_DISTANCES = {5, 3, 7};
     private static final int[] ROUTE_OFFSETS = {0, -2, 2};
     private BlockPos origin;
@@ -57,12 +55,13 @@ final class SubsurfaceAccess {
     private int routeFailures;
     private int lowestProspectingY = Integer.MAX_VALUE;
     private int nextDescentRecovery;
-    private int descentBatchFloor = NO_DESCENT_BATCH;
+    private boolean localDescent;
     private final java.util.LinkedHashSet<Passage> attemptedPassages = new java.util.LinkedHashSet<>();
 
     boolean active() { return settings != null; }
     boolean openingReturnStep() { return passage != null && passage.climbing(); }
     boolean followingNaturalAscent() { return ascentGoal != Integer.MIN_VALUE; }
+    boolean continuingLocalDescent() { return localDescent; }
 
     static boolean deepResource(String resource) {
         return Integer.valueOf(-54).equals(prospectingAltitude(resource));
@@ -199,7 +198,7 @@ final class SubsurfaceAccess {
                 routeFailures = 0;
             }
             if (arrived && destinationHint != null) heading = 0;
-            if (!arrived) descentBatchFloor = NO_DESCENT_BATCH;
+            if (!arrived) localDescent = false;
             stopRoute();
             if (natural) return false;
         }
@@ -219,16 +218,16 @@ final class SubsurfaceAccess {
         }
         int initial = Math.floorMod(client.player.getUuid().hashCode(), HEADINGS.length);
         int preferredHeading = initial + heading / 2;
-        if (descending && position.getY() > descentBatchFloor
+        if (descending && localDescent
                 && openPassage(client, age, position, area, preferredHeading, -1)) return true;
-        descentBatchFloor = NO_DESCENT_BATCH;
+        localDescent = false;
         // A cave can bring a path back at a different X/Z without reaching a lower layer.
         boolean stalledDescent = descending && lowestProspectingY != Integer.MAX_VALUE && age >= nextDescentRecovery;
         if (stalledDescent || routeFailures >= 2 && position.equals(stalledAt)) {
             boolean openedDescent = descending && openPassage(client, age, position, area, preferredHeading, -1);
             if (openedDescent) {
-                descentBatchFloor = Math.max(height, position.getY() - DESCENT_BATCH_STEPS);
-                BotEvents.add("debug", "mining", "Continuing local descent toward Y " + descentBatchFloor);
+                localDescent = true;
+                BotEvents.add("debug", "mining", "Continuing local descent toward Y " + height);
             }
             if (openedDescent || openPassage(client, age, position, area, preferredHeading, 0)) {
                 if (stalledDescent) {
@@ -368,19 +367,19 @@ final class SubsurfaceAccess {
         if (age >= passageDeadline || !hasFooting(client) || client.currentScreen != null
                 || !position.equals(opening.from()) || !safePassage(client, opening, area)) {
             stopPassage();
-            descentBatchFloor = NO_DESCENT_BATCH;
+            localDescent = false;
             return false;
         }
         if (passageOpen(client, opening)) {
             stopPassage();
             if (start(client, position, List.of(opening.to()), area, age, opening.climbing())) return true;
-            descentBatchFloor = NO_DESCENT_BATCH;
+            localDescent = false;
             return false;
         }
         var ray = passageHit(client, opening, area);
         if (ray == null || !preparePassageHit(client, ray, opening.climbing())) {
             stopPassage();
-            descentBatchFloor = NO_DESCENT_BATCH;
+            localDescent = false;
             return false;
         }
         client.player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, ray.getPos());
@@ -588,7 +587,7 @@ final class SubsurfaceAccess {
 
     void stop() {
         stopPassage();
-        descentBatchFloor = NO_DESCENT_BATCH;
+        localDescent = false;
         stopRoute();
     }
 

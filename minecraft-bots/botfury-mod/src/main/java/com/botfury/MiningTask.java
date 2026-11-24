@@ -507,7 +507,7 @@ final class MiningTask {
                 }
                 stopPath();
             }
-            if (tryNaturalDescent(client, depth)) return;
+            if (!subsurface.continuingLocalDescent() && tryNaturalDescent(client, depth)) return;
             if (subsurface.advance(client, age, depth, excluded)) {
                 status = "Prospecting for " + job.resource + " toward Y " + depth;
                 return;

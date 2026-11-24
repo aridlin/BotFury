@@ -223,7 +223,7 @@ final class ProjectQueue {
     private static final int GATHERING_RETRY_RADIUS = 64;
     private static final int GATHERING_RETRY_CLIMB = 12;
     private static final int FAILED_SITE_RADIUS = 12;
-    private static final long GATHER_RECONNECT_GRACE_MS = 30_000;
+    private static final long WORKER_RECONNECT_GRACE_MS = 30_000;
     private final Path journal;
     private final Path archive;
     private final Map<String, Long> workerSeen = new HashMap<>();
@@ -1110,6 +1110,7 @@ final class ProjectQueue {
                 boolean equippedRetry = excavationMaterial != null && hasExcavationTool.test(excavationMaterial);
                 if (excavationMaterial != null && !equippedRetry) continue;
                 if (job.state != State.WAITING && !nearbyPickup && !nearbyCleanup
+                        && !canResumeExpiredProduction(job, worker)
                         && !(equippedRetry && job.state == State.FAILED && job.attempts == MAX_ATTEMPTS)) continue;
                 if (!done.containsAll(job.work.needs)) {
                     if (job.work.kind == Kind.TRANSFER && job.work.needs.size() > 1 && !blocked.contains(job.work.id)
@@ -2914,12 +2915,14 @@ final class ProjectQueue {
                     }
                     if (handoff != null) {
                         jobs.set(i, new Job(job.work, State.WAITING, Math.max(0, job.attempts - 1), handoff, null,
-                                job.expiresAt + GATHER_RECONNECT_GRACE_MS, GATHER_REASSIGNED, job.chest, job.resourceSite));
+                                job.expiresAt + WORKER_RECONNECT_GRACE_MS, GATHER_REASSIGNED, job.chest, job.resourceSite));
                         continue;
                     }
                     if (job.gatheringAfterPickup != null) {
                         waiting = new Job(job.gatheringAfterPickup, State.FAILED, job.attempts, null, null, 0,
                                 GATHER_STALLED, job.chest);
+                    } else if (productionWork(job.work) && job.attempts > MAX_ATTEMPTS) {
+                        waiting = retry(job, LEASE_EXPIRED, job.chest, job.resourceSite);
                     } else if (restored && job.attempts == MAX_ATTEMPTS + 1 && job.work.constructionMaterial != null) {
                         waiting = new Job(job.work, State.FAILED, MAX_ATTEMPTS, null, null, 0,
                                 TARGET_TIMEOUT, job.chest, job.resourceSite);
@@ -2933,7 +2936,13 @@ final class ProjectQueue {
                             && job.resourceSite != null && gatherSource(job.work.payload) != null) {
                         // The original gatherer may reconnect with partial cargo still in inventory.
                         waiting = new Job(job.work, State.WAITING, waiting.attempts, job.worker, null,
-                                job.expiresAt + GATHER_RECONNECT_GRACE_MS, waiting.evidence, job.chest, job.resourceSite);
+                                job.expiresAt + WORKER_RECONNECT_GRACE_MS, waiting.evidence, job.chest, job.resourceSite);
+                    }
+                    if (productionWork(job.work)) {
+                        // The former owner can still hold the output of an unacknowledged action.
+                        long grace = waiting.state == State.WAITING ? job.expiresAt + WORKER_RECONNECT_GRACE_MS : 0;
+                        waiting = new Job(job.work, waiting.state, waiting.attempts, job.worker, null, grace,
+                                waiting.evidence, waiting.chest, waiting.resourceSite);
                     }
                     jobs.set(i, waiting);
                 }
@@ -3040,10 +3049,23 @@ final class ProjectQueue {
         return new Job(job.work, state, job.attempts, null, null, 0, reason, chest, site);
     }
 
+    private static boolean productionWork(Work work) {
+        return work.kind == Kind.CRAFT || work.kind == Kind.SMELT;
+    }
+
+    private static boolean canResumeExpiredProduction(Job job, String worker) {
+        if (!productionWork(job.work) || job.state != State.FAILED || job.attempts != MAX_ATTEMPTS
+                || !LEASE_EXPIRED.equals(job.evidence)) return false;
+        // Older journals retained the owner only in the prerequisite. Claim also checks that pin.
+        return job.worker == null ? job.work.sameWorkerAs != null : worker.equalsIgnoreCase(job.worker);
+    }
+
     private static boolean retryDelayedFor(Job job, String worker, long now) {
         if (job.expiresAt <= now) return false;
         if (RECOVERING_TOOLS.equals(job.evidence) || CONSTRUCTION_PICKUP.equals(job.evidence)
-                || gatherReconnectPending(job, now)) {
+                || gatherReconnectPending(job, now)
+                || productionWork(job.work) && job.worker != null
+                    && (LEASE_EXPIRED.equals(job.evidence) || COORDINATOR_RESTARTED.equals(job.evidence))) {
             return !worker.equalsIgnoreCase(job.worker);
         }
         return !GATHER_STALLED.equals(job.evidence) || worker.equalsIgnoreCase(job.worker);

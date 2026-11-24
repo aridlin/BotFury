@@ -1606,6 +1606,49 @@ class ProjectQueueTest {
         assertEquals("ore", restored.claim(WORLD, "replacement", Set.of(GATHER), now).job().work().id());
     }
 
+    @Test void returningProducerReconcilesOnceAfterLastLeaseExpires() throws Exception {
+        for (var kind : List.of(CRAFT, SMELT)) {
+            var journal = directory.resolve("interrupted-" + kind + ".json");
+            var board = new ProjectQueue(journal);
+            board.submit("orders", WORLD, List.of(job("work", kind, List.of())));
+            var lease = board.claim(WORLD, "maker", Set.of(kind), 1).job();
+            assertNull(board.claim(WORLD, "other", Set.of(kind), lease.expiresAt()));
+            for (int attempt = 2; attempt <= 3; attempt++) {
+                lease = board.claim(WORLD, "maker", Set.of(kind), lease.expiresAt() + 1).job();
+                assertEquals(attempt, lease.attempts());
+            }
+            long now = lease.expiresAt();
+            assertNull(board.claim(WORLD, "other", Set.of(kind), now));
+            board = new ProjectQueue(journal);
+            assertNull(board.claim(WORLD, "other", Set.of(kind), now + 60_000));
+            var resumed = board.claim(WORLD, "maker", Set.of(kind), now + 60_001).job();
+            assertEquals(4, resumed.attempts());
+            assertNotEquals(lease.lease(), resumed.lease());
+            assertFalse(board.finish("orders", "work", lease.lease(), true, "Late report", now + 60_002));
+            board = new ProjectQueue(journal);
+            assertNull(board.claim(WORLD, "maker", Set.of(kind), resumed.expiresAt()));
+        }
+    }
+
+    @Test void oldProductionJournalUsesTheRecordedSupplierToIdentifyTheMaker() throws Exception {
+        var journal = directory.resolve("old-production.json");
+        var board = new ProjectQueue(journal);
+        board.submit("orders", WORLD, List.of(job("supplies", GATHER, List.of()),
+                new ProjectQueue.Work("tool", CRAFT, "{}", List.of("supplies"), Set.of(), "supplies")));
+        var source = board.claim(WORLD, "maker", Set.of(GATHER), 1).job();
+        assertTrue(board.finish("orders", "supplies", source.lease(), true, "Held materials", 2));
+        var saved = com.google.gson.JsonParser.parseString(Files.readString(journal)).getAsJsonObject();
+        var tool = saved.getAsJsonObject("projects").getAsJsonObject("orders").getAsJsonArray("jobs").get(1).getAsJsonObject();
+        tool.addProperty("state", "FAILED");
+        tool.addProperty("attempts", 3);
+        tool.addProperty("evidence", "Worker lease expired");
+        Files.writeString(journal, saved.toString());
+        board = new ProjectQueue(journal);
+        assertNull(board.claim(WORLD, "other", Set.of(CRAFT), 3));
+        var resumed = board.claim(WORLD, "maker", Set.of(CRAFT), 4).job();
+        assertTrue(board.finish("orders", "tool", resumed.lease(), true, "Observed tool", 5));
+    }
+
     @Test void retriesInterruptedProductionWithoutReopeningRecipeFailures() throws Exception {
         var board = new ProjectQueue(directory.resolve("production-retry.json"));
         board.submit("tools", WORLD, List.of(job("craft", CRAFT, List.of()), job("smelt", SMELT, List.of())));

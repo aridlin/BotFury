@@ -533,7 +533,7 @@ final class ProjectWorker {
                 }
             }
         } else if (production != null) {
-            var result = block == null ? production.tick(client, now) : production.finishedFromInventory(client);
+            var result = block == null ? production.tick(client, now) : production.beforeApproach(client, now);
             if (result != null) finishProduction(client, result, now);
             else if (block != null && !prepareFieldWorkstation(client, now)) execute(client, now);
         } else execute(client, now);

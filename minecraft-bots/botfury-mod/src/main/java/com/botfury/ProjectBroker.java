@@ -503,7 +503,7 @@ final class ProjectBroker {
                     var position = workerPosition(request.worker);
                     int returnRevision = Math.max(0, Math.min(request.returnRouteRevision, SubsurfaceAccess.RETURN_ROUTE_REVISION));
                     var assignment = request.kinds.contains(ProjectQueue.Kind.TRANSFER)
-                            ? board.offerCheckpointDeposit(world, request.worker, request.project, now,
+                            ? board.offerUrgentMiningDeposit(world, request.worker, request.project, now,
                                 position, ProjectBroker::heldCount, returnRevision) : null;
                     if (assignment == null) assignment = board.claim(world, request.worker, request.kinds,
                             request.project, now, position, material -> hasExcavationTool(request.toolUses, material),

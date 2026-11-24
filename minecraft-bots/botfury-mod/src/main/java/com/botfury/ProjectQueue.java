@@ -1999,6 +1999,15 @@ final class ProjectQueue {
         return offerInterruptedDeposit(world, worker, projectId, now, position, heldCount, CargoRecovery.CHECKPOINT, returnRevision);
     }
 
+    synchronized Assignment offerUrgentMiningDeposit(String world, String worker, String projectId, long now,
+                                                      ResourceSite position,
+                                                      java.util.function.ToIntBiFunction<String, String> heldCount,
+                                                      int returnRevision) throws IOException {
+        var checkpoint = offerCheckpointDeposit(world, worker, projectId, now, position, heldCount, returnRevision);
+        return checkpoint != null ? checkpoint : offerInterruptedDeposit(world, worker, projectId, now, position,
+                heldCount, CargoRecovery.TOOL_FAILURE, returnRevision);
+    }
+
     private Assignment offerInterruptedDeposit(String world, String worker, String projectId, long now,
                                                ResourceSite position,
                                                java.util.function.ToIntBiFunction<String, String> heldCount,
@@ -2043,7 +2052,39 @@ final class ProjectQueue {
                 var assignment = offerContribution(project, gather, deposit, source.item, worker,
                         held, true, now, position, coveringActiveGather, returnRevision);
                 if (assignment != null) return assignment;
+                if (interrupted && (checkpoint || missingTools)) {
+                    assignment = offerEarlierContribution(project, deposit, source.item, worker, held,
+                            now, position, returnRevision);
+                    if (assignment != null) return assignment;
+                }
             }
+        }
+        return null;
+    }
+
+    private Assignment offerEarlierContribution(Project project, Job blockedDeposit, String item, String worker,
+                                                int held, long now, ResourceSite position, int returnRevision) throws IOException {
+        var pending = new ArrayDeque<>(blockedDeposit.work.needs);
+        var visited = new HashSet<String>();
+        while (!pending.isEmpty()) {
+            String id = pending.removeFirst();
+            if (!visited.add(id)) continue;
+            var deposit = find(project, id);
+            if (deposit.state == State.DONE || deposit.work.kind != Kind.TRANSFER
+                    || !deposit.work.locks.contains(project.supplyChest) || !depositTarget(deposit)) continue;
+            var target = transferTarget(deposit);
+            if (target == null || !item.equals(target.item)) continue;
+            var gather = deposit.work.sameWorkerAs == null ? null : find(project, deposit.work.sameWorkerAs);
+            if (deposit.state == State.WAITING && gather != null && gather.work.kind == Kind.GATHER
+                    && (gather.state == State.WAITING || gather.state == State.FAILED)) {
+                var source = gatherSource(gather.work.payload);
+                if (source != null && item.equals(source.item)) {
+                    var assignment = offerContribution(project, gather, deposit, item, worker, held,
+                            true, now, position, false, returnRevision);
+                    if (assignment != null) return assignment;
+                }
+            }
+            pending.addAll(deposit.work.needs);
         }
         return null;
     }

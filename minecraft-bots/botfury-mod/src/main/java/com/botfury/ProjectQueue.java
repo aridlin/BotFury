@@ -135,6 +135,8 @@ final class ProjectQueue {
     private static final String COORDINATOR_RESTARTED = "Coordinator restarted during work";
     private static final String GATHER_HANDOFF = "Gathering handoff to ";
     private static final String GATHER_REASSIGNED = "Gathering reassigned to a worker with cargo";
+    private static final String CONTRIBUTION_ACTIVE = "Delivering a partial stock contribution";
+    private static final String CONTRIBUTION_SETTLED = "Partial stock contribution settled";
     static final String TARGET_TIMEOUT = "Timed out approaching or changing the target";
     static final String GATHER_STALLED = "Gathering stalled without item or route progress";
     static final String GATHER_TOOLS_NEEDED = "Gathering needs renewed tools";
@@ -610,11 +612,11 @@ final class ProjectQueue {
         return false;
     }
 
-    synchronized void offerGatheringHandoff(String world, String worker, String projectId, long now,
-                                           java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
+    synchronized Assignment offerGatheringHandoff(String world, String worker, String projectId, long now,
+                                                  java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
         if (projects.values().stream().flatMap(project -> project.jobs.stream()).anyMatch(job ->
                 job.state == State.LEASED && (worker.equalsIgnoreCase(job.worker)
-                        || worker.equalsIgnoreCase(handoffWorker(job))))) return;
+                        || worker.equalsIgnoreCase(handoffWorker(job))))) return null;
         for (Project project : projects.values()) {
             if (!world.equals(project.world) || cancelled(project)
                     || projectId != null && !projectId.equals(project.id)) continue;
@@ -627,16 +629,47 @@ final class ProjectQueue {
                 int candidate = heldCount.applyAsInt(worker, source.item);
                 if (candidate < 16) continue;
                 int current = heldCount.applyAsInt(job.worker, source.item);
-                if (current < 0 || candidate < current + 16 || candidate <= 2 * current) continue;
-                if (project.jobs.stream().noneMatch(deposit -> deposit.state == State.WAITING
-                        && deposit.work.kind == Kind.TRANSFER && job.work.id.equals(deposit.work.sameWorkerAs)
-                        && depositTarget(deposit))) continue;
+                if (current < 0) continue;
+                var deposit = project.jobs.stream().filter(entry -> entry.state == State.WAITING
+                        && entry.work.kind == Kind.TRANSFER && job.work.id.equals(entry.work.sameWorkerAs)
+                        && depositTarget(entry)).findFirst().orElse(null);
+                if (deposit == null) continue;
+                if (candidate < current + 16 || candidate <= 2 * current) {
+                    var contribution = offerContribution(project, job, deposit, source.item, worker, current + candidate, now);
+                    if (contribution != null) return contribution;
+                    continue;
+                }
                 // Keep the current lease valid through its signed deadline. The new worker must wait.
                 replace(project, new Job(job.work, State.LEASED, job.attempts, job.worker, job.lease, job.expiresAt,
                         GATHER_HANDOFF + worker, job.chest, job.resourceSite));
-                return;
+                return null;
             }
         }
+        return null;
+    }
+
+    private Assignment offerContribution(Project project, Job gather, Job deposit, String item, String worker,
+                                         int carriedTotal, long now) throws IOException {
+        if (project.repeat != null || project.supplyChest == null || deposit.chest != null || deposit.attempts != 0
+                || !deposit.work.locks.contains(project.supplyChest) || CONTRIBUTION_SETTLED.equals(deposit.evidence)
+                || project.jobs.stream().anyMatch(job -> job != deposit && job.work.needs.contains(gather.work.id))) return null;
+        var target = transferTarget(deposit);
+        var payload = JSON.fromJson(gather.work.payload, com.google.gson.JsonObject.class);
+        if (target == null || !item.equals(target.item) || !payload.has("count")) return null;
+        int goal = payload.get("count").getAsInt();
+        if (carriedTotal < goal || ownChestContributionBlocked(project, gather, deposit)) return null;
+        var assigned = new Job(deposit.work, State.LEASED, deposit.attempts, worker, UUID.randomUUID(), now + LEASE_MS,
+                CONTRIBUTION_ACTIVE, null);
+        replace(project, assigned);
+        return new Assignment(project.id, project.world, assigned);
+    }
+
+    private boolean ownChestContributionBlocked(Project project, Job gather, Job deposit) {
+        if (deposit.work.needs.stream().anyMatch(dep -> !dep.equals(gather.work.id)
+                && find(project, dep).state != State.DONE)) return true;
+        return projects.values().stream().filter(other -> other.world.equals(project.world))
+                .flatMap(other -> other.jobs.stream()).anyMatch(job -> job.state == State.LEASED
+                        && !Collections.disjoint(deposit.work.locks, job.work.locks));
     }
 
     private static boolean depositTarget(Job job) {
@@ -728,7 +761,7 @@ final class ProjectQueue {
         Job job = find(project, jobId);
         if (!owns(job, token, now) || cancelled(project) || handoffWorker(job) != null) return null;
         Job renewed = new Job(job.work, State.LEASED, job.attempts, job.worker,
-                job.lease, now + LEASE_MS, null, job.chest, gatheringSite(job, site));
+                job.lease, now + LEASE_MS, job.evidence, job.chest, gatheringSite(job, site));
         replace(project, renewed);
         restoredLeases.remove(token);
         markAssignmentSeen(project, job.worker, now);
@@ -774,6 +807,12 @@ final class ProjectQueue {
         }
         var observation = chest == null ? job.chest : new ChestObservation(chest, now);
         var location = gatheringSite(job, site);
+        if (CONTRIBUTION_ACTIVE.equals(job.evidence)) {
+            settleContribution(project, job, evidence, observation, now);
+            markAssignmentSeen(project, job.worker, now);
+            restoredLeases.remove(token);
+            return true;
+        }
         if (!success && GATHER_TOOLS_NEEDED.equals(evidence) && recoverGatheringTools(project, job, location, now)) {
             markAssignmentSeen(project, job.worker, now);
             restoredLeases.remove(token);
@@ -899,15 +938,45 @@ final class ProjectQueue {
         String production = deposit ? transfer.work.sameWorkerAs
                 : "TAKE".equals(target.direction) && transfer.work.needs.size() == 1 ? transfer.work.needs.get(0) : null;
         if (production == null) return false;
-        int stock = "any_logs".equals(target.item)
-                ? ResourceCatalog.blocks(target.item, "both").stream().mapToInt(id -> chest.items.getOrDefault(id, 0)).sum()
-                : chest.items.getOrDefault(target.item, 0);
+        int stock = stockCount(chest, target.item);
         if (stock >= target.stock) return false;
 
         var jobs = new HashMap<String, Job>();
         project.jobs.forEach(job -> jobs.put(job.work.id, job));
         var prerequisite = jobs.get(production);
         return rewindSupply(project, transfer, prerequisite, jobs, evidence, observation);
+    }
+
+    private static int stockCount(ChestReport chest, String item) {
+        return "any_logs".equals(item)
+                ? ResourceCatalog.blocks(item, "both").stream().mapToInt(id -> chest.items.getOrDefault(id, 0)).sum()
+                : chest.items.getOrDefault(item, 0);
+    }
+
+    private void settleContribution(Project project, Job deposit, String evidence, ChestObservation observation,
+                                    long now) throws IOException {
+        var target = transferTarget(deposit);
+        var gather = find(project, deposit.work.sameWorkerAs);
+        int remaining = observation == null ? target.stock : target.stock - stockCount(observation.report, target.item);
+        var result = new Job(deposit.work, remaining <= 0 ? State.DONE : State.WAITING, deposit.attempts,
+                remaining <= 0 ? deposit.worker : null, remaining <= 0 ? deposit.lease : null, 0,
+                remaining <= 0 ? evidence : CONTRIBUTION_SETTLED, observation);
+        var jobs = new ArrayList<>(project.jobs);
+        jobs.set(jobs.indexOf(deposit), result);
+        if (observation != null && (gather.state == State.WAITING || gather.state == State.LEASED)) {
+            var work = gather.work;
+            var payload = JSON.fromJson(work.payload, com.google.gson.JsonObject.class);
+            int outstanding = Math.max(1, remaining);
+            if (outstanding < payload.get("count").getAsInt()) {
+                payload.addProperty("count", outstanding);
+                var adjusted = new Work(work.id, work.kind, JSON.toJson(payload), work.needs, work.locks, work.sameWorkerAs);
+                String retry = gather.state == State.LEASED && gather.expiresAt > now
+                        ? GATHER_HANDOFF + gather.worker : gather.evidence;
+                jobs.set(jobs.indexOf(gather), new Job(adjusted, gather.state, gather.attempts, gather.worker,
+                        gather.lease, gather.expiresAt, retry, gather.chest, gather.resourceSite));
+            }
+        }
+        commit(project.withJobs(jobs));
     }
 
     private void recoverMissingBuildCargo(String world) throws IOException {
@@ -1080,6 +1149,11 @@ final class ProjectQueue {
                     Job waiting;
                     boolean restored = restoredLeases.contains(job.lease);
                     if (restored) interrupted.add(job.lease);
+                    if (CONTRIBUTION_ACTIVE.equals(job.evidence)) {
+                        jobs.set(i, new Job(job.work, State.WAITING, job.attempts, null, null, 0,
+                                CONTRIBUTION_SETTLED, job.chest));
+                        continue;
+                    }
                     if (handoff != null) {
                         jobs.set(i, new Job(job.work, State.WAITING, Math.max(0, job.attempts - 1), handoff, null,
                                 job.expiresAt + GATHER_RECONNECT_GRACE_MS, GATHER_REASSIGNED, job.chest, job.resourceSite));

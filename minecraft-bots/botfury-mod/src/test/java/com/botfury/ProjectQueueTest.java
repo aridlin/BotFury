@@ -1566,7 +1566,7 @@ class ProjectQueueTest {
         var board = new ProjectQueue(journal);
         var prior = job("old-tool", CRAFT, List.of());
         var wood = new ProjectQueue.Work("logs", GATHER,
-                "{\"resource\":\"any_logs\",\"variant\":\"both\",\"item\":\"any_logs\"}", List.of("old-tool"), Set.of(), "old-tool");
+                "{\"resource\":\"any_logs\",\"variant\":\"both\",\"item\":\"any_logs\",\"count\":3}", List.of("old-tool"), Set.of(), "old-tool");
         var ladder = new ProjectQueue.Work("ladders", CRAFT, "{\"recipe\":\"minecraft:ladder\"}",
                 List.of("logs"), Set.of(), "logs");
         board.submitSupplied("order", WORLD, List.of(prior, wood, ladder), "block:1,64,0");
@@ -1576,7 +1576,9 @@ class ProjectQueueTest {
         var sticks = Set.of("minecraft:stick");
         assertNull(board.claim(WORLD, "helper", Set.of(CRAFT, GATHER), 4));
         var request = board.carriedCraftCandidates(WORLD, 5).get(0);
-        assertTrue(board.offerCarriedCraftHandoff(WORLD, request, "helper", sticks, (w,i) -> 0, 5));
+        assertFalse(board.offerCarriedCraftHandoff(WORLD, request, "helper", sticks, (w,i) -> -1, 5));
+        assertFalse(board.offerCarriedCraftHandoff(WORLD, request, "helper", sticks, (w,i) -> 3, 5));
+        assertTrue(board.offerCarriedCraftHandoff(WORLD, request, "helper", sticks, (w,i) -> 2, 5));
         board = new ProjectQueue(journal);
         assertNull(board.renew("order", "logs", gather.lease(), 6));
         assertTrue(board.carriedCraftCandidates(WORLD, gather.expiresAt() - 1).isEmpty());

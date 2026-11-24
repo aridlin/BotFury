@@ -85,6 +85,7 @@ final class ProjectQueue {
         }
     }
     private record GatherSource(String resource, String variant, String item) {}
+    private record GatherQuantity(Integer count) {}
     record ChestReport(String location, Map<String, Integer> items, Integer free) {
         ChestReport(String location, Map<String, Integer> items) { this(location, items, null); }
 
@@ -1745,7 +1746,11 @@ final class ProjectQueue {
         var gather = path.get(path.size() - 1);
         var source = gatherSource(gather.work.payload);
         String key = "carried-handoff:" + craft.work.id;
-        if (source == null || gather.state != State.LEASED || heldCount.applyAsInt(request.worker, source.item) != 0
+        if (source == null || gather.state != State.LEASED) return false;
+        int held = heldCount.applyAsInt(request.worker, source.item);
+        var quantity = JSON.fromJson(gather.work.payload, GatherQuantity.class);
+        // Existing cargo stays with the gatherer. A complete or unknown count cannot be preempted.
+        if (held < 0 || held > 0 && (quantity.count == null || held >= quantity.count)
                 || project.supplyRecoveries.containsKey(key) && !project.supplyRecoveries.containsKey("carried-craft:" + craft.work.id)
                 || !Collections.disjoint(inputs, pendingBuildMaterials(world, helper))) return false;
         for (var other : projects.values()) {

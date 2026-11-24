@@ -186,6 +186,51 @@ class ProjectQueueTest {
         assertEquals("ingredients", queue.claim(WORLD, "replacement", Set.of(GATHER), now).job().work().id());
     }
 
+    @Test void anExhaustedMineCanBankCargoAndResumeWithFreshGearAtTheSameDepth() throws Exception {
+        var journal = directory.resolve("equipped-mine-recovery.json");
+        var queue = new ProjectQueue(journal);
+        String chest = "block:3,64,0";
+        String diamond = "minecraft:diamond";
+        queue.submitSupplied("stock", WORLD, List.of(job("ingredients", GATHER, List.of()),
+                new ProjectQueue.Work("tools", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\"}",
+                        List.of("ingredients"), Set.of(), "ingredients"),
+                new ProjectQueue.Work("ore", GATHER,
+                        "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":64}",
+                        List.of("tools"), Set.of(), "tools"),
+                new ProjectQueue.Work("deposit", TRANSFER,
+                        "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":64}",
+                        List.of("ore"), Set.of(chest), "ore")), chest);
+        long now = 1;
+        var site = new ProjectQueue.ResourceSite(6, -48, 8);
+        for (int i = 0; i < 3; i++) {
+            for (var kind : List.of(GATHER, CRAFT)) {
+                var supply = queue.claim(WORLD, "miner", Set.of(kind), now++).job();
+                assertTrue(queue.finish("stock", supply.work().id(), supply.lease(), true, "Done", now++));
+            }
+            var ore = queue.claim(WORLD, "miner", Set.of(GATHER), now++).job();
+            assertTrue(queue.finish("stock", "ore", ore.lease(), false, ProjectQueue.GATHER_TOOLS_NEEDED, null, site, now++));
+        }
+        var iron = java.util.Map.of("minecraft:iron_pickaxe", 150);
+        var stone = java.util.Map.of("minecraft:stone_pickaxe", 100);
+        assertNull(queue.offerEquippedMiner(WORLD, "helper", null, stone, now++));
+        queue = new ProjectQueue(journal);
+        var rescue = queue.offerEquippedMiner(WORLD, "helper", null, iron, now++).job();
+        assertEquals(site, rescue.resourceSite());
+        assertTrue(queue.finish("stock", "ore", rescue.lease(), false, ProjectQueue.GATHER_TOOLS_NEEDED, null, site, now++));
+        queue = new ProjectQueue(journal);
+        assertNull(queue.offerEquippedMiner(WORLD, "helper", null, iron, now++));
+
+        var delivery = queue.offerInterruptedDeposit(WORLD, "helper", null, now++, (bot, item) -> 4).job();
+        assertTrue(queue.finish("stock", "deposit", delivery.lease(), false, "Delivery is short by 60",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(diamond, 4)), null, true, now++));
+        queue = new ProjectQueue(journal);
+        rescue = queue.offerEquippedMiner(WORLD, "replacement", null, java.util.Map.of("minecraft:diamond_pickaxe", 200), now++).job();
+        assertEquals(site, rescue.resourceSite());
+        assertEquals(60, com.google.gson.JsonParser.parseString(rescue.work().payload()).getAsJsonObject().get("count").getAsInt());
+        assertTrue(queue.finish("stock", "ore", rescue.lease(), false, ProjectQueue.GATHER_TOOLS_NEEDED, null, site, now++));
+        assertEquals("ingredients", queue.claim(WORLD, "replacement", Set.of(GATHER), now).job().work().id());
+    }
+
     @Test void expiredGatheringWithASavedSiteAllowsTheOriginalWorkerToReconnect() throws Exception {
         for (boolean coordinatorRestart : new boolean[]{false, true}) {
             var journal = directory.resolve("gather-reconnect-" + coordinatorRestart + ".json");

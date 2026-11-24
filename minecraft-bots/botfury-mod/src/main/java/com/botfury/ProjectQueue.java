@@ -203,6 +203,7 @@ final class ProjectQueue {
     private static final String CONSTRUCTION_PICKUP = "Collecting replacement materials for a nearby builder";
     static final String ALTERNATIVE_FUEL = "Using carried smelting fuel ";
     static final String TARGET_TIMEOUT = "Timed out approaching or changing the target";
+    static final String PLACEMENT_REJECTED = "Placement was rejected at ";
     static final String GATHER_STALLED = "Gathering stalled without item or route progress";
     static final String EXCAVATION_TOOL_NEEDED = "No suitable tool in inventory for ";
     static final String GATHER_TOOLS_NEEDED = "Gathering needs renewed tools";
@@ -2614,6 +2615,7 @@ final class ProjectQueue {
 
     private static boolean placementApproachFailure(String evidence) {
         return evidence != null && (TARGET_TIMEOUT.equals(evidence)
+                || evidence.startsWith(PLACEMENT_REJECTED)
                 || evidence.startsWith("No reachable solid support face for "));
     }
 

@@ -8,6 +8,7 @@ import net.minecraft.block.FallingBlock;
 import net.minecraft.block.FenceGateBlock;
 import net.minecraft.block.HopperBlock;
 import net.minecraft.block.PillarBlock;
+import net.minecraft.block.ShapeContext;
 import net.minecraft.block.SlabBlock;
 import net.minecraft.block.enums.ChestType;
 import net.minecraft.block.enums.SlabType;
@@ -200,6 +201,9 @@ final class ProjectPlacement {
         var observed = client.world.getBlockState(target);
         if (ProjectShapedBlock.canOpen(observed, desired)) return open(client, target, desired);
         if (!observed.isAir() && !(ProjectWater.source(desired) && ProjectWater.water(observed))) return "Build target is occupied";
+        if (!ProjectWater.source(desired) && !client.world.canPlace(desired, target, ShapeContext.of(player))) {
+            return null;
+        }
         var hit = supportHit(client, block);
         if (hit == null) return "No reachable solid support face for " + target.toShortString();
         var support = hit.getBlockPos();
@@ -233,10 +237,13 @@ final class ProjectPlacement {
         }
         ActionResult result;
         try {
+            var context = new ItemPlacementContext(player, Hand.MAIN_HAND, player.getMainHandStack(), hit);
+            if (!context.getBlockPos().equals(target)) {
+                return "No reachable solid support face for " + target.toShortString();
+            }
             if (ProjectShapedBlock.recognized(desired)) {
-                var context = new ItemPlacementContext(player, Hand.MAIN_HAND, player.getMainHandStack(), hit);
                 var predicted = desired.getBlock().getPlacementState(context);
-                if (!context.getBlockPos().equals(target) || predicted == null
+                if (predicted == null
                         || !predicted.equals(desired) && !ProjectShapedBlock.canOpen(predicted, desired)
                         || !predicted.canPlaceAt(client.world, target)) {
                     return "Block cannot be placed in the requested state at " + target.toShortString();
@@ -249,7 +256,7 @@ final class ProjectPlacement {
                 player.networkHandler.sendPacket(new ClientCommandC2SPacket(player, ClientCommandC2SPacket.Mode.RELEASE_SHIFT_KEY));
             }
         }
-        if (!result.isAccepted()) return "Placement was rejected at " + target.toShortString();
+        if (!result.isAccepted()) return ProjectQueue.PLACEMENT_REJECTED + target.toShortString();
         player.swingHand(Hand.MAIN_HAND);
         return null;
     }

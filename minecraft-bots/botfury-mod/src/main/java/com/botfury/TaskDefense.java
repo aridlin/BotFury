@@ -1,13 +1,17 @@
 package com.botfury;
 
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor;
+import net.minecraft.util.math.Vec3d;
 import java.util.List;
 
 final class TaskDefense {
     record Config(boolean enabled,String server,String dimension,String owner,List<String> protectedNames) {}
     private static Config config;
     private static long receivedAt,holdUntil;
+    private static long lastWalkEvent;
     private static boolean pathPaused;
+    private static Vec3d walkingDirection;
     static Config parse(String value){
         String[] parts=value.split("\\|",-1);
         if(parts.length!=5||!java.util.Set.of("on","off").contains(parts[0])
@@ -23,22 +27,54 @@ final class TaskDefense {
                 &&client.player!=null&&client.world!=null&&client.player.isAlive()
                 &&config.server.equals(here.server())&&config.dimension.equals(here.dimension());
     }
-    static void cancelEvasion(){pathPaused=false;holdUntil=0;}
+    static void cancelEvasion(){
+        stopWalking(MinecraftClient.getInstance());
+        pathPaused=false;
+        holdUntil=0;
+    }
     static boolean evade(MinecraftClient client,boolean working){
         if(!eligible(client,working)){
             if(pathPaused)BaritoneClient.execute("stop");
             cancelEvasion();return false;
         }
-        if(System.nanoTime()<holdUntil)return true;
-        if(ThreatEvasion.dodge(client)){
+        if(walkingDirection!=null&&(!client.player.isOnGround()||client.currentScreen!=null)){
+            stopWalking(client);
+            holdUntil=0;
+        }
+        if(System.nanoTime()<holdUntil){
+            if(walkingDirection!=null)walk(client);
+            return true;
+        }
+        stopWalking(client);
+        var action=ThreatEvasion.dodge(client);
+        if(action!=null){
+            walkingDirection=action.walkingDirection();
             if(!pathPaused&&BaritoneClient.available())pathPaused=BaritoneClient.execute("pause");
             if(client.interactionManager!=null)client.interactionManager.cancelBlockBreaking();
             BotInventory.evaded();
-            holdUntil=System.nanoTime()+200_000_000L;
+            long now=System.nanoTime();
+            if(walkingDirection!=null){
+                walk(client);
+                if(now-lastWalkEvent>=5_000_000_000L){
+                    lastWalkEvent=now;
+                    BotEvents.add("info","defense","Stepping out of a projectile or blast path");
+                }
+            }
+            holdUntil=now+200_000_000L;
             return true;
         }
         if(pathPaused){BaritoneClient.execute("resume");pathPaused=false;}
         return false;
+    }
+
+    private static void walk(MinecraftClient client) {
+        client.player.lookAt(EntityAnchor.EYES, client.player.getEyePos().add(walkingDirection));
+        client.options.forwardKey.setPressed(true);
+    }
+
+    private static void stopWalking(MinecraftClient client) {
+        if(walkingDirection!=null)client.options.forwardKey.setPressed(false);
+        walkingDirection=null;
     }
     static boolean defendProject(MinecraftClient client) {
         return eligible(client, true) && client.player.currentScreenHandler == client.player.playerScreenHandler

@@ -34,6 +34,7 @@ final class BotInventory {
         manualPause = value;
     }
     private static int age, delivered, waitTicks;
+    private static boolean projectDelivery;
     private static Vec3d spreadGoal;
     private static final DroppedItemSearch pickup = new DroppedItemSearch();
     private static final StallRecovery routeRecovery = new StallRecovery();
@@ -76,6 +77,7 @@ final class BotInventory {
     }
 
     static String status() { return status; }
+    static int deliveredItems() { return delivered; }
     static void hold() { finish("Paused"); paused = true; }
     static void baritone(String command) { hold(); baritoneTask=true; status = "Baritone: " + command; }
     static void resume() { finish("Resumed formations"); paused = false; }
@@ -90,7 +92,18 @@ final class BotInventory {
     static void start(MinecraftClient client, Request request) {
         ProjectWorker.stop(client);
         MiningTask.stop();
+        begin(client, request);
+        projectDelivery = false;
+    }
+
+    static void startProjectDelivery(MinecraftClient client, Item item, String recipient, Destination destination) {
+        begin(client, new Request("deliver", item, 1, recipient, destination));
+        projectDelivery = true;
+    }
+
+    private static void begin(MinecraftClient client, Request request) {
         finish("");
+        delivered = 0;
         manualPause=false;lastRecipient=null;excessDropCenter=null;completion="Done";
         if (request.action.equals("stop")) { paused = false; status = "Stopped"; return; }
         if (client.player == null || client.world == null) { status = "Not in game"; return; }
@@ -157,7 +170,7 @@ final class BotInventory {
                 client.player.lookAt(EntityAnchorArgumentType.EntityAnchor.EYES, recipient.getEyePos());
                 client.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.LookAndOnGround(
                         client.player.getYaw(), client.player.getPitch(), client.player.isOnGround()));
-                delivered += drop(client, task.item, task.count - delivered, false);
+                delivered += projectDelivery ? dropProjectTool(client, task.item) : drop(client, task.item, task.count - delivered, false);
             }
             case "drop" -> {
                 if (delivered >= task.count || held == 0) { completion="Dropped "+delivered;spread(client);return; }
@@ -221,6 +234,23 @@ final class BotInventory {
             total += client.player.getInventory().getStack(i).getCount();
         return total;
     }
+    private static int dropProjectTool(MinecraftClient client, Item item) {
+        var player = client.player;
+        var inventory = player.getInventory();
+        for (int slot = 0; slot < 36; slot++) {
+            if (!inventory.getStack(slot).isOf(item)) continue;
+            if (slot >= 9) {
+                client.interactionManager.clickSlot(player.playerScreenHandler.syncId, slot,
+                        inventory.selectedSlot, SlotActionType.SWAP, player);
+                return 0;
+            }
+            inventory.selectedSlot = slot;
+            player.networkHandler.sendPacket(new net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket(slot));
+            return player.dropSelectedItem(false) ? 1 : 0;
+        }
+        return 0;
+    }
+
     private static int drop(MinecraftClient client, Item item, int amount, boolean otherItems) {
         if (client.interactionManager == null || amount <= 0) return 0;
         int total = 0;

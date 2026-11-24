@@ -34,7 +34,7 @@ final class ProjectWorker {
     private static final double[] JUMP_HEIGHTS = {.42, .76, 1, 1.15};
     private static final Gson JSON = new Gson();
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(750)).build();
-    private static final Set<ProjectQueue.Kind> KINDS = Set.of(ProjectQueue.Kind.EXCAVATE, ProjectQueue.Kind.VERIFY, ProjectQueue.Kind.INSPECT, ProjectQueue.Kind.FILL_BUCKETS, ProjectQueue.Kind.TRANSFER, ProjectQueue.Kind.BUILD, ProjectQueue.Kind.CRAFT, ProjectQueue.Kind.SMELT, ProjectQueue.Kind.GATHER);
+    private static final Set<ProjectQueue.Kind> KINDS = Set.of(ProjectQueue.Kind.EXCAVATE, ProjectQueue.Kind.VERIFY, ProjectQueue.Kind.INSPECT, ProjectQueue.Kind.FILL_BUCKETS, ProjectQueue.Kind.TRANSFER, ProjectQueue.Kind.BUILD, ProjectQueue.Kind.CRAFT, ProjectQueue.Kind.SMELT, ProjectQueue.Kind.GATHER, ProjectQueue.Kind.RESUPPLY);
     private static WorkerEnrollment enrollment;
     private static boolean enrollmentLoaded;
     private static int port;
@@ -85,6 +85,11 @@ final class ProjectWorker {
     private static long nextTrailSave;
     private static final SubsurfaceAccess stationReturn = new SubsurfaceAccess();
     private static BlockPos stationToolAttempt;
+    private static boolean needsRouteTool;
+    private static final int TOOL_DROP_RADIUS = 5;
+    private static final DroppedItemSearch routeToolPickup = new DroppedItemSearch(TOOL_DROP_RADIUS);
+    private static boolean pickingUpRouteTool;
+    private static boolean deliveringRouteTool;
     private static int approachAge;
     private static Vec3d approachProgress;
     private static long retryApproach;
@@ -226,6 +231,7 @@ final class ProjectWorker {
         approachAge = 0;
         stationReturn.reset();
         stationToolAttempt = null;
+        needsRouteTool = false;
         inspection = null;
         fill = null;
         chest = null;
@@ -254,6 +260,12 @@ final class ProjectWorker {
 
     private static void halt(MinecraftClient client) {
         approachRecovery.reset();
+        routeToolPickup.reset();
+        pickingUpRouteTool = false;
+        if (deliveringRouteTool) {
+            BotInventory.hold();
+            deliveringRouteTool = false;
+        }
         stationReturn.stop();
         releaseCentering(client);
         releaseJump(client);
@@ -349,7 +361,15 @@ final class ProjectWorker {
             if (client.interactionManager != null) client.interactionManager.cancelBlockBreaking();
             return;
         }
-        if (miningRecipe != null && gather == null) {
+        if (pickupRouteTool(client)) return;
+        if (deliveringRouteTool) {
+            BotInventory.tick(client);
+            status = BotInventory.status();
+            if (!BotInventory.working()) {
+                boolean dropped = BotInventory.deliveredItems() > 0;
+                finish(client, dropped, dropped ? "Dropped a replacement pickaxe beside the worker" : status);
+            }
+        } else if (miningRecipe != null && gather == null) {
             tickMiningCraft(client, now);
         } else if (gather != null) {
             int held = gather.inventoryCount(client);
@@ -399,6 +419,35 @@ final class ProjectWorker {
             if (result != null) finish(client, result.success(), result.detail());
             else if (block != null && !prepareFieldWorkstation(client, now)) execute(client, now);
         } else execute(client, now);
+    }
+
+    private static boolean pickupRouteTool(MinecraftClient client) {
+        if (!needsRouteTool || SubsurfaceAccess.canDigRoute(client)) {
+            if (pickingUpRouteTool) {
+                routeToolPickup.reset();
+                pickingUpRouteTool = false;
+            }
+            return false;
+        }
+        if (!pickingUpRouteTool) {
+            var player = client.player;
+            if (client.world.getEntitiesByClass(net.minecraft.entity.ItemEntity.class,
+                    player.getBoundingBox().expand(TOOL_DROP_RADIUS),
+                    entity -> entity.isAlive() && usableRouteTool(entity.getStack())).isEmpty()) return false;
+            halt(client);
+            pickingUpRouteTool = true;
+        }
+        if (routeToolPickup.tick(client, ProjectWorker::usableRouteTool, null) == DroppedItemSearch.State.APPROACHING) {
+            status = assignment.project() + "/" + assignment.job().work().id() + ": Collecting a replacement pickaxe";
+            return true;
+        }
+        pickingUpRouteTool = false;
+        return false;
+    }
+
+    private static boolean usableRouteTool(net.minecraft.item.ItemStack stack) {
+        return stack.getItem() instanceof net.minecraft.item.PickaxeItem
+                && stack.getMaxDamage() - stack.getDamage() >= 21;
     }
 
     private static boolean prepareMiningWeapon(MinecraftClient client, long now) {
@@ -917,6 +966,7 @@ final class ProjectWorker {
     private static boolean tryElevatedApproach(MinecraftClient client, BlockPos destination, long now, boolean placement) {
         var position = client.player.getBlockPos();
         if (destination.getY() - position.getY() < (placement ? 3 : 5)) {
+            needsRouteTool = false;
             stationReturn.stop();
             return false;
         }
@@ -943,7 +993,9 @@ final class ProjectWorker {
             recoveryOrigin = null;
         }
         // Placement cargo can include the very planks needed for a new workbench.
-        if (!placement && !SubsurfaceAccess.canDigRoute(client)
+        boolean hasRouteTool = SubsurfaceAccess.canDigRoute(client);
+        if (hasRouteTool) needsRouteTool = false;
+        if (!placement && !hasRouteTool
                 && (stationToolAttempt == null || !position.isWithinDistance(stationToolAttempt, 4))
                 && SubsurfaceAccess.hasFooting(client)) {
             stationToolAttempt = position;
@@ -951,6 +1003,7 @@ final class ProjectWorker {
                 stationReturn.stop();
                 return true;
             }
+            needsRouteTool = chest != null && chest.depositing();
         }
         boolean alreadyClimbing = stationReturn.active();
         if (!stationReturn.advanceToward(client, approachAge, destination, excluded, !placement)) return false;
@@ -1223,6 +1276,7 @@ final class ProjectWorker {
             args.put("project", assignment.project());
             args.put("job", assignment.job().work().id());
             args.put("token", assignment.job().lease());
+            if (needsRouteTool && !SubsurfaceAccess.canDigRoute(client)) args.put("needsRouteTool", true);
             if (gatherSite != null && !gather.fromDrops()) args.put("resourceSite", gatherSite);
             if (success != null && action.equals("finish")) {
                 args.put("success", success);
@@ -1265,9 +1319,18 @@ final class ProjectWorker {
                         case GATHER -> 1800;
                         case SMELT -> 300;
                         case CRAFT, TRANSFER, FILL_BUCKETS -> 180;
+                        case RESUPPLY -> 120;
                         default -> 90;
                     });
-                    if (work.kind() == ProjectQueue.Kind.GATHER) {
+                    if (work.kind() == ProjectQueue.Kind.RESUPPLY) {
+                        var delivery = JSON.fromJson(work.payload(), ProjectQueue.RouteToolDelivery.class);
+                        var position = delivery.position();
+                        var destination = new BotInventory.Destination(here.server(), here.dimension(),
+                                new Vec3d(position.x() + .5, position.y(), position.z() + .5), port);
+                        var item = Registries.ITEM.get(new Identifier(delivery.item()));
+                        BotInventory.startProjectDelivery(client, item, delivery.recipient(), destination);
+                        deliveringRouteTool = true;
+                    } else if (work.kind() == ProjectQueue.Kind.GATHER) {
                         gather = ProjectGather.parse(work.payload());
                         gatherSite = assignment.job().resourceSite();
                         if (gather.fromDrops()) pickup = new DroppedItemSearch();

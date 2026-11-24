@@ -244,6 +244,31 @@ class ProjectQueueTest {
         assertEquals("ingredients", queue.claim(WORLD, "replacement", Set.of(GATHER), now).job().work().id());
     }
 
+    @Test void routeResupplyKeepsTheOriginalLeaseAndCannotDuplicateAcrossRestart() throws Exception {
+        var journal = directory.resolve("route-tool-support.json");
+        var queue = new ProjectQueue(journal);
+        var deposit = new ProjectQueue.Work("return", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":3}", List.of(), Set.of("block:0,64,0"));
+        queue.submit("order", WORLD, List.of(deposit));
+        var returnLease = queue.claim(WORLD, "miner", Set.of(TRANSFER), 1).job();
+        var tool = java.util.Map.of("minecraft:stone_pickaxe", 180);
+        var mine = new ProjectQueue.ResourceSite(0, -30, 0);
+        assertNull(queue.offerRouteTool(WORLD, "helper", null, 2, tool, name -> mine, (bot, item) -> 2));
+        assertNotNull(queue.renew("order", "return", returnLease.lease(), null, 3, true));
+        assertNull(queue.offerRouteTool(WORLD, "helper", null, 4, tool, name -> mine, (bot, item) -> 1));
+        var help = queue.offerRouteTool(WORLD, "helper", null, 5, tool, name -> mine, (bot, item) -> 2).job();
+        assertEquals(ProjectQueue.Kind.RESUPPLY, help.work().kind());
+        var delivery = new com.google.gson.Gson().fromJson(help.work().payload(), ProjectQueue.RouteToolDelivery.class);
+        assertEquals("miner", delivery.recipient());
+        assertEquals(mine, delivery.position());
+        queue = new ProjectQueue(journal);
+        assertNotNull(queue.renew("order", "return", returnLease.lease(), null, 6, true));
+        assertNull(queue.offerRouteTool(WORLD, "second", null, 7, tool, name -> mine, (bot, item) -> 2));
+        assertTrue(queue.finish("order", help.work().id(), help.lease(), false, "Could not deliver", 8));
+        assertNull(queue.offerRouteTool(WORLD, "second", null, 9, tool, name -> mine, (bot, item) -> 2));
+        assertEquals(returnLease.lease(), queue.claim(WORLD, "miner", Set.of(TRANSFER), 10).job().lease());
+    }
+
     @Test void aNewReturnRouteGetsOneRetryWithTheSameCargoAndPosition() throws Exception {
         for (boolean observedStock : new boolean[]{false, true}) {
             var journal = directory.resolve("return-upgrade-" + observedStock + ".json");

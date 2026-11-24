@@ -668,6 +668,31 @@ class ProjectQueueTest {
         assertEquals(receiver.lease(), queue.claim(WORLD, "miner", Set.of(TRANSFER), 12).job().lease());
     }
 
+    @Test void anExpiredWorkbenchDeliveryCanReuseAWorkbenchObservedInTheSuppliersInventory() throws Exception {
+        var queue = new ProjectQueue(directory.resolve("retry-retained-bench.json"));
+        queue.submit("tools", WORLD, List.of(job("craft", CRAFT, List.of())));
+        var receiver = queue.claim(WORLD, "crafter", Set.of(CRAFT), 1).job();
+        assertNotNull(queue.renew("tools", "craft", receiver.lease(), null, 2, false, true));
+        var firstPosition = new ProjectQueue.ResourceSite(5, 64, 4);
+        var first = queue.offerRouteTool(WORLD, "helper", null, 3, null, 0, true,
+                name -> firstPosition, (bot, item) -> 0).job();
+        long now = first.expiresAt();
+        assertNotNull(queue.renew("tools", "craft", receiver.lease(), null, 10, false, true));
+        assertNull(queue.claim(WORLD, "helper", Set.of(RESUPPLY), now));
+        var nextPosition = new ProjectQueue.ResourceSite(7, 65, 4);
+        assertNull(queue.offerRouteTool(WORLD, "helper", null, now, null, 0, true,
+                name -> nextPosition, (bot, item) -> 0));
+        assertNull(queue.offerRouteTool(WORLD, "helper", null, now, null, 0, true,
+                name -> nextPosition, (bot, item) -> 1));
+        var retry = queue.offerRouteTool(WORLD, "helper", null, now, null, 0, true,
+                name -> nextPosition, (bot, item) -> bot.equals("helper") ? 1 : 0).job();
+        assertEquals(first.work().id() + "-retry", retry.work().id());
+        var delivery = queue.routeToolDelivery("tools", retry.work().id(), retry.lease(), now);
+        assertEquals("minecraft:crafting_table", delivery.item());
+        assertEquals(nextPosition, delivery.position());
+        assertNull(delivery.benchStock());
+    }
+
     @Test void aCrafterCanRequestAndAcknowledgeAWorkbenchWithoutRequestingAPickaxe() throws Exception {
         var queue = new ProjectQueue(directory.resolve("craft-bench-delivery.json"));
         queue.submit("tools", WORLD, List.of(job("craft", CRAFT, List.of())));

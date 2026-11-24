@@ -1434,19 +1434,26 @@ final class ProjectQueue {
                 var destination = position.apply(deposit.worker);
                 if (destination == null) continue;
                 var first = find(project, id);
+                boolean retryWithHeldBench = false;
                 if (first != null) {
-                    if (first.state != State.FAILED || first.evidence == null
-                            || !first.evidence.startsWith(ROUTE_PREPARATION_FAILED)
-                            || worker.equalsIgnoreCase(first.worker)) continue;
+                    if (first.state != State.FAILED || first.evidence == null) continue;
+                    if (requestBench && LEASE_EXPIRED.equals(first.evidence)) {
+                        var previous = JSON.fromJson(first.work.payload, RouteToolDelivery.class);
+                        retryWithHeldBench = "minecraft:crafting_table".equals(previous.item)
+                                && held.applyAsInt(worker, previous.item) > 0
+                                && held.applyAsInt(deposit.worker, previous.item) == previous.previousCount;
+                    }
+                    if (!retryWithHeldBench && (!first.evidence.startsWith(ROUTE_PREPARATION_FAILED)
+                            || worker.equalsIgnoreCase(first.worker))) continue;
                     id += "-retry";
                     if (find(project, id) != null) continue;
                 }
-                if (requestBench && fromStock && !checkedStock) {
+                if (requestBench && !retryWithHeldBench && fromStock && !checkedStock) {
                     checkedStock = true;
                     benchStock = routeBenchStock(world, worker, position.apply(worker), held, now);
                 }
-                var pickup = requestBench ? benchStock : null;
-                if (requestBench && pickup == null && !canSupplyBench) continue;
+                var pickup = requestBench && !retryWithHeldBench ? benchStock : null;
+                if (requestBench && pickup == null && !canSupplyBench && !retryWithHeldBench) continue;
                 String item = requestBench ? "minecraft:crafting_table" : spare == null ? "minecraft:stone_pickaxe" : spare;
                 int craftTarget = requestBench || spare != null ? 0 : routeCraftTarget;
                 int previousCount = held.applyAsInt(deposit.worker, item);

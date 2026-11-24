@@ -199,6 +199,21 @@ final class SubsurfaceAccess {
         // Shorter, shallower alternatives can get around a wall without returning up the cave.
         int delta = height - position.getY();
         int fallbackY = position.getY() + (delta == 0 ? 1 : Math.abs(delta) <= 2 ? 0 : Integer.signum(delta) * 2);
+        if (delta < -2) {
+            // Offer one depth at a time so an easy shallow exit cannot outrank a reachable descent.
+            int preferredY = routeFailures % 2 == 0 ? segmentY : fallbackY;
+            int secondaryY = preferredY == segmentY ? fallbackY : segmentY;
+            var exits = descentExits(client, position, area, initial + heading / 2, preferredY);
+            if (exits.isEmpty() && secondaryY != preferredY) {
+                exits = descentExits(client, position, area, initial + heading / 2, secondaryY);
+            }
+            if (!exits.isEmpty() && start(client, position, exits, area, age, false)) {
+                BotEvents.add("debug", "mining", "Planning a descent to Y " + exits.get(0).getY()
+                        + " with " + exits.size() + " candidate stands");
+                return true;
+            }
+            return false;
+        }
         for (int attempt = 0; attempt < HEADINGS.length * 2; attempt++) {
             int phase = Math.floorMod(heading + attempt, HEADINGS.length * 2);
             var direction = HEADINGS[Math.floorMod(initial + phase / 2, HEADINGS.length)];
@@ -396,6 +411,16 @@ final class SubsurfaceAccess {
         var exits = corridorExits(client, position, forward, area, exitY);
         if (exits.isEmpty()) heading++;
         return exits;
+    }
+
+    private static List<BlockPos> descentExits(MinecraftClient client, BlockPos position, ProjectGather.Area area,
+                                               int heading, int exitY) {
+        var exits = new java.util.LinkedHashSet<BlockPos>();
+        for (int turn = 0; turn < HEADINGS.length; turn++) {
+            var direction = HEADINGS[Math.floorMod(heading + turn, HEADINGS.length)];
+            exits.addAll(corridorExits(client, position, direction, area, exitY));
+        }
+        return List.copyOf(exits);
     }
 
     private static List<BlockPos> corridorExits(MinecraftClient client, BlockPos position, Direction forward,

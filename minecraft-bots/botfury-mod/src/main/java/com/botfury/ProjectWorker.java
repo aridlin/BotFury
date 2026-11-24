@@ -68,7 +68,9 @@ final class ProjectWorker {
     private static List<BlockPos> interactionGoals = List.of();
     private static final Set<BlockPos> rejectedInteractionStands = new HashSet<>();
     private static final Set<BlockPos> triedJumpStands = new HashSet<>();
+    private static final Set<BlockPos> triedCanopyStands = new HashSet<>();
     private static long nextInteractionStandSearch;
+    private static long canopyApproachEnds;
     private static long jumpEnds;
     private static boolean jumpPressed;
     private static BlockPos openingJumpHeadroom;
@@ -187,6 +189,7 @@ final class ProjectWorker {
         interactionGoals = List.of();
         rejectedInteractionStands.clear();
         triedJumpStands.clear();
+        triedCanopyStands.clear();
         attemptedJumpHeadroom = false;
         nextInteractionStandSearch = 0;
         approachAge = 0;
@@ -238,6 +241,7 @@ final class ProjectWorker {
             approachProgress = null;
         }
         recoveryOrigin = null;
+        canopyApproachEnds = 0;
     }
 
     static boolean blocksRecoveryBreak(BlockPos pos) {
@@ -245,14 +249,26 @@ final class ProjectWorker {
         if (stationReturn.blocksBreaking(client, pos)) return true;
         if (recoveryOrigin == null) return false;
         boolean stationJob = chest != null || production != null;
-        if (client.world == null || block == null || !pos.isWithinDistance(recoveryOrigin, stationJob ? 9 : 5)
+        boolean canopy = canopyApproachEnds != 0;
+        if (client.world == null || block == null || !pos.isWithinDistance(recoveryOrigin, canopy ? 8 : stationJob ? 9 : 5)
                 || pos.getY() < recoveryOrigin.getY()
-                || pos.getY() > (stationJob ? block.stand().getY() + 1 : recoveryOrigin.getY() + 2)
+                || pos.getY() > (canopy ? recoveryOrigin.getY() + 6
+                    : stationJob ? block.stand().getY() + 1 : recoveryOrigin.getY() + 2)
                 || pos.equals(block.target()) || pos.equals(block.support()) || pos.equals(block.target().down())
                 || pos.equals(block.stand().down())
                 || (interactionStand != null && pos.equals(interactionStand.down()))
-                || interactionGoals.contains(pos.up())
-                || !BaritoneSettings.recoverableTerrain(client.world.getBlockState(pos).getBlock())) return true;
+                || interactionGoals.contains(pos.up())) return true;
+        var world = client.world;
+        var state = world.getBlockState(pos);
+        if (canopy) {
+            if (!naturalLeaves(state) || !state.getFluidState().isEmpty()
+                    || world.getBlockState(pos.up()).getBlock() instanceof FallingBlock) return true;
+            for (var side : Direction.values()) {
+                var neighbor = pos.offset(side);
+                if (!world.isChunkLoaded(neighbor.getX() >> 4, neighbor.getZ() >> 4)
+                        || !world.getFluidState(neighbor).isEmpty()) return true;
+            }
+        } else if (!BaritoneSettings.recoverableTerrain(state.getBlock())) return true;
         return client.world.getPlayers().stream().anyMatch(player -> player.isAlive() && !player.isSpectator()
                 && player.getBlockPos().down().equals(pos));
     }
@@ -507,6 +523,8 @@ final class ProjectWorker {
                 && openJumpHeadroom(client, currentCell)) return;
         boolean belowPlacement = ordinaryBuild && targetLoaded && !canBuildHere && client.world.isAir(target)
                 && stand.getY() - currentCell.getY() >= 3 && currentCell.isWithinDistance(stand, 16);
+        if ((canopyApproachEnds != 0 || belowPlacement)
+                && tryCanopyApproach(client, stand, now, searchingForStand)) return;
         if (belowPlacement && tryElevatedApproach(client, stand, now, true)) {
             approachAge++;
             return;
@@ -728,6 +746,38 @@ final class ProjectWorker {
         breaking = true;
     }
 
+    private static boolean tryCanopyApproach(MinecraftClient client, BlockPos stand, long now, boolean searching) {
+        var position = client.player.getBlockPos();
+        if (canopyApproachEnds != 0) {
+            if (searching && !stand.equals(position) && now < canopyApproachEnds) return true;
+            halt(client);
+            return false;
+        }
+        if (!searching || approach == null || now < retryApproach || !position.isWithinDistance(stand, 7)
+                || !SubsurfaceAccess.hasFooting(client)
+                || !naturalLeaves(client.world.getBlockState(stand.down()))
+                || !triedCanopyStands.add(stand)) return false;
+        halt(client);
+        try {
+            approach = BaritoneSettings.canopyApproach();
+        } catch (ReflectiveOperationException | LinkageError unavailable) {
+            return false;
+        }
+        recoveryOrigin = position;
+        canopyApproachEnds = now + seconds(12);
+        if (!BaritoneClient.goTo(stand)) {
+            halt(client);
+            return false;
+        }
+        status = assignment.project() + "/" + assignment.job().work().id() + ": Approaching through natural foliage";
+        BotEvents.add("info", "movement", "Opening a protected canopy approach to " + stand.toShortString());
+        return true;
+    }
+
+    private static boolean naturalLeaves(net.minecraft.block.BlockState state) {
+        return state.getBlock() instanceof LeavesBlock && !state.get(LeavesBlock.PERSISTENT);
+    }
+
     private static boolean tryElevatedApproach(MinecraftClient client, BlockPos destination, long now, boolean placement) {
         var position = client.player.getBlockPos();
         if (destination.getY() - position.getY() < (placement ? 3 : 5)) {
@@ -849,8 +899,7 @@ final class ProjectWorker {
                 || !usableInteractionStand(client, feet, block.target())
                 || ProjectWater.source(block.desired()) || obstacle.equals(block.target())) return false;
         var state = world.getBlockState(obstacle);
-        boolean naturalLeaves = state.getBlock() instanceof LeavesBlock && !state.get(LeavesBlock.PERSISTENT);
-        if (!naturalLeaves && !BaritoneSettings.recoverableTerrain(state.getBlock())
+        if (!naturalLeaves(state) && !BaritoneSettings.recoverableTerrain(state.getBlock())
                 || state.hasBlockEntity() || !state.getFluidState().isEmpty() || state.getHardness(world, obstacle) < 0
                 || BuildProtection.blocked(obstacle)
                 || world.getBlockState(obstacle.up()).getBlock() instanceof FallingBlock

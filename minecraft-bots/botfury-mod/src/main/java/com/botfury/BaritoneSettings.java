@@ -2,12 +2,14 @@ package com.botfury;
 
 import net.minecraft.block.Block;
 import net.minecraft.block.FenceGateBlock;
+import net.minecraft.block.LeavesBlock;
 import net.minecraft.registry.Registries;
 import net.minecraft.registry.tag.BlockTags;
 
 import java.lang.reflect.Field;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.function.Predicate;
 
 final class BaritoneSettings implements AutoCloseable {
     private final Object breaking, placing, avoidance, mobAvoidance, oldBreak, oldPlace, oldMobAvoidance;
@@ -30,26 +32,30 @@ final class BaritoneSettings implements AutoCloseable {
     }
 
     BaritoneSettings(boolean allowBreak, boolean preserveGates, boolean recovery) throws ReflectiveOperationException {
-        this(allowBreak, preserveGates, recovery, false, false);
+        this(allowBreak, preserveGates, recovery ? BaritoneSettings::recoverableTerrain : null, false);
     }
 
     static BaritoneSettings prospecting(boolean allowBreak) throws ReflectiveOperationException {
-        return new BaritoneSettings(allowBreak, true, true, true, false);
+        return new BaritoneSettings(allowBreak, true, BaritoneSettings::recoverableTerrain, true);
     }
 
     static BaritoneSettings explorationExit(boolean equipped) throws ReflectiveOperationException {
-        return new BaritoneSettings(true, true, true, true, !equipped);
+        return new BaritoneSettings(true, true,
+                equipped ? BaritoneSettings::recoverableTerrain : BaritoneSettings::handDiggableTerrain, true);
     }
 
-    private BaritoneSettings(boolean allowBreak, boolean preserveGates, boolean recovery, boolean prospecting,
-                             boolean handDigging)
+    static BaritoneSettings canopyApproach() throws ReflectiveOperationException {
+        return new BaritoneSettings(true, true, block -> block instanceof LeavesBlock, true);
+    }
+
+    private BaritoneSettings(boolean allowBreak, boolean preserveGates, Predicate<Block> canBreak, boolean prospecting)
             throws ReflectiveOperationException {
         Object settings = Class.forName("baritone.api.BaritoneAPI").getMethod("getSettings").invoke(null);
         breaking = settings.getClass().getField("allowBreak").get(settings);
         placing = settings.getClass().getField("allowPlace").get(settings);
         avoidance = preserveGates ? settings.getClass().getField("blocksToAvoid").get(settings) : null;
         mobAvoidance = settings.getClass().getField("avoidance").get(settings);
-        excludedFromBreaking = recovery ? settings.getClass().getField("blocksToDisallowBreaking").get(settings) : null;
+        excludedFromBreaking = canBreak == null ? null : settings.getClass().getField("blocksToDisallowBreaking").get(settings);
         fallHeight = prospecting ? settings.getClass().getField("maxFallHeightNoWater").get(settings) : null;
         bucketFall = prospecting ? settings.getClass().getField("allowWaterBucketFall").get(settings) : null;
         autoTool = prospecting ? settings.getClass().getField("autoTool").get(settings) : null;
@@ -58,7 +64,7 @@ final class BaritoneSettings implements AutoCloseable {
         oldPlace = value.get(placing);
         oldMobAvoidance = value.get(mobAvoidance);
         oldAvoidance = avoidance == null ? null : (List<?>) value.get(avoidance);
-        oldExcludedFromBreaking = recovery ? (List<?>) value.get(excludedFromBreaking) : null;
+        oldExcludedFromBreaking = canBreak == null ? null : (List<?>) value.get(excludedFromBreaking);
         oldFallHeight = prospecting ? value.get(fallHeight) : null;
         oldBucketFall = prospecting ? value.get(bucketFall) : null;
         oldAutoTool = prospecting ? value.get(autoTool) : null;
@@ -73,10 +79,10 @@ final class BaritoneSettings implements AutoCloseable {
                 }
                 value.set(avoidance, List.copyOf(blocked));
             }
-            if (recovery) {
+            if (canBreak != null) {
                 var blocked = new LinkedHashSet<Object>(oldExcludedFromBreaking);
                 for (Block block : Registries.BLOCK) {
-                    if (!recoverableTerrain(block) || handDigging && !handDiggableTerrain(block)) blocked.add(block);
+                    if (!canBreak.test(block)) blocked.add(block);
                 }
                 value.set(excludedFromBreaking, List.copyOf(blocked));
             }

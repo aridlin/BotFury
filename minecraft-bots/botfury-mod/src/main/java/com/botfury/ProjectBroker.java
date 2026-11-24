@@ -282,7 +282,7 @@ final class ProjectBroker {
                 case "claim" -> {
                     var assignment = board.claim(world, request.worker, request.kinds, request.project, now);
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.GATHER)) {
-                        board.offerGatheringHandoff(world, request.worker, request.project, now, ProjectBroker::heldCount);
+                        assignment = board.offerGatheringHandoff(world, request.worker, request.project, now, ProjectBroker::heldCount);
                     }
                     reply(exchange, 200, assignment);
                 }

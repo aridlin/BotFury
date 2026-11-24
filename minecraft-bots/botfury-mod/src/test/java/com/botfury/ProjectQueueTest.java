@@ -157,6 +157,33 @@ class ProjectQueueTest {
         }
     }
 
+    @Test void twoWorkersCanCompleteOneStockBatchFromTheirPartialInventories() throws Exception {
+        var journal = directory.resolve("partial-stock.json");
+        var queue = new ProjectQueue(journal);
+        String project = "stock";
+        String chest = "block:3,64,0";
+        queue.submitSupplied(project, WORLD, List.of(new ProjectQueue.Work("gather", GATHER,
+                "{\"resource\":\"any_logs\",\"variant\":\"both\",\"item\":\"any_logs\",\"count\":64}", List.of(), Set.of(), null),
+                new ProjectQueue.Work("deposit", TRANSFER, "{\"direction\":\"DEPOSIT\",\"item\":\"any_logs\",\"stock\":128}",
+                        List.of("gather"), Set.of(chest), "gather")), chest);
+        var active = queue.claim(WORLD, "gatherer", Set.of(GATHER), 1).job();
+        var part = queue.offerGatheringHandoff(WORLD, "hauler", null, 2, (name, item) -> name.equals("hauler") ? 44 : 32).job();
+        assertEquals("deposit", part.work().id());
+        var restored = new ProjectQueue(journal);
+        part = restored.renew(project, "deposit", part.lease(), 3);
+        assertTrue(restored.finish(project, "deposit", part.lease(), false, "Partial delivery",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:oak_log", 102, "minecraft:birch_log", 6)),
+                null, true, 4));
+        assertNull(restored.renew(project, "gather", active.lease(), 5));
+        var job = restored.claim(WORLD, "gatherer", Set.of(GATHER), active.expiresAt()).job();
+        assertEquals(20, com.google.gson.JsonParser.parseString(job.work().payload()).getAsJsonObject().get("count").getAsInt());
+        assertTrue(restored.finish(project, "gather", job.lease(), true, "Gathered", active.expiresAt() + 1));
+        var deposit = restored.claim(WORLD, "gatherer", Set.of(TRANSFER), active.expiresAt() + 2).job();
+        assertTrue(restored.finish(project, "deposit", deposit.lease(), true, "Delivered",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:oak_log", 122, "minecraft:birch_log", 6)),
+                active.expiresAt() + 3));
+    }
+
     @Test void gatheringHandoffWaitsForTheOldLeaseAndKeepsTheSavedSite() throws Exception {
         var journal = directory.resolve("gather-cargo-handoff.json");
         var queue = new ProjectQueue(journal);

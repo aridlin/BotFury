@@ -373,18 +373,22 @@ class ProjectQueueTest {
     }
 
     @Test void stalledPlacementCanUseANearbyBuildersExistingMaterials() throws Exception {
-        checkConstructionHandoff(false, false);
+        checkConstructionHandoff(false, false, false);
     }
 
     @Test void stalledPlacementCanUseReplacementMaterialsFromTheCommunityChest() throws Exception {
-        checkConstructionHandoff(true, false);
+        checkConstructionHandoff(true, false, false);
     }
 
     @Test void readyPlacementHandsOffCargoWithoutInterruptingADistantMiner() throws Exception {
-        checkConstructionHandoff(true, true);
+        checkConstructionHandoff(true, true, false);
     }
 
-    private void checkConstructionHandoff(boolean stockAvailable, boolean busySupplier) throws Exception {
+    @Test void stalledPlacementCanHandOffFromACloseStrandedWorkerToADifferentApproach() throws Exception {
+        checkConstructionHandoff(true, false, true);
+    }
+
+    private void checkConstructionHandoff(boolean stockAvailable, boolean busySupplier, boolean closeSupplier) throws Exception {
         var journal = directory.resolve("construction-handoff-" + stockAvailable + ".json");
         var queue = new ProjectQueue(journal);
         var chest = "block:3,64,0";
@@ -402,7 +406,8 @@ class ProjectQueueTest {
                 ? java.util.Map.of("minecraft:oak_log", 1) : java.util.Map.of());
         assertTrue(queue.finish("house", "pickup", cargo.lease(), true, "Taken", stock, 4));
         java.util.function.Function<String, ProjectQueue.ResourceSite> locate = name -> name.equals("builder")
-                ? new ProjectQueue.ResourceSite(8, 64, 10) : new ProjectQueue.ResourceSite(8, 14, 8);
+                ? new ProjectQueue.ResourceSite(closeSupplier ? 16 : 8, 64, closeSupplier ? 8 : 10)
+                : new ProjectQueue.ResourceSite(8, closeSupplier ? 60 : 14, 8);
         ProjectQueue.Job mining = null;
         if (busySupplier) {
             var kinds = Set.of(BUILD, TRANSFER);
@@ -417,6 +422,11 @@ class ProjectQueueTest {
                 var lease = queue.claim(WORLD, "original", Set.of(BUILD), now).job();
                 assertTrue(queue.finish("house", "place-1", lease.lease(), false, ProjectQueue.TARGET_TIMEOUT, now + 1));
             }
+        }
+        if (closeSupplier) {
+            assertFalse(queue.offerConstructionHandoff(WORLD, "builder", null, Set.of(BUILD, TRANSFER), 11,
+                    worker -> "builder".equals(worker) ? new ProjectQueue.ResourceSite(9, 61, 8) : locate.apply(worker),
+                    (worker, item) -> 0));
         }
         assertFalse(queue.offerConstructionHandoff(WORLD, "builder", null, Set.of(BUILD), 11, locate, (worker, item) -> 0));
         assertEquals(stockAvailable, queue.offerConstructionHandoff(WORLD, "builder", null,

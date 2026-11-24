@@ -10,6 +10,7 @@ import net.minecraft.world.RaycastContext;
 import java.util.*;
 
 final class ThreatEvasion {
+    record Action(Vec3d walkingDirection) {}
     private record Blast(Vec3d center,double radius) {}
     private record Flight(Vec3d from,Vec3d to,int tick) {}
     private record Threats(List<Blast> blasts,List<Flight> flights) {
@@ -56,12 +57,17 @@ final class ThreatEvasion {
         }
         return new Threats(blasts,flights);
     }
-    static boolean dodge(MinecraftClient client){
-        if(!LocalFormation.canEvade())return false;
+    static Action dodge(MinecraftClient client){
         Threats threats=scan(client);
         Box body=client.player.getBoundingBox();
         double current=threats.risk(body,client.player.getVelocity());
-        if(current<=0)return false;
+        if(current<=0)return null;
+        if(LocalFormation.canEvade()&&teleport(client,threats,body,current))return new Action(null);
+        var direction=walkDirection(client,threats,body,current);
+        return direction==null?null:new Action(direction);
+    }
+
+    private static boolean teleport(MinecraftClient client, Threats threats, Box body, double current) {
         Vec3d origin=client.player.getPos(),best=null;
         double bestRisk=current,bestCost=Double.POSITIVE_INFINITY;
         var examined=new HashSet<BlockPos>();
@@ -76,5 +82,38 @@ final class ThreatEvasion {
             }
         }
         return best!=null&&LocalFormation.evadeTo(client,best);
+    }
+
+    private static Vec3d walkDirection(MinecraftClient client, Threats threats, Box body, double current) {
+        var player = client.player;
+        if (!player.isOnGround() || player.isTouchingWater() || client.currentScreen != null) return null;
+        Vec3d best = null;
+        double bestRisk = current;
+        for (int index = 0; index < 8; index++) {
+            double angle = index * Math.PI / 4;
+            var heading = new Vec3d(Math.cos(angle), 0, Math.sin(angle));
+            if (!walkable(client, body, heading)) continue;
+            double risk = threats.risk(body, heading.multiply(.16));
+            if (risk < bestRisk) {
+                bestRisk = risk;
+                best = heading;
+            }
+        }
+        return best;
+    }
+
+    private static boolean walkable(MinecraftClient client, Box body, Vec3d heading) {
+        for (int step = 1; step <= 5; step++) {
+            var moved = body.offset(heading.multiply(step * .2));
+            var feet = BlockPos.ofFloored(moved.getCenter().x, moved.minY, moved.getCenter().z);
+            var floor = client.world.getBlockState(feet.down());
+            if (!client.world.getWorldBorder().contains(feet) || !client.world.getFluidState(feet).isEmpty()
+                    || floor.isOf(net.minecraft.block.Blocks.MAGMA_BLOCK)
+                    || floor.isOf(net.minecraft.block.Blocks.CAMPFIRE)
+                    || floor.isOf(net.minecraft.block.Blocks.SOUL_CAMPFIRE)
+                    || !client.world.isSpaceEmpty(client.player, moved)
+                    || !client.world.getBlockCollisions(client.player, moved.offset(0, -.08, 0)).iterator().hasNext()) return false;
+        }
+        return true;
     }
 }

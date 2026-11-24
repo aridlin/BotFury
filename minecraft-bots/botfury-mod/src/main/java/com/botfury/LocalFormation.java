@@ -286,6 +286,7 @@ final class LocalFormation {
         }
         if (client.player != null && client.player.isDead()) {
             stage = "Waiting to respawn";
+            TaskDefense.evade(client, false);
             if (ProjectWorker.enabled()) ProjectWorker.interrupt(client);
             MiningTask.onDeath();
             cancelPath();
@@ -299,6 +300,7 @@ final class LocalFormation {
         local = snapshot(client);
         if (local == null) {
             stage = "Disconnected";
+            TaskDefense.evade(client, false);
             if (BotInventory.active()) BotInventory.disconnected();
             stop();
             incoming = null;

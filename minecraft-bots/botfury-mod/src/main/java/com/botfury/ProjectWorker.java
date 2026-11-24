@@ -72,13 +72,16 @@ final class ProjectWorker {
     private static final Set<BlockPos> triedCanopyStands = new HashSet<>();
     private static long nextInteractionStandSearch;
     private static long canopyApproachEnds;
-    private static int scaffoldWaypoint;
-    private static long scaffoldStepEnds;
+    private static int waypoint;
+    private static long waypointEnds;
     private static long jumpEnds;
     private static boolean jumpPressed;
     private static BlockPos openingJumpHeadroom;
     private static boolean attemptedJumpHeadroom;
     private static final StallRecovery approachRecovery = new StallRecovery();
+    private static final WorkerReturnTrail returnTrail = new WorkerReturnTrail();
+    private static List<ProjectQueue.ResourceSite> returnWaypoints;
+    private static long nextTrailSave;
     private static final SubsurfaceAccess stationReturn = new SubsurfaceAccess();
     private static BlockPos stationToolAttempt;
     private static int approachAge;
@@ -136,6 +139,12 @@ final class ProjectWorker {
         LocalFormation.clearMovement();
         BotInventory.hold();
         port = enrollment.port();
+        nextTrailSave = 0;
+        try {
+            returnTrail.load(trailPath(), enrollment);
+        } catch (IOException error) {
+            BotEvents.add("warn", "projects", "Could not read saved worker return trail");
+        }
         status = "Waiting for project jobs";
         BotEvents.add("info", "projects", event);
     }
@@ -177,6 +186,22 @@ final class ProjectWorker {
         return FabricLoader.getInstance().getConfigDir().resolve("botfury-worker.json");
     }
 
+    private static Path trailPath() {
+        return FabricLoader.getInstance().getConfigDir().resolve("botfury-return-trail.json");
+    }
+
+    private static void saveTrail() {
+        try {
+            returnTrail.save(trailPath(), enrollment);
+        } catch (IOException error) {
+            BotEvents.add("warn", "projects", "Could not save worker return trail");
+        }
+    }
+
+    private static ProjectQueue.ResourceSite routePoint(BlockPos pos) {
+        return new ProjectQueue.ResourceSite(pos.getX(), pos.getY(), pos.getZ());
+    }
+
     static void interrupt(MinecraftClient client) {
         if (assignment == null && !pending) return;
         generation++;
@@ -193,7 +218,8 @@ final class ProjectWorker {
         rejectedInteractionStands.clear();
         triedJumpStands.clear();
         triedCanopyStands.clear();
-        scaffoldWaypoint = 0;
+        waypoint = 0;
+        returnWaypoints = null;
         attemptedJumpHeadroom = false;
         nextInteractionStandSearch = 0;
         approachAge = 0;
@@ -247,7 +273,7 @@ final class ProjectWorker {
         }
         recoveryOrigin = null;
         canopyApproachEnds = 0;
-        scaffoldStepEnds = 0;
+        waypointEnds = 0;
     }
 
     static boolean blocksRecoveryBreak(BlockPos pos) {
@@ -283,6 +309,14 @@ final class ProjectWorker {
         if (!enabled()) return;
         releaseJump(client);
         long now = System.nanoTime();
+        if (enrollment.matches(here.name(), world(here)) && client.player.isAlive() && client.player.isOnGround()
+                && !client.player.isTouchingWater() && (returnWaypoints == null || waypoint >= returnWaypoints.size())) {
+            returnTrail.record(routePoint(client.player.getBlockPos()));
+            if (now >= nextTrailSave) {
+                saveTrail();
+                nextTrailSave = now + seconds(15);
+            }
+        }
         if (assignment == null) {
             TaskDefense.evade(client, false);
             if (!pending && now >= nextRequest) request(client, here, "claim", now);
@@ -504,7 +538,7 @@ final class ProjectWorker {
         boolean canBuildHere = ordinaryBuild && targetLoaded && player.isOnGround() && !centering
                 && !player.getBoundingBox().intersects(new Box(target))
                 && ProjectPlacement.supportHit(client, block) != null;
-        if (ordinaryBuild && targetLoaded && !canBuildHere && tryScaffoldRoute(client, now)) return;
+        if (ordinaryBuild && targetLoaded && !canBuildHere && followWaypoints(client, now, assignment.accessRoute(), true)) return;
         if (ordinaryBuild && targetLoaded && !canBuildHere && player.isOnGround() && !centering
                 && !player.isSneaking() && client.world.isAir(target) && canJumpToPlace(client, player.getPos(), currentCell)) {
             halt(client);
@@ -576,6 +610,19 @@ final class ProjectWorker {
             releaseCentering(client);
             stableSince = 0;
             approachAge++;
+            if (stationJob && belowStation && returnWaypoints == null) {
+                returnWaypoints = returnTrail.backtrack(routePoint(currentCell), routePoint(stand));
+                if (!returnWaypoints.isEmpty()) {
+                    BotEvents.add("info", "movement", "Retracing " + returnWaypoints.size() + " recorded worker waypoints");
+                }
+            }
+            if (stationJob && returnWaypoints != null && followWaypoints(client, now, returnWaypoints, false)) {
+                if (currentCell.getY() >= stationReturnHeight + 4) {
+                    stationReturnHeight = currentCell.getY();
+                    taskEnd = Math.max(taskEnd, Math.min(stationReturnDeadline, now + seconds(90)));
+                }
+                return;
+            }
             if (stationJob && tryElevatedApproach(client, stand, now, false)) return;
             var recovery = approachRecovery.tick(client, stand,
                     pos -> !pos.equals(target) && !pos.up().equals(target));
@@ -787,54 +834,70 @@ final class ProjectWorker {
         return true;
     }
 
-    private static boolean tryScaffoldRoute(MinecraftClient client, long now) {
-        var route = assignment.accessRoute();
-        if (scaffoldWaypoint >= route.size()) return false;
+    private static boolean followWaypoints(MinecraftClient client, long now,
+                                           List<ProjectQueue.ResourceSite> route, boolean scaffold) {
+        if (waypoint >= route.size()) return false;
         var feet = client.player.getBlockPos();
         if (SubsurfaceAccess.hasFooting(client)) {
-            for (int i = route.size() - 1; i >= scaffoldWaypoint; i--) {
+            for (int i = route.size() - 1; i >= waypoint; i--) {
                 var step = route.get(i);
                 if (feet.getX() == step.x() && feet.getY() == step.y() && feet.getZ() == step.z()) {
                     halt(client);
-                    scaffoldWaypoint = i + 1;
+                    waypoint = i + 1;
                     break;
                 }
             }
         }
-        if (scaffoldWaypoint >= route.size()) return false;
-        var step = route.get(scaffoldWaypoint);
+        if (waypoint >= route.size()) return false;
+        var step = route.get(waypoint);
         var next = new BlockPos(step.x(), step.y(), step.z());
         var world = client.world;
-        if (!world.isChunkLoaded(next.getX() >> 4, next.getZ() >> 4)) return false;
-        if (!world.getBlockState(next.down()).isOf(Blocks.COBBLESTONE)
-                || !world.isAir(next) || !world.isAir(next.up())
-                || scaffoldStepEnds != 0 && now >= scaffoldStepEnds) {
-            halt(client);
-            scaffoldWaypoint = route.size();
+        if (!world.isChunkLoaded(next.getX() >> 4, next.getZ() >> 4)) {
+            if (!scaffold) {
+                halt(client);
+                waypoint = route.size();
+            }
             return false;
         }
-        if (scaffoldStepEnds == 0) {
+        boolean valid = scaffold ? world.getBlockState(next.down()).isOf(Blocks.COBBLESTONE)
+                && world.isAir(next) && world.isAir(next.up())
+                : knownTrailFooting(client, next);
+        if (!valid || waypointEnds != 0 && now >= waypointEnds) {
+            halt(client);
+            waypoint = route.size();
+            return false;
+        }
+        if (waypointEnds == 0) {
             halt(client);
             try {
                 approach = new BaritoneSettings(false, true);
             } catch (ReflectiveOperationException | LinkageError unavailable) {
-                scaffoldWaypoint = route.size();
+                waypoint = route.size();
                 return false;
             }
             if (!BaritoneClient.goTo(next)) {
                 halt(client);
-                scaffoldWaypoint = route.size();
+                waypoint = route.size();
                 return false;
             }
-            scaffoldStepEnds = now + seconds(scaffoldWaypoint == 0 ? 18 : 8);
+            waypointEnds = now + seconds(!scaffold || waypoint == 0 ? 18 : 8);
             retryApproach = now + seconds(3);
         } else if (now >= retryApproach && !BaritoneClient.pursuing(next)) {
             BaritoneClient.goTo(next);
             retryApproach = now + seconds(3);
         }
-        status = assignment.project() + "/" + assignment.job().work().id() + ": Scaffold step "
-                + (scaffoldWaypoint + 1) + "/" + route.size();
+        status = assignment.project() + "/" + assignment.job().work().id() + (scaffold ? ": Scaffold step " : ": Retracing return route ")
+                + (waypoint + 1) + "/" + route.size();
         return true;
+    }
+
+    private static boolean knownTrailFooting(MinecraftClient client, BlockPos pos) {
+        var world = client.world;
+        return world.isInBuildLimit(pos.up()) && world.getWorldBorder().contains(pos)
+                && ProjectPlacement.flushFloor(world.getBlockState(pos.down()), world, pos.down())
+                && world.getFluidState(pos).isEmpty() && world.getFluidState(pos.up()).isEmpty()
+                && world.getBlockState(pos).getCollisionShape(world, pos).isEmpty()
+                && world.getBlockState(pos.up()).getCollisionShape(world, pos.up()).isEmpty();
     }
 
     private static boolean naturalLeaves(net.minecraft.block.BlockState state) {
@@ -1106,6 +1169,7 @@ final class ProjectWorker {
 
     private static void finish(MinecraftClient client, boolean result, String observation) {
         halt(client);
+        saveTrail();
         success = result;
         evidence = observation;
         nextRequest = 0;

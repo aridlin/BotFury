@@ -5,6 +5,7 @@ import net.minecraft.item.PickaxeItem;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.Vec3d;
 import net.minecraft.block.Blocks;
 
 import java.util.ArrayList;
@@ -21,7 +22,8 @@ final class SubsurfaceAccess {
     private BlockPos origin;
     private List<BlockPos> goals = List.of();
     private ProjectGather.Area excluded;
-    private int started, retryAt, heading;
+    private int started, movedAt, retryAt, heading;
+    private Vec3d lastMovement;
     private BaritoneSettings settings;
 
     boolean active() { return settings != null; }
@@ -55,8 +57,13 @@ final class SubsurfaceAccess {
     private boolean advance(MinecraftClient client, int age, int height, ProjectGather.Area area, BlockPos destinationHint) {
         var position = client.player.getBlockPos();
         if (active()) {
+            var feet = client.player.getPos();
+            if (feet.squaredDistanceTo(lastMovement) >= .36) {
+                lastMovement = feet;
+                movedAt = age;
+            }
             boolean arrived = goals.contains(position);
-            if (!arrived && age - started < 600
+            if (!arrived && age - started < 600 && age - movedAt < 240
                     && (age - started < 60 || BaritoneClient.pursuing(goals.get(0)))) return true;
             if (!arrived) heading++;
             else if (destinationHint != null) heading = 0;
@@ -135,6 +142,8 @@ final class SubsurfaceAccess {
         goals = destinations;
         excluded = area;
         started = age;
+        movedAt = age;
+        lastMovement = client.player.getPos();
         retryAt = age + 20;
         if (BaritoneClient.goToAny(goals)) return true;
         stop();
@@ -198,6 +207,7 @@ final class SubsurfaceAccess {
         settings.close();
         settings = null;
         origin = null;
+        lastMovement = null;
         goals = List.of();
         excluded = null;
     }

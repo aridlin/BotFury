@@ -59,7 +59,8 @@ final class ProjectWorker {
     private static ProjectProduction miningCraft;
     private static boolean preparingMiningSticks;
     private static ProjectGather.Area miningCraftArea;
-    private static ProjectBlock portableWorkbench;
+    private static ProjectBlock portableWorkbench, productionWorkbench;
+    private static ProjectProduction.Result pendingProductionResult;
     private static WorkbenchPickup workbenchPickup;
     private static long nextSafetyReport;
     private static boolean waitingForSafety;
@@ -277,7 +278,8 @@ final class ProjectWorker {
         miningCraft = null;
         preparingMiningSticks = false;
         miningCraftArea = null;
-        portableWorkbench = null;
+        portableWorkbench = productionWorkbench = null;
+        pendingProductionResult = null;
         workbenchPickup = null;
         nextMiningWeaponCheck = 0;
         pausedForWeapon = false;
@@ -428,6 +430,10 @@ final class ProjectWorker {
             carriedUnstartedSmeltingInput = production.carryingUnstartedSmeltingInput(client);
         }
         if (now >= taskEnd) {
+            if (pendingProductionResult != null) {
+                finish(client, pendingProductionResult.success(), pendingProductionResult.detail());
+                return;
+            }
             String reason = craftingRouteDelivery == null ? ProjectQueue.TARGET_TIMEOUT
                     : ProjectQueue.ROUTE_PREPARATION_FAILED + "timed out sourcing or crafting the item";
             finish(client, false, reason);
@@ -447,6 +453,12 @@ final class ProjectWorker {
             if (workbenchPickup.tick(client, now)) return;
             workbenchPickup.close(client);
             workbenchPickup = null;
+            if (pendingProductionResult != null) {
+                var result = pendingProductionResult;
+                pendingProductionResult = null;
+                finish(client, result.success(), result.detail());
+                return;
+            }
         }
         if (pickupRouteTool(client)) return;
         if (routeWorkbench != null) {
@@ -520,7 +532,7 @@ final class ProjectWorker {
             }
         } else if (production != null) {
             var result = block == null ? production.tick(client, now) : production.finishedFromInventory(client);
-            if (result != null) finish(client, result.success(), result.detail());
+            if (result != null) finishProduction(client, result, now);
             else if (block != null && !prepareFieldWorkstation(client, now)) execute(client, now);
         } else execute(client, now);
     }
@@ -715,6 +727,7 @@ final class ProjectWorker {
             return true;
         }
         if (state == FieldWorkstation.State.READY) {
+            productionWorkbench = fieldWorkstation.placedWorkbench(client);
             block = fieldWorkstation.station();
             production = production.atStation(block);
             interactionStand = null;
@@ -998,7 +1011,7 @@ final class ProjectWorker {
         }
         if (production != null) {
             var result = production.tick(client, now);
-            if (result != null) finish(client, result.success(), result.detail());
+            if (result != null) finishProduction(client, result, now);
             return;
         }
         var state = client.world.getBlockState(target);
@@ -1501,6 +1514,15 @@ final class ProjectWorker {
     private static String blockObservation(BlockState observed) {
         return "Observed " + Registries.BLOCK.getId(observed.getBlock())
                 + (block.properties().isEmpty() ? "" : ProjectBlock.properties(observed)) + " at " + block.target().toShortString();
+    }
+
+    private static void finishProduction(MinecraftClient client, ProjectProduction.Result result, long now) {
+        if (result.success() && productionWorkbench != null) {
+            halt(client);
+            pendingProductionResult = result;
+            workbenchPickup = new WorkbenchPickup(productionWorkbench.target(), now, client);
+            productionWorkbench = null;
+        } else finish(client, result.success(), result.detail());
     }
 
     private static void finish(MinecraftClient client, boolean result, String observation) {

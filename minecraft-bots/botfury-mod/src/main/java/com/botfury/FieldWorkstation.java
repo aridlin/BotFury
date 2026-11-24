@@ -49,6 +49,11 @@ final class FieldWorkstation {
                 && station.matches(client.world.getBlockState(station.target()));
     }
 
+    ProjectBlock placedWorkbench(MinecraftClient client) {
+        if (workbench != null) return workbench.placedWorkbench(client);
+        return station.block().equals(TABLE) && placedByWorker(client) ? station : null;
+    }
+
     static FieldWorkstation find(MinecraftClient client, long now, ProjectQueue.Kind kind) {
         return find(client, now, kind == ProjectQueue.Kind.SMELT ? FURNACE : TABLE, null, PLANK_BUDGET, null);
     }

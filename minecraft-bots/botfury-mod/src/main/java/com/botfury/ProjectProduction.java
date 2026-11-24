@@ -39,6 +39,7 @@ final class ProjectProduction {
     private final Spec spec;
     private ScreenHandler screen;
     private boolean opening;
+    private boolean contactedStation;
     private long nextAction;
     private Map<Integer, ItemStack> craftingInputs;
     private ItemStack substitutedFuel = ItemStack.EMPTY;
@@ -56,7 +57,25 @@ final class ProjectProduction {
     }
 
     ProjectProduction atStation(ProjectBlock station) {
-        return new ProjectProduction(new Spec(station, spec.kind, spec.recipe, spec.input, spec.fuel, spec.count));
+        var relocated = new ProjectProduction(new Spec(station, spec.kind, spec.recipe, spec.input, spec.fuel, spec.count));
+        relocated.contactedStation = contactedStation;
+        return relocated;
+    }
+
+    boolean contactedStation() { return contactedStation; }
+
+    boolean carryingUnstartedSmeltingInput(MinecraftClient client) {
+        return spec.kind == ProjectQueue.Kind.SMELT && !contactedStation && hasSmeltingInput(client);
+    }
+
+    Result failedIfSmeltingInputLost(MinecraftClient client) {
+        var finished = finishedFromInventory(client);
+        return finished != null ? finished
+                : hasSmeltingInput(client) ? null : failure("Missing furnace input " + spec.input);
+    }
+
+    private boolean hasSmeltingInput(MinecraftClient client) {
+        return client.player.getInventory().contains(Registries.ITEM.get(spec.input).getDefaultStack());
     }
 
     static Spec parse(String json, ProjectQueue.Kind kind) {
@@ -311,6 +330,7 @@ final class ProjectProduction {
             var hit = workstationHit(client, target);
             if (hit == null) return failure("Workstation obstructed or out of reach");
             opening = true;
+            contactedStation = true;
             player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, hit.getPos());
             client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
             nextAction = now + SETTLE;

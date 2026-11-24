@@ -279,7 +279,13 @@ final class ProjectBroker {
                     board.submit(request.project, world, work);
                     reply(exchange, 201, request.project);
                 }
-                case "claim" -> reply(exchange, 200, board.claim(world, request.worker, request.kinds, request.project, now));
+                case "claim" -> {
+                    var assignment = board.claim(world, request.worker, request.kinds, request.project, now);
+                    if (assignment == null && request.kinds.contains(ProjectQueue.Kind.GATHER)) {
+                        board.offerGatheringHandoff(world, request.worker, request.project, now, ProjectBroker::heldCount);
+                    }
+                    reply(exchange, 200, assignment);
+                }
                 case "renew" -> {
                     var renewed = board.renew(request.project, request.job, request.token, request.resourceSite, now);
                     reply(exchange, renewed == null ? 409 : 200, renewed);
@@ -298,6 +304,12 @@ final class ProjectBroker {
             BotEvents.add("warn", "projects", "Could not read or save the project journal");
             reply(exchange, 503, "Project journal unavailable");
         }
+    }
+
+    private static int heldCount(String worker, String item) {
+        var bot = BotTracker.trackedPlayer(worker);
+        if (bot == null || !bot.fresh() || !bot.connected() || !bot.alive() || bot.items() == null) return -1;
+        return ProjectItem.parse(item).count(bot.items());
     }
 
     private static String summarize(List<ProjectQueue.Project> projects) {

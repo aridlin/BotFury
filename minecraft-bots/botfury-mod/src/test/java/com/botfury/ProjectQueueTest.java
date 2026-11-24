@@ -220,11 +220,23 @@ class ProjectQueueTest {
         queue = new ProjectQueue(journal);
         assertNull(queue.offerEquippedMiner(WORLD, "helper", null, iron, now++));
 
-        var delivery = queue.offerInterruptedDeposit(WORLD, "helper", null, now++, (bot, item) -> 4).job();
+        queue.submit("scaffold", WORLD, List.of(job("cleanup", EXCAVATE, List.of())));
+        var kinds = Set.of(EXCAVATE, GATHER, TRANSFER);
+        var delivery = queue.claim(WORLD, "helper", kinds, null, now++, site,
+                material -> true, (bot, item) -> 4, stone).job();
+        assertEquals("deposit", delivery.work().id());
+        assertEquals(delivery.lease(), queue.claim(WORLD, "helper", kinds, null, now++, site,
+                material -> true, (bot, item) -> 4, stone).job().lease());
+        var cleanup = queue.claim(WORLD, "builder", kinds, null, now++, site,
+                material -> true, (bot, item) -> 0, stone).job();
+        assertEquals("cleanup", cleanup.work().id());
+        assertTrue(queue.finish("scaffold", "cleanup", cleanup.lease(), false, ProjectQueue.TARGET_TIMEOUT, now++));
         assertTrue(queue.finish("stock", "deposit", delivery.lease(), false, "Delivery is short by 60",
                 new ProjectQueue.ChestReport(chest, java.util.Map.of(diamond, 4)), null, true, now++));
         queue = new ProjectQueue(journal);
-        rescue = queue.offerEquippedMiner(WORLD, "replacement", null, java.util.Map.of("minecraft:diamond_pickaxe", 200), now++).job();
+        rescue = queue.claim(WORLD, "replacement", kinds, null, now++, site, material -> true,
+                (bot, item) -> 0, java.util.Map.of("minecraft:diamond_pickaxe", 200)).job();
+        assertEquals("ore", rescue.work().id());
         assertEquals(site, rescue.resourceSite());
         assertEquals(60, com.google.gson.JsonParser.parseString(rescue.work().payload()).getAsJsonObject().get("count").getAsInt());
         assertTrue(queue.finish("stock", "ore", rescue.lease(), false, ProjectQueue.GATHER_TOOLS_NEEDED, null, site, now++));

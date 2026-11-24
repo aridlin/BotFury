@@ -15,6 +15,55 @@ class ProjectQueueTest {
     @TempDir Path directory;
     private static final String WORLD = "test|overworld";
 
+    @Test void stockBatchSizeUsesAvailableWorkersAndPreservesSmallOrders() {
+        assertEquals(13, OutputManifest.batchLimit(128, 10));
+        assertEquals(64, OutputManifest.batchLimit(128, 1));
+        assertEquals(64, OutputManifest.batchLimit(128, 0));
+        assertEquals(8, OutputManifest.batchLimit(16, 10));
+        assertEquals(3, OutputManifest.batchLimit(3, 10));
+    }
+
+    @Test void idleWorkerCanShareOnlyTheOutstandingStockAcrossIndependentToolChains() throws Exception {
+        var path = directory.resolve("shared.json");
+        var queue = new ProjectQueue(path);
+        String project = "manifest-example";
+        String chest = "block:6,64,0";
+        String stone = "{\"resource\":\"stone\",\"variant\":\"both\",\"item\":\"minecraft:cobblestone\",\"count\":3}";
+        String ore = "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":57}";
+        String bank = "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":64}";
+        var root = new ProjectQueue.Work("materials", GATHER, stone, List.of(), Set.of());
+        var craft = new ProjectQueue.Work("pickaxe", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\",\"count\":1}",
+                List.of(root.id()), Set.of("bench"), root.id());
+        var gather = new ProjectQueue.Work("ore", GATHER, ore, List.of(craft.id()), Set.of(), craft.id());
+        var deposit = new ProjectQueue.Work("stock-0-0-deposit", TRANSFER, bank, List.of(gather.id()), Set.of(chest), gather.id());
+        queue.submitSupplied(project, WORLD, List.of(root, craft, gather, deposit), chest);
+        long now = 1;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            var job = queue.claim(WORLD, "Alpha", Set.of(GATHER), project, now++).job();
+            assertNull(queue.claim(WORLD, "Beta", Set.of(GATHER), project, now++));
+            assertFalse(queue.shareBlockedStock(WORLD, "Beta", project, now++));
+            assertTrue(queue.finish(project, job.work().id(), job.lease(), false, "Materials unavailable", now++));
+        }
+        assertTrue(queue.shareBlockedStock(WORLD, "Beta", project, now++));
+        var first = queue.claim(WORLD, "Alpha", Set.of(GATHER), project, now++).job();
+        var second = queue.claim(WORLD, "Beta", Set.of(GATHER), project, now++).job();
+        assertNotEquals(first.work().id(), second.work().id());
+        queue = new ProjectQueue(path);
+        var jobs = queue.snapshot(now++).get(0).jobs();
+        assertEquals(8, jobs.size());
+        assertEquals(2, jobs.stream().filter(j -> j.state() == ProjectQueue.State.LEASED).count());
+        var gson = new com.google.gson.Gson();
+        var quotas = jobs.stream().map(ProjectQueue.Job::work).filter(w -> w.kind() == GATHER && w.payload().contains("diamond"))
+                .map(w -> gson.fromJson(w.payload(), com.google.gson.JsonObject.class).get("count").getAsInt()).sorted().toList();
+        assertEquals(List.of(28, 29), quotas);
+        var deposits = jobs.stream().map(ProjectQueue.Job::work).filter(w -> w.kind() == TRANSFER).toList();
+        assertEquals(35, gson.fromJson(deposits.get(0).payload(), com.google.gson.JsonObject.class).get("stock").getAsInt());
+        assertEquals(deposit.id(), deposits.get(1).id());
+        assertTrue(deposits.get(1).needs().contains(deposits.get(0).id()));
+        assertEquals(Set.of(chest), deposits.get(0).locks());
+        assertFalse(queue.shareBlockedStock(WORLD, "Beta", project, now));
+    }
+
     @Test void repairsLostSchematicSupportAndReopensItsBlockedDependent() throws Exception {
         var journal = directory.resolve("destroyed-wall.json");
         var queue = new ProjectQueue(journal);

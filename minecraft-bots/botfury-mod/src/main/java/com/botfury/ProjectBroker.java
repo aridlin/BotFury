@@ -515,6 +515,12 @@ final class ProjectBroker {
                         assignment = board.claim(world, request.worker, request.kinds, request.project, now, position,
                                 material -> hasExcavationTool(request.toolUses, material), ProjectBroker::heldCount, request.toolUses, returnRevision);
                     }
+                    if (assignment == null && request.kinds.containsAll(java.util.Set.of(ProjectQueue.Kind.GATHER,
+                            ProjectQueue.Kind.CRAFT, ProjectQueue.Kind.SMELT, ProjectQueue.Kind.TRANSFER))
+                            && board.shareBlockedStock(world, request.worker, request.project, now)) {
+                        assignment = board.claim(world, request.worker, request.kinds, request.project, now, position,
+                                material -> hasExcavationTool(request.toolUses, material), ProjectBroker::heldCount, request.toolUses, returnRevision);
+                    }
                     reply(exchange, 200, assignment);
                 }
                 case "renew" -> {

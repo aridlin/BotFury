@@ -505,6 +505,13 @@ final class ProjectWorker {
         if (ordinaryBuild && targetLoaded && !canBuildHere && client.world.isAir(target)
                 && (openingJumpHeadroom != null || !attemptedJumpHeadroom && (routeFailed || reachedAlternative))
                 && openJumpHeadroom(client, currentCell)) return;
+        boolean belowPlacement = ordinaryBuild && targetLoaded && !canBuildHere && client.world.isAir(target)
+                && stand.getY() - currentCell.getY() >= 3 && currentCell.isWithinDistance(stand, 16);
+        if (belowPlacement && tryElevatedApproach(client, stand, now, true)) {
+            approachAge++;
+            return;
+        }
+        if (ordinaryBuild && !belowPlacement && stationReturn.active()) stationReturn.stop();
         // Try a protected exit once after both the planned and an alternate approach fail.
         boolean recoverBeforeSwitching = (excavate || ordinaryBuild) && interactionStand != null
                 && recoveryOrigin == null && routeFailed;
@@ -538,7 +545,7 @@ final class ProjectWorker {
             releaseCentering(client);
             stableSince = 0;
             approachAge++;
-            if (tryStationReturn(client, stand, now)) return;
+            if (stationJob && tryElevatedApproach(client, stand, now, false)) return;
             var recovery = approachRecovery.tick(client, stand,
                     pos -> !pos.equals(target) && !pos.up().equals(target));
             if (recovery == StallRecovery.State.DETOUR) {
@@ -721,15 +728,13 @@ final class ProjectWorker {
         breaking = true;
     }
 
-    private static boolean tryStationReturn(MinecraftClient client, BlockPos destination, long now) {
-        if (chest == null && production == null) return false;
+    private static boolean tryElevatedApproach(MinecraftClient client, BlockPos destination, long now, boolean placement) {
         var position = client.player.getBlockPos();
-        // Each segment is bounded around the worker. A distant station can still need that local climb.
-        if (destination.getY() - position.getY() < 5) {
+        if (destination.getY() - position.getY() < (placement ? 3 : 5)) {
             stationReturn.stop();
             return false;
         }
-        if (position.getY() >= stationReturnHeight + 4) {
+        if (!placement && position.getY() >= stationReturnHeight + 4) {
             stationReturnHeight = position.getY();
             taskEnd = Math.max(taskEnd, Math.min(stationReturnDeadline, now + seconds(90)));
         }
@@ -743,7 +748,8 @@ final class ProjectWorker {
         }
         var target = block.target();
         var excluded = StructureSupply.union(new ProjectGather.Area(target, target), block);
-        if (!SubsurfaceAccess.canDigRoute(client)
+        // Placement cargo can include the very planks needed for a new workbench.
+        if (!placement && !SubsurfaceAccess.canDigRoute(client)
                 && (stationToolAttempt == null || !position.isWithinDistance(stationToolAttempt, 4))
                 && SubsurfaceAccess.hasFooting(client)) {
             stationToolAttempt = position;
@@ -752,8 +758,11 @@ final class ProjectWorker {
                 return true;
             }
         }
+        boolean alreadyClimbing = stationReturn.active();
         if (!stationReturn.advanceToward(client, approachAge, destination, excluded)) return false;
-        status = assignment.project() + "/" + assignment.job().work().id() + ": Opening a return route to the station";
+        String detail = placement ? "Opening a short climb to the placement stand" : "Opening a return route to the station";
+        if (placement && !alreadyClimbing) BotEvents.add("info", "movement", detail);
+        status = assignment.project() + "/" + assignment.job().work().id() + ": " + detail;
         return true;
     }
 

@@ -244,6 +244,57 @@ class ProjectQueueTest {
         assertEquals("ingredients", queue.claim(WORLD, "replacement", Set.of(GATHER), now).job().work().id());
     }
 
+    @Test void bankedOreRestartsExhaustedToolProductionOnceEvenWithoutAnEquippedMiner() throws Exception {
+        var journal = directory.resolve("banked-ore-tool-rearm.json");
+        String chest = "block:3,64,0";
+        var root = job("ingredients", GATHER, List.of());
+        var tools = new ProjectQueue.Work("tools", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\"}",
+                List.of("ingredients"), Set.of(), "ingredients");
+        var ore = new ProjectQueue.Work("ore", GATHER,
+                "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":61}",
+                List.of("tools"), Set.of(), "tools");
+        var deposit = new ProjectQueue.Work("deposit", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":64}",
+                List.of("ore"), Set.of(chest), "ore");
+        var receipt = new ProjectQueue.ChestObservation(
+                new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:diamond", 3)), 1);
+        var site = new ProjectQueue.ResourceSite(8, -51, 2);
+        var jobs = List.of(new ProjectQueue.Job(root, ProjectQueue.State.DONE, 1, "prior", null, 0, "Found", null),
+                new ProjectQueue.Job(tools, ProjectQueue.State.DONE, 1, "prior", null, 0, "Crafted", null),
+                new ProjectQueue.Job(ore, ProjectQueue.State.FAILED, 3, null, null, 0,
+                        ProjectQueue.GATHER_TOOLS_NEEDED + " after 2 supply recoveries", null, site),
+                new ProjectQueue.Job(deposit, ProjectQueue.State.WAITING, 1, null, null, 0,
+                        "Partial stock contribution settled", receipt));
+        var saved = new ProjectQueue.Project("stock", WORLD, jobs, null, chest,
+                java.util.Map.of("ingredients", 2, "tool-depth:ore", -51, "tool-stock:ore", 64));
+        Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                "projects", java.util.Map.of(saved.id(), saved))));
+        var queue = new ProjectQueue(journal);
+        long now = 2;
+        var claim = queue.claim(WORLD, "worker", Set.of(GATHER, CRAFT), "stock", now++, site,
+                material -> false, (bot, item) -> 0, java.util.Map.of()).job();
+        assertEquals("ingredients", claim.work().id());
+        queue = new ProjectQueue(journal);
+        var rearmed = queue.snapshot(now).get(0);
+        assertEquals(61, rearmed.supplyRecoveries().get("tool-stock:ore"));
+        assertEquals(1, rearmed.supplyRecoveries().get("ingredients"));
+        assertEquals(receipt, rearmed.jobs().get(3).chest());
+        assertEquals(ore, rearmed.jobs().get(2).work());
+        assertEquals(site, rearmed.jobs().get(2).resourceSite());
+
+        for (int cycle = 0; cycle < 2; cycle++) {
+            if (cycle == 1) claim = queue.claim(WORLD, "worker", Set.of(GATHER), now++).job();
+            assertTrue(queue.finish("stock", "ingredients", claim.lease(), true, "Found", now++));
+            var crafted = queue.claim(WORLD, "worker", Set.of(CRAFT), now++).job();
+            assertTrue(queue.finish("stock", "tools", crafted.lease(), true, "Crafted", now++));
+            var mining = queue.claim(WORLD, "worker", Set.of(GATHER), now++).job();
+            assertTrue(queue.finish("stock", "ore", mining.lease(), false, ProjectQueue.GATHER_TOOLS_NEEDED, null, site, now++));
+        }
+        queue = new ProjectQueue(journal);
+        assertNull(queue.claim(WORLD, "other", Set.of(GATHER, CRAFT), "stock", now, site,
+                material -> false, (bot, item) -> 0, java.util.Map.of()));
+    }
+
     @Test void routeResupplyKeepsTheOriginalLeaseAndCannotDuplicateAcrossRestart() throws Exception {
         var journal = directory.resolve("route-tool-support.json");
         var queue = new ProjectQueue(journal);

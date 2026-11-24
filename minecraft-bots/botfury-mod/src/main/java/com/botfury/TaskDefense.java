@@ -2,6 +2,7 @@ package com.botfury;
 
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor;
+import net.minecraft.entity.mob.WardenEntity;
 import net.minecraft.util.math.Vec3d;
 import java.util.List;
 
@@ -11,6 +12,7 @@ final class TaskDefense {
     private static long receivedAt,holdUntil;
     private static long lastWalkEvent;
     private static boolean pathPaused;
+    private static boolean retreatingFromWarden;
     private static Vec3d walkingDirection;
     static Config parse(String value){
         String[] parts=value.split("\\|",-1);
@@ -49,16 +51,17 @@ final class TaskDefense {
         var action=ThreatEvasion.dodge(client);
         if(action!=null){
             walkingDirection=action.walkingDirection();
+            retreatingFromWarden = action.wardensNearby();
             if(!pathPaused&&BaritoneClient.available())pathPaused=BaritoneClient.execute("pause");
             if(client.interactionManager!=null)client.interactionManager.cancelBlockBreaking();
             BotInventory.evaded();
             long now=System.nanoTime();
-            if(walkingDirection!=null){
-                walk(client);
-                if(now-lastWalkEvent>=5_000_000_000L){
-                    lastWalkEvent=now;
-                    BotEvents.add("info","defense","Stepping out of a projectile or blast path");
-                }
+            if(walkingDirection!=null) walk(client);
+            if ((walkingDirection != null || retreatingFromWarden) && now - lastWalkEvent >= 5_000_000_000L) {
+                lastWalkEvent = now;
+                String reason = !retreatingFromWarden ? "Stepping out of a projectile or blast path"
+                        : walkingDirection == null ? "Holding position near a Warden" : "Sneaking away from a Warden";
+                BotEvents.add("info", "defense", reason);
             }
             holdUntil=now+200_000_000L;
             return true;
@@ -70,23 +73,29 @@ final class TaskDefense {
     private static void walk(MinecraftClient client) {
         client.player.lookAt(EntityAnchor.EYES, client.player.getEyePos().add(walkingDirection));
         client.options.forwardKey.setPressed(true);
+        if (retreatingFromWarden) {
+            client.player.setSprinting(false);
+            client.options.sneakKey.setPressed(true);
+        }
     }
 
     private static void stopWalking(MinecraftClient client) {
         if(walkingDirection!=null)client.options.forwardKey.setPressed(false);
+        if (retreatingFromWarden) client.options.sneakKey.setPressed(false);
         walkingDirection=null;
+        retreatingFromWarden = false;
     }
     static boolean defendProject(MinecraftClient client) {
         return eligible(client, true) && client.player.currentScreenHandler == client.player.playerScreenHandler
                 && LocalFormation.defend(client, config.owner, config.protectedNames,
                 other -> other instanceof net.minecraft.entity.mob.Monster
-                        && !(other instanceof net.minecraft.entity.mob.CreeperEntity));
+                        && !(other instanceof net.minecraft.entity.mob.CreeperEntity || other instanceof WardenEntity));
     }
 
     static boolean tick(MinecraftClient client,boolean working){
         if(!eligible(client,working))return false;
         var safe=new java.util.ArrayList<>(config.protectedNames);
         if(!BotInventory.recipient().isEmpty())safe.add(BotInventory.recipient());
-        return LocalFormation.defend(client,config.owner,safe);
+        return LocalFormation.defend(client,config.owner,safe, other -> !(other instanceof WardenEntity));
     }
 }

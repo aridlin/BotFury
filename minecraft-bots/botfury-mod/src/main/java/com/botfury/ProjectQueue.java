@@ -138,6 +138,7 @@ final class ProjectQueue {
     private static final int CONSTRUCTION_PICKUP_RETRY_RADIUS = 48;
     private static final int CONSTRUCTION_PICKUP_RETRY_CLIMB = 12;
     private static final int STOCK_RECOVERY_RADIUS = 64;
+    private static final int PLACEMENT_HANDOFF_SEPARATION = 6;
     private static final long SUPPLIER_OFFLINE_MS = 60_000;
     private static final int MAX_SUPPLY_RECOVERIES = 2;
     private static final int MAX_PROJECTS = 32;
@@ -680,7 +681,11 @@ final class ProjectQueue {
                 double distance = distance(candidate, target);
                 if (distance > 24) continue;
                 var original = locate.apply(pickup.worker);
-                if (original == null ? !failedApproach : distance(original, target) < distance + 16) continue;
+                if (failedApproach) {
+                    // A close worker can still be stranded on the wrong side of a wall or height change.
+                    if (original != null && distance(candidate, new ProjectBlock.Position(original.x, original.y, original.z))
+                            < PLACEMENT_HANDOFF_SEPARATION) continue;
+                } else if (original == null || distance(original, target) < distance + 16) continue;
                 if (reassignConstructionCargo(project, pickup, worker, heldCount.applyAsInt(worker, material),
                         kinds.contains(Kind.TRANSFER), now)) {
                     return true;

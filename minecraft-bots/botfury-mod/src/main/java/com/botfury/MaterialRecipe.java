@@ -173,8 +173,19 @@ final class MaterialRecipe {
                 // Reserve a separate route budget for descent and branching through natural terrain.
                 copies = Math.max(copies, 1 + (512 - 1) / pickaxe.getMaxDamage());
             }
-            // Earlier stages provide the tools for this recipe before the production batch begins.
-            stages.addAll(quantities(item, copies, false, resolveSteps(item, false)).quantities);
+            var tools = quantities(item, copies, false, resolveSteps(item, false)).quantities;
+            if (tier == highest && deepProspecting && recipes.containsKey(mc("crafting_table"))) {
+                // Stock the portable kit before the final tool craft, which consumes two sticks per pickaxe.
+                stages.addAll(tools.subList(0, tools.size() - 1));
+                var table = mc("crafting_table");
+                var sticks = mc("stick");
+                stages.addAll(quantities(table, 1, false, resolveSteps(table, false)).quantities);
+                stages.addAll(quantities(sticks, 4 + 2 * copies, false, resolveSteps(sticks, false)).quantities);
+                stages.add(tools.get(tools.size() - 1));
+            } else {
+                // Earlier stages provide the tools for this recipe before the production batch begins.
+                stages.addAll(tools);
+            }
             if (tier == 1 && deepProspecting && BotUiConfig.defense) {
                 var sword = Registries.ITEM.getId(Items.STONE_SWORD);
                 if (recipes.containsKey(sword)) {

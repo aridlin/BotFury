@@ -34,6 +34,7 @@ final class MiningTask {
     private static boolean requesting,dead,paused,pathActive,projectMining;
     private static final Deque<BlockPos> pendingCandidates = new ArrayDeque<>();
     private static boolean scanNeedsTool;
+    private static boolean toolShortfall;
     static void pause(boolean value) {
         if (job == null || paused == value) return;
         paused = value;
@@ -68,6 +69,7 @@ final class MiningTask {
     static boolean working(){return job!=null&&!paused&&!dead;}
     static String status(){return job==null?"":status;}
     static String lastStatus(){return status;}
+    static boolean toolShortfall() { return toolShortfall; }
     static boolean blocksProspectingBreak(BlockPos pos) {
         return subsurface.blocksBreaking(MinecraftClient.getInstance(), pos);
     }
@@ -108,6 +110,7 @@ final class MiningTask {
         for(String id:ids){var state=Registries.BLOCK.get(new Identifier(id)).getDefaultState();if(state.isAir()||state.getHardness(client.world,client.player.getBlockPos())<0){fail("Choose a breakable mining block");return;}}
         try{settings=new BaritoneSettings(exclude == null, project);}catch(ReflectiveOperationException|LinkageError e){fail("Could not configure mining approach");return;}
         projectMining=project;
+        toolShortfall = false;
         subsurface.reset();
         rememberedSite = null;
         observedSite = null;
@@ -167,7 +170,11 @@ final class MiningTask {
                     && !client.player.getBlockPos().down().equals(target)){
                 approachProgress = age;
                 stopPath();
-                if(!equip(client,target)){status="Need a suitable tool";return;}
+                if (!equip(client, target)) {
+                    toolShortfall = projectMining;
+                    status = "Need a suitable tool";
+                    return;
+                }
                 if (projectMining) {
                     var feet = client.player.getBlockPos();
                     if (excluded == null || !excluded.contains(feet)) {
@@ -252,6 +259,7 @@ final class MiningTask {
         }
         nextSearch = age + 20;
         if (scanNeedsTool) {
+            toolShortfall = projectMining;
             status = "Need a suitable tool for " + job.resource;
             stopPath();
             return;
@@ -294,12 +302,18 @@ final class MiningTask {
 
     private static void explore(MinecraftClient client) {
         if (returnToResourceSite(client)) return;
-        if (projectMining && client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)
-                && client.world.getBottomY() <= -54
-                && (job.resource.equals("diamond") || job.resource.equals("redstone"))) {
+        int depth = SubsurfaceAccess.PROSPECTING_DEPTH;
+        boolean deep = projectMining && client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)
+                && client.world.getBottomY() <= depth && SubsurfaceAccess.deepResource(job.resource);
+        if (deep) {
             if (pathActive) stopPath();
-            if (subsurface.advance(client, age, -54, excluded)) {
-                status = "Prospecting for " + job.resource + " toward Y -54";
+            if (subsurface.advance(client, age, depth, excluded)) {
+                status = "Prospecting for " + job.resource + " toward Y " + depth;
+                return;
+            }
+            if (!SubsurfaceAccess.canDigRoute(client)) {
+                toolShortfall = true;
+                status = "Route pickaxes are worn out";
                 return;
             }
         }
@@ -312,11 +326,9 @@ final class MiningTask {
             double radius = projectMining ? Math.min(1024, 32 + 24.0 * exploration) : 24 + 16 * (exploration % 3);
             int x = (int)(origin.x + Math.cos(angle) * radius);
             int z = (int)(origin.z + Math.sin(angle) * radius);
-            if (projectMining && job.resource.equals("diamond")
-                    && client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)
-                    && client.world.getBottomY() <= -54) {
-                status = "Searching for diamonds around " + x + ", -54, " + z;
-                path(new BlockPos(x, -54, z));
+            if (deep) {
+                status = "Searching for " + job.resource + " around " + x + ", " + depth + ", " + z;
+                path(new BlockPos(x, depth, z));
             } else path("explore " + x + " " + z);
         }
     }

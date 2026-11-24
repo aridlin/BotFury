@@ -152,12 +152,14 @@ final class MaterialRecipe {
     private Plan prepareTools(Plan plan) {
         int highest = -1;
         int miningUses = 0;
+        boolean deepProspecting = false;
         for (var quantity : plan.quantities) {
             var source = quantity.step.resource;
             if (source == null || source.equals("dropped")) continue;
             int tier = requiredPickaxe(source);
             if (tier < 0) continue;
             highest = Math.max(highest, tier);
+            deepProspecting |= SubsurfaceAccess.deepResource(source);
             // One use per requested drop is conservative for multi-drop blocks and harvesting enchantments.
             miningUses = Math.addExact(miningUses, quantity.count);
         }
@@ -167,6 +169,10 @@ final class MaterialRecipe {
             var pickaxe = PICKAXES.get(tier);
             var item = Registries.ITEM.getId(pickaxe);
             int copies = tier == highest ? 1 + (miningUses - 1) / pickaxe.getMaxDamage() : 1;
+            if (tier == 1 && deepProspecting) {
+                // Reserve a separate route budget for descent and branching through natural terrain.
+                copies = Math.max(copies, 1 + (512 - 1) / pickaxe.getMaxDamage());
+            }
             // Earlier stages provide the tools for this recipe before the production batch begins.
             stages.addAll(quantities(item, copies, false, resolveSteps(item, false)).quantities);
         }

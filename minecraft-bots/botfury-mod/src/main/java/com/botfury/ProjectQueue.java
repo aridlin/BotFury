@@ -120,6 +120,7 @@ final class ProjectQueue {
     private record StationTarget(ProjectBlock.Position target, String block) {}
     private record Board(int schema, Map<String, Project> projects) {}
     private record PickupTarget(String direction, String item, int stock) {}
+    private record ToolRecipe(String recipe) {}
 
     private static final Gson JSON = new Gson();
     private static final long LEASE_MS = 15_000;
@@ -130,6 +131,10 @@ final class ProjectQueue {
     private static final int MAX_DEPENDENCIES = 250_000;
     private static final String LEASE_EXPIRED = "Worker lease expired";
     static final String GATHER_STALLED = "Gathering stalled without item or route progress";
+    static final String GATHER_TOOLS_NEEDED = "Gathering needs renewed tools";
+    private static final String RECOVERING_TOOLS = GATHER_TOOLS_NEEDED + "; reacquiring materials";
+    private static final Set<String> PICKAXE_RECIPES = Set.of("minecraft:wooden_pickaxe", "minecraft:stone_pickaxe",
+            "minecraft:iron_pickaxe", "minecraft:diamond_pickaxe");
     private static final long STALLED_WORKER_COOLDOWN_MS = 30_000;
     private final Path journal;
     private final Path archive;
@@ -590,6 +595,11 @@ final class ProjectQueue {
         }
         var observation = chest == null ? job.chest : new ChestObservation(chest, now);
         var location = gatheringSite(job, site);
+        if (!success && GATHER_TOOLS_NEEDED.equals(evidence) && recoverGatheringTools(project, job, location, now)) {
+            markAssignmentSeen(project, job.worker, now);
+            restoredLeases.remove(token);
+            return true;
+        }
         if (pickupShortfall) {
             if (success || chest == null || job.work.kind != Kind.TRANSFER) {
                 throw new IllegalArgumentException("A stock shortfall requires a failed transfer and chest observation");
@@ -776,6 +786,23 @@ final class ProjectQueue {
                 || ("Missing unmodified material " + material).equals(job.evidence));
     }
 
+    private boolean recoverGatheringTools(Project project, Job gathering, ResourceSite site, long now) throws IOException {
+        if (project.supplyChest == null && project.repeat == null
+                || gathering.work.kind != Kind.GATHER || gathering.work.sameWorkerAs == null) return false;
+        var jobs = new HashMap<String, Job>();
+        project.jobs.forEach(job -> jobs.put(job.work.id, job));
+        var supplier = jobs.get(gathering.work.sameWorkerAs);
+        for (var stage = supplier; stage != null; stage = jobs.get(stage.work.sameWorkerAs)) {
+            if (stage.state != State.DONE) return false;
+            if (stage.work.kind != Kind.CRAFT) continue;
+            var recipe = JSON.fromJson(stage.work.payload, ToolRecipe.class);
+            if (recipe != null && recipe.recipe != null && PICKAXE_RECIPES.contains(recipe.recipe)) {
+                return rewindSupply(project, gathering, supplier, jobs, GATHER_TOOLS_NEEDED, gathering.chest, site, now);
+            }
+        }
+        return false;
+    }
+
     private void recoverMissingSuppliers(String world, long now) throws IOException {
         for (Project project : List.copyOf(projects.values())) {
             if (project.supplyChest == null || !world.equals(project.world)) continue;
@@ -798,6 +825,12 @@ final class ProjectQueue {
 
     private boolean rewindSupply(Project project, Job waiting, Job supplier, Map<String, Job> jobs,
                                  String evidence, ChestObservation observation) throws IOException {
+        return rewindSupply(project, waiting, supplier, jobs, evidence, observation, waiting.resourceSite, 0);
+    }
+
+    private boolean rewindSupply(Project project, Job waiting, Job supplier, Map<String, Job> jobs,
+                                 String evidence, ChestObservation observation, ResourceSite site,
+                                 long preferOriginalAt) throws IOException {
         Set<String> rewind = new HashSet<>();
         Job stage = supplier;
         // Earlier batches can gate gathering, but their completed work must survive recovery.
@@ -820,14 +853,19 @@ final class ProjectQueue {
         int attempts = recoveries.getOrDefault(root, 0);
         if (attempts >= MAX_SUPPLY_RECOVERIES) {
             replace(project, new Job(waiting.work, State.FAILED, waiting.attempts, null, null, 0,
-                    evidence + " after " + attempts + " supply recoveries", observation));
+                    evidence + " after " + attempts + " supply recoveries", observation, site));
             return true;
         }
         recoveries.put(root, attempts + 1);
         rewind.add(waiting.work.id);
-        var updated = project.jobs.stream().map(job -> rewind.contains(job.work.id)
-                ? new Job(job.work, State.WAITING, 0, null, null, 0, evidence + "; reacquiring materials", job == waiting ? observation : job.chest, job.resourceSite)
-                : job).toList();
+        var updated = project.jobs.stream().map(job -> {
+            if (!rewind.contains(job.work.id)) return job;
+            boolean preferred = preferOriginalAt > 0 && job.work.id.equals(root);
+            return new Job(job.work, State.WAITING, 0, preferred ? waiting.worker : null, null,
+                    preferred ? preferOriginalAt + STALLED_WORKER_COOLDOWN_MS : 0,
+                    evidence + "; reacquiring materials", job == waiting ? observation : job.chest,
+                    job == waiting ? site : job.resourceSite);
+        }).toList();
         commit(new Project(project.id, project.world, updated, project.repeat, project.supplyChest, recoveries));
         return true;
     }
@@ -918,6 +956,7 @@ final class ProjectQueue {
 
     private static boolean retryDelayedFor(Job job, String worker, long now) {
         if (job.expiresAt <= now) return false;
+        if (RECOVERING_TOOLS.equals(job.evidence)) return !worker.equalsIgnoreCase(job.worker);
         return !GATHER_STALLED.equals(job.evidence) || worker.equalsIgnoreCase(job.worker);
     }
 

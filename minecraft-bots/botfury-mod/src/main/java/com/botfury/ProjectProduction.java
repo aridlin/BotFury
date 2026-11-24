@@ -39,6 +39,7 @@ final class ProjectProduction {
     private boolean opening;
     private long nextAction;
     private Map<Integer, ItemStack> craftingInputs;
+    private ItemStack substitutedFuel = ItemStack.EMPTY;
 
     ProjectProduction(Spec spec) { this.spec = spec; }
 
@@ -89,6 +90,10 @@ final class ProjectProduction {
         int output = smelting.getOutput(client.world.getRegistryManager()).getCount();
         if (output < 1) return null;
         long cookTicks = (long) smelting.getCookTime() * ((plan.count() + output - 1) / output);
+        return alternativeFuel(client, Identifier.tryParse(plan.input()), Identifier.tryParse(plan.expectedFuel()), cookTicks);
+    }
+
+    private static Identifier alternativeFuel(MinecraftClient client, Identifier input, Identifier preferred, long cookTicks) {
         if (cookTicks <= 0) return null;
         var burnTimes = net.minecraft.block.entity.AbstractFurnaceBlockEntity.createFuelTimeMap();
         var carried = new java.util.LinkedHashMap<Identifier, Integer>();
@@ -104,7 +109,7 @@ final class ProjectProduction {
         for (var entry : carried.entrySet()) {
             var id = entry.getKey();
             int ticks = burnTimes.getOrDefault(Registries.ITEM.get(id), 0);
-            if (ticks <= 0 || id.toString().equals(plan.input()) || id.toString().equals(plan.expectedFuel())
+            if (ticks <= 0 || id.equals(input) || id.equals(preferred)
                     || (long) ticks * entry.getValue() < cookTicks) continue;
             long waste = (cookTicks + (long) ticks - 1) / ticks * ticks - cookTicks;
             if (waste < bestWaste) {
@@ -313,6 +318,7 @@ final class ProjectProduction {
         var existingFuel = furnace.getSlot(1).getStack();
         if (!existingInput.isEmpty() && !ItemStack.canCombine(existingInput, raw)
                 || !existingFuel.isEmpty() && !ItemStack.canCombine(existingFuel, fuel)
+                    && !ItemStack.canCombine(existingFuel, substitutedFuel)
                 || !result.isEmpty() && !ItemStack.canCombine(result, output)) {
             return failure("Furnace contains unrelated items");
         }
@@ -327,10 +333,23 @@ final class ProjectProduction {
             return null;
         }
         if (queued == 0) return failure("Missing furnace input " + spec.input);
-        if (!furnace.isBurning() && existingFuel.isEmpty() && !feed(client, 1, fuel, 1)) {
+        if (!furnace.isBurning() && existingFuel.isEmpty()
+                && !addFuel(client, furnace, fuel, (long) recipe.getCookTime() * inputs)) {
             return failure("Missing furnace fuel " + spec.fuel);
         }
         return null;
+    }
+
+    private boolean addFuel(MinecraftClient client, FurnaceScreenHandler furnace, ItemStack preferred, long cookTicks) {
+        if (feed(client, 1, preferred, 1)) return true;
+        if (!substitutedFuel.isEmpty() && feed(client, 1, substitutedFuel, 1)) return true;
+        var alternative = alternativeFuel(client, spec.input, spec.fuel, cookTicks);
+        if (alternative == null) return false;
+        var fuel = Registries.ITEM.get(alternative).getDefaultStack();
+        if (!furnace.getSlot(1).canInsert(fuel) || !feed(client, 1, fuel, 1)) return false;
+        substitutedFuel = fuel;
+        BotEvents.add("info", "projects", "Furnace is using carried " + alternative);
+        return true;
     }
 
     private boolean feed(MinecraftClient client, int destination, ItemStack wanted, int count) {

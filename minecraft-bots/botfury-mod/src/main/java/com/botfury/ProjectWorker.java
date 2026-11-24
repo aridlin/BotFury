@@ -50,6 +50,7 @@ final class ProjectWorker {
     private static boolean carriedUnstartedSmeltingInput;
     private static java.util.UUID interruptedSmeltingLease;
     private static FieldWorkstation fieldWorkstation;
+    private static final Set<BlockPos> rejectedFieldWorkbenches = new HashSet<>();
     private static long nextWorkstationSearch;
     private static final Identifier MINING_SWORD = Identifier.of("minecraft", "stone_sword");
     private static final Identifier ROUTE_STICKS = Identifier.of("minecraft", "stick");
@@ -273,6 +274,7 @@ final class ProjectWorker {
         production = null;
         carriedUnstartedSmeltingInput = false;
         fieldWorkstation = null;
+        rejectedFieldWorkbenches.clear();
         nextWorkstationSearch = 0;
         miningRecipe = null;
         miningCraft = null;
@@ -713,7 +715,7 @@ final class ProjectWorker {
         if (fieldWorkstation == null && now >= nextWorkstationSearch
                 && !block.target().isWithinDistance(client.player.getBlockPos(), 16)) {
             nextWorkstationSearch = now + seconds(8);
-            var nearby = FieldWorkstation.find(client, now, kind);
+            var nearby = FieldWorkstation.find(client, now, kind, rejectedFieldWorkbenches);
             needsProductionBench = nearby == null && production.canUsePortableWorkbench(client);
             if (nearby != null) {
                 halt(client);
@@ -723,7 +725,9 @@ final class ProjectWorker {
         if (fieldWorkstation == null) return false;
         var state = fieldWorkstation.tick(client, now);
         if (state == FieldWorkstation.State.WORKING) {
-            status = assignment.project() + "/" + assignment.job().work().id() + ": Setting up a nearby " + stationName;
+            status = assignment.project() + "/" + assignment.job().work().id()
+                    + (fieldWorkstation.walkingToExistingWorkbench() ? ": Walking to a nearby " : ": Setting up a nearby ")
+                    + stationName;
             return true;
         }
         if (state == FieldWorkstation.State.READY) {
@@ -734,6 +738,8 @@ final class ProjectWorker {
             interactionGoals = List.of();
             rejectedInteractionStands.clear();
             BotEvents.add("info", "projects", "Using nearby " + stationName + " at " + block.target().toShortString());
+        } else if (fieldWorkstation.walkingToExistingWorkbench()) {
+            rejectedFieldWorkbenches.add(fieldWorkstation.station().target());
         }
         fieldWorkstation.close(client);
         fieldWorkstation = null;

@@ -13,6 +13,11 @@ import net.minecraft.util.Hand;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.Vec3d;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
 
 /** Establishes a local production station outside protected project areas. */
 final class FieldWorkstation {
@@ -30,6 +35,8 @@ final class FieldWorkstation {
     private ProjectProduction plankPreparation;
     private long nextPlacement;
     private boolean openingRecess;
+    private List<BlockPos> approach = List.of();
+    private BaritoneSettings walkSettings;
     private int heldBeforePlacement;
 
     private FieldWorkstation(ProjectBlock station, long now, ProjectProduction.Spec plankRecipe,
@@ -54,8 +61,42 @@ final class FieldWorkstation {
         return station.block().equals(TABLE) && placedByWorker(client) ? station : null;
     }
 
-    static FieldWorkstation find(MinecraftClient client, long now, ProjectQueue.Kind kind) {
-        return find(client, now, kind == ProjectQueue.Kind.SMELT ? FURNACE : TABLE, null, PLANK_BUDGET, null);
+    static FieldWorkstation find(MinecraftClient client, long now, ProjectQueue.Kind kind, Set<BlockPos> rejected) {
+        var local = find(client, now, kind == ProjectQueue.Kind.SMELT ? FURNACE : TABLE, null, PLANK_BUDGET, null);
+        if (local != null || kind != ProjectQueue.Kind.CRAFT || !SubsurfaceAccess.hasFooting(client)
+                || client.player.isTouchingWater() || client.player.currentScreenHandler != client.player.playerScreenHandler) return local;
+        return findWalkableWorkbench(client, now, rejected);
+    }
+
+    private static FieldWorkstation findWalkableWorkbench(MinecraftClient client, long now, Set<BlockPos> rejected) {
+        var world = client.world;
+        var player = client.player;
+        var feet = player.getBlockPos();
+        for (var position : BlockPos.iterateOutwards(feet, 12, 4, 12)) {
+            if (rejected.contains(position) || !world.isChunkLoaded(position.getX() >> 4, position.getZ() >> 4)
+                    || !world.getBlockState(position).isOf(net.minecraft.block.Blocks.CRAFTING_TABLE)) continue;
+            var stands = new ArrayList<BlockPos>();
+            for (var side : Direction.Type.HORIZONTAL) {
+                for (var stand : List.of(position.offset(side), position.offset(side).down(), position.offset(side).up())) {
+                    var floor = stand.down();
+                    var point = Vec3d.ofBottomCenter(stand);
+                    var body = player.getBoundingBox().offset(point.subtract(player.getPos()));
+                    var eye = point.add(0, player.getEyeY() - player.getY(), 0);
+                    if (!world.isChunkLoaded(stand.getX() >> 4, stand.getZ() >> 4)
+                            || !world.getWorldBorder().contains(stand) || !world.getFluidState(stand).isEmpty()
+                            || !world.getFluidState(stand.up()).isEmpty()
+                            || !ProjectPlacement.flushFloor(world.getBlockState(floor), world, floor)
+                            || !world.isSpaceEmpty(player, body)
+                            || ProjectProduction.workstationHit(client, position, eye) == null) continue;
+                    stands.add(stand.toImmutable());
+                }
+            }
+            if (stands.isEmpty()) continue;
+            var bench = new FieldWorkstation(new ProjectBlock(position.toImmutable(), stands.get(0), TABLE), now, null, null, null);
+            bench.approach = List.copyOf(stands);
+            return bench;
+        }
+        return null;
     }
 
     static FieldWorkstation findForMiningTool(MinecraftClient client, long now, ProjectGather.Area excluded) {
@@ -106,6 +147,17 @@ final class FieldWorkstation {
 
     State tick(MinecraftClient client, long now) {
         var position = station.target();
+        if (!approach.isEmpty()) {
+            if (now >= expires || !station.matches(client.world.getBlockState(position))) return State.UNAVAILABLE;
+            if (ProjectProduction.workstationHit(client, position, client.player.getEyePos()) != null) return State.READY;
+            if (walkSettings != null) return State.WORKING;
+            try {
+                walkSettings = new BaritoneSettings(false);
+            } catch (ReflectiveOperationException | LinkageError error) {
+                return State.UNAVAILABLE;
+            }
+            return BaritoneClient.goToAny(approach) ? State.WORKING : State.UNAVAILABLE;
+        }
         if (station.matches(client.world.getBlockState(position))) {
             return ProjectProduction.workstationHit(client, position, client.player.getEyePos()) == null
                     ? State.UNAVAILABLE : State.READY;
@@ -149,7 +201,14 @@ final class FieldWorkstation {
         return ProjectPlacement.attempt(client, station) == null ? State.WORKING : State.UNAVAILABLE;
     }
 
+    boolean walkingToExistingWorkbench() { return !approach.isEmpty(); }
+
     void close(MinecraftClient client) {
+        if (walkSettings != null) {
+            BaritoneClient.execute("stop");
+            walkSettings.close();
+            walkSettings = null;
+        }
         stopOpening(client);
         if (workbench != null) workbench.close(client);
         if (plankPreparation != null) plankPreparation.close(client);

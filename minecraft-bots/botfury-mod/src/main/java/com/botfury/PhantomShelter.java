@@ -7,7 +7,9 @@ import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
 import java.util.ArrayDeque;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 
 /** Uses short paths through existing terrain to put a roof between a vulnerable worker and a Phantom. */
 final class PhantomShelter {
@@ -15,13 +17,15 @@ final class PhantomShelter {
     private static final ArrayDeque<BlockPos> route = new ArrayDeque<>();
     private static long nextThreatCheck;
     private static long nextSearch;
-    private static boolean threatened;
+    private static final long THREAT_GRACE = 3_000_000_000L;
+    private static Map<Integer, Vec3d> lastPhantoms = Map.of();
+    private static long threatenedUntil;
     private record Step(BlockPos cell, Step previous, int distance) {}
 
     static void clear() {
         route.clear();
-        threatened = false;
-        nextThreatCheck = nextSearch = 0;
+        lastPhantoms = Map.of();
+        threatenedUntil = nextThreatCheck = nextSearch = 0;
     }
 
     static ThreatEvasion.Action seek(MinecraftClient client) {
@@ -29,11 +33,26 @@ final class PhantomShelter {
         var player = client.player;
         if (now >= nextThreatCheck) {
             nextThreatCheck = now + 250_000_000L;
-            double radius = threatened || player.getHealth() <= player.getMaxHealth() / 2 ? 20 : 8;
-            threatened = !client.world.getEntitiesByClass(PhantomEntity.class, player.getBoundingBox().expand(radius),
-                    phantom -> phantom.isAlive() && player.squaredDistanceTo(phantom) <= radius * radius).isEmpty();
+            boolean injured = player.getHealth() <= player.getMaxHealth() / 2;
+            double radius = injured || now < threatenedUntil ? 20 : 8;
+            double close = injured ? 6 : 4;
+            var current = new HashMap<Integer, Vec3d>();
+            var position = player.getPos();
+            for (var phantom : client.world.getEntitiesByClass(PhantomEntity.class, player.getBoundingBox().expand(radius),
+                    entity -> entity.isAlive() && player.squaredDistanceTo(entity) <= radius * radius)) {
+                var observed = phantom.getPos();
+                int id = phantom.getId();
+                current.put(id, observed);
+                var previous = lastPhantoms.get(id);
+                double distance = position.distanceTo(observed);
+                // Compare both observations from the same position so a moving bot does not look like a diving Phantom.
+                if (distance <= close || previous != null && position.distanceTo(previous) - distance >= .25) {
+                    threatenedUntil = now + THREAT_GRACE;
+                }
+            }
+            lastPhantoms = current;
         }
-        if (!threatened) {
+        if (now >= threatenedUntil) {
             route.clear();
             return null;
         }

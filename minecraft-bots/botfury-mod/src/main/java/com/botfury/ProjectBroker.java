@@ -106,6 +106,7 @@ final class ProjectBroker {
                     BotEvents.add("info", "projects", "Rebuilding missing station at " + target.toShortString());
                 }
             }
+            reuseCarriedStationWood(board, world);
             checkOwnedPlacements(client, board, world);
             confirmLocalScaffoldClearance(client, board, world);
             confirmLocalInspections(client, board, world, now);
@@ -118,6 +119,17 @@ final class ProjectBroker {
             }
         } catch (IOException | IllegalArgumentException failure) {
             BotEvents.add("warn", "projects", "Could not check owned project work. " + failure.getMessage());
+        }
+    }
+
+    private static void reuseCarriedStationWood(ProjectQueue board, String world) throws IOException {
+        long now = System.currentTimeMillis();
+        for (var bot : BotTracker.all()) {
+            if (!bot.fresh() || !bot.connected() || !bot.alive() || !bot.sameWorld() || bot.items().isEmpty()) continue;
+            if (board.reuseCarriedStationWood(world, bot.name(), bot.items(), now, ProjectBroker::heldCount)) {
+                BotEvents.add("info", "projects", bot.name() + " already carries wood for station repair");
+                return;
+            }
         }
     }
 

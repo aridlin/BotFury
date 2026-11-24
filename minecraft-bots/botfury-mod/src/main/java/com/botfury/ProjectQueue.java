@@ -47,6 +47,9 @@ final class ProjectQueue {
         Work(String id, Kind kind, String payload, List<String> needs, Set<String> locks) {
             this(id, kind, payload, needs, locks, null);
         }
+        Work withPayload(String replacement) {
+            return new Work(id, kind, replacement, needs, locks, sameWorkerAs, cleanup, constructionMaterial);
+        }
         Work {
             if (!validId(id) || kind == null || payload == null || payload.length() > 8192
                     || needs == null || locks == null || needs.size() > MAX_JOBS || locks.size() > 128
@@ -821,9 +824,14 @@ final class ProjectQueue {
     private static String stationRepairKey(Job job) { return "station-repair:" + job.work.id; }
 
     private static boolean canRepairOwnedStation(Project project, Job job) {
-        return job.state == State.DONE || job.state == State.FAILED
-                && !project.supplyRecoveries.containsKey(stationRepairKey(job))
-                && (OWNED_STATION_MISSING + " after " + MAX_SUPPLY_RECOVERIES + " supply recoveries").equals(job.evidence);
+        if (job.state == State.DONE) return true;
+        if (job.state != State.FAILED || project.supplyRecoveries.containsKey(stationRepairKey(job))) return false;
+        if ((OWNED_STATION_MISSING + " after " + MAX_SUPPLY_RECOVERIES + " supply recoveries").equals(job.evidence)) {
+            return true;
+        }
+        if (job.evidence == null || !job.evidence.startsWith("Missing material ") || stationKey(job) == null) return false;
+        var target = JSON.fromJson(job.work.payload, StationTarget.class);
+        return ("Missing material " + target.block).equals(job.evidence);
     }
 
     synchronized boolean restoreOwnedStation(String world, String projectId, String jobId, List<Work> footing) throws IOException {
@@ -864,6 +872,106 @@ final class ProjectQueue {
             revised.add(job);
         }
         return rewindSupply(project.withJobs(revised), station, recipe, jobs, OWNED_STATION_MISSING, null);
+    }
+
+    synchronized boolean reuseCarriedStationWood(String world, String worker, Map<String, Integer> inventory, long now,
+                                                  java.util.function.ToIntBiFunction<String, String> held) throws IOException {
+        var logs = ResourceCatalog.blocks("any_logs", "both").stream()
+                .filter(log -> inventory.getOrDefault(log, 0) > 0).toList();
+        if (logs.isEmpty()) return false;
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || cancelled(project)) continue;
+            for (var station : project.jobs) {
+                if (station.state != State.WAITING
+                        || !(station.work.id.equals("setup-workbench") || station.work.id.equals("setup-storage"))
+                        || !project.supplyRecoveries.containsKey(stationRepairKey(station))
+                        || stationKey(station) == null) continue;
+                if (reuseCarriedStationWood(project, station, worker, logs, inventory, held, now)) return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean reuseCarriedStationWood(Project project, Job station, String worker, List<String> logs,
+                                            Map<String, Integer> inventory,
+                                            java.util.function.ToIntBiFunction<String, String> held, long now) throws IOException {
+        var recipe = find(project, station.work.sameWorkerAs);
+        if (recipe == null || recipe.work.kind != Kind.CRAFT || recipe.state != State.WAITING) return false;
+        var planks = find(project, recipe.work.sameWorkerAs);
+        if (planks == null || planks.work.kind != Kind.CRAFT || planks.state != State.WAITING) return false;
+        var gather = find(project, planks.work.sameWorkerAs);
+        if (gather == null || gather.work.kind != Kind.GATHER || gather.work.sameWorkerAs != null
+                || gather.state != State.WAITING && gather.state != State.LEASED
+                || !availableProjectWorker(project, worker, now, gather)) return false;
+        var source = gatherSource(gather.work.payload);
+        if (source == null || !("block:" + source.item).equals(source.resource)
+                || !ResourceCatalog.blocks("any_logs", "both").contains(source.item)) return false;
+        if (gather.state == State.LEASED && (gather.expiresAt <= now || handoffWorker(gather) != null
+                || routeToolRequests.containsKey(gather.lease) || held.applyAsInt(gather.worker, source.item) != 0)) return false;
+        var craft = JSON.fromJson(recipe.work.payload, InventoryRecipe.class);
+        var conversion = JSON.fromJson(planks.work.payload, InventoryRecipe.class);
+        int required = station.work.id.equals("setup-storage") ? 2 : 1;
+        var amount = JSON.fromJson(gather.work.payload, GatherQuantity.class);
+        var target = JSON.fromJson(station.work.payload, StationTarget.class);
+        if (craft == null || !target.block.equals(craft.recipe) || !Integer.valueOf(1).equals(craft.count)
+                || conversion == null || !conversion.inventory || !plankRecipe(source.item).equals(conversion.recipe)
+                || !Integer.valueOf(required * 4).equals(conversion.count)
+                || amount == null || !Integer.valueOf(required).equals(amount.count)) return false;
+        var stages = Set.of(gather.work.id, planks.work.id, recipe.work.id);
+        if (!privatePreparationReady(project, station, stages)
+                || hasPendingDepositOf(project.world, worker, "any_logs")) return false;
+        var reserved = pendingBuildMaterials(project.world, worker);
+        reserved.addAll(pinnedRecipeWood(project.world, worker, logs));
+        for (String log : logs) {
+            if (inventory.getOrDefault(log, 0) < required || reserved.contains(log)
+                    || hasPendingDepositOf(project.world, worker, log)) continue;
+            var gatherPayload = JSON.fromJson(gather.work.payload, com.google.gson.JsonObject.class);
+            gatherPayload.addProperty("resource", "block:" + log);
+            gatherPayload.addProperty("item", log);
+            var plankPayload = JSON.fromJson(planks.work.payload, com.google.gson.JsonObject.class);
+            plankPayload.addProperty("recipe", plankRecipe(log));
+            var jobs = project.jobs.stream().map(job -> {
+                if (job == gather) {
+                    return new Job(job.work.withPayload(gatherPayload.toString()), State.DONE, job.attempts, worker,
+                            null, 0, "Observed " + required + " " + log + " already carried by the worker", null);
+                }
+                if (job == planks) {
+                    return new Job(job.work.withPayload(plankPayload.toString()), State.WAITING, job.attempts, null,
+                            null, 0, job.evidence, job.chest);
+                }
+                return job;
+            }).toList();
+            commit(project.withJobs(jobs));
+            return true;
+        }
+        return false;
+    }
+
+    private Set<String> pinnedRecipeWood(String world, String worker, List<String> logs) {
+        var reserved = new HashSet<String>();
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || cancelled(project)) continue;
+            for (var job : project.jobs) {
+                if (job.state != State.WAITING || job.work.sameWorkerAs == null
+                        || job.work.kind != Kind.CRAFT && job.work.kind != Kind.SMELT) continue;
+                var prior = find(project, job.work.sameWorkerAs);
+                if (prior == null || prior.state != State.DONE || !worker.equalsIgnoreCase(prior.worker)) continue;
+                if (job.work.kind == Kind.SMELT) {
+                    var smelt = JSON.fromJson(job.work.payload, SmeltFuel.class);
+                    if (smelt != null && logs.contains(smelt.fuel)) reserved.add(smelt.fuel);
+                } else {
+                    var craft = JSON.fromJson(job.work.payload, InventoryRecipe.class);
+                    if (craft != null) {
+                        for (String log : logs) if (plankRecipe(log).equals(craft.recipe)) reserved.add(log);
+                    }
+                }
+            }
+        }
+        return reserved;
+    }
+
+    private static String plankRecipe(String log) {
+        return log.substring(0, log.length() - "_log".length()) + "_planks";
     }
 
     private static boolean stationFailure(Job job) {
@@ -2113,11 +2221,15 @@ final class ProjectQueue {
     }
 
     private boolean availableProjectWorker(Project project, String worker, long now) {
+        return availableProjectWorker(project, worker, now, null);
+    }
+
+    private boolean availableProjectWorker(Project project, String worker, long now, Job replacedGathering) {
         long lastSeen = Math.max(workerSeen.getOrDefault(workerKey(project.world, worker, project.id), 0L),
                 workerSeen.getOrDefault(workerKey(project.world, worker, null), 0L));
         return lastSeen > 0 && lastSeen >= lastSafetyWait(project.world, worker, project.id)
                 && now - lastSeen <= LEASE_MS && projects.values().stream().flatMap(p -> p.jobs.stream())
-                .noneMatch(job -> workerCommittedToLease(job, worker) || job.state == State.WAITING
+                .noneMatch(job -> job != replacedGathering && workerCommittedToLease(job, worker) || job.state == State.WAITING
                         && CARRIED_SMELT_ASSIGNED.equals(job.evidence) && job.expiresAt > now
                         && worker.equalsIgnoreCase(job.worker));
     }
@@ -2584,7 +2696,7 @@ final class ProjectQueue {
         var planks = onlyInventoryCraftConsumer(project, gather);
         if (planks == null) return null;
         var plankRecipe = JSON.fromJson(planks.work.payload, InventoryRecipe.class);
-        String planksId = source.item.substring(0, source.item.length() - "_log".length()) + "_planks";
+        String planksId = plankRecipe(source.item);
         if (plankRecipe == null || !plankRecipe.inventory || !planksId.equals(plankRecipe.recipe)) return null;
         var sticks = onlyInventoryCraftConsumer(project, planks);
         if (sticks == null) return null;

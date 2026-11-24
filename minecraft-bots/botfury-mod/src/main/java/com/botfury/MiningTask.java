@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.entity.ItemEntity;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.Hand;
@@ -56,6 +57,9 @@ final class MiningTask {
     private static int alternateStandAttempts;
     private static int pickupUntil;
     private static ProjectItem projectDrop;
+    private static ItemEntity reservedDrop;
+    private static int nextDropScan, dropDeadline;
+    private static final int LOOSE_DROP_RADIUS = 12;
     private static final DroppedItemSearch minedDrops = new DroppedItemSearch();
     private static BlockPos rememberedSite;
     private static BlockPos deepExplorationGoal;
@@ -144,6 +148,7 @@ final class MiningTask {
         job=next;blocks=Set.copyOf(ids);generation++;owner=UUID.randomUUID()+"-"+client.player.getGameProfile().getName();
         var here=LocalFormation.here();world=here.server()+"|"+here.dimension();
         paused=false;
+        nextDropScan = 0;
         age=nextSearch=nextPath=nextRenew=exploration=0;requesting=dead=false;target=null;stand=null;pickup=null;leaseToken=null;origin=client.player.getPos();rejected.clear();
         rejectedStands.clear();
         pendingCandidates.clear();
@@ -153,6 +158,7 @@ final class MiningTask {
     static void stop(){
         if(job!=null){stopPath();var client=MinecraftClient.getInstance();if(client.interactionManager!=null)client.interactionManager.cancelBlockBreaking();release(job,leaseToken);}
         minedDrops.reset();
+        reservedDrop = null;
         projectDrop = null;
         pendingCandidates.clear();
         job=null;generation++;target=null;stand=null;pickup=null;leaseToken=null;requesting=false;
@@ -165,6 +171,10 @@ final class MiningTask {
         var here=LocalFormation.here();
         if(client.player==null||client.world==null||here==null||!world.equals(here.server()+"|"+here.dimension())){stop();return;}
         age++;dead=false;
+        if (reservedDrop != null) {
+            collectReservedDrop(client);
+            return;
+        }
         if(target!=null){
             if (protectedTarget(client, target)) {
                 stopPath();
@@ -295,6 +305,7 @@ final class MiningTask {
             }else if(age%20==0)pickupPath();
             status="Gathering mined drops";return;
         }
+        if (requestLooseDrop(client)) return;
         if (subsurface.continuePassage(client, age, excluded)) {
             status = "Opening a short prospecting passage";
             return;
@@ -339,6 +350,45 @@ final class MiningTask {
             return;
         }
         explore(client);
+    }
+
+    private static boolean requestLooseDrop(MinecraftClient client) {
+        if (requesting || projectDrop == null || age < nextDropScan) return false;
+        nextDropScan = age + 10;
+        var player = client.player;
+        var loose = client.world.getEntitiesByClass(ItemEntity.class, player.getBoundingBox().expand(LOOSE_DROP_RADIUS),
+                item -> item.isOnGround() && player.squaredDistanceTo(item) <= LOOSE_DROP_RADIUS * LOOSE_DROP_RADIUS
+                        && rejected.getOrDefault(item.getBlockPos(), 0) <= age && availableDrop(client, item))
+                .stream().min(Comparator.comparingDouble(player::squaredDistanceTo)).orElse(null);
+        if (loose == null) return false;
+        var cell = loose.getBlockPos();
+        request(client, cell, Vec3d.ofBottomCenter(cell), "claim", loose);
+        return true;
+    }
+
+    private static boolean availableDrop(MinecraftClient client, ItemEntity item) {
+        if (!item.isAlive() || !projectDrop.matches(item.getStack())) return false;
+        var cell = item.getBlockPos();
+        if (BuildProtection.blocked(cell) || excluded != null && excluded.contains(cell)) return false;
+        // Leave nearby players room to collect their own harvest or receive a delivery.
+        for (var peer : client.world.getPlayers()) {
+            if (peer != client.player && peer.isAlive() && !peer.isSpectator() && peer.squaredDistanceTo(item) <= 9) return false;
+        }
+        var inventory = client.player.getInventory();
+        return inventory.getEmptySlot() >= 0 || inventory.getOccupiedSlotWithRoomForStack(item.getStack()) >= 0;
+    }
+
+    private static void collectReservedDrop(MinecraftClient client) {
+        if (reservedDrop.getBlockPos().equals(target) && availableDrop(client, reservedDrop)
+                && age < dropDeadline && System.currentTimeMillis() < leaseUntil
+                && minedDrops.approachReserved(client, reservedDrop) == DroppedItemSearch.State.APPROACHING) {
+            status = "Collecting dropped " + projectDrop;
+            return;
+        }
+        if (reservedDrop.isAlive()) rejected.put(target, age + 160);
+        minedDrops.reset();
+        clearReservation();
+        nextSearch = age + 1;
     }
 
     private static void scan(MinecraftClient client) {
@@ -695,6 +745,10 @@ final class MiningTask {
     }
 
     private static void request(MinecraftClient client,BlockPos ore,Vec3d place,String action){
+        request(client, ore, place, action, null);
+    }
+
+    private static void request(MinecraftClient client, BlockPos ore, Vec3d place, String action, ItemEntity drop) {
         if(job==null||place==null)return;requesting=true;
         boolean switchingStand = action.equals("claim") && ore.equals(target);
         Job current=job;String token=action.equals("renew")&&leaseToken!=null?leaseToken:owner+":"+(++claimSerial);int epoch=generation;
@@ -724,6 +778,12 @@ final class MiningTask {
                     approachDistance = client.player.getPos().distanceTo(place);
                     nextPath = age;
                 }
+                if (drop != null) {
+                    stopPath();
+                    reservedDrop = drop;
+                    dropDeadline = age + 140;
+                    BotEvents.add("info", "mining", "Reserved dropped " + projectDrop + " at " + ore.toShortString());
+                }
                 target=ore;stand=place;leaseToken=token;leaseUntil=System.currentTimeMillis()+Math.min(10000,reply.leaseMillis());nextRenew=age+40;
             }catch(RuntimeException e){status="Invalid mining coordinator reply";}
         }));
@@ -734,6 +794,7 @@ final class MiningTask {
         release(job, leaseToken);
         leaseToken = null;
         leaseUntil = 0;
+        reservedDrop = null;
         target = null;
         stand = null;
     }

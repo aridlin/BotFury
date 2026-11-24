@@ -2408,6 +2408,8 @@ final class ProjectQueue {
         var stickRecipe = JSON.fromJson(sticks.work.payload, InventoryRecipe.class);
         if (stickRecipe == null || !stickRecipe.inventory || !"minecraft:stick".equals(stickRecipe.recipe)
                 || stickRecipe.count == null || stickRecipe.count < 1 || stickRecipe.count > 8) return null;
+        int planksForSticks = 2 * ((stickRecipe.count + 3) / 4);
+        if (!Integer.valueOf(planksForSticks).equals(plankRecipe.count)) return null;
         return new StickPreparation(planks, sticks, stickRecipe.count);
     }
 

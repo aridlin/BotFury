@@ -949,7 +949,22 @@ final class StructureProject {
     private static boolean clearBuildFace(MinecraftClient client, BlockPos stand, BlockPos target,
                                           BlockPos support, Direction face, Map<BlockPos, BlockState> desired,
                                           BlockState placement, boolean avoidCorners) {
-        var eye = Vec3d.ofBottomCenter(stand).add(0, 1.62, 0);
+        return clearBuildFace(client, Vec3d.ofBottomCenter(stand).add(0, 1.62, 0), target, support, face,
+                desired, placement, avoidCorners);
+    }
+
+    static boolean clearBuildFace(MinecraftClient client, Vec3d eye, ProjectBlock block,
+                                  Map<BlockPos, BlockState> changes) {
+        var support = block.support();
+        var state = changes.getOrDefault(support, client.world.getBlockState(support));
+        var desired = block.desired();
+        return ProjectPlacement.support(state, desired, block.face(), client.world, support)
+                && clearBuildFace(client, eye, block.target(), support, block.face(), changes, desired, false);
+    }
+
+    private static boolean clearBuildFace(MinecraftClient client, Vec3d eye, BlockPos target, BlockPos support,
+                                          Direction face, Map<BlockPos, BlockState> desired,
+                                          BlockState placement, boolean avoidCorners) {
         var state = desired.getOrDefault(support, client.world.getBlockState(support));
         return ProjectPlacement.findSupportHit(client.world, support, face, state, placement, point -> {
             if (!hitsFace(client, eye, point, target, support, face, desired)) return null;

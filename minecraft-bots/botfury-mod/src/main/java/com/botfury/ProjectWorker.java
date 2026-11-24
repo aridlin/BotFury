@@ -448,7 +448,9 @@ final class ProjectWorker {
             }
             if (held >= gather.count()) {
                 finish(client, true, "Observed " + held + " " + gather.item() + " in worker inventory");
-            } else if (checkpointAt > 0 && held >= checkpointAt && client.player.getBlockY() <= 8) {
+            } else if (checkpointAt > 0 && held > 0 && client.player.getBlockY() <= 8
+                    && (held >= checkpointAt || client.player.getHealth() <= client.player.getMaxHealth() / 2)) {
+                if (held < checkpointAt) BotEvents.add("info", "projects", "Banking mined cargo early at low health");
                 finish(client, false, ProjectQueue.CARGO_CHECKPOINT);
             } else if (miningRecipe != null) {
                 tickMiningCraft(client, now);

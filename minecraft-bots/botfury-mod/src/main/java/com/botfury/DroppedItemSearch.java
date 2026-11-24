@@ -35,18 +35,24 @@ final class DroppedItemSearch {
     }
 
     State tick(MinecraftClient client, Predicate<ItemStack> matches, Vec3d minedAt) {
-        return tick(client, matches, minedAt, null);
+        return tick(client, matches, minedAt, null, entity -> true);
     }
 
     State approachReserved(MinecraftClient client, ItemEntity reserved) {
-        return tick(client, stack -> !stack.isEmpty(), null, reserved);
+        return tick(client, stack -> !stack.isEmpty(), null, reserved, entity -> true);
     }
 
-    private State tick(MinecraftClient client, Predicate<ItemStack> matches, Vec3d minedAt, ItemEntity reserved) {
+    State tickNear(MinecraftClient client, Predicate<ItemStack> matches, Vec3d center, int distance) {
+        return tick(client, matches, null, null, entity -> entity.squaredDistanceTo(center) <= distance * distance);
+    }
+
+    private State tick(MinecraftClient client, Predicate<ItemStack> matches, Vec3d minedAt, ItemEntity reserved,
+                       Predicate<ItemEntity> allowed) {
         age++;
         var player = client.player;
         if (target != null) {
-            if (!target.isAlive() || !matches.test(target.getStack()) || player.squaredDistanceTo(target) > radius * radius) {
+            if (!target.isAlive() || !allowed.test(target) || !matches.test(target.getStack())
+                    || player.squaredDistanceTo(target) > radius * radius) {
                 stop();
             } else if (age - started >= 400 || age - lastProgress >= 120) {
                 retry.put(target.getUuid(), age + 200);
@@ -60,7 +66,7 @@ final class DroppedItemSearch {
             retry.values().removeIf(retryAt -> retryAt <= age);
             nextScan = age + 5;
             target = reserved != null ? reserved : client.world.getEntitiesByClass(ItemEntity.class, player.getBoundingBox().expand(radius),
-                    entity -> entity.isAlive() && matches.test(entity.getStack())
+                    entity -> entity.isAlive() && allowed.test(entity) && matches.test(entity.getStack())
                             && player.squaredDistanceTo(entity) <= radius * radius
                             && !retry.containsKey(entity.getUuid())
                             && (minedAt == null || Math.abs(entity.getX() - minedAt.x) <= 5

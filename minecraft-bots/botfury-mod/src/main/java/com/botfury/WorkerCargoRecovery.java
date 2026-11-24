@@ -2,34 +2,38 @@ package com.botfury;
 
 import com.google.gson.Gson;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.entity.ItemEntity;
+import net.minecraft.item.ItemStack;
+import net.minecraft.registry.Registries;
 import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Map;
 
 /** Returns a respawned worker to the drops from its interrupted project work. */
 final class WorkerCargoRecovery {
     private static final Gson JSON = new Gson();
     private static final long WINDOW_MS = 120_000;
     private static final int DROP_RADIUS = 7;
-    private record Cargo(String item, int count, ProjectQueue.ResourceSite location, long expiresAt) {}
+    private record Cargo(String item, int count, ProjectQueue.ResourceSite location, long expiresAt,
+                         Map<String, Integer> contents) {}
     private record Saved(WorkerEnrollment worker, Cargo cargo) {}
 
     private final DroppedItemSearch pickup = new DroppedItemSearch(20);
+    private final Map<String, Integer> held = new HashMap<>();
     private Cargo cargo;
     private ProjectItem item;
     private BaritoneSettings travel;
     private long nextPath, emptySince;
 
-    void remember(Path path, WorkerEnrollment worker, ProjectItem lostItem, int count, BlockPos position) {
-        cargo = new Cargo(lostItem.key(), count, new ProjectQueue.ResourceSite(position.getX(), position.getY(),
-                position.getZ()), System.currentTimeMillis() + WINDOW_MS);
+    void remember(Path path, WorkerEnrollment worker, ProjectItem lostItem, Map<String, Integer> contents, BlockPos position) {
+        cargo = new Cargo(lostItem == null ? null : lostItem.key(), lostItem == null ? 0 : lostItem.count(contents),
+                new ProjectQueue.ResourceSite(position.getX(), position.getY(), position.getZ()),
+                System.currentTimeMillis() + WINDOW_MS, Map.copyOf(contents));
         item = lostItem;
         try {
             var parent = path.toAbsolutePath().getParent();
@@ -44,7 +48,7 @@ final class WorkerCargoRecovery {
         } catch (IOException error) {
             BotEvents.add("warn", "projects", "Could not save the dropped cargo location");
         }
-        BotEvents.add("info", "projects", "Marked dropped " + item + " for recovery");
+        BotEvents.add("info", "projects", "Marked dropped project inventory for recovery");
     }
 
     void load(Path path, WorkerEnrollment worker) {
@@ -52,16 +56,19 @@ final class WorkerCargoRecovery {
         item = null;
         if (!Files.isRegularFile(path)) return;
         try {
-            if (Files.size(path) > 4096) throw new IOException("Dropped cargo file is too large");
+            if (Files.size(path) > 32768) throw new IOException("Dropped cargo file is too large");
             var saved = JSON.fromJson(Files.readString(path), Saved.class);
             if (saved == null || !worker.equals(saved.worker())) return;
             var stored = saved.cargo();
-            if (stored == null || stored.count() < 1 || stored.location() == null
+            if (stored == null || stored.location() == null
+                    || stored.contents() == null && (stored.item() == null || stored.count() < 1)
+                    || stored.contents() != null && (stored.contents().isEmpty() || stored.contents().size() > 41
+                        || stored.contents().values().stream().anyMatch(count -> count == null || count < 1))
                     || stored.expiresAt() <= System.currentTimeMillis()) {
                 clear(path);
                 return;
             }
-            item = ProjectItem.parse(stored.item());
+            item = stored.item() == null ? null : ProjectItem.parse(stored.item());
             cargo = stored;
         } catch (IOException | RuntimeException error) {
             BotEvents.add("warn", "projects", "Could not read the dropped cargo location");
@@ -72,15 +79,17 @@ final class WorkerCargoRecovery {
 
     boolean tick(MinecraftClient client, Path path) {
         if (cargo == null) return false;
-        int held = item.count(client);
-        if (held >= cargo.count() || System.currentTimeMillis() >= cargo.expiresAt()) {
-            return finish(path, held);
+        snapshotInventory(client, held);
+        boolean complete = cargo.contents() == null ? item.count(held) >= cargo.count()
+                : cargo.contents().entrySet().stream().allMatch(entry -> held.getOrDefault(entry.getKey(), 0) >= entry.getValue());
+        if (complete || System.currentTimeMillis() >= cargo.expiresAt()) {
+            return finish(path);
         }
         var death = cargo.location();
         var position = new BlockPos(death.x(), death.y(), death.z());
         var center = Vec3d.ofCenter(position);
         if (!client.world.getWorldBorder().contains(position) || !client.world.isInBuildLimit(position)) {
-            return finish(path, held);
+            return finish(path);
         }
         var player = client.player;
         long now = System.nanoTime();
@@ -91,32 +100,51 @@ final class WorkerCargoRecovery {
                 try {
                     travel = new BaritoneSettings(false, true);
                 } catch (ReflectiveOperationException | LinkageError unavailable) {
-                    return finish(path, held);
+                    return finish(path);
                 }
             }
             if (now >= nextPath && !BaritoneClient.pursuing(position)) {
-                if (!BaritoneClient.goTo(position)) return finish(path, held);
+                if (!BaritoneClient.goTo(position)) return finish(path);
                 nextPath = now + 3_000_000_000L;
             }
             return true;
         }
         stopTravel();
-        var drop = client.world.getEntitiesByClass(ItemEntity.class, new Box(position).expand(DROP_RADIUS),
-                        entity -> entity.isAlive() && item.matches(entity.getStack())
-                                && entity.squaredDistanceTo(center) <= DROP_RADIUS * DROP_RADIUS)
-                .stream().min(Comparator.comparingDouble(player::squaredDistanceTo)).orElse(null);
-        if (drop != null && pickup.approachReserved(client, drop) == DroppedItemSearch.State.APPROACHING) {
+        if (pickup.tickNear(client, this::neededDrop, center, DROP_RADIUS) == DroppedItemSearch.State.APPROACHING) {
             emptySince = 0;
             return true;
         }
         if (emptySince == 0) emptySince = now;
         if (now - emptySince < 3_000_000_000L) return true;
-        return finish(path, held);
+        return finish(path);
     }
 
-    private boolean finish(Path path, int held) {
-        BotEvents.add("info", "projects", held > 0 ? "Recovered " + held + " " + item + " after respawn"
-                : "Dropped project cargo could not be recovered");
+    static void snapshotInventory(MinecraftClient client, Map<String, Integer> counts) {
+        counts.clear();
+        var inventory = client.player.getInventory();
+        for (int slot = 0; slot < inventory.size(); slot++) {
+            var stack = inventory.getStack(slot);
+            if (!stack.isEmpty()) counts.merge(itemKey(stack), stack.getCount(), Integer::sum);
+        }
+    }
+
+    private static String itemKey(ItemStack stack) {
+        return Registries.ITEM.getId(stack.getItem()).toString();
+    }
+
+    private boolean neededDrop(ItemStack stack) {
+        if (cargo.contents() == null) return item.matches(stack) && item.count(held) < cargo.count();
+        String key = itemKey(stack);
+        return held.getOrDefault(key, 0) < cargo.contents().getOrDefault(key, 0);
+    }
+
+    private boolean finish(Path path) {
+        int primary = item == null ? 0 : Math.min(cargo.count(), item.count(held));
+        int recovered = cargo.contents() == null ? primary : cargo.contents().entrySet().stream()
+                .mapToInt(entry -> Math.min(entry.getValue(), held.getOrDefault(entry.getKey(), 0))).sum();
+        if (primary > 0) BotEvents.add("info", "projects", "Recovered " + primary + " " + item + " after respawn");
+        else BotEvents.add("info", "projects", recovered > 0 ? "Recovered " + recovered + " project items after respawn"
+                : "Dropped project inventory could not be recovered");
         clear(path);
         return false;
     }

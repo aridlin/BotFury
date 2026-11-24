@@ -45,7 +45,15 @@ final class ProjectProduction {
 
     ProjectProduction(Spec spec) { this.spec = spec; }
 
-    Identifier recipe() { return spec.recipe; }
+    boolean canUsePortableWorkbench(MinecraftClient client) {
+        var inventory = client.player.getInventory();
+        if (inventory.contains(net.minecraft.item.Items.CRAFTING_TABLE.getDefaultStack())) return false;
+        if (spec.kind == ProjectQueue.Kind.CRAFT) return canCraft(client, spec.recipe);
+        return spec.kind == ProjectQueue.Kind.SMELT
+                && inventory.contains(Registries.ITEM.get(spec.input).getDefaultStack())
+                && !inventory.contains(net.minecraft.item.Items.FURNACE.getDefaultStack())
+                && canCraft(client, Identifier.of("minecraft", "furnace"));
+    }
 
     ProjectProduction atStation(ProjectBlock station) {
         return new ProjectProduction(new Spec(station, spec.kind, spec.recipe, spec.input, spec.fuel, spec.count));

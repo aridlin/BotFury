@@ -89,6 +89,8 @@ final class ProjectChest {
 
     ProjectChest(Spec spec) { this.spec = spec; }
 
+    boolean depositing() { return spec.direction == Direction.DEPOSIT; }
+
     static Spec parse(String json) {
         ProjectBlock location = ProjectBlock.parse(json);
         Payload payload = JSON.fromJson(json, Payload.class);

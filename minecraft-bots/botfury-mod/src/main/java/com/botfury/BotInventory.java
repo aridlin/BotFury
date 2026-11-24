@@ -76,6 +76,7 @@ final class BotInventory {
     }
 
     static String status() { return status; }
+    static int deliveredItems() { return delivered; }
     static void hold() { finish("Paused"); paused = true; }
     static void baritone(String command) { hold(); baritoneTask=true; status = "Baritone: " + command; }
     static void resume() { finish("Resumed formations"); paused = false; }
@@ -90,7 +91,16 @@ final class BotInventory {
     static void start(MinecraftClient client, Request request) {
         ProjectWorker.stop(client);
         MiningTask.stop();
+        begin(client, request);
+    }
+
+    static void startProjectDelivery(MinecraftClient client, Item item, String recipient, Destination destination) {
+        begin(client, new Request("deliver", item, 1, recipient, destination));
+    }
+
+    private static void begin(MinecraftClient client, Request request) {
         finish("");
+        delivered = 0;
         manualPause=false;lastRecipient=null;excessDropCenter=null;completion="Done";
         if (request.action.equals("stop")) { paused = false; status = "Stopped"; return; }
         if (client.player == null || client.world == null) { status = "Not in game"; return; }

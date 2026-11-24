@@ -12,7 +12,7 @@ import java.util.*;
 /** The coordinator persists each transition before acknowledging it to a worker. */
 final class ProjectQueue {
     static final int MAX_JOBS = 4096;
-    enum Kind { EXCAVATE, GATHER, CRAFT, SMELT, TRANSFER, BUILD, VERIFY, INSPECT, BARRIER, SETTLEMENT_BARRIER, FILL_BUCKETS;
+    enum Kind { EXCAVATE, GATHER, CRAFT, SMELT, TRANSFER, BUILD, VERIFY, INSPECT, BARRIER, SETTLEMENT_BARRIER, FILL_BUCKETS, RESUPPLY;
 
         boolean coordinatorOnly() { return this == BARRIER || this == SETTLEMENT_BARRIER; }
     }
@@ -156,6 +156,9 @@ final class ProjectQueue {
         }
         Assignment(String project, String world, Job job) { this(project, world, job, null, List.of(), 0); }
     }
+    record RouteToolDelivery(String recipient, ResourceSite position, String item) {}
+    private final Set<UUID> routeToolRequests = new HashSet<>();
+
     record FuelUse(String job, String recipe, String input, String expectedFuel, int count) {}
     private record SmeltFuel(String recipe, String input, String fuel, String plannedFuel, int count) {}
     record OwnedStation(String project, String job, String payload) {}
@@ -948,6 +951,38 @@ final class ProjectQueue {
         return new Job(work, State.WAITING, 0, worker, null, now + LEASE_MS, CONSTRUCTION_PICKUP, pickup.chest);
     }
 
+    synchronized Assignment offerRouteTool(String world, String worker, String projectId, long now,
+                                           Map<String, Integer> tools,
+                                           java.util.function.Function<String, ResourceSite> position,
+                                           java.util.function.ToIntBiFunction<String, String> held) throws IOException {
+        if (tools == null || tools.isEmpty() || routeToolRequests.isEmpty()
+                || projects.values().stream().flatMap(project -> project.jobs.stream())
+                    .anyMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker))) return null;
+        var item = PICKAXE_TIERS.stream().skip(1).filter(tool -> tools.get(tool) != null && tools.get(tool) >= 64
+                && held.applyAsInt(worker, tool) >= 2).findFirst().orElse(null);
+        if (item == null) return null;
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || cancelled(project) || project.jobs.size() >= MAX_JOBS
+                    || projectId != null && !project.id.equals(projectId)) continue;
+            for (var deposit : project.jobs) {
+                if (deposit.state != State.LEASED || deposit.expiresAt <= now || !routeToolRequests.contains(deposit.lease)
+                        || worker.equalsIgnoreCase(deposit.worker)) continue;
+                String id = "route-tool-" + deposit.lease;
+                var destination = position.apply(deposit.worker);
+                if (destination == null || find(project, id) != null) continue;
+                var work = new Work(id, Kind.RESUPPLY, JSON.toJson(new RouteToolDelivery(deposit.worker, destination, item)),
+                        List.of(), Set.of());
+                var loan = new Job(work, State.LEASED, 1, worker, UUID.randomUUID(),
+                        now + LEASE_MS, null, null);
+                var jobs = new ArrayList<>(project.jobs);
+                jobs.add(loan);
+                commit(project.withJobs(jobs));
+                return assignment(project, loan);
+            }
+        }
+        return null;
+    }
+
     synchronized Assignment offerEquippedMiner(String world, String worker, String projectId,
                                                 Map<String, Integer> toolUses, long now) throws IOException {
         return offerEquippedMiner(world, worker, projectId, toolUses, now, false);
@@ -1468,10 +1503,17 @@ final class ProjectQueue {
     }
 
     synchronized Job renew(String projectId, String jobId, UUID token, ResourceSite site, long now) throws IOException {
+        return renew(projectId, jobId, token, site, now, false);
+    }
+
+    synchronized Job renew(String projectId, String jobId, UUID token, ResourceSite site, long now,
+                           boolean needsRouteTool) throws IOException {
         Project project = projects.get(projectId);
         Job job = find(project, jobId);
         if (!owns(job, token, now) || cancelled(project) || handoffWorker(job) != null
                 || GATHER_STOCK_CONFIRMED.equals(job.evidence)) return null;
+        if (needsRouteTool && job.work.kind == Kind.TRANSFER && depositTarget(job)) routeToolRequests.add(token);
+        else routeToolRequests.remove(token);
         Job renewed = new Job(job.work, State.LEASED, job.attempts, job.worker,
                 job.lease, now + LEASE_MS, job.evidence, job.chest, gatheringSite(job, site), job.gatheringAfterPickup);
         replace(project, renewed);
@@ -1511,6 +1553,7 @@ final class ProjectQueue {
         }
         if (!owns(job, token, now) || !success && handoffWorker(job) != null
                 || GATHER_STOCK_CONFIRMED.equals(job.evidence)) return false;
+        routeToolRequests.remove(token);
         var fuelPlan = success ? fuelUse(project, job) : null;
         boolean substituted = success && evidence.startsWith(ALTERNATIVE_FUEL);
         if (substituted || fuelPlan != null && !fuelPlan.expectedFuel.equals(currentFuel(project, fuelPlan))) {
@@ -1983,6 +2026,11 @@ final class ProjectQueue {
                     Job waiting;
                     boolean restored = restoredLeases.contains(job.lease);
                     if (restored) interrupted.add(job.lease);
+                    routeToolRequests.remove(job.lease);
+                    if (job.work.kind == Kind.RESUPPLY) {
+                        jobs.set(i, retry(job, LEASE_EXPIRED, null, null));
+                        continue;
+                    }
                     if (CONTRIBUTION_ACTIVE.equals(job.evidence)) {
                         jobs.set(i, interruptedContribution(job, now));
                         continue;
@@ -2117,7 +2165,7 @@ final class ProjectQueue {
     }
 
     private static Job retry(Job job, String reason, ChestObservation chest, ResourceSite site) {
-        State state = job.attempts < MAX_ATTEMPTS ? State.WAITING : State.FAILED;
+        State state = job.work.kind != Kind.RESUPPLY && job.attempts < MAX_ATTEMPTS ? State.WAITING : State.FAILED;
         return new Job(job.work, state, job.attempts, null, null, 0, reason, chest, site);
     }
 

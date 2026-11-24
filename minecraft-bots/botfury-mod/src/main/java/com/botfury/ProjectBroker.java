@@ -26,7 +26,7 @@ final class ProjectBroker {
     private record Request(String action, String project, String worker, Set<ProjectQueue.Kind> kinds,
                            List<ProjectQueue.Work> work, String job, UUID token, Boolean success,
                            String evidence, ProjectQueue.ChestReport chest, ProjectQueue.ResourceSite resourceSite,
-                           boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision) {}
+                           boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
         if (queue == null) {
@@ -294,6 +294,9 @@ final class ProjectBroker {
                     if (request.work == null) throw new IllegalArgumentException("Missing project jobs");
                     var work = request.work.stream().map(item -> {
                         if (item == null) throw new IllegalArgumentException("Missing project job");
+                        if (item.kind() == ProjectQueue.Kind.RESUPPLY) {
+                            throw new IllegalArgumentException("Route resupply is assigned by the coordinator");
+                        }
                         if (item.kind() == ProjectQueue.Kind.GATHER) {
                             ProjectGather.parse(item.payload());
                             return item;
@@ -325,6 +328,10 @@ final class ProjectBroker {
                     if (assignment == null) assignment = board.claim(world, request.worker, request.kinds,
                             request.project, now, position, material -> hasExcavationTool(request.toolUses, material),
                             ProjectBroker::heldCount, request.toolUses, returnRevision);
+                    if (assignment == null && request.kinds.contains(ProjectQueue.Kind.RESUPPLY)) {
+                        assignment = board.offerRouteTool(world, request.worker, request.project, now, request.toolUses,
+                                ProjectBroker::workerPosition, ProjectBroker::heldCount);
+                    }
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.TRANSFER)) {
                         assignment = board.offerInterruptedDeposit(world, request.worker, request.project, now,
                                 position, ProjectBroker::heldCount, returnRevision);
@@ -348,7 +355,7 @@ final class ProjectBroker {
                     reply(exchange, 200, assignment);
                 }
                 case "renew" -> {
-                    var renewed = board.renew(request.project, request.job, request.token, request.resourceSite, now);
+                    var renewed = board.renew(request.project, request.job, request.token, request.resourceSite, now, request.needsRouteTool);
                     reply(exchange, renewed == null ? 409 : 200, renewed);
                 }
                 case "finish" -> {

@@ -131,6 +131,8 @@ final class ProjectQueue {
     private static final Gson JSON = new Gson();
     private static final long LEASE_MS = 15_000;
     private static final int MAX_ATTEMPTS = 3;
+    private static final int CONSTRUCTION_PICKUP_RETRY_RADIUS = 48;
+    private static final int CONSTRUCTION_PICKUP_RETRY_CLIMB = 12;
     private static final long SUPPLIER_OFFLINE_MS = 60_000;
     private static final int MAX_SUPPLY_RECOVERIES = 2;
     private static final int MAX_PROJECTS = 32;
@@ -497,6 +499,11 @@ final class ProjectQueue {
     }
 
     synchronized Assignment claim(String world, String worker, Set<Kind> kinds, String projectId, long now) throws IOException {
+        return claim(world, worker, kinds, projectId, now, null);
+    }
+
+    synchronized Assignment claim(String world, String worker, Set<Kind> kinds, String projectId,
+                                  long now, ResourceSite position) throws IOException {
         if (world == null || !validId(worker) || kinds == null || kinds.isEmpty()
                 || projectId != null && !validId(projectId)) {
             throw new IllegalArgumentException("Invalid worker or world");
@@ -572,8 +579,10 @@ final class ProjectQueue {
                 if (job.work.constructionMaterial != null && carried.contains(job.work.constructionMaterial)) continue;
                 if (ownedLane != null && !ownedLane.equals(lane(job.work.id))) continue;
                 if (deposit != null && job.work.kind == Kind.TRANSFER && !deposit.equals(job.work.id)) continue;
-                if (job.state != State.WAITING || job.work.kind.coordinatorOnly()
-                        || retryDelayedFor(job, worker, now) || !kinds.contains(job.work.kind)) continue;
+                if (job.work.kind.coordinatorOnly() || retryDelayedFor(job, worker, now)
+                        || !kinds.contains(job.work.kind)) continue;
+                boolean nearbyPickup = canRetryConstructionPickup(job, position);
+                if (job.state != State.WAITING && !nearbyPickup) continue;
                 if (!done.containsAll(job.work.needs)) {
                     if (job.work.kind == Kind.TRANSFER && job.work.needs.size() > 1 && !blocked.contains(job.work.id)
                             && job.work.sameWorkerAs != null && done.contains(job.work.sameWorkerAs)
@@ -599,13 +608,24 @@ final class ProjectQueue {
                         || CONSTRUCTION_PICKUP.equals(job.evidence) && job.expiresAt > now) {
                     return assign(project, job, worker, now);
                 }
-                if (fallbackJob == null) {
+                if (fallbackJob == null || nearbyPickup && fallbackJob.state != State.FAILED) {
                     fallbackProject = project;
                     fallbackJob = job;
                 }
             }
         }
         return fallbackJob == null || waitingWithCargo ? null : assign(fallbackProject, fallbackJob, worker, now);
+    }
+
+    private static boolean canRetryConstructionPickup(Job job, ResourceSite position) {
+        // Location can change after the normal attempts. Give one local worker a chance to finish the pickup.
+        if (position == null || job.state != State.FAILED || job.attempts != MAX_ATTEMPTS
+                || job.work.constructionMaterial == null || !TARGET_TIMEOUT.equals(job.evidence)) return false;
+        var pickup = transferTarget(job);
+        if (pickup == null || !"TAKE".equals(pickup.direction)) return false;
+        var target = JSON.fromJson(job.work.payload, StationTarget.class).target;
+        return target != null && target.y() - position.y <= CONSTRUCTION_PICKUP_RETRY_CLIMB
+                && distance(position, target) <= CONSTRUCTION_PICKUP_RETRY_RADIUS;
     }
 
     private static boolean earlierDepositInProgress(Job deposit, Map<String, Job> jobs, Set<String> done) {
@@ -1395,7 +1415,10 @@ final class ProjectQueue {
                                 job.expiresAt + GATHER_RECONNECT_GRACE_MS, GATHER_REASSIGNED, job.chest, job.resourceSite));
                         continue;
                     }
-                    if (restored) {
+                    if (restored && job.attempts == MAX_ATTEMPTS + 1 && job.work.constructionMaterial != null) {
+                        waiting = new Job(job.work, State.FAILED, MAX_ATTEMPTS, null, null, 0,
+                                TARGET_TIMEOUT, job.chest, job.resourceSite);
+                    } else if (restored) {
                         waiting = new Job(job.work, State.WAITING, Math.max(0, job.attempts - 1), null, null, 0,
                                 COORDINATOR_RESTARTED, job.chest, job.resourceSite);
                     } else {

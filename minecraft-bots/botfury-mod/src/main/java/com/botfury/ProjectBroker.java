@@ -281,7 +281,8 @@ final class ProjectBroker {
                     reply(exchange, 201, request.project);
                 }
                 case "claim" -> {
-                    var assignment = board.claim(world, request.worker, request.kinds, request.project, now);
+                    var assignment = board.claim(world, request.worker, request.kinds, request.project, now,
+                            workerPosition(request.worker));
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.GATHER)) {
                         assignment = board.offerEquippedMiner(world, request.worker, request.project, request.toolUses, now);
                         if (assignment == null) {

@@ -688,6 +688,52 @@ final class StructureProject {
         return planScaffoldBlocks(client, scaffold, layout, cleared, ready, placed, prerequisites, suffix);
     }
 
+    static ProjectQueue.Work repairPlacementPose(MinecraftClient client, ProjectQueue.Work work,
+                                                Set<String> temporaryFooting) {
+        var original = ProjectBlock.parse(work.payload());
+        var target = original.target();
+        var desired = original.desired();
+        if (!loaded(client, target) || !client.world.isAir(target)) return null;
+
+        ProjectBlock best = null;
+        double bestScore = Double.POSITIVE_INFINITY;
+        for (var face : ProjectPlacement.faces(desired)) {
+            if (face == original.face()) continue;
+            var support = target.offset(face.getOpposite());
+            if (!loaded(client, support) || temporaryFooting.contains(ProjectBlock.key(support))
+                    || !ProjectPlacement.support(client.world.getBlockState(support), desired, face, client.world, support)) continue;
+            for (var candidate : BlockPos.iterateOutwards(target, 4, 4, 4)) {
+                var stand = candidate.toImmutable();
+                if (target.getSquaredDistance(stand) > 16 || target.equals(stand) || target.equals(stand.up())
+                        || target.equals(stand.down()) || stand.equals(support.up()) && face.getAxis().isHorizontal()
+                        || !loaded(client, stand.up()) || temporaryFooting.contains(ProjectBlock.key(stand.down()))
+                        || !safeStand(client, stand, Map.of())) continue;
+                var pose = new ProjectBlock(target, stand, original.block(), original.properties(), face);
+                var eye = Vec3d.ofBottomCenter(stand).add(0, 1.62, 0);
+                boolean jump = !clearBuildFace(client, eye, pose, Map.of());
+                if (jump && (ProjectWater.source(desired) || !client.world.isAir(stand.up(2))
+                        || !clearBuildFace(client, eye.add(0, 1.15, 0), pose, Map.of()))) continue;
+                int approaches = 0;
+                for (var direction : Direction.Type.HORIZONTAL) {
+                    var adjacent = stand.offset(direction);
+                    if (loaded(client, adjacent) && (safeStand(client, adjacent, Map.of())
+                            || safeStand(client, adjacent.down(), Map.of()) && client.world.isAir(adjacent.up()))) approaches++;
+                }
+                if (approaches == 0) continue;
+                double score = target.getSquaredDistance(stand) - approaches * 3 + (jump ? 8 : 0);
+                if (score >= bestScore) continue;
+                bestScore = score;
+                best = pose;
+            }
+        }
+        if (best == null) return null;
+        var replacement = work(work.id(), work.kind(), target, desired, best.stand(), best.face(), work.needs());
+        var locks = new LinkedHashSet<>(work.locks());
+        locks.addAll(replacement.locks());
+        return new ProjectQueue.Work(replacement.id(), replacement.kind(), replacement.payload(), replacement.needs(),
+                locks, work.sameWorkerAs());
+    }
+
     static AccessRepair repairPlacementAccess(MinecraftClient client, ProjectQueue.Work work,
                                                ProjectQueue.ResourceSite worker, Set<String> reserved) {
         var original = ProjectBlock.parse(work.payload());

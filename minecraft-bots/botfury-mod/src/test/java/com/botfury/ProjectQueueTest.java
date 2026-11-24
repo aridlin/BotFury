@@ -635,6 +635,37 @@ class ProjectQueueTest {
         assertEquals(1, reopened.retryInterruptedGathering(WORLD, "ore"));
     }
 
+    @Test void timedOutConstructionPickupOffersOneRecoveryToAWorkerNearTheChest() throws Exception {
+        var journal = directory.resolve("pickup-route-recovery.json");
+        var queue = new ProjectQueue(journal);
+        String chest = "block:3,64,0";
+        var pickup = new ProjectQueue.Work("pickup", TRANSFER,
+                "{\"target\":{\"x\":3,\"y\":64,\"z\":0},\"direction\":\"TAKE\",\"item\":\"minecraft:oak_log\",\"stock\":1}",
+                List.of("clear"), Set.of(chest), null, null, "minecraft:oak_log");
+        var build = new ProjectQueue.Work("place-0", BUILD, "", List.of("pickup"), Set.of("placement"), "pickup");
+        queue.submitSupplied("house", WORLD, List.of(job("clear", EXCAVATE, List.of()), pickup, build), chest);
+        var clear = queue.claim(WORLD, "first", Set.of(EXCAVATE), 0).job();
+        assertTrue(queue.finish("house", "clear", clear.lease(), true, "Cleared", 0));
+        for (int now = 1; now < 7; now += 2) {
+            var lease = queue.claim(WORLD, "first", Set.of(TRANSFER), now).job();
+            assertTrue(queue.finish("house", "pickup", lease.lease(), false, ProjectQueue.TARGET_TIMEOUT, now + 1));
+        }
+        var nearby = new ProjectQueue.ResourceSite(1, 64, 0);
+        var underground = new ProjectQueue.ResourceSite(1, 45, 0);
+        var reopened = new ProjectQueue(journal);
+        assertNull(reopened.claim(WORLD, "underground", Set.of(TRANSFER), null, 7, underground));
+        assertNull(reopened.claim(WORLD, "builder", Set.of(BUILD), null, 7, nearby));
+        var retry = reopened.claim(WORLD, "builder", Set.of(TRANSFER), null, 8, nearby).job();
+        assertEquals(4, retry.attempts());
+        assertNull(reopened.claim(WORLD, "other", Set.of(TRANSFER), null, 9, nearby));
+        var recovered = new ProjectQueue(journal);
+        assertNull(recovered.claim(WORLD, "underground", Set.of(TRANSFER), null, retry.expiresAt(), underground));
+        var replacement = recovered.claim(WORLD, "other", Set.of(TRANSFER), null, retry.expiresAt(), nearby).job();
+        assertTrue(recovered.finish("house", "pickup", replacement.lease(), false, ProjectQueue.TARGET_TIMEOUT,
+                retry.expiresAt() + 1));
+        assertNull(recovered.claim(WORLD, "builder", Set.of(TRANSFER), null, retry.expiresAt() + 2, nearby));
+    }
+
     @Test void reopensExhaustedGatheringStallsThroughExistingRetry() throws Exception {
         var journal = directory.resolve("stalled-gather-retry.json");
         var queue = new ProjectQueue(journal);

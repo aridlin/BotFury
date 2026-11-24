@@ -1524,7 +1524,9 @@ class ProjectQueueTest {
         var queue = new ProjectQueue(journal);
         String chest = "block:3,64,0";
         queue.submitSupplied("stock", WORLD, List.of(job("setup", EXCAVATE, List.of()),
-                job("logs", GATHER, List.of("setup")),
+                new ProjectQueue.Work("logs", GATHER,
+                        "{\"resource\":\"any_logs\",\"variant\":\"both\",\"item\":\"any_logs\",\"count\":4}",
+                        List.of("setup"), Set.of()),
                 new ProjectQueue.Work("deliver", TRANSFER,
                         "{\"direction\":\"DEPOSIT\",\"item\":\"any_logs\",\"stock\":4}",
                         List.of("logs"), Set.of(chest), "logs")), chest);
@@ -1543,7 +1545,21 @@ class ProjectQueueTest {
         assertEquals(ProjectQueue.State.WAITING, jobs.get(1).state());
         assertEquals(site, jobs.get(1).resourceSite());
         assertNull(restored.claim(WORLD, "next", Set.of(TRANSFER), 8));
-        assertEquals("logs", restored.claim(WORLD, "next", Set.of(GATHER), 9).job().work().id());
+        var refill = restored.claim(WORLD, "next", Set.of(GATHER), 9).job();
+        assertEquals("logs", refill.work().id());
+        assertEquals(2, com.google.gson.JsonParser.parseString(refill.work().payload()).getAsJsonObject().get("count").getAsInt());
+
+        // Replaying a claim preserves the lease and its reduced target.
+        assertEquals(refill, restored.claim(WORLD, "next", Set.of(GATHER), 9).job());
+        assertTrue(restored.finish("stock", "logs", refill.lease(), true, "Collected replacement logs", 10));
+        var nextDelivery = restored.claim(WORLD, "next", Set.of(TRANSFER), 11).job();
+        var largerShortfall = new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:birch_log", 1));
+        assertTrue(restored.finish("stock", "deliver", nextDelivery.lease(), false, "Delivery is short",
+                largerShortfall, null, true, 12));
+        var secondRefill = restored.claim(WORLD, "next", Set.of(GATHER), 13).job();
+        assertEquals(3, com.google.gson.JsonParser.parseString(secondRefill.work().payload()).getAsJsonObject().get("count").getAsInt());
+        var planned = restored.snapshot(13).get(0).jobs().get(1).work();
+        assertEquals(4, com.google.gson.JsonParser.parseString(planned.payload()).getAsJsonObject().get("count").getAsInt());
     }
 
     @Test void restoresOwnedStationWithoutReplayingUnrelatedCargo() throws Exception {

@@ -844,6 +844,10 @@ final class ProjectWorker {
             taskEnd = Math.max(taskEnd, Math.min(stationReturnDeadline, now + seconds(90)));
         }
         if (!stationReturn.active()) {
+            if (!placement && approach == null && stationReturn.tryNaturalAscent(client, approachAge, destination.getY())) {
+                status = assignment.project() + "/" + assignment.job().work().id() + ": Following a natural ascent to the station";
+                return true;
+            }
             if (approach == null || now < retryApproach || BaritoneClient.pursuing(destination)) return false;
             BaritoneClient.execute("stop");
             approachRecovery.reset();
@@ -864,8 +868,10 @@ final class ProjectWorker {
             }
         }
         boolean alreadyClimbing = stationReturn.active();
-        if (!stationReturn.advanceToward(client, approachAge, destination, excluded)) return false;
-        String detail = placement ? "Opening a short climb to the placement stand" : "Opening a return route to the station";
+        if (!stationReturn.advanceToward(client, approachAge, destination, excluded, !placement)) return false;
+        String detail = placement ? "Opening a short climb to the placement stand"
+                : stationReturn.followingNaturalAscent() ? "Following a natural ascent to the station"
+                : "Opening a return route to the station";
         if (placement && !alreadyClimbing) BotEvents.add("info", "movement", detail);
         status = assignment.project() + "/" + assignment.job().work().id() + ": " + detail;
         return true;

@@ -24,6 +24,7 @@ final class SubsurfaceAccess {
     private static final Direction[] HEADINGS = {Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST};
     private static final int REACH = 12;
     private static final int HARVEST_RESERVE = 20;
+    private static final int ASCENT_CHECKPOINT = 12;
     private static final int[] ROUTE_DISTANCES = {5, 3, 7};
     private static final int[] ROUTE_OFFSETS = {0, -2, 2};
     private BlockPos origin;
@@ -32,6 +33,7 @@ final class SubsurfaceAccess {
     private int started, movedAt, retryAt, heading;
     private Vec3d lastMovement;
     private BaritoneSettings settings;
+    private int ascentGoal = Integer.MIN_VALUE, lastAscentProbe = Integer.MIN_VALUE;
     private boolean escapingExploration, handDigging;
     private Passage passage;
     private int passageDeadline;
@@ -40,6 +42,7 @@ final class SubsurfaceAccess {
     private final java.util.LinkedHashSet<Passage> attemptedPassages = new java.util.LinkedHashSet<>();
 
     boolean active() { return settings != null; }
+    boolean followingNaturalAscent() { return ascentGoal != Integer.MIN_VALUE; }
 
     static boolean deepResource(String resource) {
         return Integer.valueOf(-54).equals(prospectingAltitude(resource));
@@ -71,11 +74,12 @@ final class SubsurfaceAccess {
     }
 
     boolean advance(MinecraftClient client, int age, int depth, ProjectGather.Area area) {
-        return advance(client, age, depth, area, null);
+        return advance(client, age, depth, area, null, false);
     }
 
-    boolean advanceToward(MinecraftClient client, int age, BlockPos destination, ProjectGather.Area area) {
-        return advance(client, age, destination.getY(), area, destination);
+    boolean advanceToward(MinecraftClient client, int age, BlockPos destination, ProjectGather.Area area,
+                          boolean allowNaturalAscent) {
+        return advance(client, age, destination.getY(), area, destination, allowNaturalAscent);
     }
 
     boolean openLocalApproach(MinecraftClient client, int age, BlockPos destination, ProjectGather.Area area) {
@@ -122,7 +126,8 @@ final class SubsurfaceAccess {
         return false;
     }
 
-    private boolean advance(MinecraftClient client, int age, int height, ProjectGather.Area area, BlockPos destinationHint) {
+    private boolean advance(MinecraftClient client, int age, int height, ProjectGather.Area area,
+                            BlockPos destinationHint, boolean allowNaturalAscent) {
         var position = client.player.getBlockPos();
         if (active()) {
             var feet = client.player.getPos();
@@ -130,25 +135,28 @@ final class SubsurfaceAccess {
                 lastMovement = feet;
                 movedAt = age;
             }
-            boolean arrived = goals.contains(position);
-            if (!arrived && age - started < 600 && age - movedAt < 240
+            boolean natural = followingNaturalAscent();
+            boolean arrived = natural ? position.getY() >= ascentGoal : goals.contains(position);
+            if (!arrived && age - started < (natural ? 1000 : 600) && age - movedAt < 240
                     && (age - started < 60 || BaritoneClient.pursuing(goals.get(0)))) return true;
-            if (!arrived) {
+            if (!arrived && !natural) {
                 heading++;
                 if (position.equals(stalledAt)) routeFailures++;
                 else {
                     stalledAt = position;
                     routeFailures = 1;
                 }
-            } else {
+            } else if (arrived) {
                 stalledAt = null;
                 routeFailures = 0;
             }
             if (arrived && destinationHint != null) heading = 0;
             stop();
+            if (natural) return false;
         }
         if (age < retryAt) return true;
         if (!hasFooting(client)) return false;
+        if (allowNaturalAscent && tryNaturalAscent(client, age, height)) return true;
         if (area != null && (area.contains(position) || area.contains(position.down()))) return false;
 
         int segmentY = position.getY() + Math.max(-4, Math.min(4, height - position.getY()));
@@ -172,6 +180,31 @@ final class SubsurfaceAccess {
             }
         }
         return false;
+    }
+
+    boolean tryNaturalAscent(MinecraftClient client, int age, int destinationY) {
+        var position = client.player.getBlockPos();
+        int y = position.getY();
+        if (active() || age < retryAt || !hasFooting(client) || destinationY - y < ASCENT_CHECKPOINT
+                || y < lastAscentProbe + ASCENT_CHECKPOINT - 2) return false;
+        lastAscentProbe = y;
+        int height = y + ASCENT_CHECKPOINT;
+        try {
+            settings = new BaritoneSettings(false, true);
+        } catch (ReflectiveOperationException | LinkageError unavailable) {
+            return false;
+        }
+        origin = position;
+        goals = List.of(position.withY(height));
+        started = movedAt = age;
+        lastMovement = client.player.getPos();
+        ascentGoal = height;
+        if (!BaritoneClient.goToAltitude(height)) {
+            stop();
+            return false;
+        }
+        BotEvents.add("info", "movement", "Following a natural ascent toward Y " + height);
+        return true;
     }
 
     private boolean openPassage(MinecraftClient client, int age, BlockPos from, ProjectGather.Area area,
@@ -345,6 +378,7 @@ final class SubsurfaceAccess {
 
     boolean blocksBreaking(MinecraftClient client, BlockPos pos) {
         if (!active()) return false;
+        if (followingNaturalAscent()) return true;
         if (client.world == null || !pos.isWithinDistance(origin, escapingExploration ? 6 : REACH)
                 || excluded != null && excluded.contains(pos)
                 || !BaritoneSettings.recoverableTerrain(client.world.getBlockState(pos).getBlock())) return true;
@@ -405,6 +439,7 @@ final class SubsurfaceAccess {
         BaritoneClient.execute("stop");
         settings.close();
         settings = null;
+        ascentGoal = Integer.MIN_VALUE;
         escapingExploration = handDigging = false;
         origin = null;
         lastMovement = null;
@@ -414,6 +449,7 @@ final class SubsurfaceAccess {
 
     void reset() {
         stop();
+        lastAscentProbe = Integer.MIN_VALUE;
         retryAt = heading = 0;
         stalledAt = null;
         routeFailures = 0;

@@ -745,6 +745,16 @@ final class ProjectWorker {
             args.put("worker", here.name());
             if (enrollment.project() != null) args.put("project", enrollment.project());
             args.put("kinds", KINDS);
+            var tools = new HashMap<String, Integer>();
+            var inventory = client.player.getInventory();
+            for (int slot = 0; slot < 36; slot++) {
+                var stack = inventory.getStack(slot);
+                if (stack.getItem() instanceof net.minecraft.item.PickaxeItem) {
+                    tools.merge(Registries.ITEM.getId(stack.getItem()).toString(),
+                            stack.getMaxDamage() - stack.getDamage(), Integer::sum);
+                }
+            }
+            if (!tools.isEmpty()) args.put("toolUses", tools);
         } else {
             args.put("project", assignment.project());
             args.put("job", assignment.job().work().id());

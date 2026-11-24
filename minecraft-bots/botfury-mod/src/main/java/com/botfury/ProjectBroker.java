@@ -21,7 +21,8 @@ final class ProjectBroker {
 
     private record Request(String action, String project, String worker, Set<ProjectQueue.Kind> kinds,
                            List<ProjectQueue.Work> work, String job, UUID token, Boolean success,
-                           String evidence, ProjectQueue.ChestReport chest, ProjectQueue.ResourceSite resourceSite, boolean pickupShortfall) {}
+                           String evidence, ProjectQueue.ChestReport chest, ProjectQueue.ResourceSite resourceSite,
+                           boolean pickupShortfall, Map<String, Integer> toolUses) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
         if (queue == null) {
@@ -282,7 +283,10 @@ final class ProjectBroker {
                 case "claim" -> {
                     var assignment = board.claim(world, request.worker, request.kinds, request.project, now);
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.GATHER)) {
-                        assignment = board.offerGatheringHandoff(world, request.worker, request.project, now, ProjectBroker::heldCount);
+                        assignment = board.offerEquippedMiner(world, request.worker, request.project, request.toolUses, now);
+                        if (assignment == null) {
+                            assignment = board.offerGatheringHandoff(world, request.worker, request.project, now, ProjectBroker::heldCount);
+                        }
                     }
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.BUILD)
                             && board.offerConstructionHandoff(world, request.worker, request.project,

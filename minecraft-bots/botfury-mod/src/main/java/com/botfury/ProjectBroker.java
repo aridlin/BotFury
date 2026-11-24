@@ -208,7 +208,7 @@ final class ProjectBroker {
             if (item == null) continue;
             for (var bot : BotTracker.all()) {
                 if (!bot.fresh() || !bot.connected() || !bot.alive() || !bot.sameWorld()
-                        || bot.items().getOrDefault(item.toString(), 0) < 1) continue;
+                        || bot.items() == null || bot.items().getOrDefault(item.toString(), 0) < 1) continue;
                 if (board.reuseCarriedSmeltingOutput(world, candidate, bot.name(), item.toString(), now,
                         ProjectBroker::heldCount)) {
                     BotEvents.add("info", "projects", bot.name() + " already carries furnace output for " + candidate.work().id());

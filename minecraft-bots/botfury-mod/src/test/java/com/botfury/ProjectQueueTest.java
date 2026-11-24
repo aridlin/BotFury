@@ -53,6 +53,14 @@ class ProjectQueueTest {
     }
 
     @Test void carriedFurnaceOutputReplacesEmptyPrivateWorkAndKeepsTheFollowingStageAssigned() throws Exception {
+        verifyCarriedFurnaceOutput("Missing ingredients for minecraft:iron_pickaxe; reacquiring materials");
+    }
+
+    @Test void carriedFurnaceOutputCanAvoidAnUnstartedSmelt() throws Exception {
+        verifyCarriedFurnaceOutput(null);
+    }
+
+    private void verifyCarriedFurnaceOutput(String smeltingEvidence) throws Exception {
         var file = directory.resolve("carried-furnace-output.json");
         var queue = new ProjectQueue(file);
         var ore = new ProjectQueue.Work("ore", GATHER,
@@ -65,8 +73,7 @@ class ProjectQueueTest {
                 "{\"resource\":\"block:minecraft:oak_log\",\"variant\":\"both\",\"item\":\"minecraft:oak_log\",\"count\":1}",
                 List.of("metal"), Set.of(), "metal");
         var jobs = List.of(ore, metal, wood).stream().map(work -> new ProjectQueue.Job(work,
-                ProjectQueue.State.WAITING, 0, null, null, 0, work == metal
-                ? "Missing ingredients for minecraft:iron_pickaxe; reacquiring materials" : null, null)).toList();
+                ProjectQueue.State.WAITING, 0, null, null, 0, work == metal ? smeltingEvidence : null, null)).toList();
         var project = new ProjectQueue.Project("stock", WORLD, jobs, null, "block:2,64,0", java.util.Map.of());
         Files.writeString(file, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
                 "projects", java.util.Map.of("stock", project))));

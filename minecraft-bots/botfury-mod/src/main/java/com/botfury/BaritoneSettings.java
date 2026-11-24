@@ -44,6 +44,10 @@ final class BaritoneSettings implements AutoCloseable {
                 equipped ? BaritoneSettings::recoverableTerrain : BaritoneSettings::handDiggableTerrain, true);
     }
 
+    static BaritoneSettings lowerStandApproach() throws ReflectiveOperationException {
+        return new BaritoneSettings(true, true, block -> recoverableTerrain(block) || block instanceof LeavesBlock, true);
+    }
+
     static BaritoneSettings canopyApproach() throws ReflectiveOperationException {
         return new BaritoneSettings(true, true, block -> block instanceof LeavesBlock, true);
     }

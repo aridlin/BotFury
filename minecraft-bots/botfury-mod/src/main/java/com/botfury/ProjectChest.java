@@ -66,7 +66,7 @@ final class ProjectChest {
     }
 
     enum Direction { DEPOSIT, WITHDRAW, TAKE, INSPECT, VERIFY_STOCK }
-    record Spec(ProjectBlock location, Direction direction, ProjectItem item, int stock, BlockPos partner) {
+    record Spec(ProjectBlock location, Direction direction, ProjectItem item, int stock, BlockPos partner, int stockReserve) {
         ProjectQueue.Work reserve(ProjectQueue.Work work) {
             var reserved = location.reserve(work);
             if (partner == null) return reserved;
@@ -79,7 +79,7 @@ final class ProjectChest {
     record Result(boolean success, String detail, Map<String, Integer> stock, Integer free, boolean pickupShortfall) {
         Result(boolean success, String detail, Map<String, Integer> stock) { this(success, detail, stock, null, false); }
     }
-    private record Payload(Direction direction, String item, Integer stock, ProjectBlock.Position partner) {}
+    private record Payload(Direction direction, String item, Integer stock, ProjectBlock.Position partner, Integer stockReserve) {}
     private static final Gson JSON = new Gson();
     private static final long SETTLE = Duration.ofMillis(750).toNanos();
     private final Spec spec;
@@ -92,7 +92,7 @@ final class ProjectChest {
 
     ProjectChest(Spec spec, int reserve) {
         this.spec = spec;
-        this.reserve = reserve;
+        this.reserve = Math.max(reserve, spec.stockReserve);
     }
 
     boolean depositing() { return spec.direction == Direction.DEPOSIT; }
@@ -109,14 +109,18 @@ final class ProjectChest {
             throw new IllegalArgumentException("Invalid double chest position");
         }
         if (payload.direction == Direction.INSPECT && payload.item == null) {
-            return new Spec(location, payload.direction, null, 0, partner);
+            return new Spec(location, payload.direction, null, 0, partner, 0);
         }
         var item = ProjectItem.parse(payload.item);
         if (payload.direction != Direction.INSPECT
                 && (payload.stock == null || payload.stock < 0 || payload.stock > (partner == null ? 1728 : 3456))) {
             throw new IllegalArgumentException("Invalid chest item or stock target");
         }
-        return new Spec(location, payload.direction, item, payload.stock == null ? 0 : payload.stock, partner);
+        int reserve = payload.stockReserve == null ? 0 : payload.stockReserve;
+        if (reserve < 0 || reserve > (partner == null ? 1728 : 3456)) {
+            throw new IllegalArgumentException("Invalid chest stock reserve");
+        }
+        return new Spec(location, payload.direction, item, payload.stock == null ? 0 : payload.stock, partner, reserve);
     }
 
     void close(MinecraftClient client) {

@@ -624,26 +624,38 @@ final class ProjectQueue {
                                                   java.util.function.Function<String, ResourceSite> locate,
                                                   java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
         var candidate = locate.apply(worker);
-        if (candidate == null || projects.values().stream().flatMap(project -> project.jobs.stream())
-                .anyMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker))) return false;
+        if (candidate == null) return false;
+        var activeProjects = new HashMap<String, Project>();
+        for (var project : projects.values()) {
+            for (var job : project.jobs) {
+                if (job.state == State.LEASED && job.expiresAt > now) {
+                    activeProjects.put(job.worker.toLowerCase(Locale.ROOT), project);
+                }
+            }
+        }
+        if (activeProjects.containsKey(worker.toLowerCase(Locale.ROOT))) return false;
         var reserved = pendingBuildMaterials(world, worker);
         for (var project : projects.values()) {
             if (project.supplyChest == null || !world.equals(project.world) || cancelled(project)
                     || projectId != null && !project.id.equals(projectId)) continue;
             for (var job : project.jobs) {
-                if (job.state != State.FAILED || job.work.kind != Kind.BUILD || !placementApproachFailure(job)
-                        || job.work.sameWorkerAs == null || !SCHEMATIC_PLACEMENT.matcher(job.work.id).matches()
-                        || job.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) continue;
+                boolean failedApproach = job.state == State.FAILED && placementApproachFailure(job);
+                if (job.state != State.WAITING && !failedApproach || job.work.kind != Kind.BUILD
+                        || job.work.sameWorkerAs == null || !SCHEMATIC_PLACEMENT.matcher(job.work.id).matches()) continue;
                 var pickup = find(project, job.work.sameWorkerAs);
                 String material = pickup.work.constructionMaterial;
-                if (material == null || worker.equalsIgnoreCase(pickup.worker) || reserved.contains(material)
-                        || hasPendingDepositOf(world, worker, material)) continue;
+                if (pickup.state != State.DONE || pickup.worker == null || material == null
+                        || worker.equalsIgnoreCase(pickup.worker) || reserved.contains(material)
+                        || hasPendingDepositOf(world, worker, material)
+                        || job.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) continue;
+                var activeProject = activeProjects.get(pickup.worker.toLowerCase(Locale.ROOT));
+                if (!failedApproach && (activeProject == null || activeProject == project)) continue;
                 var target = JSON.fromJson(job.work.payload, StationTarget.class).target;
                 if (target == null) continue;
                 double distance = distance(candidate, target);
                 if (distance > 24) continue;
                 var original = locate.apply(pickup.worker);
-                if (original != null && distance(original, target) < distance + 16) continue;
+                if (original == null ? !failedApproach : distance(original, target) < distance + 16) continue;
                 if (reassignConstructionCargo(project, pickup, worker, heldCount.applyAsInt(worker, material),
                         kinds.contains(Kind.TRANSFER), now)) {
                     return true;

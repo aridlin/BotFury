@@ -3,6 +3,11 @@ import java.util.*;
 
 final class ResourceCatalog {
     record Resource(String id,String label,String category,List<String> normal,List<String> deepslate) {}
+    static final String FURNACE_STONE = "furnace_stone";
+    static final List<String> FURNACE_STONE_DROPS = List.of("minecraft:cobblestone", "minecraft:cobbled_deepslate",
+            "minecraft:blackstone");
+    private static final List<String> FURNACE_STONE_BLOCKS = List.of("minecraft:stone", "minecraft:deepslate",
+            "minecraft:cobblestone", "minecraft:cobbled_deepslate", "minecraft:blackstone");
     static final List<Resource> RESOURCES;
     static {
         var list=new ArrayList<Resource>();
@@ -28,6 +33,7 @@ final class ResourceCatalog {
     }
     static String title(String id){String text=id.replace('_',' ');return Character.toUpperCase(text.charAt(0))+text.substring(1);}
     static List<String> blocks(String id,String variant){
+        if (FURNACE_STONE.equals(id)) return FURNACE_STONE_BLOCKS;
         if(id.startsWith("block:")) {
             String block=id.substring(6);
             if(!block.matches("[a-z0-9_.-]+:[a-z0-9_./-]+"))throw new IllegalArgumentException("Invalid block ID");
@@ -51,6 +57,7 @@ final class ResourceCatalog {
     }
 
     static List<String> trackedDrops(String resource, String variant) {
+        if (FURNACE_STONE.equals(resource)) return FURNACE_STONE_DROPS;
         var items = new LinkedHashSet<String>();
         String drop = switch (resource) {
             case "iron", "copper", "gold" -> "raw_" + resource;

@@ -100,6 +100,10 @@ final class ProjectWorker {
     private static final StallRecovery approachRecovery = new StallRecovery();
     private static final StallRecovery idleRecovery = new StallRecovery();
     private static final WorkerReturnTrail returnTrail = new WorkerReturnTrail();
+    private static final WorkerCargoRecovery cargoRecovery = new WorkerCargoRecovery();
+    private static ProjectItem projectCargoItem;
+    private static int recentCargo;
+    private static boolean observedDeath;
     private static List<ProjectQueue.ResourceSite> returnWaypoints;
     private static long nextTrailSave;
     private static final SubsurfaceAccess stationReturn = new SubsurfaceAccess();
@@ -177,12 +181,14 @@ final class ProjectWorker {
         } catch (IOException error) {
             BotEvents.add("warn", "projects", "Could not read saved worker return trail");
         }
+        cargoRecovery.load(cargoPath(), enrollment);
         status = "Waiting for project jobs";
         BotEvents.add("info", "projects", event);
     }
 
     static void suspend(MinecraftClient client) {
         interruptedSmeltingLease = null;
+        cargoRecovery.stop();
         breathing.stop(client);
         generation++;
         port = 0;
@@ -193,6 +199,7 @@ final class ProjectWorker {
     static void stop(MinecraftClient client) {
         suspend(client);
         if (!Boolean.getBoolean("botfury.managedHttp")) return;
+        cargoRecovery.clear(cargoPath());
         loadEnrollment();
         enrollment = null;
         try {
@@ -224,6 +231,10 @@ final class ProjectWorker {
         return FabricLoader.getInstance().getConfigDir().resolve("botfury-return-trail.json");
     }
 
+    private static Path cargoPath() {
+        return FabricLoader.getInstance().getConfigDir().resolve("botfury-dropped-cargo.json");
+    }
+
     private static void saveTrail() {
         try {
             returnTrail.save(trailPath(), enrollment);
@@ -237,7 +248,13 @@ final class ProjectWorker {
     }
 
     static void interrupt(MinecraftClient client) {
+        if (observedDeath) return;
+        observedDeath = true;
+        if (cargoRecovery.pending()) cargoRecovery.clear(cargoPath());
         if (assignment == null && !pending) return;
+        if (projectCargoItem != null && recentCargo > 0 && success == null) {
+            cargoRecovery.remember(cargoPath(), enrollment, projectCargoItem, recentCargo, client.player.getBlockPos());
+        }
         if (assignment != null && production != null && success == null && assignment.job().attempts() == 1
                 && carriedUnstartedSmeltingInput && !production.contactedStation()) {
             interruptedSmeltingLease = assignment.job().lease();
@@ -291,6 +308,8 @@ final class ProjectWorker {
         pausedForMiningCraft = false;
         checkedExcavationTool = false;
         gather = null;
+        projectCargoItem = null;
+        recentCargo = 0;
         checkedCarriedFuel = false;
         gatherSite = null;
         lastGatherProgress = 0;
@@ -380,8 +399,10 @@ final class ProjectWorker {
 
     static void tick(MinecraftClient client, LocalFormation.Peer here) {
         if (!enabled()) return;
+        observedDeath = false;
         releaseJump(client);
         long now = System.nanoTime();
+        if (projectCargoItem != null && client.player.isAlive()) recentCargo = projectCargoItem.count(client);
         if (enrollment.matches(here.name(), world(here)) && client.player.isAlive() && client.player.isOnGround()
                 && !client.player.isTouchingWater() && (returnWaypoints == null || waypoint >= returnWaypoints.size())) {
             var feet = client.player.getBlockPos();
@@ -400,6 +421,9 @@ final class ProjectWorker {
             } else if (TaskDefense.defendProject(client)) {
                 idleRecovery.reset();
                 status = "Defending or recovering";
+            } else if (cargoRecovery.tick(client, cargoPath())) {
+                idleRecovery.reset();
+                status = "Recovering dropped project cargo";
             } else if (!pending && idleRecovery.yieldWhileIdle(client)) status = "Yielding the work area";
             else busy = false;
             if (busy) {
@@ -1749,6 +1773,7 @@ final class ProjectWorker {
                         } else startRouteDelivery(client, delivery);
                     } else if (work.kind() == ProjectQueue.Kind.GATHER) {
                         gather = ProjectGather.parse(work.payload());
+                        projectCargoItem = gather.item();
                         gatherSite = assignment.job().resourceSite();
                         if (assignment.flexibleStickCount() > 0) {
                             stickPreparation = new PortableWoodPreparation(Items.STICK,
@@ -1759,6 +1784,7 @@ final class ProjectWorker {
                         var spec = ProjectChest.parse(work.payload());
                         block = spec.location();
                         chest = new ProjectChest(spec);
+                        if (chest.depositing()) projectCargoItem = spec.item();
                     } else if (work.kind() == ProjectQueue.Kind.CRAFT || work.kind() == ProjectQueue.Kind.SMELT) {
                         var spec = ProjectProduction.useInventoryGrid(client, ProjectProduction.parse(work.payload(), work.kind()));
                         block = spec.station();

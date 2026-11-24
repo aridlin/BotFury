@@ -174,6 +174,7 @@ final class ProjectQueue {
     record FuelUse(String job, String recipe, String input, String expectedFuel, int count) {}
     private record SmeltFuel(String recipe, String input, String fuel, String plannedFuel, int count) {}
     record OwnedStation(String project, String job, String payload) {}
+    private static final String OWNED_STATION_MISSING = "Owned station is missing";
     record OwnedPlacement(String project, String job, String payload) {}
     record CarriedSmelt(String project, Work work) {}
     record CarriedCraft(String project, Work work, String worker, UUID gatheringLease) {}
@@ -370,7 +371,7 @@ final class ProjectQueue {
             if (!project.world.equals(world) || cancelled(project)
                     || project.jobs.stream().allMatch(job -> job.state == State.DONE)) continue;
             for (var job : project.jobs) {
-                if (job.state == State.DONE && stationKey(job) != null) {
+                if (canRepairOwnedStation(project, job) && stationKey(job) != null) {
                     result.add(new OwnedStation(project.id, job.work.id, job.work.payload));
                 }
             }
@@ -817,12 +818,20 @@ final class ProjectQueue {
         return restoreOwnedStation(world, projectId, jobId, List.of());
     }
 
+    private static String stationRepairKey(Job job) { return "station-repair:" + job.work.id; }
+
+    private static boolean canRepairOwnedStation(Project project, Job job) {
+        return job.state == State.DONE || job.state == State.FAILED
+                && !project.supplyRecoveries.containsKey(stationRepairKey(job))
+                && (OWNED_STATION_MISSING + " after " + MAX_SUPPLY_RECOVERIES + " supply recoveries").equals(job.evidence);
+    }
+
     synchronized boolean restoreOwnedStation(String world, String projectId, String jobId, List<Work> footing) throws IOException {
         var project = projects.get(projectId);
         var station = find(project, jobId);
         String key = station == null ? null : stationKey(station);
         if (project == null || !project.world.equals(world) || cancelled(project)
-                || key == null || station.state != State.DONE || project.jobs.size() + footing.size() > MAX_JOBS) return false;
+                || key == null || !canRepairOwnedStation(project, station) || project.jobs.size() + footing.size() > MAX_JOBS) return false;
         var jobs = new HashMap<String, Job>();
         project.jobs.forEach(job -> jobs.put(job.work.id, job));
         var recipe = jobs.get(station.work.sameWorkerAs);
@@ -847,10 +856,14 @@ final class ProjectQueue {
             } else if (job.state == State.FAILED && work.locks.contains(key) && stationFailure(job)) {
                 job = new Job(work, State.WAITING, 0, null, null, 0, "Waiting for station repair", job.chest, job.resourceSite);
             }
+            if (job != station && job.chest != null && key.equals(job.chest.report.location)) {
+                job = new Job(work, job.state, job.attempts, job.worker, job.lease, job.expiresAt,
+                        job.evidence, null, job.resourceSite, job.gatheringAfterPickup);
+            }
             jobs.put(work.id, job);
             revised.add(job);
         }
-        return rewindSupply(project.withJobs(revised), station, recipe, jobs, "Owned station is missing", null);
+        return rewindSupply(project.withJobs(revised), station, recipe, jobs, OWNED_STATION_MISSING, null);
     }
 
     private static boolean stationFailure(Job job) {
@@ -3414,9 +3427,11 @@ final class ProjectQueue {
         var recoveries = new HashMap<>(project.supplyRecoveries);
         boolean stalled = GATHER_STALLED.equals(evidence);
         if (stalled && !privatePreparationReady(project, waiting, rewind)) return false;
-        String recoveryKey = stalled ? stalledSupplyKey(waiting)
+        boolean stationLoss = OWNED_STATION_MISSING.equals(evidence);
+        String recoveryKey = stationLoss ? stationRepairKey(waiting) : stalled ? stalledSupplyKey(waiting)
                 : missingProductionInput(waiting, evidence) ? "production-inputs:" + waiting.work.id : root;
-        int attempts = recoveries.getOrDefault(recoveryKey, 0);
+        // This path runs only after observing that a completed station has disappeared, or when migrating an old failure.
+        int attempts = stationLoss ? 0 : recoveries.getOrDefault(recoveryKey, 0);
         if (GATHER_TOOLS_NEEDED.equals(evidence)) {
             var source = gatherSource(waiting.work.payload);
             String checkpoint = "tool-depth:" + waiting.work.id;

@@ -281,8 +281,13 @@ final class ProjectBroker {
                     reply(exchange, 201, request.project);
                 }
                 case "claim" -> {
+                    var position = workerPosition(request.worker);
                     var assignment = board.claim(world, request.worker, request.kinds, request.project, now,
-                            workerPosition(request.worker));
+                            position);
+                    if (assignment == null && request.kinds.contains(ProjectQueue.Kind.TRANSFER)) {
+                        assignment = board.offerGatheringStock(world, request.worker, request.project, now, position,
+                                ProjectBroker::heldCount);
+                    }
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.GATHER)) {
                         assignment = board.offerEquippedMiner(world, request.worker, request.project, request.toolUses, now);
                         if (assignment == null) {

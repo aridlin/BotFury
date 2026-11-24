@@ -1,5 +1,6 @@
 package com.botfury;
 
+import java.time.Duration;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.Item;
 import net.minecraft.item.Items;
@@ -16,6 +17,7 @@ final class PortableWoodPreparation {
     private final ProjectGather.Area excluded;
     private ProjectProduction production;
     private boolean craftingProduct;
+    private long belowSurfaceSince;
     private boolean gathering;
     private String status;
 
@@ -31,8 +33,15 @@ final class PortableWoodPreparation {
     static boolean canSupply(MinecraftClient client) {
         if (client.player.getInventory().contains(Items.CRAFTING_TABLE.getDefaultStack())
                 || ProjectProduction.canCraft(client, TABLE) || FieldWorkstation.plankRecipe(client, 4) != null) return true;
+        return nearLoadedSurface(client);
+    }
+
+    private static boolean nearLoadedSurface(MinecraftClient client) {
         var pos = client.player.getBlockPos();
-        return client.world.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, pos.getX(), pos.getZ()) - pos.getY() <= 12;
+        if (!client.world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)) return false;
+        // MOTION_BLOCKING is sent to the client. The no-leaves variant is server-side.
+        int depth = client.world.getTopY(Heightmap.Type.MOTION_BLOCKING, pos.getX(), pos.getZ()) - pos.getY();
+        return depth >= 0 && depth <= 12;
     }
 
     String status() { return status; }
@@ -51,6 +60,12 @@ final class PortableWoodPreparation {
                             Math.min(targetCount, held + (sticks ? 4 : 1)))
                     : FieldWorkstation.plankRecipe(client, sticks ? 2 : 4);
             if (spec == null) {
+                if (!sticks && !nearLoadedSurface(client)) {
+                    if (belowSurfaceSince == 0) belowSurfaceSince = now;
+                    if (now - belowSurfaceSince >= Duration.ofSeconds(6).toNanos()) {
+                        return new ProjectProduction.Result(false, "Underground without materials for a workbench");
+                    }
+                } else belowSurfaceSince = 0;
                 if (!gathering) {
                     MiningTask.startProject(client, new MiningTask.Job("any_logs", "both", coordinator), excluded, null, LOGS);
                     gathering = true;
@@ -60,6 +75,7 @@ final class PortableWoodPreparation {
                 MiningTask.tick(client);
                 return null;
             }
+            belowSurfaceSince = 0;
             if (gathering) {
                 MiningTask.stop();
                 gathering = false;

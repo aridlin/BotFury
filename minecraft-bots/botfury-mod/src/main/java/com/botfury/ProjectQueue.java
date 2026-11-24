@@ -126,6 +126,7 @@ final class ProjectQueue {
     private record SmeltFuel(String recipe, String input, String fuel, String plannedFuel, int count) {}
     record OwnedStation(String project, String job, String payload) {}
     record OwnedPlacement(String project, String job, String payload) {}
+    record BlockedAccess(String project, Work job, String builder) {}
     private static final java.util.regex.Pattern SCHEMATIC_PLACEMENT = java.util.regex.Pattern.compile("place-[0-9]+");
     private record StationTarget(ProjectBlock.Position target, String block) {}
     private record Board(int schema, Map<String, Project> projects) {}
@@ -272,6 +273,79 @@ final class ProjectQueue {
             }
         }
         return result;
+    }
+
+    synchronized List<BlockedAccess> blockedAccess(String world) {
+        var result = new ArrayList<BlockedAccess>();
+        for (var project : projects.values()) {
+            if (!project.world.equals(world) || project.supplyChest == null || project.repeat != null
+                    || project.jobs.stream().anyMatch(job -> job.state != State.DONE && job.work.id.startsWith("remove-access-repair-"))) continue;
+            for (var job : project.jobs) {
+                if (job.state != State.FAILED || !placementApproachFailure(job) || job.work.kind != Kind.BUILD
+                        || !SCHEMATIC_PLACEMENT.matcher(job.work.id).matches() || job.work.sameWorkerAs == null
+                        || project.supplyRecoveries.containsKey("access:" + job.work.id)
+                        || job.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) continue;
+                var cargo = find(project, job.work.sameWorkerAs);
+                if (cargo.state == State.DONE && cargo.worker != null && cargo.work.constructionMaterial != null) {
+                    result.add(new BlockedAccess(project.id, job.work, cargo.worker));
+                }
+            }
+        }
+        return result;
+    }
+
+    synchronized Set<String> accessReservations(String world) {
+        var reserved = new HashSet<String>();
+        for (var project : projects.values()) {
+            if (project.world.equals(world)) {
+                for (var job : project.jobs) reserved.addAll(job.work.locks);
+            }
+        }
+        return reserved;
+    }
+
+    synchronized boolean installAccess(String world, BlockedAccess request, StructureProject.AccessRepair repair,
+                                       long now) throws IOException {
+        var project = projects.get(request.project);
+        var waiting = find(project, request.job.id);
+        if (waiting == null || !waiting.work.equals(request.job) || !blockedAccess(world).contains(request)
+                || project.jobs.size() + repair.before().size() + repair.cleanup().size() >= MAX_JOBS
+                || projects.values().stream().anyMatch(other -> other != project && other.world.equals(world)
+                    && project.supplyChest.equals(reservedStorage(other)))) return false;
+        var cargo = find(project, waiting.work.sameWorkerAs);
+        var stockByChest = new HashMap<String, ChestObservation>();
+        collectChestStock(world, project, stockByChest);
+        var stock = stockByChest.get(project.supplyChest);
+        String item = "minecraft:cobblestone";
+        if (stock == null || stockCount(stock.report, item) < repair.stone()
+                || item.equals(cargo.work.constructionMaterial)
+                || pendingBuildMaterials(world, request.builder).contains(item)
+                || hasPendingDepositOf(world, request.builder, item)) return false;
+        for (var job : project.jobs) {
+            if (job.work.kind != Kind.TRANSFER || !job.work.locks.contains(project.supplyChest)) continue;
+            var transfer = transferTarget(job);
+            if (transfer != null && ("VERIFY_STOCK".equals(transfer.direction)
+                    || job.state != State.DONE && ("TAKE".equals(transfer.direction) || "WITHDRAW".equals(transfer.direction)))
+                    && (transfer.item == null || transfer.item.equals(item))) return false;
+        }
+        var payload = JSON.fromJson(cargo.work.payload, com.google.gson.JsonObject.class);
+        payload.addProperty("item", item);
+        payload.addProperty("direction", "TAKE");
+        payload.addProperty("stock", repair.stone());
+        var pickup = new Work("repair-" + waiting.work.id + "-stock", Kind.TRANSFER, JSON.toJson(payload),
+                cargo.work.needs, cargo.work.locks, null, null, item);
+        var jobs = new ArrayList<>(project.jobs);
+        int index = jobs.indexOf(waiting);
+        jobs.set(index, new Job(repair.placement(), State.WAITING, 0, null, null, 0,
+                "Waiting for temporary scaffold", waiting.chest, waiting.resourceSite));
+        jobs.add(index++, new Job(pickup, State.WAITING, 0, request.builder, null,
+                now + LEASE_MS, CONSTRUCTION_PICKUP, null));
+        for (var work : repair.before()) jobs.add(index++, new Job(work, State.WAITING, 0, null, null, 0, null, null));
+        for (var work : repair.cleanup()) jobs.add(new Job(work, State.WAITING, 0, null, null, 0, null, null));
+        var counts = new HashMap<>(project.supplyRecoveries);
+        counts.put("access:" + waiting.work.id, 1);
+        commit(new Project(project.id, project.world, jobs, project.repeat, project.supplyChest, counts));
+        return true;
     }
 
     private static boolean repairablePlacement(Job job) {

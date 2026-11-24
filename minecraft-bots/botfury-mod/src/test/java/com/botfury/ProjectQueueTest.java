@@ -693,19 +693,21 @@ class ProjectQueueTest {
         assertNull(delivery.benchStock());
     }
 
-    @Test void aCrafterCanRequestAndAcknowledgeAWorkbenchWithoutRequestingAPickaxe() throws Exception {
-        var queue = new ProjectQueue(directory.resolve("craft-bench-delivery.json"));
-        queue.submit("tools", WORLD, List.of(job("craft", CRAFT, List.of())));
-        var receiver = queue.claim(WORLD, "crafter", Set.of(CRAFT), 1).job();
-        var site = new ProjectQueue.ResourceSite(5, 64, 4);
-        assertNotNull(queue.renew("tools", "craft", receiver.lease(), null, 2, false, true));
-        var spare = java.util.Map.of("minecraft:stone_pickaxe", 100);
-        assertNull(queue.offerRouteTool(WORLD, "helper", null, 3, spare, 0, false, name -> site, (bot, item) -> 2));
-        var delivery = queue.offerRouteTool(WORLD, "helper", null, 4, spare, 0, true,
-                name -> site, (bot, item) -> item.endsWith("pickaxe") ? 2 : 0).job();
-        assertEquals("minecraft:crafting_table", queue.routeToolDelivery("tools", delivery.work().id(), delivery.lease(), 5).item());
-        queue.recordRouteBenchReceipt("tools", "craft", receiver.lease(), 6);
-        assertNull(queue.routeToolDelivery("tools", delivery.work().id(), delivery.lease(), 6));
+    @Test void productionCanRequestAndAcknowledgeAWorkbenchWithoutRequestingAPickaxe() throws Exception {
+        for (var kind : List.of(CRAFT, SMELT)) {
+            var queue = new ProjectQueue(directory.resolve(kind.name() + "-bench-delivery.json"));
+            queue.submit("tools", WORLD, List.of(job("craft", kind, List.of())));
+            var receiver = queue.claim(WORLD, "crafter", Set.of(kind), 1).job();
+            var site = new ProjectQueue.ResourceSite(5, 64, 4);
+            assertNotNull(queue.renew("tools", "craft", receiver.lease(), null, 2, false, true));
+            var spare = java.util.Map.of("minecraft:stone_pickaxe", 100);
+            assertNull(queue.offerRouteTool(WORLD, "helper", null, 3, spare, 0, false, name -> site, (bot, item) -> 2));
+            var delivery = queue.offerRouteTool(WORLD, "helper", null, 4, spare, 0, true,
+                    name -> site, (bot, item) -> item.endsWith("pickaxe") ? 2 : 0).job();
+            assertEquals("minecraft:crafting_table", queue.routeToolDelivery("tools", delivery.work().id(), delivery.lease(), 5).item());
+            queue.recordRouteBenchReceipt("tools", "craft", receiver.lease(), 6);
+            assertNull(queue.routeToolDelivery("tools", delivery.work().id(), delivery.lease(), 6));
+        }
     }
 
     @Test void aNewReturnRouteGetsOneRetryWithTheSameCargoAndPosition() throws Exception {

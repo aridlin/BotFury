@@ -16,6 +16,7 @@ final class ProjectBroker {
     private static final int MAX_BODY = 512 * 1024;
     private static ProjectQueue queue;
     private static long nextStationCheck;
+    private static long nextAccessCheck;
     private static int ownedPlacementCursor;
     record Overview(List<ProjectQueue.Project> projects, Map<String, ProjectQueue.ChestObservation> stock) {}
 
@@ -83,8 +84,28 @@ final class ProjectBroker {
                 }
             }
             checkOwnedPlacements(client, board, world);
+            if (now >= nextAccessCheck) {
+                nextAccessCheck = now + java.time.Duration.ofSeconds(20).toNanos();
+                repairBlockedAccess(client, board, world);
+            }
         } catch (IOException | IllegalArgumentException failure) {
-            BotEvents.add("warn", "projects", "Could not check owned stations. " + failure.getMessage());
+            BotEvents.add("warn", "projects", "Could not check owned project work. " + failure.getMessage());
+        }
+    }
+
+    private static void repairBlockedAccess(net.minecraft.client.MinecraftClient client, ProjectQueue board, String world)
+            throws IOException {
+        var blocked = board.blockedAccess(world);
+        if (blocked.isEmpty()) return;
+        var reservations = board.accessReservations(world);
+        for (var request : blocked) {
+            var builder = workerPosition(request.builder());
+            if (builder == null) continue;
+            var plan = StructureProject.repairPlacementAccess(client, request.job(), builder, reservations);
+            if (plan != null && board.installAccess(world, request, plan, System.currentTimeMillis())) {
+                BotEvents.add("info", "projects", "Planned temporary scaffold for " + request.job().id());
+                return;
+            }
         }
     }
 

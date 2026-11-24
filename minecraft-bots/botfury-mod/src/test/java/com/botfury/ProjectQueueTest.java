@@ -499,6 +499,52 @@ class ProjectQueueTest {
         assertEquals(1, replacement.attempts());
     }
 
+    @Test void temporaryAccessPersistsCargoDependencyAndCleansUpAfterTheBlockedPlacement() throws Exception {
+        var journal = directory.resolve("scaffold-recovery.json");
+        var queue = new ProjectQueue(journal);
+        String chest = "block:3,64,0";
+        String key = "block:6,64,1";
+        var cargo = new ProjectQueue.Work("pickup", TRANSFER,
+                "{\"direction\":\"TAKE\",\"item\":\"minecraft:oak_planks\",\"stock\":1}",
+                List.of("ready"), Set.of(chest), null, null, "minecraft:oak_planks");
+        var original = new ProjectQueue.Work("place-1", BUILD, "{}", List.of("pickup"), Set.of("wall"), "pickup");
+        queue.submitSupplied("house", WORLD, List.of(job("ready", ProjectQueue.Kind.BARRIER, List.of()), cargo, original), chest);
+        var stock = new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:cobblestone", 4));
+        var taken = queue.claim(WORLD, "builder", Set.of(TRANSFER), 1).job();
+        assertTrue(queue.finish("house", "pickup", taken.lease(), true, "Taken", stock, 2));
+        long now = 3;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            var lease = queue.claim(WORLD, "builder", Set.of(BUILD), now++).job();
+            assertTrue(queue.finish("house", "place-1", lease.lease(), false, ProjectQueue.TARGET_TIMEOUT, now++));
+            now += ProjectQueue.PLACEMENT_HANDOFF_WINDOW_MS;
+        }
+        var request = queue.blockedAccess(WORLD).get(0);
+        String intake = "repair-place-1-stock";
+        String step = "place-access-repair-place-1-0";
+        String done = "repair-place-1-settled";
+        var temporary = new ProjectQueue.Work(step, BUILD, "{}", List.of(intake), Set.of(key), intake);
+        var moved = new ProjectQueue.Work("place-1", BUILD, "{}", List.of("pickup", step), Set.of("wall"), "pickup");
+        var barrier = job(done, ProjectQueue.Kind.SETTLEMENT_BARRIER, List.of("place-1"));
+        var cleanup = new ProjectQueue.Work("remove-access-repair-place-1-0", EXCAVATE, "{}", List.of(step),
+                Set.of(key), null, new ProjectQueue.Cleanup(key, done));
+        var repair = new StructureProject.AccessRepair(moved, List.of(temporary), List.of(barrier, cleanup), 1);
+        assertTrue(queue.installAccess(WORLD, request, repair, now++));
+        assertFalse(queue.installAccess(WORLD, request, repair, now++));
+        var restored = new ProjectQueue(journal);
+        assertNull(restored.claim(WORLD, "builder", Set.of(BUILD, EXCAVATE), now++));
+        var gather = restored.claim(WORLD, "builder", Set.of(TRANSFER), now++).job();
+        assertEquals(intake, gather.work().id());
+        assertTrue(restored.finish("house", intake, gather.lease(), true, "Took scaffold stock", stock, now++));
+        var scaffold = restored.claim(WORLD, "builder", Set.of(BUILD), now++).job();
+        assertEquals(step, scaffold.work().id());
+        assertTrue(restored.finish("house", step, scaffold.lease(), true, "Built scaffold", now++));
+        assertNull(restored.claim(WORLD, "helper", Set.of(EXCAVATE), now++));
+        var placement = restored.claim(WORLD, "builder", Set.of(BUILD), now++).job();
+        assertEquals("place-1", placement.work().id());
+        assertTrue(restored.finish("house", "place-1", placement.lease(), true, "Built wall", now++));
+        assertEquals(cleanup.id(), restored.claim(WORLD, "helper", Set.of(EXCAVATE), now).job().work().id());
+    }
+
     @Test void placementHandoffAccountsForCargoInTheBatchesItUnblocks() throws Exception {
         var journal = directory.resolve("reopened-construction-cargo.json");
         var queue = new ProjectQueue(journal);

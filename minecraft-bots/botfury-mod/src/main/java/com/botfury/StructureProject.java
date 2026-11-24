@@ -35,6 +35,8 @@ final class StructureProject {
     private static final Identifier AIR = Identifier.of("minecraft", "air");
 
     record Plan(List<ProjectQueue.Work> jobs, Map<Identifier, Integer> materials, ProjectGather.Area area, ProjectGather.Area footprint) {}
+    record AccessRepair(ProjectQueue.Work placement, List<ProjectQueue.Work> before, List<ProjectQueue.Work> cleanup,
+                        int stone) {}
     private record Cell(BlockPos pos, BlockState desired, BlockState observed) {}
     private record BuildPose(BlockPos stand, Direction face, BlockPos support, boolean exposedBeforeBuild,
                              BuildAccess access) {
@@ -684,6 +686,55 @@ final class StructureProject {
             }
         }
         return planScaffoldBlocks(client, scaffold, layout, cleared, ready, placed, prerequisites, suffix);
+    }
+
+    static AccessRepair repairPlacementAccess(MinecraftClient client, ProjectQueue.Work work,
+                                               ProjectQueue.ResourceSite worker, Set<String> reserved) {
+        var original = ProjectBlock.parse(work.payload());
+        var target = original.target();
+        var start = new BlockPos(worker.x(), worker.y(), worker.z());
+        if (!loaded(client, target) || !client.world.isAir(target) || !start.isWithinDistance(target, 10)) return null;
+        String prefix = "repair-" + work.id();
+        String pickup = prefix + "-stock";
+        for (var top : BlockPos.iterateOutwards(target, 4, 2, 4)) {
+            var stand = top.up();
+            int rise = stand.getY() - start.getY();
+            if (rise < 1 || rise > 4 || stand.equals(original.stand()) || stand.equals(target)
+                    || stand.up().equals(target) || top.equals(target) || target.getSquaredDistance(stand) > 16
+                    || !loaded(client, stand.up()) || !client.world.isAir(stand) || !client.world.isAir(stand.up())
+                    || !clearBuildFace(client, Vec3d.ofBottomCenter(stand).add(0, 1.62, 0), original, Map.of())) continue;
+            for (var ascent : Direction.Type.HORIZONTAL) {
+                var base = top.down(rise - 1).offset(ascent.getOpposite(), rise - 1);
+                if (!base.isWithinDistance(start, 6) || !safeStand(client, base, Map.of())) continue;
+                var scaffold = planScaffold(client, top, ascent, rise, Map.of(), Map.of(), Map.of(), Map.of(),
+                        Map.of(), Set.of(), List.of(pickup), prefix + "-");
+                if (scaffold == null || scaffold.layout.keySet().stream().anyMatch(pos -> pos.equals(target)
+                        || pos.equals(original.support()) || reserved.contains(ProjectBlock.key(pos)))
+                        || !safeStand(client, stand, scaffold.layout)
+                        || !clearBuildFace(client, Vec3d.ofBottomCenter(stand).add(0, 1.62, 0), original, scaffold.layout)) continue;
+                var firstStand = ProjectBlock.parse(scaffold.jobs.get(0).payload()).stand();
+                if (!firstStand.isWithinDistance(start, 7) || Math.abs(firstStand.getY() - start.getY()) > 1) continue;
+                var depends = new ArrayList<>(work.needs());
+                depends.add(scaffold.lastPlacement());
+                var built = work(work.id(), ProjectQueue.Kind.BUILD, target, original.desired(), stand,
+                        original.face(), depends);
+                built = new ProjectQueue.Work(built.id(), built.kind(), built.payload(), built.needs(), built.locks(),
+                        work.sameWorkerAs());
+                var before = scaffold.jobs.stream().map(step -> {
+                    if (step.kind() != ProjectQueue.Kind.BUILD) return step;
+                    var needs = new ArrayList<>(step.needs());
+                    needs.add(pickup);
+                    return new ProjectQueue.Work(step.id(), step.kind(), step.payload(), needs, step.locks(), pickup);
+                }).toList();
+                String settled = prefix + "-settled";
+                var cleanup = new ArrayList<ProjectQueue.Work>();
+                cleanup.add(new ProjectQueue.Work(settled, ProjectQueue.Kind.SETTLEMENT_BARRIER, "",
+                        List.of(work.id()), Set.of()));
+                appendScaffoldCleanup(cleanup, scaffold, settled, settled);
+                return new AccessRepair(built, before, cleanup, scaffold.blocks.size());
+            }
+        }
+        return null;
     }
 
     private static Scaffold planScaffoldBlocks(MinecraftClient client, Map<BlockPos, BlockState> scaffold,

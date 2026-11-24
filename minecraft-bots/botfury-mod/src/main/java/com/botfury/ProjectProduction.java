@@ -171,6 +171,14 @@ final class ProjectProduction {
         return alternativeFuel(carried, input, preferred, cookTicks, true);
     }
 
+    static Identifier smeltingOutput(MinecraftClient client, String work) {
+        var spec = parse(work, ProjectQueue.Kind.SMELT);
+        var recipe = client.world.getRecipeManager().get(spec.recipe).orElse(null);
+        if (!(recipe instanceof SmeltingRecipe smelting)) return null;
+        var output = smelting.getOutput(client.world.getRegistryManager());
+        return output.isEmpty() || output.hasNbt() ? null : Registries.ITEM.getId(output.getItem());
+    }
+
     static Identifier carriedSmeltingFuel(MinecraftClient client, String work, Map<String, Integer> inventory) {
         var spec = parse(work, ProjectQueue.Kind.SMELT);
         if (inventory.getOrDefault(spec.input.toString(), 0) == 0) return null;

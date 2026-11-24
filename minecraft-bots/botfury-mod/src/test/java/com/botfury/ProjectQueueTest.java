@@ -15,6 +15,42 @@ class ProjectQueueTest {
     @TempDir Path directory;
     private static final String WORLD = "test|overworld";
 
+    @Test void carriedFurnaceOutputReplacesEmptyPrivateWorkAndKeepsTheFollowingStageAssigned() throws Exception {
+        var file = directory.resolve("carried-furnace-output.json");
+        var queue = new ProjectQueue(file);
+        var ore = new ProjectQueue.Work("ore", GATHER,
+                "{\"resource\":\"iron\",\"variant\":\"both\",\"item\":\"minecraft:raw_iron\",\"count\":3}",
+                List.of(), Set.of());
+        var metal = new ProjectQueue.Work("metal", SMELT,
+                "{\"recipe\":\"minecraft:iron_ingot_from_smelting_raw_iron\",\"input\":\"minecraft:raw_iron\","
+                        + "\"fuel\":\"minecraft:coal\",\"count\":3}", List.of("ore"), Set.of(), "ore");
+        var wood = new ProjectQueue.Work("wood", GATHER,
+                "{\"resource\":\"block:minecraft:oak_log\",\"variant\":\"both\",\"item\":\"minecraft:oak_log\",\"count\":1}",
+                List.of("metal"), Set.of(), "metal");
+        var jobs = List.of(ore, metal, wood).stream().map(work -> new ProjectQueue.Job(work,
+                ProjectQueue.State.WAITING, 0, null, null, 0, work == metal
+                ? "Missing ingredients for minecraft:iron_pickaxe; reacquiring materials" : null, null)).toList();
+        var project = new ProjectQueue.Project("stock", WORLD, jobs, null, "block:2,64,0", java.util.Map.of());
+        Files.writeString(file, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                "projects", java.util.Map.of("stock", project))));
+        queue = new ProjectQueue(file);
+        var active = queue.claim(WORLD, "miner", Set.of(GATHER), 1).job();
+        assertNull(queue.claim(WORLD, "holder", Set.of(SMELT), 2));
+        var candidate = queue.reusableSmeltingOutputs(WORLD).get(0);
+        var ingot = "minecraft:iron_ingot";
+        assertFalse(queue.reuseCarriedSmeltingOutput(WORLD, candidate, "holder", ingot, 3,
+                (worker, item) -> worker.equals("holder") ? 2 : 0));
+        assertFalse(queue.reuseCarriedSmeltingOutput(WORLD, candidate, "holder", ingot, 4,
+                (worker, item) -> worker.equals("holder") ? 3 : 1));
+        assertTrue(queue.reuseCarriedSmeltingOutput(WORLD, candidate, "holder", ingot, 5,
+                (worker, item) -> worker.equals("holder") ? 3 : 0));
+        queue = new ProjectQueue(file);
+        assertNull(queue.renew("stock", "ore", active.lease(), 6));
+        assertNull(queue.claim(WORLD, "miner", Set.of(GATHER), 7));
+        assertEquals("wood", queue.claim(WORLD, "holder", Set.of(GATHER), 8).job().work().id());
+        assertTrue(queue.reusableSmeltingOutputs(WORLD).isEmpty());
+    }
+
     @Test void anActiveWorkerCanRequestOneMealAndAcknowledgeReceipt() throws Exception {
         var journal = directory.resolve("food-resupply.json");
         var queue = new ProjectQueue(journal);

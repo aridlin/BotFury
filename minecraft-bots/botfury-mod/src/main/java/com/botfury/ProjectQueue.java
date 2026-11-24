@@ -845,6 +845,7 @@ final class ProjectQueue {
         var recipe = jobs.get(station.work.sameWorkerAs);
         if (recipe == null || recipe.state != State.DONE) return false;
         var revised = new ArrayList<Job>();
+        var recoveries = new HashMap<>(project.supplyRecoveries);
         for (var job : project.jobs) {
             var work = job.work;
             if (job == station && !footing.isEmpty()) {
@@ -868,10 +869,11 @@ final class ProjectQueue {
                 job = new Job(work, job.state, job.attempts, job.worker, job.lease, job.expiresAt,
                         job.evidence, null, job.resourceSite, job.gatheringAfterPickup);
             }
+            if (work.locks.contains(key)) recoveries.remove(rebuiltStorageRetryKey(job));
             jobs.put(work.id, job);
             revised.add(job);
         }
-        return rewindSupply(project.withJobs(revised), station, recipe, jobs, OWNED_STATION_MISSING, null);
+        return rewindSupply(project.withRecovery(revised, recoveries), station, recipe, jobs, OWNED_STATION_MISSING, null);
     }
 
     synchronized boolean reuseCarriedStationWood(String world, String worker, Map<String, Integer> inventory, long now,
@@ -2491,7 +2493,15 @@ final class ProjectQueue {
                                          boolean coveringActiveGather, int returnRevision) throws IOException {
         // Older journals used the settled marker even when the worker never reached the chest.
         boolean legacyRetry = deposit.attempts == 0 && CONTRIBUTION_SETTLED.equals(deposit.evidence);
-        boolean retry = legacyRetry || (deposit.attempts == 1 && CONTRIBUTION_RETRY.equals(deposit.evidence));
+        var storage = find(project, "setup-storage");
+        String rebuiltRetryKey = rebuiltStorageRetryKey(deposit);
+        // Station repair invalidates the receipt. Its retry history belongs to the lost chest.
+        boolean rebuiltStorageRetry = interrupted && deposit.chest == null && CONTRIBUTION_SETTLED.equals(deposit.evidence)
+                && storage != null && storage.state == State.DONE && Objects.equals(project.supplyChest, stationKey(storage))
+                && project.supplyRecoveries.containsKey(stationRepairKey(storage))
+                && !project.supplyRecoveries.containsKey(rebuiltRetryKey);
+        boolean retry = legacyRetry || rebuiltStorageRetry
+                || (deposit.attempts == 1 && CONTRIBUTION_RETRY.equals(deposit.evidence));
         boolean additionalCargo = interrupted && deposit.chest != null && CONTRIBUTION_SETTLED.equals(deposit.evidence);
         var target = transferTarget(deposit);
         var payload = JSON.fromJson(gather.work.payload, com.google.gson.JsonObject.class);
@@ -2523,11 +2533,18 @@ final class ProjectQueue {
         }
         int goal = payload.get("count").getAsInt();
         if (!interrupted && carriedTotal < goal || ownChestContributionBlocked(project, gather, deposit)) return null;
-        var assigned = new Job(deposit.work, State.LEASED, retry || additionalCargo || upgradedReturn ? 1 : 0, worker,
+        int attempts = !rebuiltStorageRetry && (retry || additionalCargo || upgradedReturn) ? 1 : 0;
+        var assigned = new Job(deposit.work, State.LEASED, attempts, worker,
                 UUID.randomUUID(), now + LEASE_MS, CONTRIBUTION_ACTIVE, deposit.chest);
         if (interrupted) {
             var jobs = project.jobs.stream().map(job -> job == deposit ? assigned : job).toList();
-            commit(project.withContribution(jobs, cargo, carriedTotal, position, stock, returnRevision));
+            var updated = project.withContribution(jobs, cargo, carriedTotal, position, stock, returnRevision);
+            if (rebuiltStorageRetry) {
+                var recoveries = new HashMap<>(updated.supplyRecoveries);
+                recoveries.put(rebuiltRetryKey, 1);
+                updated = updated.withRecovery(jobs, recoveries);
+            }
+            commit(updated);
         } else replace(project, assigned);
         return new Assignment(project.id, project.world, assigned);
     }
@@ -2543,7 +2560,13 @@ final class ProjectQueue {
         return "contribution:" + deposit.work.id + ":" + worker.toLowerCase(Locale.ROOT);
     }
 
+    private static String rebuiltStorageRetryKey(Job deposit) {
+        return "rebuilt-storage-retry:" + deposit.work.id;
+    }
+
     private boolean ownChestContributionBlocked(Project project, Job gather, Job deposit) {
+        var storage = find(project, "setup-storage");
+        if (storage != null && storage.state != State.DONE && Objects.equals(project.supplyChest, stationKey(storage))) return true;
         if (deposit.work.needs.stream().anyMatch(dep -> !dep.equals(gather.work.id)
                 && find(project, dep).state != State.DONE)) return true;
         if (projects.values().stream().anyMatch(other -> other != project && other.world.equals(project.world)
@@ -3274,7 +3297,9 @@ final class ProjectQueue {
             var payload = JSON.fromJson(work.payload, com.google.gson.JsonObject.class);
             int outstanding = Math.max(1, remaining);
             int previousCount = payload.get("count").getAsInt();
-            if (outstanding < previousCount) {
+            boolean firstStockAfterRebuild = deposit.chest == null
+                    && project.supplyRecoveries.containsKey(rebuiltStorageRetryKey(deposit));
+            if (outstanding < previousCount || firstStockAfterRebuild && outstanding != previousCount) {
                 payload.addProperty("count", outstanding);
                 var adjusted = new Work(work.id, work.kind, JSON.toJson(payload), work.needs, work.locks, work.sameWorkerAs);
                 String retry = gather.state == State.LEASED && gather.expiresAt > now

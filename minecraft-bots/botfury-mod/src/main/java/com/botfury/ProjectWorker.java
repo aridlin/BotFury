@@ -48,7 +48,10 @@ final class ProjectWorker {
     private static ProjectProduction production;
     private static FieldWorkstation fieldWorkstation;
     private static long nextWorkstationSearch;
-    private static ProjectProduction miningWeapon;
+    private static final Identifier MINING_SWORD = Identifier.of("minecraft", "stone_sword");
+    private static final Identifier ROUTE_PICKAXE = Identifier.of("minecraft", "stone_pickaxe");
+    private static Identifier miningRecipe;
+    private static ProjectProduction miningCraft;
     private static boolean checkedMiningWeapon;
     private static ProjectGather gather;
     private static boolean checkedCarriedFuel;
@@ -193,7 +196,8 @@ final class ProjectWorker {
         production = null;
         fieldWorkstation = null;
         nextWorkstationSearch = 0;
-        miningWeapon = null;
+        miningRecipe = null;
+        miningCraft = null;
         checkedMiningWeapon = false;
         gather = null;
         checkedCarriedFuel = false;
@@ -220,7 +224,7 @@ final class ProjectWorker {
         if (chest != null) chest.close(client);
         if (production != null) production.close(client);
         if (fieldWorkstation != null) fieldWorkstation.close(client);
-        if (miningWeapon != null) miningWeapon.close(client);
+        if (miningCraft != null) miningCraft.close(client);
         if (pickup != null) pickup.stop();
         if (gather != null && MiningTask.active()) MiningTask.stop();
         if (breaking && client.interactionManager != null) client.interactionManager.cancelBlockBreaking();
@@ -297,6 +301,8 @@ final class ProjectWorker {
             }
             if (held >= gather.count()) {
                 finish(client, true, "Observed " + held + " " + gather.item() + " in worker inventory");
+            } else if (miningRecipe != null) {
+                tickMiningCraft(client, now);
             } else if (!gatherProgress(client, held, now)) {
                 finish(client, false, ProjectQueue.GATHER_STALLED);
             } else if (pickup != null) {
@@ -314,7 +320,11 @@ final class ProjectWorker {
                 MiningTask.tick(client);
                 var observation = MiningTask.observedSite();
                 if (observation != null) gatherSite = observation;
-                if (MiningTask.toolShortfall()) finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
+                if (MiningTask.toolShortfall()) {
+                    if (MiningTask.routeToolShortfall() && startMiningCraft(client, now, ROUTE_PICKAXE)) {
+                        MiningTask.stop();
+                    } else finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
+                }
             }
         } else if (production != null) {
             var result = block == null ? production.tick(client, now) : production.finishedFromInventory(client);
@@ -324,40 +334,58 @@ final class ProjectWorker {
     }
 
     private static boolean prepareMiningWeapon(MinecraftClient client, long now) {
-        var sword = Identifier.of("minecraft", "stone_sword");
-        if (!checkedMiningWeapon) {
-            checkedMiningWeapon = true;
-            if (!TaskDefense.enabled() || !SubsurfaceAccess.deepResource(gather.resource())
-                    || !ProjectProduction.canCraft(client, sword)) return false;
-            var inventory = client.player.getInventory();
-            for (int slot = 0; slot < 36; slot++) {
-                var item = inventory.getStack(slot).getItem();
-                if (item instanceof net.minecraft.item.SwordItem || item instanceof net.minecraft.item.AxeItem) return false;
-            }
-            fieldWorkstation = FieldWorkstation.find(client, now, ProjectQueue.Kind.CRAFT);
+        if (checkedMiningWeapon) return false;
+        checkedMiningWeapon = true;
+        if (!TaskDefense.enabled() || !SubsurfaceAccess.deepResource(gather.resource())) return false;
+        var inventory = client.player.getInventory();
+        for (int slot = 0; slot < 36; slot++) {
+            var item = inventory.getStack(slot).getItem();
+            if (item instanceof net.minecraft.item.SwordItem || item instanceof net.minecraft.item.AxeItem) return false;
         }
-        if (miningWeapon == null && fieldWorkstation != null) {
+        return startMiningCraft(client, now, MINING_SWORD);
+    }
+
+    private static boolean startMiningCraft(MinecraftClient client, long now, Identifier recipe) {
+        if (!ProjectProduction.canCraft(client, recipe)) return false;
+        fieldWorkstation = recipe.equals(ROUTE_PICKAXE) ? FieldWorkstation.findForMiningTool(client, now, gather.exclude())
+                : FieldWorkstation.find(client, now, ProjectQueue.Kind.CRAFT);
+        if (fieldWorkstation == null) return false;
+        miningRecipe = recipe;
+        return true;
+    }
+
+    private static void tickMiningCraft(MinecraftClient client, long now) {
+        boolean replacement = miningRecipe.equals(ROUTE_PICKAXE);
+        if (miningCraft == null) {
             var state = fieldWorkstation.tick(client, now);
             if (state == FieldWorkstation.State.WORKING) {
-                status = "Setting up a workbench for a mining weapon";
-                return true;
+                status = replacement ? "Setting up a workbench to replace a worn pickaxe"
+                        : "Setting up a workbench for a mining weapon";
+                return;
             }
             var station = fieldWorkstation.station();
             fieldWorkstation.close(client);
             fieldWorkstation = null;
-            if (state == FieldWorkstation.State.READY) {
-                miningWeapon = new ProjectProduction(new ProjectProduction.Spec(station, ProjectQueue.Kind.CRAFT,
-                        sword, null, null, 1));
+            if (state != FieldWorkstation.State.READY) {
+                miningRecipe = null;
+                if (replacement) finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
+                return;
             }
+            miningCraft = new ProjectProduction(new ProjectProduction.Spec(station, ProjectQueue.Kind.CRAFT,
+                    miningRecipe, null, null, 1));
         }
-        if (miningWeapon == null) return false;
-        status = "Making a stone sword before prospecting";
-        var result = miningWeapon.tick(client, now);
-        if (result == null) return true;
-        miningWeapon.close(client);
-        miningWeapon = null;
-        if (result.success()) BotEvents.add("info", "defense", "Crafted a stone sword before prospecting");
-        return false;
+        status = replacement ? "Crafting a replacement prospecting pickaxe" : "Making a stone sword before prospecting";
+        var result = miningCraft.tick(client, now);
+        if (result == null) return;
+        miningCraft.close(client);
+        miningCraft = null;
+        miningRecipe = null;
+        if (replacement) {
+            if (result.success() && SubsurfaceAccess.canDigRoute(client)) {
+                lastGatherProgress = now;
+                BotEvents.add("info", "mining", "Crafted a replacement prospecting pickaxe");
+            } else finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
+        } else if (result.success()) BotEvents.add("info", "defense", "Crafted a stone sword before prospecting");
     }
 
     private static boolean prepareFieldWorkstation(MinecraftClient client, long now) {

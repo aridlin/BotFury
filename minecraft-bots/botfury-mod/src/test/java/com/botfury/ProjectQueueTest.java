@@ -692,16 +692,28 @@ class ProjectQueueTest {
     }
 
     @Test void carriedAndStockedInputsRecoverAStalledGatherWithoutBreakingCraftOwnership() throws Exception {
+        checkGatheringStockRecovery(false);
+    }
+
+    @Test void gatheringStockRecoveryDoesNotSpendTheManifestMinimum() throws Exception {
+        checkGatheringStockRecovery(true);
+    }
+
+    private void checkGatheringStockRecovery(boolean reserved) throws Exception {
         var journal = directory.resolve("recover-gather-from-chest.json");
         var queue = new ProjectQueue(journal);
         String chest = "block:3,64,0";
         String logs = "minecraft:oak_log";
         String inspection = "{\"target\":{\"x\":3,\"y\":64,\"z\":0},\"direction\":\"INSPECT\"}";
         String gathering = "{\"resource\":\"block:minecraft:oak_log\",\"item\":\"minecraft:oak_log\",\"variant\":\"both\",\"count\":32}";
-        queue.submitSupplied("house", WORLD, List.of(
+        var work = new ArrayList<>(List.of(
                 new ProjectQueue.Work("stock", TRANSFER, inspection, List.of(), Set.of(chest)),
                 new ProjectQueue.Work("gather", GATHER, gathering, List.of("stock"), Set.of()),
-                new ProjectQueue.Work("craft", CRAFT, "", List.of("gather"), Set.of(), "gather")), chest);
+                new ProjectQueue.Work("craft", CRAFT, "", List.of("gather"), Set.of(), "gather")));
+        if (reserved) work.add(new ProjectQueue.Work("verify", TRANSFER,
+                "{\"direction\":\"VERIFY_STOCK\",\"item\":\"any_logs\",\"stock\":5}",
+                List.of("craft"), Set.of(chest)));
+        queue.submitSupplied("house", WORLD, work, chest);
         var inspect = queue.claim(WORLD, "scout", Set.of(TRANSFER), 1).job();
         assertTrue(queue.finish("house", "stock", inspect.lease(), true, "Observed 12 logs",
                 new ProjectQueue.ChestReport(chest, java.util.Map.of(logs, 12)), 2));
@@ -711,6 +723,10 @@ class ProjectQueueTest {
         }
         var position = new ProjectQueue.ResourceSite(0, 64, 0);
         assertNull(queue.offerGatheringStock(WORLD, "helper", null, 9, position, (bot, item) -> 16));
+        if (reserved) {
+            assertNull(queue.offerGatheringStock(WORLD, "helper", null, 10, position, (bot, item) -> 24));
+            return;
+        }
         var pickup = queue.offerGatheringStock(WORLD, "helper", null, 10, position, (bot, item) -> 24).job();
         assertEquals("gather", pickup.work().id());
         assertEquals(TRANSFER, pickup.work().kind());

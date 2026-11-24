@@ -36,6 +36,7 @@ final class MiningTask {
     private static final Deque<BlockPos> pendingCandidates = new ArrayDeque<>();
     private static boolean scanNeedsTool;
     private static boolean toolShortfall;
+    private static boolean routeToolShortfall;
     static void pause(boolean value) {
         if (job == null || paused == value) return;
         paused = value;
@@ -77,6 +78,7 @@ final class MiningTask {
     static String status(){return job==null?"":status;}
     static String lastStatus(){return status;}
     static boolean toolShortfall() { return toolShortfall; }
+    static boolean routeToolShortfall() { return routeToolShortfall; }
     static boolean blocksProspectingBreak(BlockPos pos) {
         return subsurface.blocksBreaking(MinecraftClient.getInstance(), pos);
     }
@@ -123,6 +125,7 @@ final class MiningTask {
         try{settings=new BaritoneSettings(exclude == null, project);}catch(ReflectiveOperationException|LinkageError e){fail("Could not configure mining approach");return;}
         projectMining=project;
         toolShortfall = false;
+        routeToolShortfall = false;
         subsurface.reset();
         lastCaveProbeY = Integer.MAX_VALUE;
         nextCaveProbe = 0;
@@ -368,6 +371,7 @@ final class MiningTask {
             }
             if (!SubsurfaceAccess.canDigRoute(client)) {
                 toolShortfall = true;
+                routeToolShortfall = true;
                 status = "Route pickaxes are worn out";
                 return;
             }

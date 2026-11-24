@@ -84,6 +84,29 @@ final class ProjectProduction {
         return matcher.match(recipe, null);
     }
 
+    static java.util.Set<String> carriedCraftingIngredients(MinecraftClient client, String work,
+                                                            Map<String, Integer> inventory) {
+        var spec = parse(work, ProjectQueue.Kind.CRAFT);
+        var recipe = client.world.getRecipeManager().get(spec.recipe).orElse(null);
+        if (!(recipe instanceof CraftingRecipe)) return java.util.Set.of();
+        int yield = recipe.getOutput(client.world.getRegistryManager()).getCount();
+        if (yield < 1) return java.util.Set.of();
+        var matcher = new RecipeMatcher();
+        inventory.forEach((key, count) -> {
+            var id = Identifier.tryParse(key);
+            if (id == null || count == null || count <= 0) return;
+            Registries.ITEM.getOrEmpty(id).ifPresent(item -> matcher.addInput(new ItemStack(item, Math.min(count, 64))));
+        });
+        var matched = new IntArrayList();
+        if (!matcher.match(recipe, matched, (spec.count + yield - 1) / yield)) return java.util.Set.of();
+        var inputs = new java.util.HashSet<String>();
+        for (int code : matched) {
+            var stack = RecipeMatcher.getStackFromId(code);
+            if (!stack.isEmpty()) inputs.add(Registries.ITEM.getId(stack.getItem()).toString());
+        }
+        return inputs;
+    }
+
     static Identifier alternativeFuel(MinecraftClient client, ProjectQueue.FuelUse plan) {
         var recipe = client.world.getRecipeManager().get(Identifier.tryParse(plan.recipe())).orElse(null);
         if (!(recipe instanceof SmeltingRecipe smelting)) return null;

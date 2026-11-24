@@ -1275,6 +1275,35 @@ class ProjectQueueTest {
                 true, ProjectQueue.ALTERNATIVE_FUEL + "minecraft:oak_planks", 5));
     }
 
+    @Test void carriedIngredientsRetireOnlyThePrivateGatherForTheCurrentWorker() throws Exception {
+        var journal = directory.resolve("carried-crafting.json");
+        var board = new ProjectQueue(journal);
+        var wood = job("logs", GATHER, List.of());
+        var sticks = new ProjectQueue.Work("sticks", CRAFT, "{}", List.of("logs"), Set.of(), "logs");
+        var craft = new ProjectQueue.Work("tool", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\"}",
+                List.of("sticks"), Set.of(), "sticks");
+        var mine = new ProjectQueue.Work("diamonds", GATHER, "{}", List.of("tool"), Set.of(), "tool");
+        var shared = new ProjectQueue.Work("second-use", VERIFY, "{}", List.of("sticks"), Set.of());
+        board.submitSupplied("independent", WORLD, List.of(wood, sticks, craft, mine), "block:1,64,0");
+        board.submitSupplied("shared", WORLD, List.of(wood, sticks, craft, mine, shared), "block:2,64,0");
+        var gather = board.claim(WORLD, "worker", Set.of(GATHER), "independent", 1).job();
+        var sharedGather = board.claim(WORLD, "other", Set.of(GATHER), "shared", 1).job();
+        var candidates = board.craftableToolPreparation(WORLD, 2);
+        assertEquals(1, candidates.size());
+        var request = candidates.get(0);
+        assertEquals("independent", request.project());
+        assertFalse(board.useCarriedCraftingIngredients(WORLD, request, Set.of(), 2));
+        assertTrue(board.useCarriedCraftingIngredients(WORLD, request, Set.of("minecraft:stick", "minecraft:iron_ingot"), 2));
+        assertNull(board.renew("independent", "logs", gather.lease(), 3));
+        assertNotNull(board.renew("shared", "logs", sharedGather.lease(), 3));
+        var restarted = new ProjectQueue(journal);
+        assertNull(restarted.claim(WORLD, "helper", Set.of(CRAFT), "independent", 4));
+        var tool = restarted.claim(WORLD, "worker", Set.of(CRAFT), "independent", 4).job();
+        assertEquals("tool", tool.work().id());
+        assertTrue(restarted.finish("independent", "tool", tool.lease(), true, "Observed iron pickaxe", 5));
+        assertEquals("diamonds", restarted.claim(WORLD, "worker", Set.of(GATHER), "independent", 6).job().work().id());
+    }
+
     @Test void stalledSmeltingResumesFromCarriedSuppliesWithoutReplayingPrivatePreparation() throws Exception {
         var journal = directory.resolve("resume-carried-smelting.json");
         var ore = job("ore", GATHER, List.of());

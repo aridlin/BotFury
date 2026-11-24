@@ -218,12 +218,14 @@ final class MiningTask {
                     approachProgress = age;
                 }
                 if (subsurface.continueLocalApproach(client, age)) return;
-                if (!localApproachTried && age - approachProgress >= 80 && prospectingAltitude(client) != null
-                        && feet.isWithinDistance(p, 9) && !BaritoneClient.pursuing(p)) {
+                if (projectMining && !localApproachTried && age - approachProgress >= 80
+                        && feet.isWithinDistance(p, 9) && SubsurfaceAccess.canDigRoute(client)
+                        && (!BaritoneClient.pursuing(p) || BaritoneClient.route().isEmpty())) {
                     stopPath();
                     localApproachTried = true;
                     if (subsurface.openLocalApproach(client, age, p, excluded)) {
                         status = "Opening a protected approach to reserved " + job.resource;
+                        BotEvents.add("info", "mining", status);
                         return;
                     }
                 }

@@ -40,6 +40,7 @@ class ProjectQueueTest {
             assertEquals("place-1", upper.work().id());
             assertFalse(queue.repairMissingPlacement(WORLD, "house", "place-0"));
             assertTrue(queue.finish("house", "place-1", upper.lease(), false, ProjectQueue.TARGET_TIMEOUT, now++));
+            now += ProjectQueue.PLACEMENT_HANDOFF_WINDOW_MS;
         }
         assertEquals(List.of("place-0"), queue.ownedPlacements(WORLD).stream().map(ProjectQueue.OwnedPlacement::job).toList());
         assertTrue(queue.repairMissingPlacement(WORLD, "house", "place-0"));
@@ -466,6 +467,38 @@ class ProjectQueueTest {
         checkConstructionHandoff(true, false, true);
     }
 
+    @Test void stalledPlacementGivesAnotherBuilderTheBatchBeforeTheOriginalRetries() throws Exception {
+        var journal = directory.resolve("early-construction-handoff.json");
+        var queue = new ProjectQueue(journal);
+        String chest = "block:3,64,0";
+        String material = "minecraft:oak_log";
+        String target = "{\"target\":{\"x\":8,\"y\":64,\"z\":8}}";
+        var pickup = new ProjectQueue.Work("pickup", TRANSFER,
+                "{\"direction\":\"TAKE\",\"item\":\"minecraft:oak_log\",\"stock\":2}",
+                List.of("ready"), Set.of(chest), null, null, material);
+        queue.submitSupplied("house", WORLD, List.of(job("ready", ProjectQueue.Kind.BARRIER, List.of()), pickup,
+                new ProjectQueue.Work("place-1", BUILD, target, List.of("pickup"), Set.of("wall"), "pickup"),
+                new ProjectQueue.Work("place-2", BUILD, target, List.of("pickup"), Set.of("roof"), "pickup")), chest);
+        var cargo = queue.claim(WORLD, "original", Set.of(TRANSFER), 1).job();
+        assertTrue(queue.finish("house", "pickup", cargo.lease(), true, "Taken",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of()), 2));
+        var first = queue.claim(WORLD, "original", Set.of(BUILD), 3).job();
+        assertTrue(queue.finish("house", "place-1", first.lease(), false, ProjectQueue.TARGET_TIMEOUT, 4));
+
+        var restored = new ProjectQueue(journal);
+        assertNull(restored.claim(WORLD, "original", Set.of(BUILD), 5));
+        var stranded = new ProjectQueue.ResourceSite(8, 60, 8);
+        assertFalse(restored.offerConstructionHandoff(WORLD, "near-original", null, Set.of(BUILD), 5,
+                worker -> stranded, (worker, item) -> 2));
+        assertTrue(restored.offerConstructionHandoff(WORLD, "alternate", null, Set.of(BUILD), 6,
+                worker -> worker.equals("original") ? stranded : new ProjectQueue.ResourceSite(15, 64, 8),
+                (worker, item) -> material.equals(item) ? 2 : 0));
+        assertNull(restored.claim(WORLD, "original", Set.of(BUILD), 7));
+        var replacement = restored.claim(WORLD, "alternate", Set.of(BUILD), 8).job();
+        assertEquals("place-1", replacement.work().id());
+        assertEquals(1, replacement.attempts());
+    }
+
     @Test void placementHandoffAccountsForCargoInTheBatchesItUnblocks() throws Exception {
         var journal = directory.resolve("reopened-construction-cargo.json");
         var queue = new ProjectQueue(journal);
@@ -486,25 +519,27 @@ class ProjectQueueTest {
         assertTrue(queue.finish("house", "pickup", wallCargo.lease(), true, "Carrying wall cargo", stock, 4));
         var roofCargo = queue.claim(WORLD, "roofer", Set.of(TRANSFER), 5).job();
         assertTrue(queue.finish("house", "roof-cargo", roofCargo.lease(), true, "Carrying roof cargo", stock, 6));
-        for (long now = 7; now <= 11; now += 2) {
+        long now = 7;
+        for (int attempt = 0; attempt < 3; attempt++) {
             var lease = queue.claim(WORLD, "first", Set.of(BUILD), now).job();
-            assertTrue(queue.finish("house", "place-1", lease.lease(), false, ProjectQueue.TARGET_TIMEOUT, now + 1));
+            assertTrue(queue.finish("house", "place-1", lease.lease(), false, ProjectQueue.TARGET_TIMEOUT, ++now));
+            now += ProjectQueue.PLACEMENT_HANDOFF_WINDOW_MS;
         }
         java.util.function.Function<String, ProjectQueue.ResourceSite> locate = worker -> "first".equals(worker)
                 ? new ProjectQueue.ResourceSite(8, 60, 8) : new ProjectQueue.ResourceSite(16, 64, 8);
         var kinds = Set.of(BUILD, TRANSFER);
-        assertFalse(queue.offerConstructionHandoff(WORLD, "roofer", null, kinds, 13, locate, (worker, item) -> 0));
-        assertFalse(queue.offerConstructionHandoff(WORLD, "roofer", null, kinds, 13, locate, (worker, item) -> 1));
-        assertEquals(ProjectQueue.State.FAILED, queue.snapshot(13).get(0).jobs().get(3).state());
-        assertTrue(queue.offerConstructionHandoff(WORLD, "helper", null, kinds, 14, locate, (worker, item) -> 0));
+        assertFalse(queue.offerConstructionHandoff(WORLD, "roofer", null, kinds, now, locate, (worker, item) -> 0));
+        assertFalse(queue.offerConstructionHandoff(WORLD, "roofer", null, kinds, now, locate, (worker, item) -> 1));
+        assertEquals(ProjectQueue.State.FAILED, queue.snapshot(now).get(0).jobs().get(3).state());
+        assertTrue(queue.offerConstructionHandoff(WORLD, "helper", null, kinds, now + 1, locate, (worker, item) -> 0));
         var restored = new ProjectQueue(journal);
-        var replacement = restored.claim(WORLD, "helper", kinds, 15).job();
+        var replacement = restored.claim(WORLD, "helper", kinds, now + 2).job();
         assertEquals("pickup", replacement.work().id());
-        assertTrue(restored.finish("house", "pickup", replacement.lease(), true, "Carrying replacement wall cargo", stock, 16));
-        var wall = restored.claim(WORLD, "helper", kinds, 17).job();
+        assertTrue(restored.finish("house", "pickup", replacement.lease(), true, "Carrying replacement wall cargo", stock, now + 3));
+        var wall = restored.claim(WORLD, "helper", kinds, now + 4).job();
         assertEquals("place-1", wall.work().id());
-        assertTrue(restored.finish("house", "place-1", wall.lease(), true, "Placed wall", 18));
-        assertEquals("place-2", restored.claim(WORLD, "roofer", kinds, 19).job().work().id());
+        assertTrue(restored.finish("house", "place-1", wall.lease(), true, "Placed wall", now + 5));
+        assertEquals("place-2", restored.claim(WORLD, "roofer", kinds, now + 6).job().work().id());
     }
 
     private void checkConstructionHandoff(boolean stockAvailable, boolean busySupplier, boolean closeSupplier) throws Exception {
@@ -527,6 +562,7 @@ class ProjectQueueTest {
         java.util.function.Function<String, ProjectQueue.ResourceSite> locate = name -> name.equals("builder")
                 ? new ProjectQueue.ResourceSite(closeSupplier ? 16 : 8, 64, closeSupplier ? 8 : 10)
                 : new ProjectQueue.ResourceSite(8, closeSupplier ? 60 : 14, 8);
+        long now = busySupplier ? 11 : 5;
         ProjectQueue.Job mining = null;
         if (busySupplier) {
             var kinds = Set.of(BUILD, TRANSFER);
@@ -537,38 +573,39 @@ class ProjectQueueTest {
             assertFalse(queue.offerConstructionHandoff(WORLD, "builder", null, kinds, 7,
                     worker -> closeBy, (worker, item) -> 0));
         } else {
-            for (long now = 5; now <= 9; now += 2) {
-                var lease = queue.claim(WORLD, "original", Set.of(BUILD), now).job();
-                assertTrue(queue.finish("house", "place-1", lease.lease(), false, ProjectQueue.TARGET_TIMEOUT, now + 1));
+            for (int attempt = 0; attempt < 3; attempt++) {
+                var lease = queue.claim(WORLD, "original", Set.of(BUILD), now++).job();
+                assertTrue(queue.finish("house", "place-1", lease.lease(), false, ProjectQueue.TARGET_TIMEOUT, now++));
+                now += ProjectQueue.PLACEMENT_HANDOFF_WINDOW_MS;
             }
         }
         if (closeSupplier) {
-            assertFalse(queue.offerConstructionHandoff(WORLD, "builder", null, Set.of(BUILD, TRANSFER), 11,
+            assertFalse(queue.offerConstructionHandoff(WORLD, "builder", null, Set.of(BUILD, TRANSFER), now,
                     worker -> "builder".equals(worker) ? new ProjectQueue.ResourceSite(9, 61, 8) : locate.apply(worker),
                     (worker, item) -> 0));
         }
-        assertFalse(queue.offerConstructionHandoff(WORLD, "builder", null, Set.of(BUILD), 11, locate, (worker, item) -> 0));
+        assertFalse(queue.offerConstructionHandoff(WORLD, "builder", null, Set.of(BUILD), now, locate, (worker, item) -> 0));
         assertEquals(stockAvailable, queue.offerConstructionHandoff(WORLD, "builder", null,
-                Set.of(BUILD, TRANSFER), 11, locate, (worker, item) -> 0));
+                Set.of(BUILD, TRANSFER), now, locate, (worker, item) -> 0));
         if (!stockAvailable) {
-            assertTrue(queue.offerConstructionHandoff(WORLD, "builder", null, Set.of(BUILD), 11, locate, (worker, item) -> 1));
+            assertTrue(queue.offerConstructionHandoff(WORLD, "builder", null, Set.of(BUILD), now, locate, (worker, item) -> 1));
         }
         var restored = new ProjectQueue(journal);
         if (stockAvailable) {
-            assertFalse(restored.finish("house", "pickup", cargo.lease(), true, "Taken", stock, 12));
-            assertNull(restored.claim(WORLD, "original", Set.of(TRANSFER), 12));
-            assertNull(restored.claim(WORLD, "builder", Set.of(BUILD), 12));
-            var replacement = restored.claim(WORLD, "builder", Set.of(TRANSFER), 12).job();
+            assertFalse(restored.finish("house", "pickup", cargo.lease(), true, "Taken", stock, now + 1));
+            assertNull(restored.claim(WORLD, "original", Set.of(TRANSFER), now + 1));
+            assertNull(restored.claim(WORLD, "builder", Set.of(BUILD), now + 1));
+            var replacement = restored.claim(WORLD, "builder", Set.of(TRANSFER), now + 1).job();
             assertEquals("pickup", replacement.work().id());
             assertTrue(restored.finish("house", "pickup", replacement.lease(), true, "Taken",
-                    new ProjectQueue.ChestReport(chest, java.util.Map.of()), 13));
+                    new ProjectQueue.ChestReport(chest, java.util.Map.of()), now + 2));
         } else {
-            assertTrue(restored.finish("house", "pickup", cargo.lease(), true, "Taken", stock, 13));
+            assertTrue(restored.finish("house", "pickup", cargo.lease(), true, "Taken", stock, now + 2));
         }
-        assertNull(restored.claim(WORLD, "original", Set.of(BUILD), 14));
-        assertEquals("place-1", restored.claim(WORLD, "builder", Set.of(BUILD), 14).job().work().id());
+        assertNull(restored.claim(WORLD, "original", Set.of(BUILD), now + 3));
+        assertEquals("place-1", restored.claim(WORLD, "builder", Set.of(BUILD), now + 3).job().work().id());
         if (busySupplier) {
-            assertEquals(mining.lease(), restored.claim(WORLD, "original", Set.of(GATHER), 14).job().lease());
+            assertEquals(mining.lease(), restored.claim(WORLD, "original", Set.of(GATHER), now + 3).job().lease());
         }
     }
 

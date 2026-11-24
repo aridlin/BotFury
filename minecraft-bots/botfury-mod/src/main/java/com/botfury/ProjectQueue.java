@@ -817,7 +817,8 @@ final class ProjectQueue {
             var blocked = blockedJobs(project);
             String deposit = project.repeat == null ? null : pendingDeposit(project, done);
             for (Job job : project.jobs) {
-                if (job.work.constructionMaterial != null && carried.contains(job.work.constructionMaterial)) continue;
+                if (job.work.constructionMaterial != null && carried.contains(job.work.constructionMaterial)
+                        && !recoveryPickupPrecedesReservations(project, job, worker)) continue;
                 if (ownedLane != null && !ownedLane.equals(lane(job.work.id))) continue;
                 if (deposit != null && job.work.kind == Kind.TRANSFER && !deposit.equals(job.work.id)) continue;
                 if (job.work.kind.coordinatorOnly() || cargoAwaitingHandoff.contains(job.work.sameWorkerAs)
@@ -958,12 +959,12 @@ final class ProjectQueue {
                 if (target == null) continue;
                 double distance = distance(candidate, target);
                 String handoff = "build-handoff:" + pickup.work.id;
-                int limit = MAX_SUPPLY_RECOVERIES;
-                if (project.supplyRecoveries.getOrDefault(handoff, 0) >= limit) {
+                String poseHandoff = "pose-handoff:" + job.work.id;
+                if (project.supplyRecoveries.containsKey(poseHandoff)) continue;
+                boolean useAlternatePose = project.supplyRecoveries.getOrDefault(handoff, 0) >= MAX_SUPPLY_RECOVERIES;
+                if (useAlternatePose) {
                     if (job.state != State.FAILED || !failedApproach
                             || !project.supplyRecoveries.containsKey("pose:" + job.work.id)) continue;
-                    handoff = "pose-handoff:" + pickup.work.id;
-                    limit = 1;
                     var storage = JSON.fromJson(pickup.work.payload, StationTarget.class).target;
                     if (distance > 40 || target.y() - candidate.y > CONSTRUCTION_PICKUP_RETRY_CLIMB
                             || storage == null || distance(candidate, storage) > 32) continue;
@@ -974,8 +975,12 @@ final class ProjectQueue {
                     if (original != null && distance(candidate, new ProjectBlock.Position(original.x, original.y, original.z))
                             < PLACEMENT_HANDOFF_SEPARATION) continue;
                 } else if (original == null || distance(original, target) < distance + 16) continue;
-                if (reassignConstructionCargo(project, pickup, worker, heldCount.applyAsInt(worker, material),
-                        kinds.contains(Kind.TRANSFER), handoff, limit, now)) {
+                int held = heldCount.applyAsInt(worker, material);
+                boolean canCollect = kinds.contains(Kind.TRANSFER);
+                boolean reassigned = useAlternatePose
+                        ? handoffReplannedPlacement(project, job, pickup, worker, held, canCollect, poseHandoff, now)
+                        : reassignConstructionCargo(project, pickup, worker, held, canCollect, handoff, MAX_SUPPLY_RECOVERIES, now);
+                if (reassigned) {
                     return true;
                 }
             }
@@ -986,6 +991,36 @@ final class ProjectQueue {
     private static double distance(ResourceSite site, ProjectBlock.Position target) {
         return Math.hypot(Math.hypot((double) site.x - target.x(), (double) site.y - target.y()),
                 (double) site.z - target.z());
+    }
+
+    private boolean handoffReplannedPlacement(Project project, Job placement, Job batchPickup, String worker,
+                                              int held, boolean canCollect, String recovery, long now) throws IOException {
+        String pickupId = "recovery-" + placement.work.id + "-cargo";
+        if (held < 0 || project.jobs.size() >= MAX_JOBS || find(project, pickupId) != null) return false;
+        var original = batchPickup.work;
+        var payload = JSON.fromJson(original.payload, com.google.gson.JsonObject.class);
+        payload.addProperty("stock", 1);
+        var pickupWork = new Work(pickupId, Kind.TRANSFER, JSON.toJson(payload), original.needs,
+                original.locks, null, null, original.constructionMaterial);
+        var pickup = new Job(pickupWork, State.DONE, 0, worker, null, 0,
+                "Observed carried material for the replanned placement", batchPickup.chest);
+        if (held == 0) {
+            if (!canCollect) return false;
+            pickup = replacementConstructionPickup(project, pickup, worker, 1, held, now);
+            if (pickup == null) return false;
+        }
+        var work = placement.work;
+        var needs = work.needs.stream().map(id -> id.equals(original.id) ? pickupId : id).toList();
+        var replanned = new Work(work.id, work.kind, work.payload, needs, work.locks, pickupId);
+        var jobs = new ArrayList<>(project.jobs);
+        int index = jobs.indexOf(placement);
+        jobs.set(index, new Job(replanned, State.WAITING, 0, null, null, 0,
+                "Reassigned replanned placement to a nearby builder", placement.chest, placement.resourceSite));
+        jobs.add(index, pickup);
+        var counts = new HashMap<>(project.supplyRecoveries);
+        counts.put(recovery, 1);
+        commit(project.withRecovery(jobs, counts));
+        return true;
     }
 
     private boolean reassignConstructionCargo(Project project, Job pickup, String worker, int held,
@@ -1705,7 +1740,25 @@ final class ProjectQueue {
         return materials;
     }
 
+    private boolean recoveryPickupPrecedesReservations(Project recoveryProject, Job pickup, String worker) {
+        String id = pickup.work.id;
+        if (!id.startsWith("recovery-") || !id.endsWith("-cargo")) return false;
+        String placement = id.substring("recovery-".length(), id.length() - "-cargo".length());
+        if (!recoveryProject.supplyRecoveries.containsKey("pose-handoff:" + placement)) return false;
+        String material = pickup.work.constructionMaterial;
+        for (var project : projects.values()) {
+            if (project.supplyChest == null || !project.world.equals(recoveryProject.world)) continue;
+            String predecessor = project == recoveryProject ? id : null;
+            if (pendingBuildMaterials(project, worker, null, predecessor).contains(material)) return false;
+        }
+        return true;
+    }
+
     private static Set<String> pendingBuildMaterials(Project project, String worker, String incomingPickup) {
+        return pendingBuildMaterials(project, worker, incomingPickup, null);
+    }
+
+    private static Set<String> pendingBuildMaterials(Project project, String worker, String incomingPickup, String predecessor) {
         var pickups = new HashMap<String, String>();
         for (var job : project.jobs) {
             if (job.state == State.DONE && job.work.constructionMaterial != null
@@ -1715,8 +1768,15 @@ final class ProjectQueue {
         }
         if (pickups.isEmpty()) return Set.of();
         var blocked = blockedJobs(project);
+        var downstream = new HashSet<String>();
+        if (predecessor != null) downstream.add(predecessor);
         var materials = new HashSet<String>();
         for (var job : project.jobs) {
+            // Cargo for later placements cannot be used before this recovery pickup and its placement.
+            if (predecessor != null && job.work.needs.stream().anyMatch(downstream::contains)) {
+                downstream.add(job.work.id);
+                continue;
+            }
             if (job.work.kind != Kind.BUILD || job.state != State.WAITING || blocked.contains(job.work.id)) continue;
             var material = pickups.get(job.work.sameWorkerAs);
             if (material != null) materials.add(material);

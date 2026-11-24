@@ -264,6 +264,10 @@ final class MiningTask {
             }else if(age%20==0)pickupPath();
             status="Gathering mined drops";return;
         }
+        if (subsurface.continuePassage(client, age, excluded)) {
+            status = "Opening a short prospecting passage";
+            return;
+        }
         if (pathActive && recoverRoute(client, rememberedSite)) return;
         if (requesting) return;
         if (pendingCandidates.isEmpty()) {

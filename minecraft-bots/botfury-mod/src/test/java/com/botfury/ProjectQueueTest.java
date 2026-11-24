@@ -105,6 +105,35 @@ class ProjectQueueTest {
         assertEquals("ingredients", restored.claim(WORLD, "miner", Set.of(GATHER), 9).job().work().id());
     }
 
+    @Test void excavationToolFailuresWaitForEquippedWorkersAndLegacyFailuresGetOneRetry() throws Exception {
+        var file = directory.resolve("excavation-tools.json");
+        var queue = new ProjectQueue(file);
+        var work = job("clear", EXCAVATE, List.of());
+        queue.submit("scaffold", WORLD, List.of(work));
+        String missing = ProjectQueue.EXCAVATION_TOOL_NEEDED + "minecraft:cobblestone";
+        var first = queue.claim(WORLD, "unequipped", Set.of(EXCAVATE), 1).job();
+        assertTrue(queue.finish("scaffold", "clear", first.lease(), false, missing, 2));
+        queue = new ProjectQueue(file);
+
+        assertNull(queue.claim(WORLD, "unequipped", Set.of(EXCAVATE), 3));
+        assertNull(queue.claim(WORLD, "wrong-tool", Set.of(EXCAVATE), null, 4, null,
+                "minecraft:diamond_ore"::equals));
+        var second = queue.claim(WORLD, "equipped", Set.of(EXCAVATE), null, 5, null,
+                "minecraft:cobblestone"::equals).job();
+        assertEquals(2, second.attempts());
+        assertTrue(queue.finish("scaffold", "clear", second.lease(), false, missing, 6));
+        var third = queue.claim(WORLD, "equipped", Set.of(EXCAVATE), null, 7, null, material -> true).job();
+        assertTrue(queue.finish("scaffold", "clear", third.lease(), false, missing, 8));
+        assertEquals(ProjectQueue.State.FAILED, queue.snapshot(9).get(0).jobs().get(0).state());
+        queue = new ProjectQueue(file);
+
+        assertNull(queue.claim(WORLD, "unequipped", Set.of(EXCAVATE), 10));
+        var last = queue.claim(WORLD, "replacement", Set.of(EXCAVATE), null, 11, null, material -> true).job();
+        assertEquals(4, last.attempts());
+        assertTrue(queue.finish("scaffold", "clear", last.lease(), false, missing, 12));
+        assertNull(queue.claim(WORLD, "replacement", Set.of(EXCAVATE), null, 13, null, material -> true));
+    }
+
     @Test void wornToolsReopenOnlyTheGatherersProductionChain() throws Exception {
         var journal = directory.resolve("mining-tools.json");
         var queue = new ProjectQueue(journal);

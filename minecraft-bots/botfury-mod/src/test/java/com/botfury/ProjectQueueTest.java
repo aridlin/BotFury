@@ -15,6 +15,37 @@ class ProjectQueueTest {
     @TempDir Path directory;
     private static final String WORLD = "test|overworld";
 
+    @Test void compatibleSticksCanSatisfyOnlyAStandaloneWoodPreparationChain() throws Exception {
+        for (int mode = 0; mode < 3; mode++) {
+            boolean eligible = mode == 0;
+            int planks = mode == 2 ? 4 : 2;
+            var journal = directory.resolve("stick-prep-" + mode + ".json");
+            var queue = new ProjectQueue(journal);
+            var work = new ArrayList<>(List.of(
+                    new ProjectQueue.Work("log", GATHER,
+                            "{\"resource\":\"block:minecraft:oak_log\",\"variant\":\"both\",\"item\":\"minecraft:oak_log\",\"count\":1}",
+                            List.of(), Set.of()),
+                    new ProjectQueue.Work("planks", CRAFT, "{\"recipe\":\"minecraft:oak_planks\",\"inventory\":true,\"count\":" + planks + "}",
+                            List.of("log"), Set.of(), "log"),
+                    new ProjectQueue.Work("sticks", CRAFT, "{\"recipe\":\"minecraft:stick\",\"inventory\":true,\"count\":2}",
+                            List.of("planks"), Set.of(), "planks"),
+                    new ProjectQueue.Work("pickaxe", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\",\"count\":1}",
+                            List.of("sticks"), Set.of(), "sticks")));
+            if (mode == 1) work.add(job("other-consumer", BUILD, List.of("planks")));
+            queue.submit("tools", WORLD, work);
+            var leased = queue.claim(WORLD, "miner", Set.of(GATHER), 1);
+            assertEquals(eligible ? 2 : 0, leased.flexibleStickCount());
+            queue = new ProjectQueue(journal);
+            assertEquals(eligible, queue.finish("tools", "log", leased.job().lease(), true,
+                    ProjectQueue.PREPARED_COMPATIBLE_STICKS, 2));
+            if (eligible) {
+                queue = new ProjectQueue(journal);
+                assertEquals("pickaxe", queue.claim(WORLD, "miner", Set.of(CRAFT), 3).job().work().id());
+                assertNull(queue.claim(WORLD, "other", Set.of(CRAFT), 3));
+            }
+        }
+    }
+
     @Test void inventoryCraftCanProceedWhileAnotherWorkerOwnsTheBench() throws Exception {
         var path = directory.resolve("portable.json");
         var queue = new ProjectQueue(path);

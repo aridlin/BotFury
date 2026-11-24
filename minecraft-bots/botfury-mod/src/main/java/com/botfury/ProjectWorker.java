@@ -8,6 +8,7 @@ import com.google.gson.Gson;
 import net.minecraft.block.LeavesBlock;
 import net.minecraft.client.MinecraftClient;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.item.Items;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Identifier;
@@ -107,7 +108,8 @@ final class ProjectWorker {
     private static boolean allowedResupplyWait;
     private static boolean needsRouteBench, needsProductionBench;
     private static boolean receivedRouteBench;
-    private static RouteWorkbench routeWorkbench;
+    private static PortableWoodPreparation routeWorkbench;
+    private static PortableWoodPreparation stickPreparation;
     private static final int TOOL_DROP_RADIUS = 5;
     private static final DroppedItemSearch routeToolPickup = new DroppedItemSearch(TOOL_DROP_RADIUS);
     private static boolean pickingUpRouteTool;
@@ -310,6 +312,10 @@ final class ProjectWorker {
             routeWorkbench.close(client);
             routeWorkbench = null;
         }
+        if (stickPreparation != null) {
+            stickPreparation.close(client);
+            stickPreparation = null;
+        }
         if (deliveringRouteTool) {
             BotInventory.hold();
             deliveringRouteTool = false;
@@ -482,6 +488,22 @@ final class ProjectWorker {
         } else if (miningRecipe != null && gather == null) {
             tickMiningCraft(client, now);
         } else if (gather != null) {
+            if (stickPreparation != null) {
+                if (!gatherProgress(client, client.player.getInventory().count(Items.STICK), now)) {
+                    finish(client, false, ProjectQueue.GATHER_STALLED);
+                    return;
+                }
+                var result = stickPreparation.tick(client, now, port);
+                status = assignment.project() + "/" + assignment.job().work().id() + ": " + stickPreparation.status();
+                if (result == null) return;
+                stickPreparation.close(client);
+                stickPreparation = null;
+                if (result.success()) {
+                    gatherSite = null;
+                    finish(client, true, ProjectQueue.PREPARED_COMPATIBLE_STICKS);
+                }
+                return;
+            }
             int held = gather.inventoryCount(client);
             if (checkpointAt == 0 && assignment.cargoCheckpoint() > 0) {
                 checkpointAt = held >= assignment.cargoCheckpoint()
@@ -1019,7 +1041,7 @@ final class ProjectWorker {
                     chest = null;
                     block = null;
                     if (result.success()) {
-                        routeWorkbench = new RouteWorkbench();
+                        routeWorkbench = new PortableWoodPreparation();
                         taskEnd = now + seconds(90);
                     } else finish(client, false, ProjectQueue.ROUTE_PREPARATION_FAILED + result.detail());
                 } else {
@@ -1577,7 +1599,7 @@ final class ProjectWorker {
                 }
             }
             if (!tools.isEmpty()) args.put("toolUses", tools);
-            if (RouteWorkbench.canSupply(client)) args.put("canSupplyBench", true);
+            if (PortableWoodPreparation.canSupply(client)) args.put("canSupplyBench", true);
             if (ProjectProduction.canCraft(client, ROUTE_PICKAXE)
                     && FieldWorkstation.findForMiningTool(client, now, null) != null) {
                 args.put("routeCraftTarget", freshToolCount(client, net.minecraft.item.Items.STONE_PICKAXE) + 1);
@@ -1653,7 +1675,7 @@ final class ProjectWorker {
                         } else if (item == net.minecraft.item.Items.CRAFTING_TABLE
                                 && !client.player.getInventory().contains(item.getDefaultStack())) {
                             craftingRouteDelivery = delivery;
-                            routeWorkbench = new RouteWorkbench();
+                            routeWorkbench = new PortableWoodPreparation();
                         } else if (freshToolCount(client, item) < delivery.craftTarget()) {
                             if (startMiningCraft(client, started, ROUTE_PICKAXE, null)) craftingRouteDelivery = delivery;
                             else finish(client, false, ProjectQueue.ROUTE_PREPARATION_FAILED + "ingredients or workbench became unavailable");
@@ -1661,6 +1683,10 @@ final class ProjectWorker {
                     } else if (work.kind() == ProjectQueue.Kind.GATHER) {
                         gather = ProjectGather.parse(work.payload());
                         gatherSite = assignment.job().resourceSite();
+                        if (assignment.flexibleStickCount() > 0) {
+                            stickPreparation = new PortableWoodPreparation(Items.STICK,
+                                    assignment.flexibleStickCount(), gather.exclude());
+                        }
                         if (gather.fromDrops()) pickup = new DroppedItemSearch();
                     } else if (work.kind() == ProjectQueue.Kind.TRANSFER) {
                         var spec = ProjectChest.parse(work.payload());

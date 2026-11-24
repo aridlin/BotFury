@@ -151,12 +151,12 @@ final class ProjectQueue {
         }
     }
     record Assignment(String project, String world, Job job, FuelUse fuelFor, List<ResourceSite> accessRoute,
-                      int cargoCheckpoint, List<ResourceSite> peerStands) {
+                      int cargoCheckpoint, List<ResourceSite> peerStands, int flexibleStickCount) {
         Assignment {
             peerStands = peerStands == null ? List.of() : List.copyOf(peerStands);
             accessRoute = accessRoute == null ? List.of() : List.copyOf(accessRoute);
         }
-        Assignment(String project, String world, Job job) { this(project, world, job, null, List.of(), 0, List.of()); }
+        Assignment(String project, String world, Job job) { this(project, world, job, null, List.of(), 0, List.of(), 0); }
     }
     record RouteBenchStock(String payload, String location, int reserve, Set<String> locks) {}
     record RouteToolDelivery(String recipient, ResourceSite position, String item, int previousCount, int craftTarget,
@@ -186,6 +186,8 @@ final class ProjectQueue {
     private record Board(int schema, Map<String, Project> projects) {}
     private record PickupTarget(String direction, String item, int stock) {}
     private record ToolRecipe(String recipe) {}
+    private record InventoryRecipe(String recipe, Integer count, boolean inventory) {}
+    private record StickPreparation(Job planks, Job sticks, int count) {}
     private enum CargoRecovery { ANY, CHECKPOINT, TOOL_FAILURE, CARRIED_GOAL }
 
     private static final Gson JSON = new Gson();
@@ -214,6 +216,7 @@ final class ProjectQueue {
     private static final int MINING_CARGO_LIMIT = 4;
     private static final String CONSTRUCTION_PICKUP = "Collecting replacement materials for a nearby builder";
     static final String ALTERNATIVE_FUEL = "Using carried smelting fuel ";
+    static final String PREPARED_COMPATIBLE_STICKS = "Prepared sticks from compatible wood";
     static final String TARGET_TIMEOUT = "Timed out approaching or changing the target";
     static final String PLACEMENT_REJECTED = "Placement was rejected at ";
     static final String GATHER_STALLED = "Gathering stalled without item or route progress";
@@ -2383,8 +2386,43 @@ final class ProjectQueue {
     }
 
     private Assignment assignment(Project project, Job job) {
+        var sticks = stickPreparation(project, job);
         return new Assignment(project.id, project.world, job, fuelUse(project, job), accessRoute(project, job),
-                cargoCheckpoint(project, job), batchPeerStands(project, job));
+                cargoCheckpoint(project, job), batchPeerStands(project, job), sticks == null ? 0 : sticks.count);
+    }
+
+    private static StickPreparation stickPreparation(Project project, Job gather) {
+        if (gather.work.kind != Kind.GATHER) return null;
+        var source = gatherSource(gather.work.payload);
+        if (source == null || !("block:" + source.item).equals(source.resource)
+                || !ResourceCatalog.blocks("any_logs", "both").contains(source.item)) return null;
+        var amount = JSON.fromJson(gather.work.payload, GatherQuantity.class);
+        if (amount == null || !Integer.valueOf(1).equals(amount.count)) return null;
+        var planks = onlyInventoryCraftConsumer(project, gather);
+        if (planks == null) return null;
+        var plankRecipe = JSON.fromJson(planks.work.payload, InventoryRecipe.class);
+        String planksId = source.item.substring(0, source.item.length() - "_log".length()) + "_planks";
+        if (plankRecipe == null || !plankRecipe.inventory || !planksId.equals(plankRecipe.recipe)) return null;
+        var sticks = onlyInventoryCraftConsumer(project, planks);
+        if (sticks == null) return null;
+        var stickRecipe = JSON.fromJson(sticks.work.payload, InventoryRecipe.class);
+        if (stickRecipe == null || !stickRecipe.inventory || !"minecraft:stick".equals(stickRecipe.recipe)
+                || stickRecipe.count == null || stickRecipe.count < 1 || stickRecipe.count > 8) return null;
+        int planksForSticks = 2 * ((stickRecipe.count + 3) / 4);
+        if (!Integer.valueOf(planksForSticks).equals(plankRecipe.count)) return null;
+        return new StickPreparation(planks, sticks, stickRecipe.count);
+    }
+
+    private static Job onlyInventoryCraftConsumer(Project project, Job supplier) {
+        Job consumer = null;
+        for (var job : project.jobs) {
+            if (!job.work.needs.contains(supplier.work.id)) continue;
+            if (consumer != null || job.state != State.WAITING || job.work.kind != Kind.CRAFT
+                    || !job.work.locks.isEmpty() || !supplier.work.id.equals(job.work.sameWorkerAs)
+                    || !job.work.needs.equals(List.of(supplier.work.id))) return null;
+            consumer = job;
+        }
+        return consumer;
     }
 
     static boolean reservedBatchStep(Job job) {
@@ -2633,6 +2671,22 @@ final class ProjectQueue {
         if (BATCH_RESERVED.equals(job.evidence)) return false;
         if (BATCH_ACTIVE.equals(job.evidence)) return finishBatchStep(project, job, success, evidence, now);
         routeToolRequests.remove(token);
+        if (success && PREPARED_COMPATIBLE_STICKS.equals(evidence)) {
+            var plan = stickPreparation(project, job);
+            if (plan == null || chest != null) return false;
+            var jobs = project.jobs.stream().map(step -> {
+                if (step == job) return new Job(step.work, State.DONE, step.attempts, job.worker, token, 0,
+                        evidence, null, gatheringSite(step, site));
+                if (step == plan.planks || step == plan.sticks) {
+                    return new Job(step.work, State.DONE, step.attempts, job.worker, null, 0, evidence, null);
+                }
+                return step;
+            }).toList();
+            commit(project.withJobs(jobs));
+            markAssignmentSeen(project, job.worker, now);
+            restoredLeases.remove(token);
+            return true;
+        }
         var fuelPlan = success ? fuelUse(project, job) : null;
         boolean substituted = success && evidence.startsWith(ALTERNATIVE_FUEL);
         if (substituted || fuelPlan != null && !fuelPlan.expectedFuel.equals(currentFuel(project, fuelPlan))) {

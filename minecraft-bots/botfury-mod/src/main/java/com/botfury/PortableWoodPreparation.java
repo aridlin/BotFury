@@ -1,16 +1,32 @@
 package com.botfury;
 
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.item.Item;
 import net.minecraft.item.Items;
+import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
 import net.minecraft.world.Heightmap;
 
-final class RouteWorkbench {
+final class PortableWoodPreparation {
     static final Identifier TABLE = Identifier.of("minecraft", "crafting_table");
     private static final ProjectItem LOGS = ProjectItem.parse("any_logs");
+    private final Item product;
+    private final Identifier recipe;
+    private final int targetCount;
+    private final ProjectGather.Area excluded;
     private ProjectProduction production;
+    private boolean craftingProduct;
     private boolean gathering;
     private String status;
+
+    PortableWoodPreparation() { this(Items.CRAFTING_TABLE, 1, null); }
+
+    PortableWoodPreparation(Item product, int targetCount, ProjectGather.Area excluded) {
+        this.product = product;
+        recipe = Registries.ITEM.getId(product);
+        this.targetCount = targetCount;
+        this.excluded = excluded;
+    }
 
     static boolean canSupply(MinecraftClient client) {
         if (client.player.getInventory().contains(Items.CRAFTING_TABLE.getDefaultStack())
@@ -22,20 +38,25 @@ final class RouteWorkbench {
     String status() { return status; }
 
     ProjectProduction.Result tick(MinecraftClient client, long now, int coordinator) {
-        if (client.player.getInventory().contains(Items.CRAFTING_TABLE.getDefaultStack())) {
-            return new ProjectProduction.Result(true, "Observed a portable workbench in inventory");
+        var inventory = client.player.getInventory();
+        int held = inventory.count(product);
+        if (held >= targetCount) {
+            return new ProjectProduction.Result(true, "Observed " + held + " " + recipe + " in worker inventory");
         }
+        boolean sticks = product == Items.STICK;
         if (production == null) {
-            var spec = ProjectProduction.canCraft(client, TABLE)
-                    ? new ProjectProduction.Spec(null, ProjectQueue.Kind.CRAFT, TABLE, null, null, 1)
-                    : FieldWorkstation.plankRecipe(client, 4);
+            craftingProduct = ProjectProduction.canCraft(client, recipe);
+            var spec = craftingProduct
+                    ? new ProjectProduction.Spec(null, ProjectQueue.Kind.CRAFT, recipe, null, null,
+                            Math.min(targetCount, held + (sticks ? 4 : 1)))
+                    : FieldWorkstation.plankRecipe(client, sticks ? 2 : 4);
             if (spec == null) {
                 if (!gathering) {
-                    MiningTask.startProject(client, new MiningTask.Job("any_logs", "both", coordinator), null, null, LOGS);
+                    MiningTask.startProject(client, new MiningTask.Job("any_logs", "both", coordinator), excluded, null, LOGS);
                     gathering = true;
                 }
                 if (!MiningTask.active()) return new ProjectProduction.Result(false, MiningTask.lastStatus());
-                status = "Gathering wood for an emergency workbench";
+                status = sticks ? "Gathering compatible logs for sticks" : "Gathering wood for an emergency workbench";
                 MiningTask.tick(client);
                 return null;
             }
@@ -45,13 +66,12 @@ final class RouteWorkbench {
             }
             production = new ProjectProduction(spec);
         }
-        status = "Crafting an emergency workbench";
+        status = sticks ? craftingProduct ? "Crafting sticks" : "Crafting planks for sticks" : "Crafting an emergency workbench";
         var result = production.tick(client, now);
         if (result == null) return null;
         production.close(client);
         production = null;
-        return result.success() && !client.player.getInventory().contains(Items.CRAFTING_TABLE.getDefaultStack())
-                ? null : result;
+        return result.success() ? null : result;
     }
 
     void close(MinecraftClient client) {

@@ -8,6 +8,7 @@ import net.minecraft.item.Items;
 import net.minecraft.item.SwordItem;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Hand;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import java.util.List;
 
@@ -21,6 +22,9 @@ final class TaskDefense {
     private static boolean protectingWork;
     private static boolean eating;
     private static Vec3d walkingDirection;
+    private static BlockPos retreatStep;
+    private static int retreatStartY;
+    private static boolean retreatJump;
     static Config parse(String value){
         String[] parts=value.split("\\|",-1);
         if(parts.length!=5||!java.util.Set.of("on","off").contains(parts[0])
@@ -50,9 +54,12 @@ final class TaskDefense {
             if(pathPaused)BaritoneClient.execute("stop");
             cancelEvasion();return false;
         }
-        if(walkingDirection!=null&&(!client.player.isOnGround()||client.currentScreen!=null)){
+        if (walkingDirection != null && (client.currentScreen != null || client.player.isTouchingWater()
+                || retreatStep == null && !client.player.isOnGround()
+                || retreatStep != null && client.player.isOnGround()
+                    && client.player.getBlockY() != retreatStartY)) {
             stopWalking(client);
-            holdUntil=0;
+            holdUntil = 0;
         }
         if(System.nanoTime()<holdUntil){
             if(walkingDirection!=null)walk(client);
@@ -64,6 +71,8 @@ final class TaskDefense {
             stopEating(client);
             walkingDirection=action.walkingDirection();
             retreatingFromWarden = action.wardensNearby();
+            retreatStep = action.step();
+            retreatStartY = client.player.getBlockY();
             if(!pathPaused&&BaritoneClient.available())pathPaused=BaritoneClient.execute("pause");
             if(client.interactionManager!=null)client.interactionManager.cancelBlockBreaking();
             BotInventory.evaded();
@@ -72,10 +81,11 @@ final class TaskDefense {
             if ((walkingDirection != null || retreatingFromWarden) && now - lastWalkEvent >= 5_000_000_000L) {
                 lastWalkEvent = now;
                 String reason = !retreatingFromWarden ? "Stepping out of a projectile or blast path"
+                        : retreatStep != null ? "Changing elevation to escape a Warden"
                         : walkingDirection == null ? "Holding position near a Warden" : "Sneaking away from a Warden";
                 BotEvents.add("info", "defense", reason);
             }
-            holdUntil=now+200_000_000L;
+            holdUntil = now + (retreatStep == null ? 200_000_000L : 750_000_000L);
             return true;
         }
         if (!protectingWork) resumePath();
@@ -83,19 +93,31 @@ final class TaskDefense {
     }
 
     private static void walk(MinecraftClient client) {
-        client.player.lookAt(EntityAnchor.EYES, client.player.getEyePos().add(walkingDirection));
-        client.options.forwardKey.setPressed(true);
+        var direction = walkingDirection;
+        if (retreatStep != null) {
+            direction = new Vec3d(retreatStep.getX() + .5 - client.player.getX(), 0,
+                    retreatStep.getZ() + .5 - client.player.getZ());
+            boolean jump = retreatStep.getY() > retreatStartY && client.player.isOnGround();
+            if (jump || retreatJump) client.options.jumpKey.setPressed(jump);
+            retreatJump = jump;
+        }
+        boolean moving = direction.lengthSquared() > .04;
+        if (moving) client.player.lookAt(EntityAnchor.EYES, client.player.getEyePos().add(direction));
+        client.options.forwardKey.setPressed(moving);
         if (retreatingFromWarden) {
             client.player.setSprinting(false);
-            client.options.sneakKey.setPressed(true);
+            client.options.sneakKey.setPressed(retreatStep == null);
         }
     }
 
     private static void stopWalking(MinecraftClient client) {
         if(walkingDirection!=null)client.options.forwardKey.setPressed(false);
         if (retreatingFromWarden) client.options.sneakKey.setPressed(false);
+        if (retreatJump) client.options.jumpKey.setPressed(false);
         walkingDirection=null;
         retreatingFromWarden = false;
+        retreatStep = null;
+        retreatJump = false;
     }
     static boolean defendProject(MinecraftClient client) {
         protectingWork = false;

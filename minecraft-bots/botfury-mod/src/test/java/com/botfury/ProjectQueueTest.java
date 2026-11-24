@@ -348,6 +348,36 @@ class ProjectQueueTest {
         assertEquals("deliver", restored.claim(WORLD, "hauler", Set.of(TRANSFER), now).job().work().id());
     }
 
+    @Test void stalledPlacementCanUseANearbyBuildersExistingMaterials() throws Exception {
+        var journal = directory.resolve("construction-handoff.json");
+        var queue = new ProjectQueue(journal);
+        var chest = "block:3,64,0";
+        var pickup = new ProjectQueue.Work("pickup", TRANSFER,
+                "{\"direction\":\"TAKE\",\"item\":\"minecraft:oak_log\",\"stock\":1}",
+                List.of("clear"), Set.of(chest), null, null, "minecraft:oak_log");
+        var place = new ProjectQueue.Work("place-1", BUILD,
+                "{\"target\":{\"x\":8,\"y\":64,\"z\":8},\"block\":\"minecraft:oak_log\"}",
+                List.of("pickup"), Set.of("block:8,64,8"), "pickup");
+        queue.submitSupplied("house", WORLD, List.of(job("clear", EXCAVATE, List.of()), pickup, place), chest);
+        var done = queue.claim(WORLD, "original", Set.of(EXCAVATE), 1).job();
+        assertTrue(queue.finish("house", "clear", done.lease(), true, "Done", 2));
+        var cargo = queue.claim(WORLD, "original", Set.of(TRANSFER), 3).job();
+        var stock = new ProjectQueue.ChestReport(chest, java.util.Map.of());
+        assertTrue(queue.finish("house", "pickup", cargo.lease(), true, "Taken", stock, 4));
+        for (long now = 5; now <= 9; now += 2) {
+            var lease = queue.claim(WORLD, "original", Set.of(BUILD), now).job();
+            assertTrue(queue.finish("house", "place-1", lease.lease(), false, ProjectQueue.TARGET_TIMEOUT, now + 1));
+        }
+        java.util.function.Function<String, ProjectQueue.ResourceSite> locate = name -> name.equals("builder")
+                ? new ProjectQueue.ResourceSite(8, 64, 10) : new ProjectQueue.ResourceSite(8, 14, 8);
+        assertFalse(queue.offerConstructionHandoff(WORLD, "builder", null, locate, (worker, item) -> 0));
+        assertTrue(queue.offerConstructionHandoff(WORLD, "builder", null, locate, (worker, item) -> 1));
+        var restored = new ProjectQueue(journal);
+        assertTrue(restored.finish("house", "pickup", cargo.lease(), true, "Taken", stock, 11));
+        assertNull(restored.claim(WORLD, "original", Set.of(BUILD), 11));
+        assertEquals("place-1", restored.claim(WORLD, "builder", Set.of(BUILD), 11).job().work().id());
+    }
+
     @Test void retriesOnlyPlacementsWithExhaustedApproaches() throws Exception {
         var journal = directory.resolve("placement-approaches.json");
         var board = new ProjectQueue(journal);

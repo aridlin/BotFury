@@ -61,6 +61,8 @@ final class ProjectWorker {
     private static Vec3d approachProgress;
     private static long retryApproach;
     private static long nextRequest, deadline, taskEnd, stableSince, nextPlacement, inspectionStarted;
+    private static long stationReturnDeadline;
+    private static int stationReturnHeight;
     private static Boolean success;
     private static String evidence;
     private static boolean breaking;
@@ -560,6 +562,10 @@ final class ProjectWorker {
             stationReturn.stop();
             return false;
         }
+        if (position.getY() >= stationReturnHeight + 4) {
+            stationReturnHeight = position.getY();
+            taskEnd = Math.max(taskEnd, Math.min(stationReturnDeadline, now + seconds(90)));
+        }
         if (!stationReturn.active()) {
             if (approach == null || now < retryApproach || BaritoneClient.pursuing(destination)) return false;
             BaritoneClient.execute("stop");
@@ -741,7 +747,10 @@ final class ProjectWorker {
                     deadline = deadline(assignment.job(), now);
 
                     var work = assignment.job().work();
-                    taskEnd = System.nanoTime() + seconds(switch (work.kind()) {
+                    long started = System.nanoTime();
+                    stationReturnDeadline = started + seconds(900);
+                    stationReturnHeight = client.player.getBlockY();
+                    taskEnd = started + seconds(switch (work.kind()) {
                         case GATHER -> 1800;
                         case SMELT -> 300;
                         case CRAFT, TRANSFER, FILL_BUCKETS -> 180;

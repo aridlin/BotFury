@@ -139,6 +139,7 @@ final class ProjectQueue {
     private static final Set<String> PICKAXE_RECIPES = Set.of("minecraft:wooden_pickaxe", "minecraft:stone_pickaxe",
             "minecraft:iron_pickaxe", "minecraft:diamond_pickaxe");
     private static final long STALLED_WORKER_COOLDOWN_MS = 30_000;
+    private static final long GATHER_RECONNECT_GRACE_MS = 30_000;
     private final Path journal;
     private final Path archive;
     private final Map<String, Long> workerSeen = new HashMap<>();
@@ -583,7 +584,9 @@ final class ProjectQueue {
                     continue;
                 }
                 // Finish using inventory already gathered for a chain before starting unrelated work.
-                if (job.work.sameWorkerAs != null || ownedOrder != null) return assign(project, job, worker, now);
+                if (job.work.sameWorkerAs != null || ownedOrder != null || gatherReconnectPending(job, now)) {
+                    return assign(project, job, worker, now);
+                }
                 if (fallbackJob == null) {
                     fallbackProject = project;
                     fallbackJob = job;
@@ -1022,7 +1025,14 @@ final class ProjectQueue {
                         jobs.set(i, new Job(job.work, State.WAITING, Math.max(0, job.attempts - 1), null, null, 0,
                                 "Coordinator restarted during work", job.chest, job.resourceSite));
                     } else {
-                        jobs.set(i, retry(job, LEASE_EXPIRED, job.chest, job.resourceSite));
+                        var retry = retry(job, LEASE_EXPIRED, job.chest, job.resourceSite);
+                        if (retry.state == State.WAITING && job.work.kind == Kind.GATHER && job.work.sameWorkerAs == null
+                                && job.resourceSite != null && gatherSource(job.work.payload) != null) {
+                            // The original gatherer may reconnect with partial cargo still in inventory.
+                            retry = new Job(job.work, State.WAITING, job.attempts, job.worker, null,
+                                    job.expiresAt + GATHER_RECONNECT_GRACE_MS, LEASE_EXPIRED, job.chest, job.resourceSite);
+                        }
+                        jobs.set(i, retry);
                     }
                 }
             }
@@ -1075,6 +1085,11 @@ final class ProjectQueue {
                 && (LEASE_EXPIRED.equals(job.evidence) || placementApproachFailure(job)));
     }
 
+    synchronized int retryInterruptedProduction(String world, String id) throws IOException {
+        return retryFailures(world, id, job -> (job.work.kind == Kind.CRAFT || job.work.kind == Kind.SMELT)
+                && (LEASE_EXPIRED.equals(job.evidence) || TARGET_TIMEOUT.equals(job.evidence)));
+    }
+
     private static boolean placementApproachFailure(Job job) {
         return job.evidence != null && (TARGET_TIMEOUT.equals(job.evidence)
                 || job.evidence.startsWith("No reachable solid support face for "));
@@ -1110,8 +1125,15 @@ final class ProjectQueue {
 
     private static boolean retryDelayedFor(Job job, String worker, long now) {
         if (job.expiresAt <= now) return false;
-        if (RECOVERING_TOOLS.equals(job.evidence)) return !worker.equalsIgnoreCase(job.worker);
+        if (RECOVERING_TOOLS.equals(job.evidence) || gatherReconnectPending(job, now)) {
+            return !worker.equalsIgnoreCase(job.worker);
+        }
         return !GATHER_STALLED.equals(job.evidence) || worker.equalsIgnoreCase(job.worker);
+    }
+
+    private static boolean gatherReconnectPending(Job job, long now) {
+        return job.work.kind == Kind.GATHER && job.worker != null && job.expiresAt > now
+                && LEASE_EXPIRED.equals(job.evidence);
     }
 
     private static boolean cancelled(Project project) {

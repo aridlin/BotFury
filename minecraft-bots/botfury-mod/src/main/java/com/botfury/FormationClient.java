@@ -99,6 +99,10 @@ final class FormationClient {
                             .then(ClientCommandManager.argument("id", StringArgumentType.word())
                                     .executes(context -> ProjectBroker.retryInterruptedGathering(context.getSource().getClient(),
                                             StringArgumentType.getString(context, "id")))))
+                    .then(ClientCommandManager.literal("retry-production")
+                            .then(ClientCommandManager.argument("id", StringArgumentType.word())
+                                    .executes(context -> ProjectBroker.retryInterruptedProduction(context.getSource().getClient(),
+                                            StringArgumentType.getString(context, "id")))))
                     .then(ClientCommandManager.literal("workers").executes(context -> {
                         int port = BotFuryMod.controlPort();
                         if (port < 1024 || Boolean.getBoolean("botfury.managedHttp")) return 0;

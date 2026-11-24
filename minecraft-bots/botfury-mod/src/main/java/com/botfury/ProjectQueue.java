@@ -156,7 +156,9 @@ final class ProjectQueue {
         }
         Assignment(String project, String world, Job job) { this(project, world, job, null, List.of(), 0); }
     }
-    record RouteToolDelivery(String recipient, ResourceSite position, String item, int previousCount, int craftTarget) {}
+    record RouteBenchStock(String payload, String location, int reserve, Set<String> locks) {}
+    record RouteToolDelivery(String recipient, ResourceSite position, String item, int previousCount, int craftTarget,
+                             RouteBenchStock benchStock) {}
     private final Map<UUID, Boolean> routeToolRequests = new HashMap<>();
 
     record FuelUse(String job, String recipe, String input, String expectedFuel, int count) {}
@@ -1018,7 +1020,20 @@ final class ProjectQueue {
         var delivery = JSON.fromJson(supply.work.payload, RouteToolDelivery.class);
         if (!"minecraft:crafting_table".equals(delivery.item) || !receiver.worker.equals(delivery.recipient)) return;
         replace(project, new Job(supply.work, supply.state, supply.attempts, supply.worker, supply.lease,
-                supply.expiresAt, ROUTE_BENCH_RECEIVED, null));
+                supply.expiresAt, ROUTE_BENCH_RECEIVED, supply.chest));
+    }
+
+    synchronized void recordRouteStock(String projectId, String jobId, UUID token, long now, ChestReport stock) throws IOException {
+        if (stock == null) return;
+        var project = projects.get(projectId);
+        var job = find(project, jobId);
+        if (!owns(job, token, now) || job.work.kind != Kind.RESUPPLY
+                || job.chest != null && job.chest.report.equals(stock)) return;
+        var delivery = JSON.fromJson(job.work.payload, RouteToolDelivery.class);
+        if (delivery.benchStock == null || !delivery.benchStock.location.equals(stock.location)
+                || !job.work.locks.contains(stock.location)) return;
+        replace(project, new Job(job.work, job.state, job.attempts, job.worker, job.lease, job.expiresAt,
+                job.evidence, new ChestObservation(stock, now), job.resourceSite));
     }
 
     synchronized RouteToolDelivery routeToolDelivery(String projectId, String jobId, UUID token, long now) {
@@ -1031,6 +1046,13 @@ final class ProjectQueue {
                                            Map<String, Integer> tools, int routeCraftTarget, boolean canSupplyBench,
                                            java.util.function.Function<String, ResourceSite> position,
                                            java.util.function.ToIntBiFunction<String, String> held) throws IOException {
+        return offerRouteTool(world, worker, projectId, now, tools, routeCraftTarget, canSupplyBench, position, held, false);
+    }
+
+    synchronized Assignment offerRouteTool(String world, String worker, String projectId, long now,
+                                           Map<String, Integer> tools, int routeCraftTarget, boolean canSupplyBench,
+                                           java.util.function.Function<String, ResourceSite> position,
+                                           java.util.function.ToIntBiFunction<String, String> held, boolean fromStock) throws IOException {
         if (routeToolRequests.isEmpty()
                 || projects.values().stream().flatMap(project -> project.jobs.stream())
                     .anyMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker))) return null;
@@ -1038,17 +1060,19 @@ final class ProjectQueue {
                 .filter(tool -> tools.get(tool) != null && tools.get(tool) >= 64 && held.applyAsInt(worker, tool) >= 2)
                 .findFirst().orElse(null);
         boolean canCraftPickaxe = routeCraftTarget >= 1 && routeCraftTarget <= 36;
-        if (spare == null && !canCraftPickaxe && !canSupplyBench) return null;
+        if (spare == null && !canCraftPickaxe && !canSupplyBench && !fromStock) return null;
+        boolean reservedWood = pendingBuildMaterials(world, worker).stream().anyMatch(item ->
+                item.endsWith("_planks") || ResourceCatalog.blocks("any_logs", "both").contains(item));
+        RouteBenchStock benchStock = null;
+        boolean checkedStock = false;
         for (var project : projects.values()) {
             if (!world.equals(project.world) || cancelled(project) || project.jobs.size() >= MAX_JOBS
                     || projectId != null && !project.id.equals(projectId)) continue;
             for (var deposit : project.jobs) {
                 if (deposit.state != State.LEASED || deposit.expiresAt <= now || !routeToolRequests.containsKey(deposit.lease)
                         || worker.equalsIgnoreCase(deposit.worker)) continue;
-                boolean sendBench = spare == null && !canCraftPickaxe && canSupplyBench && routeToolRequests.get(deposit.lease);
-                if (spare == null && !canCraftPickaxe && !sendBench) continue;
-                String item = sendBench ? "minecraft:crafting_table" : spare == null ? "minecraft:stone_pickaxe" : spare;
-                int craftTarget = sendBench || spare != null ? 0 : routeCraftTarget;
+                boolean requestBench = spare == null && !canCraftPickaxe && !reservedWood && routeToolRequests.get(deposit.lease);
+                if (spare == null && !canCraftPickaxe && !requestBench) continue;
                 String id = "route-tool-" + deposit.lease;
                 var destination = position.apply(deposit.worker);
                 if (destination == null) continue;
@@ -1060,11 +1084,19 @@ final class ProjectQueue {
                     id += "-retry";
                     if (find(project, id) != null) continue;
                 }
+                if (requestBench && fromStock && !checkedStock) {
+                    checkedStock = true;
+                    benchStock = routeBenchStock(world, worker, position.apply(worker), held, now);
+                }
+                var pickup = requestBench ? benchStock : null;
+                if (requestBench && pickup == null && !canSupplyBench) continue;
+                String item = requestBench ? "minecraft:crafting_table" : spare == null ? "minecraft:stone_pickaxe" : spare;
+                int craftTarget = requestBench || spare != null ? 0 : routeCraftTarget;
                 int previousCount = held.applyAsInt(deposit.worker, item);
                 if (previousCount < 0) continue;
-                var delivery = new RouteToolDelivery(deposit.worker, destination, item, previousCount, craftTarget);
-                var work = new Work(id, Kind.RESUPPLY, JSON.toJson(delivery),
-                        List.of(), Set.of());
+                var delivery = new RouteToolDelivery(deposit.worker, destination, item, previousCount, craftTarget, pickup);
+                var work = new Work(id, Kind.RESUPPLY, JSON.toJson(delivery), List.of(),
+                        pickup == null ? Set.of() : pickup.locks);
                 var loan = new Job(work, State.LEASED, 1, worker, UUID.randomUUID(),
                         now + LEASE_MS, null, null);
                 var jobs = new ArrayList<>(project.jobs);
@@ -1074,6 +1106,71 @@ final class ProjectQueue {
             }
         }
         return null;
+    }
+
+    private RouteBenchStock routeBenchStock(String world, String worker, ResourceSite candidate,
+                                           java.util.function.ToIntBiFunction<String, String> held, long now) throws IOException {
+        if (candidate == null || held.applyAsInt(worker, "minecraft:crafting_table") != 0) return null;
+        var observations = chestStock(world);
+        var claimed = leasedKeys(world, now);
+        RouteBenchStock best = null;
+        double bestDistance = STOCK_RECOVERY_RADIUS;
+        for (var source : projects.values()) {
+            if (!world.equals(source.world) || cancelled(source) || source.repeat != null || source.supplyChest == null) continue;
+            var observed = observations.get(source.supplyChest);
+            if (observed == null) continue;
+            var storage = source.jobs.stream().filter(job -> job.state == State.DONE && job.work.constructionMaterial != null
+                    && job.work.kind == Kind.TRANSFER && job.work.locks.contains(source.supplyChest)).findFirst().orElse(null);
+            if (storage == null || !Collections.disjoint(storage.work.locks, claimed)) continue;
+            var location = JSON.fromJson(storage.work.payload, StationTarget.class).target;
+            if (location == null || location.y() - candidate.y > CONSTRUCTION_PICKUP_RETRY_CLIMB) continue;
+            double distance = distance(candidate, location);
+            if (distance >= bestDistance) continue;
+            for (var item : new TreeSet<>(observed.report.items.keySet())) {
+                if (!item.startsWith("minecraft:") || !item.endsWith("_planks")) continue;
+                int carried = held.applyAsInt(worker, item);
+                if (carried < 0 || carried >= 4) continue;
+                int reserve = constructionStockReserve(source, item);
+                if (observed.report.items.get(item) - reserve < 4 - carried) continue;
+                var payload = JSON.fromJson(storage.work.payload, com.google.gson.JsonObject.class);
+                payload.addProperty("direction", "TAKE");
+                payload.addProperty("item", item);
+                payload.addProperty("stock", 4);
+                best = new RouteBenchStock(payload.toString(), source.supplyChest, reserve, storage.work.locks);
+                bestDistance = distance;
+                break;
+            }
+        }
+        return best;
+    }
+
+    private Set<String> leasedKeys(String world, long now) {
+        var locks = new HashSet<String>();
+        for (var project : projects.values()) {
+            if (!world.equals(project.world)) continue;
+            for (var job : project.jobs) if (job.state == State.LEASED && job.expiresAt > now) locks.addAll(job.work.locks);
+        }
+        return locks;
+    }
+
+    private static int constructionStockReserve(Project project, String item) {
+        var pickups = new HashSet<String>();
+        int otherStock = 0;
+        int verifyStock = 0;
+        for (var job : project.jobs) {
+            if (job.work.kind != Kind.TRANSFER || !job.work.locks.contains(project.supplyChest)) continue;
+            if (item.equals(job.work.constructionMaterial)) pickups.add(job.work.id);
+            var transfer = transferTarget(job);
+            if (transfer == null || !item.equals(transfer.item)) continue;
+            if ("VERIFY_STOCK".equals(transfer.direction)) verifyStock = Math.max(verifyStock, transfer.stock);
+            if (job.state != State.DONE && job.work.constructionMaterial == null) {
+                if ("WITHDRAW".equals(transfer.direction)) return Integer.MAX_VALUE;
+                if ("TAKE".equals(transfer.direction)) otherStock += transfer.stock;
+            }
+        }
+        int remaining = (int)project.jobs.stream().filter(job -> job.state != State.DONE && job.work.kind == Kind.BUILD
+                && job.work.sameWorkerAs != null && pickups.contains(job.work.sameWorkerAs)).count();
+        return verifyStock + otherStock + remaining;
     }
 
     synchronized Assignment offerEquippedMiner(String world, String worker, String projectId,
@@ -1647,7 +1744,8 @@ final class ProjectQueue {
         Job job = find(project, jobId);
         if (job != null && job.state == State.DONE) {
             return success && Objects.equals(job.lease, token) && job.evidence.equals(evidence)
-                    && Objects.equals(job.chest == null ? null : job.chest.report, chest)
+                    && (job.work.kind == Kind.RESUPPLY && chest == null
+                        || Objects.equals(job.chest == null ? null : job.chest.report, chest))
                     && (site == null || site.equals(job.resourceSite));
         }
         if (!owns(job, token, now) || !success && handoffWorker(job) != null
@@ -1724,7 +1822,7 @@ final class ProjectQueue {
             result = new Job(job.work, State.DONE, job.attempts, job.worker, job.lease, 0, evidence, observation, location);
         } else if (job.work.kind == Kind.RESUPPLY && evidence.startsWith(ROUTE_PREPARATION_FAILED)
                 && !ROUTE_BENCH_RECEIVED.equals(job.evidence)) {
-            result = new Job(job.work, State.FAILED, job.attempts, job.worker, null, 0, evidence, null);
+            result = new Job(job.work, State.FAILED, job.attempts, job.worker, null, 0, evidence, observation);
         } else if (CARGO_CHECKPOINT.equals(evidence) && cargoCheckpoint(project, job) > 0) {
             result = new Job(job.work, State.WAITING, Math.max(0, job.attempts - 1), job.worker, null,
                     now + STALLED_WORKER_COOLDOWN_MS, evidence, observation, location);
@@ -2130,7 +2228,7 @@ final class ProjectQueue {
                     if (restored) interrupted.add(job.lease);
                     routeToolRequests.remove(job.lease);
                     if (job.work.kind == Kind.RESUPPLY) {
-                        jobs.set(i, retry(job, LEASE_EXPIRED, null, null));
+                        jobs.set(i, retry(job, LEASE_EXPIRED, job.chest, null));
                         continue;
                     }
                     if (CONTRIBUTION_ACTIVE.equals(job.evidence)) {

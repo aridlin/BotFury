@@ -25,7 +25,7 @@ final class ProjectBroker {
 
     private record Request(String action, String project, String worker, Set<ProjectQueue.Kind> kinds,
                            List<ProjectQueue.Work> work, String job, UUID token, Boolean success,
-                           String evidence, ProjectQueue.ChestReport chest, ProjectQueue.ResourceSite resourceSite,
+                           String evidence, ProjectQueue.ChestReport chest, ProjectQueue.ChestReport routeStock, ProjectQueue.ResourceSite resourceSite,
                            boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool, int routeCraftTarget, boolean needsRouteBench, boolean canSupplyBench, boolean receivedRouteBench) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
@@ -344,7 +344,7 @@ final class ProjectBroker {
                             ProjectBroker::heldCount, request.toolUses, returnRevision);
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.RESUPPLY)) {
                         assignment = board.offerRouteTool(world, request.worker, request.project, now, request.toolUses, request.routeCraftTarget, request.canSupplyBench,
-                                ProjectBroker::workerPosition, ProjectBroker::heldCount);
+                                ProjectBroker::workerPosition, ProjectBroker::heldCount, returnRevision >= 8);
                     }
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.TRANSFER)) {
                         assignment = board.offerInterruptedDeposit(world, request.worker, request.project, now,
@@ -369,11 +369,13 @@ final class ProjectBroker {
                     reply(exchange, 200, assignment);
                 }
                 case "renew" -> {
+                    board.recordRouteStock(request.project, request.job, request.token, now, request.routeStock);
                     var renewed = board.renew(request.project, request.job, request.token, request.resourceSite, now, request.needsRouteTool, request.needsRouteBench);
                     reply(exchange, renewed == null ? 409 : 200, renewed);
                 }
                 case "finish" -> {
                     if (request.success == null) throw new IllegalArgumentException("Report a success or failure");
+                    board.recordRouteStock(request.project, request.job, request.token, now, request.routeStock);
                     var delivery = board.routeToolDelivery(request.project, request.job, request.token, now);
                     if (request.success && delivery != null
                             && heldCount(delivery.recipient(), delivery.item()) <= delivery.previousCount()) {

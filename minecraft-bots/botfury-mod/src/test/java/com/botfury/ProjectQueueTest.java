@@ -300,6 +300,48 @@ class ProjectQueueTest {
         assertTrue(queue.finish("order", supply.work().id(), supply.lease(), true, "Delivered workbench", 11));
     }
 
+    @Test void routeWorkbenchCanUseOnlyUnreservedConstructionStock() throws Exception {
+        var journal = directory.resolve("stock-route-workbench.json");
+        String item = "minecraft:oak_planks";
+        String storage = "block:1,64,0";
+        var queue = new ProjectQueue(journal);
+        var ready = job("ready", ProjectQueue.Kind.BARRIER, List.of());
+        var pickup = new ProjectQueue.Work("pickup", TRANSFER,
+                "{\"target\":{\"x\":1,\"y\":64,\"z\":0},\"direction\":\"TAKE\",\"item\":\"" + item + "\",\"stock\":3}",
+                List.of("ready"), Set.of(storage), null, null, item);
+        var construction = new ArrayList<>(List.of(ready, pickup));
+        for (int n = 0; n < 3; n++) construction.add(new ProjectQueue.Work("place-" + n, BUILD,
+                "{}", List.of("pickup"), Set.of("wall-" + n), "pickup"));
+        queue.submitSupplied("house", WORLD, construction, storage);
+        var materialClaim = queue.claim(WORLD, "builder", Set.of(TRANSFER), "house", 1).job();
+        var seeded = new ProjectQueue.ChestReport(storage, java.util.Map.of(item, 7));
+        assertTrue(queue.finish("house", "pickup", materialClaim.lease(), true, "Stock available", seeded, 2));
+        var deposit = new ProjectQueue.Work("return", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":3}", List.of(), Set.of("block:0,64,0"));
+        queue.submit("mine", WORLD, List.of(deposit));
+        var receiver = queue.claim(WORLD, "miner", Set.of(TRANSFER), "mine", 3).job();
+        assertNotNull(queue.renew("mine", "return", receiver.lease(), null, 4, true, true));
+        java.util.function.Function<String, ProjectQueue.ResourceSite> position = worker -> worker.equals("miner")
+                ? new ProjectQueue.ResourceSite(0, 13, 0) : new ProjectQueue.ResourceSite(0, 63, 0);
+        assertNull(queue.offerRouteTool(WORLD, "helper", "mine", 5, null, 0, false, position, (bot, key) -> 0));
+        assertNull(queue.offerRouteTool(WORLD, "builder", "mine", 5, null, 0, true, position, (bot, key) -> 0, true));
+        var supply = queue.offerRouteTool(WORLD, "helper", "mine", 6, null, 0, false, position, (bot, key) -> 0, true).job();
+        var spec = queue.routeToolDelivery("mine", supply.work().id(), supply.lease(), 7);
+        assertEquals(3, spec.benchStock().reserve());
+        assertEquals(storage, spec.benchStock().location());
+        assertTrue(supply.work().locks().contains(storage));
+
+        var observed = new ProjectQueue.ChestReport(storage, java.util.Map.of(item, 3));
+        queue.recordRouteStock("mine", supply.work().id(), supply.lease(), 8, observed);
+        queue = new ProjectQueue(journal);
+        assertEquals(observed, queue.chestStock(WORLD).get(storage).report());
+        assertTrue(queue.finish("mine", supply.work().id(), supply.lease(), false,
+                ProjectQueue.ROUTE_PREPARATION_FAILED + "test handoff", 9));
+        assertNotNull(queue.renew("mine", "return", receiver.lease(), null, 10, true, true));
+        assertNull(queue.offerRouteTool(WORLD, "other", "mine", 11, null, 0, false, position, (bot, key) -> 0, true));
+        assertEquals(observed, queue.chestStock(WORLD).get(storage).report());
+    }
+
     @Test void anotherHelperCanTakeOverFailedPreparationAfterRestart() throws Exception {
         var journal = directory.resolve("route-supply-handoff.json");
         var queue = new ProjectQueue(journal);

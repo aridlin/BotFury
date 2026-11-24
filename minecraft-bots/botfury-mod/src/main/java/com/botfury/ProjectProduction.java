@@ -41,6 +41,7 @@ final class ProjectProduction {
     private boolean opening;
     private boolean contactedStation;
     private long nextAction;
+    private long nextCraftInputCheck;
     private Map<Integer, ItemStack> craftingInputs;
     private ItemStack substitutedFuel = ItemStack.EMPTY;
 
@@ -113,8 +114,11 @@ final class ProjectProduction {
 
     static boolean canCraft(MinecraftClient client, Identifier id, ItemStack additional) {
         var recipe = client.world.getRecipeManager().get(id).orElse(null);
-        if (!(recipe instanceof CraftingRecipe)) return false;
-        var matcher = new net.minecraft.recipe.RecipeMatcher();
+        return recipe instanceof CraftingRecipe crafting && matchesInventoryRecipe(client, crafting, additional);
+    }
+
+    private static boolean matchesInventoryRecipe(MinecraftClient client, CraftingRecipe recipe, ItemStack additional) {
+        var matcher = new RecipeMatcher();
         client.player.getInventory().populateRecipeFinder(matcher);
         if (!additional.isEmpty()) matcher.addInput(additional);
         return matcher.match(recipe, null);
@@ -255,6 +259,17 @@ final class ProjectProduction {
         }
         var output = recipe.getOutput(client.world.getRegistryManager());
         return output.isEmpty() ? null : observedOutput(output, inventoryCount(client, output));
+    }
+
+    Result beforeApproach(MinecraftClient client, long now) {
+        var finished = finishedFromInventory(client);
+        if (finished != null || spec.kind != ProjectQueue.Kind.CRAFT || now < nextCraftInputCheck
+                || client.player.currentScreenHandler != client.player.playerScreenHandler) return finished;
+        nextCraftInputCheck = now + Duration.ofSeconds(1).toNanos();
+        var recipe = client.world.getRecipeManager().get(spec.recipe).orElse(null);
+        if (!(recipe instanceof CraftingRecipe crafting)) return null;
+        return matchesInventoryRecipe(client, crafting, ItemStack.EMPTY)
+                ? null : failure("Missing ingredients for " + spec.recipe);
     }
 
     private Result observedOutput(ItemStack output, int held) {

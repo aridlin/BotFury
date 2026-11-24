@@ -465,6 +465,51 @@ class ProjectQueueTest {
         }
     }
 
+    @Test void stalledGatherRetriesWithTheSmelterOnlyWhileItsOutputIsStillHeld() throws Exception {
+        for (int held : List.of(2, 3)) {
+            var journal = directory.resolve("retained-smelt-" + held + ".json");
+            var queue = new ProjectQueue(journal);
+            var raw = job("raw", GATHER, List.of());
+            var smelt = new ProjectQueue.Work("smelt", SMELT,
+                    "{\"recipe\":\"minecraft:iron_ingot_from_smelting_raw_iron\",\"count\":3}",
+                    List.of("raw"), Set.of(), "raw");
+            var gather = new ProjectQueue.Work("wood", GATHER,
+                    "{\"resource\":\"block:minecraft:oak_log\",\"item\":\"minecraft:oak_log\",\"count\":1}",
+                    List.of("smelt"), Set.of(), "smelt");
+            queue.submitSupplied("stock", WORLD, List.of(raw, smelt, gather), "block:7,64,0");
+            var rawLease = queue.claim(WORLD, "smelter", Set.of(GATHER), 1).job();
+            assertTrue(queue.finish("stock", "raw", rawLease.lease(), true, "Collected", 2));
+            var smeltLease = queue.claim(WORLD, "smelter", Set.of(SMELT), 3).job();
+            assertTrue(queue.finish("stock", "smelt", smeltLease.lease(), true,
+                    "Observed 3 minecraft:iron_ingot in worker inventory", 4));
+            for (int tick = 5; tick < 11; tick += 2) {
+                var lease = queue.claim(WORLD, "smelter", Set.of(GATHER), tick).job();
+                assertTrue(queue.finish("stock", "wood", lease.lease(), false, ProjectQueue.GATHER_STALLED, tick + 1));
+            }
+            queue = new ProjectQueue(journal);
+            assertNull(queue.claim(WORLD, "smelter", Set.of(CRAFT), 39_999));
+            java.util.function.ToIntBiFunction<String, String> inventory = (worker, item) ->
+                    worker.equals("smelter") && item.equals("minecraft:iron_ingot") ? held : 0;
+            var helper = queue.claim(WORLD, "helper", Set.of(GATHER), null, 40_000, null,
+                    material -> false, inventory, null);
+            if (held < 3) {
+                assertEquals("raw", helper.job().work().id());
+                continue;
+            }
+            assertNull(helper);
+            assertEquals(ProjectQueue.State.DONE, queue.snapshot(40_001).get(0).jobs().get(1).state());
+            queue = new ProjectQueue(journal);
+            assertNull(queue.claim(WORLD, "helper", Set.of(GATHER), 40_002));
+            var retry = queue.claim(WORLD, "smelter", Set.of(GATHER), 40_003).job();
+            assertEquals("wood", retry.work().id());
+            assertEquals(3, retry.attempts());
+            assertTrue(queue.finish("stock", "wood", retry.lease(), false, ProjectQueue.GATHER_STALLED, 40_004));
+            helper = queue.claim(WORLD, "helper", Set.of(GATHER), null, 80_000, null,
+                    material -> false, inventory, null);
+            assertEquals("raw", helper.job().work().id());
+        }
+    }
+
     private ProjectQueue prepareStalledSupply(Path journal, boolean shared) throws Exception {
         var queue = new ProjectQueue(journal);
         var work = new java.util.ArrayList<>(List.of(

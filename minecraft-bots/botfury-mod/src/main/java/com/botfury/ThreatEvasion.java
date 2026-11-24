@@ -11,7 +11,7 @@ import net.minecraft.world.RaycastContext;
 import java.util.*;
 
 final class ThreatEvasion {
-    record Action(Vec3d walkingDirection, boolean wardensNearby) {}
+    record Action(Vec3d walkingDirection, boolean wardensNearby, BlockPos step) {}
     private record Blast(Vec3d center,double radius) {}
     private record Flight(Vec3d from,Vec3d to,int tick) {}
     private record RetreatStep(BlockPos cell, RetreatStep previous, int distance) {}
@@ -29,8 +29,9 @@ final class ThreatEvasion {
                 score+=gap*gap*25;
             }
             for (var warden : wardens) {
-                double gap = Math.max(0, 18 - Math.hypot(projected.x - warden.x, projected.z - warden.z));
-                if (Math.abs(projected.y - warden.y) < 21) score += gap * gap * 12;
+                double horizontalGap = Math.max(0, 18 - Math.hypot(projected.x - warden.x, projected.z - warden.z));
+                double verticalGap = Math.max(0, 21 - Math.abs(body.minY - warden.y));
+                score += horizontalGap * horizontalGap * (verticalGap / 21) * 12;
             }
             for(Flight flight:flights){
                 Box future=body.offset(movement.multiply(flight.tick-.5)).expand(.25);
@@ -82,18 +83,20 @@ final class ThreatEvasion {
         double current=threats.risk(body,referenceMovement);
         if(current<=0)return null;
         if(!threats.wardensNearby()&&LocalFormation.canEvade()&&teleport(client,threats,body,current))
-            return new Action(null, false);
+            return new Action(null, false, null);
         boolean canDetour = threats.wardensNearby() && threats.blasts.isEmpty() && threats.flights.isEmpty();
-        var direction = canDetour ? followWardenDetour(client, threats, body, current) : null;
-        if (direction == null) direction = walkDirection(client, threats, body, current);
+        var detour = canDetour ? followWardenDetour(client, threats, body, current) : null;
+        if (detour != null) return detour;
+        var direction = walkDirection(client, threats, body, current);
         if (direction == null && canDetour && client.player.isOnGround() && !client.player.isTouchingWater()
                 && client.currentScreen == null && System.nanoTime() >= nextWardenSearch) {
             nextWardenSearch = System.nanoTime() + 1_000_000_000L;
             searchWardenDetour(client, threats, body, current);
-            direction = followWardenDetour(client, threats, body, current);
+            detour = followWardenDetour(client, threats, body, current);
+            if (detour != null) return detour;
         }
         if (direction == null && !threats.wardensNearby()) return null;
-        return new Action(direction, threats.wardensNearby());
+        return new Action(direction, threats.wardensNearby(), null);
     }
 
     static void clearWardenDetour() {
@@ -101,21 +104,23 @@ final class ThreatEvasion {
         nextWardenSearch = 0;
     }
 
-    private static Vec3d followWardenDetour(MinecraftClient client, Threats threats, Box body, double current) {
+    private static Action followWardenDetour(MinecraftClient client, Threats threats, Box body, double current) {
         if (!client.player.isOnGround() || client.player.isTouchingWater() || client.currentScreen != null) return null;
         var center = body.getCenter();
         var goal = wardenDetour.peekLast();
-        if (goal != null && threats.risk(body.offset(goal.getX() + .5 - center.x, 0, goal.getZ() + .5 - center.z),
-                Vec3d.ZERO) >= current) wardenDetour.clear();
+        if (goal != null && threats.risk(body.offset(goal.getX() + .5 - center.x, goal.getY() - body.minY,
+                goal.getZ() + .5 - center.z), Vec3d.ZERO) >= current) wardenDetour.clear();
         while (!wardenDetour.isEmpty()) {
             var cell = wardenDetour.getFirst();
             var delta = new Vec3d(cell.getX() + .5 - center.x, 0, cell.getZ() + .5 - center.z);
-            if (cell.getY() != client.player.getBlockY() || delta.lengthSquared() > 3
-                    || !walkable(client, body, delta)) {
+            int height = cell.getY() - client.player.getBlockY();
+            if (Math.abs(height) > 1 || delta.lengthSquared() > 3 || !walkableStep(client, body, delta, cell, height)) {
                 wardenDetour.clear();
                 return null;
             }
-            if (delta.lengthSquared() > .04) return delta.normalize();
+            if (height != 0 || delta.lengthSquared() > .04) {
+                return new Action(delta.normalize(), true, height == 0 ? null : cell);
+            }
             wardenDetour.removeFirst();
         }
         return null;
@@ -133,7 +138,8 @@ final class ThreatEvasion {
         while (!queue.isEmpty()) {
             var step = queue.removeFirst();
             var cell = step.cell;
-            var from = step.distance == 0 ? origin : new Vec3d(cell.getX() + .5, origin.y, cell.getZ() + .5);
+            var from = step.distance == 0 ? origin
+                    : new Vec3d(cell.getX() + .5, cell.getY() + origin.y - body.minY, cell.getZ() + .5);
             var at = body.offset(from.subtract(origin));
             double risk = threats.risk(at, Vec3d.ZERO);
             if (risk < bestRisk) {
@@ -143,12 +149,15 @@ final class ThreatEvasion {
             }
             if (step.distance >= WARDEN_DETOUR_STEPS) continue;
             for (var side : Direction.Type.HORIZONTAL) {
-                var next = cell.offset(side);
-                if (seen.contains(next) || !client.world.isChunkLoaded(next.getX() >> 4, next.getZ() >> 4)) continue;
-                var delta = new Vec3d(next.getX() + .5 - from.x, 0, next.getZ() + .5 - from.z);
-                if (!walkable(client, at, delta)) continue;
-                seen.add(next);
-                queue.addLast(new RetreatStep(next, step, step.distance + 1));
+                var adjacent = cell.offset(side);
+                if (!client.world.isChunkLoaded(adjacent.getX() >> 4, adjacent.getZ() >> 4)) continue;
+                var delta = new Vec3d(adjacent.getX() + .5 - from.x, 0, adjacent.getZ() + .5 - from.z);
+                for (int height = -1; height <= 1; height++) {
+                    var next = adjacent.up(height);
+                    if (seen.contains(next) || !walkableStep(client, at, delta, next, height)) continue;
+                    seen.add(next);
+                    queue.addLast(new RetreatStep(next, step, step.distance + 1));
+                }
             }
         }
         // Keep the first turn even if it temporarily reduces distance to the Warden.
@@ -192,15 +201,36 @@ final class ThreatEvasion {
         return best;
     }
 
+    private static boolean walkableStep(MinecraftClient client, Box body, Vec3d direction, BlockPos next, int height) {
+        if (height == 0) return walkable(client, body, direction);
+        var world = client.world;
+        if (!world.getWorldBorder().contains(next) || !world.getFluidState(next).isEmpty()
+                || !world.getFluidState(next.up()).isEmpty()) return false;
+        var floor = world.getBlockState(next.down());
+        if (dangerousFloor(floor) || !ProjectPlacement.flushFloor(floor, world, next.down())) return false;
+
+        // A jump needs overhead room before crossing, and a drop needs clear space above the landing.
+        var highBody = height > 0 ? body.offset(0, 1.18, 0) : body;
+        if (height > 0 && !world.isSpaceEmpty(client.player, highBody)) return false;
+        for (int step = 1; step <= 5; step++) {
+            if (!world.isSpaceEmpty(client.player, highBody.offset(direction.multiply(step * .2)))) return false;
+        }
+        return world.isSpaceEmpty(client.player, body.offset(direction).offset(0, height, 0));
+    }
+
+    private static boolean dangerousFloor(net.minecraft.block.BlockState floor) {
+        return floor.isOf(net.minecraft.block.Blocks.MAGMA_BLOCK)
+                || floor.isOf(net.minecraft.block.Blocks.CAMPFIRE)
+                || floor.isOf(net.minecraft.block.Blocks.SOUL_CAMPFIRE);
+    }
+
     private static boolean walkable(MinecraftClient client, Box body, Vec3d heading) {
         for (int step = 1; step <= 5; step++) {
             var moved = body.offset(heading.multiply(step * .2));
             var feet = BlockPos.ofFloored(moved.getCenter().x, moved.minY, moved.getCenter().z);
             var floor = client.world.getBlockState(feet.down());
             if (!client.world.getWorldBorder().contains(feet) || !client.world.getFluidState(feet).isEmpty()
-                    || floor.isOf(net.minecraft.block.Blocks.MAGMA_BLOCK)
-                    || floor.isOf(net.minecraft.block.Blocks.CAMPFIRE)
-                    || floor.isOf(net.minecraft.block.Blocks.SOUL_CAMPFIRE)
+                    || dangerousFloor(floor)
                     || !client.world.isSpaceEmpty(client.player, moved)
                     || !client.world.getBlockCollisions(client.player, moved.offset(0, -.08, 0)).iterator().hasNext()) return false;
         }

@@ -523,6 +523,9 @@ final class ProjectBroker {
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.GATHER)) {
                         assignment = board.offerEquippedMiner(world, request.worker, request.project, request.toolUses, now);
                         if (assignment == null) {
+                            assignment = board.offerSmeltingRefill(world, request.worker, request.project, request.toolUses, now);
+                        }
+                        if (assignment == null) {
                             assignment = board.offerGatheringHandoff(world, request.worker, request.project, now, ProjectBroker::heldCount);
                         }
                     }

@@ -1620,6 +1620,42 @@ class ProjectQueueTest {
         assertEquals("diamonds", restarted.claim(WORLD, "worker", Set.of(GATHER), "independent", 6).job().work().id());
     }
 
+    @Test void equippedReplacementWorkerRefillsFailedSmeltingWithoutRebuildingTools() throws Exception {
+        var journal = directory.resolve("smelting-refill.json");
+        var pick = new ProjectQueue.Work("pick", CRAFT, "{\"recipe\":\"minecraft:stone_pickaxe\"}", List.of(), Set.of());
+        var ore = new ProjectQueue.Work("ore", GATHER,
+                "{\"resource\":\"iron\",\"variant\":\"both\",\"item\":\"minecraft:raw_iron\",\"count\":3}",
+                List.of("pick"), Set.of(), "pick");
+        var fuel = new ProjectQueue.Work("fuel", GATHER,
+                "{\"resource\":\"coal\",\"variant\":\"both\",\"item\":\"minecraft:coal\",\"count\":1}",
+                List.of("ore"), Set.of(), "ore");
+        var smelt = new ProjectQueue.Work("smelt", SMELT,
+                "{\"input\":\"minecraft:raw_iron\",\"fuel\":\"minecraft:coal\",\"count\":3}",
+                List.of("fuel"), Set.of(), "fuel");
+        var site = new ProjectQueue.ResourceSite(4, 42, 8);
+        var project = new ProjectQueue.Project("tools", WORLD, List.of(
+                new ProjectQueue.Job(pick, ProjectQueue.State.DONE, 1, "original", null, 0, "Observed pick", null),
+                new ProjectQueue.Job(ore, ProjectQueue.State.DONE, 1, "original", null, 0, "Observed ore", null, site),
+                new ProjectQueue.Job(fuel, ProjectQueue.State.DONE, 1, "original", null, 0, "Observed fuel", null),
+                new ProjectQueue.Job(smelt, ProjectQueue.State.FAILED, 2, null, null, 0,
+                        "Missing furnace input minecraft:raw_iron after 2 supply recoveries", null)),
+                null, "block:3,64,0", java.util.Map.of());
+        Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                "projects", java.util.Map.of(project.id(), project))));
+        var board = new ProjectQueue(journal);
+        assertNull(board.claim(WORLD, "helper", Set.of(GATHER, SMELT), 1));
+        assertNull(board.offerSmeltingRefill(WORLD, "helper", "tools", java.util.Map.of("minecraft:wooden_pickaxe", 50), 2));
+        var recovery = board.offerSmeltingRefill(WORLD, "helper", "tools", java.util.Map.of("minecraft:stone_pickaxe", 50), 2);
+        assertEquals("ore", recovery.job().work().id());
+        assertEquals(site, recovery.job().resourceSite());
+        board = new ProjectQueue(journal);
+        assertNull(board.claim(WORLD, "other", Set.of(GATHER, SMELT), 3));
+        assertTrue(board.finish("tools", "ore", recovery.job().lease(), true, "Observed 3 raw iron", 4));
+        var fuelLease = board.claim(WORLD, "helper", Set.of(GATHER, SMELT), 5).job();
+        assertTrue(board.finish("tools", "fuel", fuelLease.lease(), true, "Observed coal", 6));
+        assertEquals("smelt", board.claim(WORLD, "helper", Set.of(SMELT), 7).job().work().id());
+    }
+
     @Test void smeltingWithLostInputsCanUseAnotherWorkersSuppliesAfterRetryLimit() throws Exception {
         var journal = directory.resolve("lost-furnace-input.json");
         var ore = job("ore", GATHER, List.of());

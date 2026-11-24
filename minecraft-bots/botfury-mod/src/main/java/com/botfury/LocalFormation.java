@@ -554,12 +554,21 @@ final class LocalFormation {
 
     static boolean defend(MinecraftClient client, String owner, java.util.Collection<String> protectedNames,
                           java.util.function.Predicate<LivingEntity> threat) {
-        if (owner == null || protectedNames == null) return false;
+        var target = defenseTarget(client, owner, protectedNames, threat);
+        if (target != null && client.player.getAttackCooldownProgress(0.5f) >= 0.95f) {
+            punch(client, target);
+            return true;
+        }
+        return false;
+    }
+
+    static LivingEntity defenseTarget(MinecraftClient client, String owner, java.util.Collection<String> protectedNames,
+                                      java.util.function.Predicate<LivingEntity> threat) {
+        if (owner == null || protectedNames == null || !BotFriends.reliable()) return null;
         var safe = new java.util.HashSet<String>(BotFriends.names());
-        if (!BotFriends.reliable()) return false;
         protectedNames.forEach(name -> safe.add(name.toLowerCase(java.util.Locale.ROOT)));
         safe.add(owner.toLowerCase(java.util.Locale.ROOT));
-        LivingEntity target = client.world.getEntitiesByClass(LivingEntity.class,
+        return client.world.getEntitiesByClass(LivingEntity.class,
                 client.player.getBoundingBox().expand(3), other -> other != client.player && threat.test(other)
                         && other.isAlive() && !other.isSpectator() && !other.isTeammate(client.player)
                         && !BotFriends.protectedName(other.getName().getString(), owner, safe)
@@ -567,11 +576,9 @@ final class LocalFormation {
                         && !(other instanceof net.minecraft.entity.player.PlayerEntity player && player.isCreative())
                         && client.player.squaredDistanceTo(other) <= 9 && client.player.canSee(other)).stream()
                 .min(java.util.Comparator.comparingDouble(client.player::squaredDistanceTo)).orElse(null);
-        if (target != null && client.player.getAttackCooldownProgress(0.5f) >= 0.95f) {punch(client, target);return true;}
-        return false;
     }
 
-    private static void punch(MinecraftClient client, LivingEntity target) {
+    static void punch(MinecraftClient client, LivingEntity target) {
         if (client.interactionManager == null) return;
         client.player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, target.getEyePos());
         client.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.LookAndOnGround(

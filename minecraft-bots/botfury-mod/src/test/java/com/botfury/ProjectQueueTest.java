@@ -264,6 +264,21 @@ class ProjectQueueTest {
         assertEquals(1, reopened.retryInterruptedGathering(WORLD, "ore"));
     }
 
+    @Test void reopensExhaustedGatheringStallsThroughExistingRetry() throws Exception {
+        var journal = directory.resolve("stalled-gather-retry.json");
+        var queue = new ProjectQueue(journal);
+        queue.submit("supplies", WORLD, List.of(job("collect", GATHER, List.of())));
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            long now = 2L * attempt;
+            var lease = queue.claim(WORLD, "worker" + attempt, Set.of(GATHER), now).job();
+            assertTrue(queue.finish("supplies", "collect", lease.lease(), false, ProjectQueue.GATHER_STALLED, now + 1));
+        }
+        assertEquals(ProjectQueue.State.FAILED, queue.snapshot(8).get(0).jobs().get(0).state());
+        assertEquals(1, queue.retryInterruptedGathering(WORLD, "supplies"));
+        var reopened = new ProjectQueue(journal);
+        assertEquals(1, reopened.claim(WORLD, "replacement", Set.of(GATHER), 9).job().attempts());
+    }
+
     @Test void workerHoldsCargoWhileAnotherDeliveryHasTheChest() throws Exception {
         var queue = new ProjectQueue(directory.resolve("chest-contention.json"));
         queue.submit("house", WORLD, List.of(job("collect", GATHER, List.of()),

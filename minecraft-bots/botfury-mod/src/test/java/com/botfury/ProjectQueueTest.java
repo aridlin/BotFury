@@ -1538,6 +1538,43 @@ class ProjectQueueTest {
         assertEquals("missing", restored.claim(WORLD, "replacement", Set.of(BUILD), 13).job().work().id());
     }
 
+    @Test void observedReplacementCargoCanFinishAnAlreadyGatheredStockBatch() throws Exception {
+        var journal = directory.resolve("replacement-deposit.json");
+        String project = "stock";
+        String chest = "block:3,64,0";
+        String stone = "minecraft:cobblestone";
+        var firstBank = new ProjectQueue.Work("first-bank", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:cobblestone\",\"stock\":128}", List.of(), Set.of(chest));
+        var gather = new ProjectQueue.Work("gather", GATHER,
+                "{\"resource\":\"stone\",\"variant\":\"both\",\"item\":\"minecraft:cobblestone\",\"count\":64}", List.of(), Set.of());
+        var lastBank = new ProjectQueue.Work("last-bank", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:cobblestone\",\"stock\":192}",
+                List.of(firstBank.id(), gather.id()), Set.of(chest), gather.id());
+        var queue = new ProjectQueue(journal);
+        queue.submitSupplied(project, WORLD, List.of(firstBank, gather, lastBank), chest);
+        var bank = queue.claim(WORLD, "first", Set.of(TRANSFER), 1).job();
+        assertTrue(queue.finish(project, firstBank.id(), bank.lease(), true, "Banked",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(stone, 128)), 2));
+        var mined = queue.claim(WORLD, "miner", Set.of(GATHER), 3).job();
+        assertTrue(queue.finish(project, gather.id(), mined.lease(), true, "Collected", 4));
+
+        var restored = new ProjectQueue(journal);
+        assertNull(restored.offerInterruptedDeposit(WORLD, "helper", project, 5,
+                (bot, item) -> bot.equals("miner") ? -1 : 64));
+        assertNull(restored.offerInterruptedDeposit(WORLD, "helper", project, 6,
+                (bot, item) -> 64));
+        assertNull(restored.offerInterruptedDeposit(WORLD, "helper", project, 7,
+                (bot, item) -> bot.equals("miner") ? 0 : 63));
+        var transfer = restored.offerInterruptedDeposit(WORLD, "helper", project, 8,
+                (bot, item) -> bot.equals("miner") ? 0 : 64).job();
+        assertEquals(lastBank.id(), transfer.work().id());
+        assertNull(restored.claim(WORLD, "miner", Set.of(TRANSFER), 9));
+        assertTrue(restored.finish(project, lastBank.id(), transfer.lease(), true, "Verified replacement stock",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(stone, 192)), 10));
+        assertEquals(192, restored.chestStock(WORLD).get(chest).report().items().get(stone));
+        assertEquals(mined.lease(), restored.snapshot(11).get(0).jobs().get(1).lease());
+    }
+
     @Test void missingCargoReopensOnlyTheAffectedGatheringChain() throws Exception {
         var journal = directory.resolve("missing-cargo.json");
         var queue = new ProjectQueue(journal);

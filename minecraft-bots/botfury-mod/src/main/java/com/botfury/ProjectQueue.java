@@ -2532,9 +2532,12 @@ final class ProjectQueue {
             if (!world.equals(project.world) || project.supplyChest == null || project.repeat != null
                     || projectId != null && !projectId.equals(project.id)) continue;
             for (var gather : project.jobs) {
-                if (gather.work.kind != Kind.GATHER || gather.state == State.DONE) continue;
+                if (gather.work.kind != Kind.GATHER) continue;
                 var deposit = contributionDeposit(project, gather);
                 if (deposit == null) continue;
+                boolean replacingMissingCargo = mode == CargoRecovery.ANY && gather.state == State.DONE
+                        && gather.worker != null && !worker.equalsIgnoreCase(gather.worker);
+                if (gather.state == State.DONE && !replacingMissingCargo) continue;
                 boolean checkpoint = CARGO_CHECKPOINT.equals(gather.evidence) && cargoCheckpoint(project, gather) > 0;
                 boolean missingTools = RECOVERING_TOOLS.equals(gather.evidence) || EXHAUSTED_TOOLS.equals(gather.evidence);
                 if (mode == CargoRecovery.CHECKPOINT && !checkpoint || mode == CargoRecovery.TOOL_FAILURE && !missingTools) continue;
@@ -2545,7 +2548,7 @@ final class ProjectQueue {
                 if (coveringActiveGather) {
                     if (gather.state != State.LEASED || now >= gather.expiresAt
                             || GATHER_STOCK_CONFIRMED.equals(gather.evidence) || handoffWorker(gather) != null) continue;
-                } else if (!interrupted && !returningCargo) continue;
+                } else if (!interrupted && !returningCargo && !replacingMissingCargo) continue;
                 var source = gatherSource(gather.work.payload);
                 if (source == null || reserved.contains(source.item) || hasPendingDepositOf(world, worker, source.item)) continue;
                 int held = heldCount.applyAsInt(worker, source.item);
@@ -2555,6 +2558,7 @@ final class ProjectQueue {
                     return null;
                 }
                 if (held <= 0) continue;
+                if (replacingMissingCargo && !coversMissingDepositCargo(project, gather, deposit, source.item, held, heldCount)) continue;
                 if (coveringActiveGather) {
                     var target = transferTarget(deposit);
                     if (target == null) continue;
@@ -2573,6 +2577,20 @@ final class ProjectQueue {
             }
         }
         return null;
+    }
+
+    private static boolean coversMissingDepositCargo(Project project, Job gather, Job deposit, String item, int held,
+                                                     java.util.function.ToIntBiFunction<String, String> heldCount) {
+        var target = transferTarget(deposit);
+        if (target == null || !item.equals(target.item) || !deposit.work.locks.contains(project.supplyChest)) return false;
+        var stock = new HashMap<String, ChestObservation>();
+        collectChestStock(project.world, project, stock);
+        var observation = stock.get(project.supplyChest);
+        if (observation == null) return false;
+        int missing = target.stock - stockCount(observation.report, item);
+        if (missing < 1 || held < missing) return false;
+        int originalHeld = heldCount.applyAsInt(gather.worker, item);
+        return originalHeld >= 0 && originalHeld < missing;
     }
 
     private Assignment offerEarlierContribution(Project project, Job blockedDeposit, String item, String worker,

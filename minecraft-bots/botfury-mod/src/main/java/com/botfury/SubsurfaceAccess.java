@@ -96,12 +96,23 @@ final class SubsurfaceAccess {
         return advance(client, age, destination.getY(), area, destination, allowNaturalAscent);
     }
 
-    boolean openLocalApproach(MinecraftClient client, int age, BlockPos destination, ProjectGather.Area area) {
+    static boolean localApproachInRange(BlockPos feet, BlockPos destination, boolean prospecting) {
+        int drop = feet.getY() - destination.getY();
+        return destination.isWithinDistance(feet, 9) || prospecting && drop > 4 && drop <= 16
+                && destination.withY(feet.getY()).isWithinDistance(feet, 9);
+    }
+
+    boolean openLocalApproach(MinecraftClient client, int age, BlockPos destination, ProjectGather.Area area,
+                              boolean prospecting) {
         var feet = client.player.getBlockPos();
-        if (!hasFooting(client) || !destination.isWithinDistance(feet, 9)
-                || !validDestination(client, destination, area)
+        if (!hasFooting(client) || !validDestination(client, destination, area)
                 || (area != null && (area.contains(feet) || area.contains(feet.down())))) return false;
-        return start(client, feet, List.of(destination), area, age, false);
+        if (prospecting && feet.getY() - destination.getY() > 1) {
+            // Baritone can walk an existing cave route freely. When that fails, let it
+            // open one stair step at a time while keeping the original stand reserved.
+            if (openPassage(client, age, feet, area, headingToward(feet, destination), -1)) return true;
+        }
+        return destination.isWithinDistance(feet, 9) && start(client, feet, List.of(destination), area, age, false);
     }
 
     boolean continueLocalApproach(MinecraftClient client, int age) {

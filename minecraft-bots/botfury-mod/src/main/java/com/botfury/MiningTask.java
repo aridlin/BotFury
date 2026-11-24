@@ -22,6 +22,7 @@ final class MiningTask {
     record Job(String resource,String variant,int broker) {}
     private static final int STANDS_PER_TICK = 8;
     private static final int MAX_ALTERNATE_STANDS = 3;
+    private static final int MAX_PROTECTED_APPROACH_STEPS = 16;
     private static final int MAX_EXPLORATION_EXITS = 3;
     private static final Gson JSON=new Gson();
     private static final ExecutorService IO=Executors.newFixedThreadPool(2,r->{var t=new Thread(r,"BotFury-mining");t.setDaemon(true);return t;});
@@ -75,6 +76,8 @@ final class MiningTask {
     private static int approachProgress;
     private static double approachDistance;
     private static boolean localApproachTried;
+    private static BlockPos localApproachFrom;
+    private static int localApproachSteps;
     private static volatile String status="";
     static boolean active(){return job!=null;}
     static boolean working(){return job!=null&&!paused&&!dead;}
@@ -216,14 +219,28 @@ final class MiningTask {
                 if (approachDistance - distance >= .6) {
                     approachDistance = distance;
                     approachProgress = age;
+                    localApproachTried = false;
                 }
-                if (subsurface.continueLocalApproach(client, age)) return;
-                if (projectMining && !localApproachTried && age - approachProgress >= 80
-                        && feet.isWithinDistance(p, 9) && SubsurfaceAccess.canDigRoute(client)
+                if (subsurface.continuePassage(client, age, excluded)
+                        || subsurface.continueLocalApproach(client, age)) return;
+                if (localApproachFrom != null) {
+                    // A sideways step can reach the lip of a cave without reducing straight-line distance.
+                    if (!feet.equals(localApproachFrom)) {
+                        approachProgress = age;
+                        localApproachTried = false;
+                    }
+                    localApproachFrom = null;
+                }
+                if (projectMining && !localApproachTried && localApproachSteps < MAX_PROTECTED_APPROACH_STEPS
+                        && age - approachProgress >= 80
+                        && SubsurfaceAccess.canDigRoute(client)
+                        && SubsurfaceAccess.localApproachInRange(feet, p, prospectingAltitude(client) != null)
                         && (!BaritoneClient.pursuing(p) || BaritoneClient.route().isEmpty())) {
                     stopPath();
                     localApproachTried = true;
-                    if (subsurface.openLocalApproach(client, age, p, excluded)) {
+                    if (subsurface.openLocalApproach(client, age, p, excluded, prospectingAltitude(client) != null)) {
+                        localApproachFrom = feet;
+                        localApproachSteps++;
                         status = "Opening a protected approach to reserved " + job.resource;
                         BotEvents.add("info", "mining", status);
                         return;
@@ -680,9 +697,13 @@ final class MiningTask {
                     if (switchingStand) {
                         BotEvents.add("info", "mining", "Reserved another stand at " + BlockPos.ofFloored(place).toShortString()
                                 + " for " + ore.toShortString());
-                    } else alternateStandAttempts = 0;
+                    } else {
+                        alternateStandAttempts = 0;
+                        localApproachSteps = 0;
+                    }
                     approachProgress = age;
                     localApproachTried = false;
+                    localApproachFrom = null;
                     approachDistance = client.player.getPos().distanceTo(place);
                     nextPath = age;
                 }

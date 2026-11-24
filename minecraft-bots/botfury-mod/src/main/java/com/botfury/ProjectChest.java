@@ -17,7 +17,6 @@ import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.util.math.BlockPos;
 import java.util.HashSet;
-import net.minecraft.world.RaycastContext;
 import java.time.Duration;
 import java.util.Map;
 import java.util.TreeMap;
@@ -29,15 +28,10 @@ final class ProjectChest {
         int slots() { return other == null ? 27 : 54; }
 
         ProjectBlock approach(MinecraftClient client, Predicate<BlockPos> allowed) {
-            var center = Vec3d.ofCenter(key);
             var stand = StructureProject.chooseStand(client, key, Map.of(), null, pos -> {
                 if (!allowed.test(pos)) return false;
                 var eye = Vec3d.ofBottomCenter(pos).add(0, 1.62, 0);
-                double reach = client.interactionManager.getReachDistance() - .1;
-                var hit = client.world.raycast(new RaycastContext(eye, center, RaycastContext.ShapeType.OUTLINE,
-                        RaycastContext.FluidHandling.NONE, client.player));
-                return eye.squaredDistanceTo(center) <= reach * reach && hit.getType() == HitResult.Type.BLOCK
-                        && key.equals(hit.getBlockPos());
+                return ProjectProduction.workstationHit(client, key, eye) != null;
             });
             return stand == null ? null : new ProjectBlock(key, stand, Identifier.of("minecraft", "chest"));
         }
@@ -147,11 +141,10 @@ final class ProjectChest {
             opening = false;
         } else if (screen == null) {
             if (player.currentScreenHandler != player.playerScreenHandler) return failure("Another container is open");
-            var center = Vec3d.ofCenter(target);
             var hit = ProjectProduction.workstationHit(client, target, player.getEyePos());
             if (hit == null) return failure("Chest obstructed or out of reach");
             opening = true;
-            player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, center);
+            player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, hit.getPos());
             client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
             nextAction = now + SETTLE;
             return null;

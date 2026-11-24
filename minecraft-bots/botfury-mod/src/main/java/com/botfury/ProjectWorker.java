@@ -236,7 +236,7 @@ final class ProjectWorker {
             return;
         }
         if (now >= taskEnd) {
-            finish(client, false, "Timed out approaching or changing the target");
+            finish(client, false, ProjectQueue.TARGET_TIMEOUT);
             return;
         }
         if (TaskDefense.evade(client, true)) {

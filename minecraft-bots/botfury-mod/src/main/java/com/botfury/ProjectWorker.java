@@ -384,7 +384,8 @@ final class ProjectWorker {
         long now = System.nanoTime();
         if (enrollment.matches(here.name(), world(here)) && client.player.isAlive() && client.player.isOnGround()
                 && !client.player.isTouchingWater() && (returnWaypoints == null || waypoint >= returnWaypoints.size())) {
-            returnTrail.record(routePoint(client.player.getBlockPos()));
+            var feet = client.player.getBlockPos();
+            if (knownTrailFooting(client, feet)) returnTrail.record(routePoint(feet));
             if (now >= nextTrailSave) {
                 saveTrail();
                 nextTrailSave = now + seconds(15);
@@ -1258,6 +1259,20 @@ final class ProjectWorker {
         var step = route.get(waypoint);
         var next = new BlockPos(step.x(), step.y(), step.z());
         var world = client.world;
+        if (!scaffold && !knownTrailFooting(client, next)) {
+            halt(client);
+            // An edge position can be recorded while the player's body is supported by the next block.
+            // Look for the next nearby stand, then let Baritone find a safe path to it.
+            for (int i = waypoint + 1; i < route.size(); i++) {
+                var candidate = route.get(i);
+                var stand = new BlockPos(candidate.x(), candidate.y(), candidate.z());
+                if (!stand.isWithinDistance(feet, 12) || Math.abs(stand.getY() - feet.getY()) > 6) break;
+                if (!knownTrailFooting(client, stand)) continue;
+                waypoint = i;
+                next = stand;
+                break;
+            }
+        }
         if (!world.isChunkLoaded(next.getX() >> 4, next.getZ() >> 4)) {
             if (!scaffold) {
                 halt(client);
@@ -1299,7 +1314,8 @@ final class ProjectWorker {
 
     private static boolean knownTrailFooting(MinecraftClient client, BlockPos pos) {
         var world = client.world;
-        return world.isInBuildLimit(pos.up()) && world.getWorldBorder().contains(pos)
+        return world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)
+                && world.isInBuildLimit(pos.up()) && world.getWorldBorder().contains(pos)
                 && ProjectPlacement.flushFloor(world.getBlockState(pos.down()), world, pos.down())
                 && world.getFluidState(pos).isEmpty() && world.getFluidState(pos.up()).isEmpty()
                 && world.getBlockState(pos).getCollisionShape(world, pos).isEmpty()

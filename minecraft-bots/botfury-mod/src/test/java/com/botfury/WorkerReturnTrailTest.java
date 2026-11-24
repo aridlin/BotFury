@@ -51,6 +51,31 @@ class WorkerReturnTrailTest {
         assertTrue(trail.backtrack(teleported, station).isEmpty());
     }
 
+    @Test void returnsTheUsefulPartOfATrailThatDoesNotReachTheStation() {
+        var trail = new WorkerReturnTrail();
+        var obsoleteDetour = new ResourceSite(36, -20, 0);
+        var entrance = new ResourceSite(24, -16, 0);
+        var lip = new ResourceSite(24, -20, 0);
+        var bend = new ResourceSite(24, -24, 0);
+        var slope = new ResourceSite(28, -28, 0);
+        var mine = new ResourceSite(28, -32, 0);
+        for (var point : List.of(obsoleteDetour, entrance, lip, bend, slope, mine)) trail.record(point);
+
+        assertEquals(List.of(slope, bend, lip, entrance), trail.backtrack(mine, new ResourceSite(0, 64, 0)));
+        assertTrue(trail.backtrack(mine, new ResourceSite(28, -30, 152)).isEmpty());
+        assertTrue(trail.backtrack(new ResourceSite(48, -32, 0), new ResourceSite(0, 64, 0)).isEmpty());
+    }
+
+    @Test void doesNotUndoAWorkersClimbToReachAnOlderTrail() {
+        var trail = new WorkerReturnTrail();
+        var current = new ResourceSite(36, -20, 0);
+        for (var point : List.of(new ResourceSite(16, -8, 0), new ResourceSite(16, -12, 0),
+                new ResourceSite(16, -16, 0), new ResourceSite(20, -20, 0), new ResourceSite(24, -24, 0),
+                new ResourceSite(28, -28, 0), new ResourceSite(32, -32, 0),
+                new ResourceSite(36, -28, 0), new ResourceSite(36, -24, 0), current)) trail.record(point);
+        assertTrue(trail.backtrack(current, new ResourceSite(0, 64, 0)).isEmpty());
+    }
+
     @Test void retracingToAPreviousCellDiscardsTheDetour() {
         var trail = new WorkerReturnTrail();
         var station = new ResourceSite(0, 64, 0);

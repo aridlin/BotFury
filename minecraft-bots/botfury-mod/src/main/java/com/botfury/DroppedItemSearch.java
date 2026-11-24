@@ -35,6 +35,14 @@ final class DroppedItemSearch {
     }
 
     State tick(MinecraftClient client, Predicate<ItemStack> matches, Vec3d minedAt) {
+        return tick(client, matches, minedAt, null);
+    }
+
+    State approachReserved(MinecraftClient client, ItemEntity reserved) {
+        return tick(client, stack -> !stack.isEmpty(), null, reserved);
+    }
+
+    private State tick(MinecraftClient client, Predicate<ItemStack> matches, Vec3d minedAt, ItemEntity reserved) {
         age++;
         var player = client.player;
         if (target != null) {
@@ -51,7 +59,7 @@ final class DroppedItemSearch {
         if (target == null && age >= nextScan) {
             retry.values().removeIf(retryAt -> retryAt <= age);
             nextScan = age + 5;
-            target = client.world.getEntitiesByClass(ItemEntity.class, player.getBoundingBox().expand(radius),
+            target = reserved != null ? reserved : client.world.getEntitiesByClass(ItemEntity.class, player.getBoundingBox().expand(radius),
                     entity -> entity.isAlive() && matches.test(entity.getStack())
                             && player.squaredDistanceTo(entity) <= radius * radius
                             && !retry.containsKey(entity.getUuid())

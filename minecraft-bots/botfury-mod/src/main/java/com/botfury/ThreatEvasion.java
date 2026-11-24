@@ -15,9 +15,9 @@ final class ThreatEvasion {
     private record Blast(Vec3d center,double radius) {}
     private record Flight(Vec3d from,Vec3d to,int tick) {}
     private record RetreatStep(BlockPos cell, RetreatStep previous, int distance) {}
-    private static final int WARDEN_DETOUR_STEPS = 10;
-    private static final Deque<BlockPos> wardenDetour = new ArrayDeque<>();
-    private static long nextWardenSearch;
+    private static final int RETREAT_DETOUR_STEPS = 10;
+    private static final Deque<BlockPos> retreatDetour = new ArrayDeque<>();
+    private static long nextRetreatSearch;
     private record Threats(List<Blast> blasts,List<Flight> flights,List<Vec3d> wardens) {
         boolean wardensNearby() { return !wardens.isEmpty(); }
 
@@ -77,56 +77,60 @@ final class ThreatEvasion {
     }
     static Action dodge(MinecraftClient client){
         Threats threats=scan(client);
-        if (!threats.wardensNearby()) clearWardenDetour();
+        boolean hasBlast = !threats.blasts.isEmpty();
+        boolean canDetour = threats.flights.isEmpty() && threats.wardensNearby() != hasBlast;
+        if (!canDetour) clearDetour();
         Box body=client.player.getBoundingBox();
         var referenceMovement = threats.wardensNearby() ? Vec3d.ZERO : client.player.getVelocity();
         double current=threats.risk(body,referenceMovement);
-        if(current<=0)return null;
+        if(current<=0){
+            clearDetour();
+            return null;
+        }
         if(!threats.wardensNearby()&&LocalFormation.canEvade()&&teleport(client,threats,body,current))
             return new Action(null, false, null);
-        boolean canDetour = threats.wardensNearby() && threats.blasts.isEmpty() && threats.flights.isEmpty();
-        var detour = canDetour ? followWardenDetour(client, threats, body, current) : null;
+        var detour = canDetour ? followDetour(client, threats, body, current) : null;
         if (detour != null) return detour;
         var direction = walkDirection(client, threats, body, current);
         if (direction == null && canDetour && client.player.isOnGround() && !client.player.isTouchingWater()
-                && client.currentScreen == null && System.nanoTime() >= nextWardenSearch) {
-            nextWardenSearch = System.nanoTime() + 1_000_000_000L;
-            searchWardenDetour(client, threats, body, current);
-            detour = followWardenDetour(client, threats, body, current);
+                && client.currentScreen == null && System.nanoTime() >= nextRetreatSearch) {
+            nextRetreatSearch = System.nanoTime() + (hasBlast ? 250_000_000L : 1_000_000_000L);
+            searchDetour(client, threats, body, current);
+            detour = followDetour(client, threats, body, current);
             if (detour != null) return detour;
         }
         if (direction == null && !threats.wardensNearby()) return null;
         return new Action(direction, threats.wardensNearby(), null);
     }
 
-    static void clearWardenDetour() {
-        wardenDetour.clear();
-        nextWardenSearch = 0;
+    static void clearDetour() {
+        retreatDetour.clear();
+        nextRetreatSearch = 0;
     }
 
-    private static Action followWardenDetour(MinecraftClient client, Threats threats, Box body, double current) {
+    private static Action followDetour(MinecraftClient client, Threats threats, Box body, double current) {
         if (!client.player.isOnGround() || client.player.isTouchingWater() || client.currentScreen != null) return null;
         var center = body.getCenter();
-        var goal = wardenDetour.peekLast();
+        var goal = retreatDetour.peekLast();
         if (goal != null && threats.risk(body.offset(goal.getX() + .5 - center.x, goal.getY() - body.minY,
-                goal.getZ() + .5 - center.z), Vec3d.ZERO) >= current) wardenDetour.clear();
-        while (!wardenDetour.isEmpty()) {
-            var cell = wardenDetour.getFirst();
+                goal.getZ() + .5 - center.z), Vec3d.ZERO) >= current) retreatDetour.clear();
+        while (!retreatDetour.isEmpty()) {
+            var cell = retreatDetour.getFirst();
             var delta = new Vec3d(cell.getX() + .5 - center.x, 0, cell.getZ() + .5 - center.z);
             int height = cell.getY() - client.player.getBlockY();
             if (Math.abs(height) > 1 || delta.lengthSquared() > 3 || !walkableStep(client, body, delta, cell, height)) {
-                wardenDetour.clear();
+                retreatDetour.clear();
                 return null;
             }
             if (height != 0 || delta.lengthSquared() > .04) {
-                return new Action(delta.normalize(), true, height == 0 ? null : cell);
+                return new Action(delta.normalize(), threats.wardensNearby(), height == 0 ? null : cell);
             }
-            wardenDetour.removeFirst();
+            retreatDetour.removeFirst();
         }
         return null;
     }
 
-    private static void searchWardenDetour(MinecraftClient client, Threats threats, Box body, double current) {
+    private static void searchDetour(MinecraftClient client, Threats threats, Box body, double current) {
         var origin = body.getCenter();
         var queue = new ArrayDeque<RetreatStep>();
         var seen = new HashSet<BlockPos>();
@@ -147,7 +151,7 @@ final class ThreatEvasion {
                 best = step;
                 if (risk == 0) break;
             }
-            if (step.distance >= WARDEN_DETOUR_STEPS) continue;
+            if (step.distance >= RETREAT_DETOUR_STEPS) continue;
             for (var side : Direction.Type.HORIZONTAL) {
                 var adjacent = cell.offset(side);
                 if (!client.world.isChunkLoaded(adjacent.getX() >> 4, adjacent.getZ() >> 4)) continue;
@@ -160,9 +164,9 @@ final class ThreatEvasion {
                 }
             }
         }
-        // Keep the first turn even if it temporarily reduces distance to the Warden.
+        // Keep the first turn when a safer position requires going around an obstacle.
         for (var step = best; step != null && step.previous != null; step = step.previous) {
-            wardenDetour.addFirst(step.cell);
+            retreatDetour.addFirst(step.cell);
         }
     }
 

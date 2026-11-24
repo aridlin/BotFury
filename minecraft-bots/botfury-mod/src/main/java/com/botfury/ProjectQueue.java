@@ -201,6 +201,7 @@ final class ProjectQueue {
     private static final String COORDINATOR_RESTARTED = "Coordinator restarted during work";
     private static final String GATHER_STOCK_CONFIRMED = "Gathering target confirmed by chest stock";
     private static final String GATHER_HANDOFF = "Gathering handoff to ";
+    private static final String CARRIED_SMELT_ASSIGNED = "Assigned smelting to a worker with observed supplies";
     private static final String GATHER_REASSIGNED = "Gathering reassigned to a worker with cargo";
     private static final String CONTRIBUTION_ACTIVE = "Delivering a partial stock contribution";
     private static final String CONTRIBUTION_RETRY = "Partial deposit ended before chest observation";
@@ -1128,8 +1129,9 @@ final class ProjectQueue {
                 if (job.work.cleanup != null && (!settled(job.work.cleanup.afterSettled, done, blocked)
                         || job.work.cleanup.alsoSettled.stream().anyMatch(id -> !settled(id, done, blocked)))) continue;
                 boolean pinned = job.work.sameWorkerAs != null;
-                if (pinned
-                        && !worker.equalsIgnoreCase(byId.get(job.work.sameWorkerAs).worker)) continue;
+                if (CARRIED_SMELT_ASSIGNED.equals(job.evidence)) {
+                    if (job.expiresAt <= now || !worker.equalsIgnoreCase(job.worker)) continue;
+                } else if (pinned && !worker.equalsIgnoreCase(byId.get(job.work.sameWorkerAs).worker)) continue;
                 boolean usesStation = job.work.kind == Kind.TRANSFER || job.work.kind == Kind.CRAFT || job.work.kind == Kind.SMELT;
                 if (usesStation && !Collections.disjoint(unavailableStations, job.work.locks)
                         || !Collections.disjoint(reserved, job.work.locks) || job.work.locks.stream().anyMatch(key ->
@@ -1787,16 +1789,18 @@ final class ProjectQueue {
         return true;
     }
 
-    synchronized List<CarriedSmelt> resumableSmelting(String world) {
+    synchronized List<CarriedSmelt> resumableSmelting(String world, long now) {
         var result = new ArrayList<CarriedSmelt>();
         for (var project : projects.values()) {
             if (!world.equals(project.world) || project.supplyChest == null || cancelled(project)) continue;
             for (var job : project.jobs) {
-                if (job.work.kind != Kind.SMELT || job.state != State.WAITING || job.work.sameWorkerAs == null
-                        || job.work.needs.size() != 1 || job.evidence == null || !job.evidence.startsWith("Missing furnace fuel ")
-                        || !job.evidence.endsWith("; reacquiring materials")
-                        || project.supplyRecoveries.containsKey("carried-smelt:" + job.work.id)) continue;
-                if (!stalledPrivatePreparation(project, job, find(project, job.work.sameWorkerAs)).isEmpty()) {
+                if (job.work.kind != Kind.SMELT || job.work.sameWorkerAs == null || job.evidence == null) continue;
+                boolean recoveredInputChain = job.state == State.WAITING && job.work.needs.size() == 1
+                        && job.evidence.endsWith("; reacquiring materials")
+                        && missingProductionInput(job, job.evidence.substring(0, job.evidence.indexOf(';')))
+                        && !project.supplyRecoveries.containsKey("carried-smelt:" + job.work.id)
+                        && !stalledPrivatePreparation(project, job, find(project, job.work.sameWorkerAs)).isEmpty();
+                if (recoveredInputChain || canReassignSmelting(project, job, now)) {
                     result.add(new CarriedSmelt(project.id, job.work));
                 }
             }
@@ -1804,9 +1808,17 @@ final class ProjectQueue {
         return result;
     }
 
+    private static boolean canReassignSmelting(Project project, Job job, long now) {
+        if (job.state == State.WAITING && CARRIED_SMELT_ASSIGNED.equals(job.evidence)) return job.expiresAt <= now;
+        if (job.state != State.FAILED) return false;
+        int suffix = job.evidence.indexOf(" after ");
+        return suffix >= 0 && missingProductionInput(job, job.evidence.substring(0, suffix))
+                && job.work.needs.stream().allMatch(id -> find(project, id).state == State.DONE);
+    }
+
     synchronized boolean resumeCarriedSmelting(String world, CarriedSmelt request, String worker, String fuel,
                                                 long now) throws IOException {
-        if (!resumableSmelting(world).contains(request) || fuel == null || !fuel.matches("[a-z0-9_.-]+:[a-z0-9_./-]+")) return false;
+        if (!resumableSmelting(world, now).contains(request) || fuel == null || !fuel.matches("[a-z0-9_.-]+:[a-z0-9_./-]+")) return false;
         var project = projects.get(request.project);
         if (!availableProjectWorker(project, worker, now)) return false;
         var smelt = find(project, request.work.id);
@@ -1820,6 +1832,11 @@ final class ProjectQueue {
         payload.addProperty("fuel", fuel);
         var work = new Work(smelt.work.id, smelt.work.kind, JSON.toJson(payload), smelt.work.needs,
                 smelt.work.locks, smelt.work.sameWorkerAs);
+        if (canReassignSmelting(project, smelt, now)) {
+            replace(project, new Job(work, State.WAITING, 0, worker, null, now + WORKER_RECONNECT_GRACE_MS,
+                    CARRIED_SMELT_ASSIGNED, smelt.chest, smelt.resourceSite));
+            return true;
+        }
         var jobs = project.jobs.stream().map(job -> {
             if (job == smelt) return new Job(work, State.WAITING, job.attempts, null, null, 0,
                     "Resuming smelting with observed carried supplies", job.chest, job.resourceSite);
@@ -1838,7 +1855,9 @@ final class ProjectQueue {
                 workerSeen.getOrDefault(workerKey(project.world, worker, null), 0L));
         return lastSeen > 0 && lastSeen >= lastSafetyWait(project.world, worker, project.id)
                 && now - lastSeen <= LEASE_MS && projects.values().stream().flatMap(p -> p.jobs.stream())
-                .noneMatch(job -> workerCommittedToLease(job, worker));
+                .noneMatch(job -> workerCommittedToLease(job, worker) || job.state == State.WAITING
+                        && CARRIED_SMELT_ASSIGNED.equals(job.evidence) && job.expiresAt > now
+                        && worker.equalsIgnoreCase(job.worker));
     }
 
     synchronized Assignment offerGatheringHandoff(String world, String worker, String projectId, long now,
@@ -3123,6 +3142,7 @@ final class ProjectQueue {
     private static boolean retryDelayedFor(Job job, String worker, long now) {
         if (job.expiresAt <= now) return false;
         if (RECOVERING_TOOLS.equals(job.evidence) || CONSTRUCTION_PICKUP.equals(job.evidence)
+                || CARRIED_SMELT_ASSIGNED.equals(job.evidence)
                 || gatherReconnectPending(job, now)
                 || productionWork(job.work) && job.worker != null
                     && (LEASE_EXPIRED.equals(job.evidence) || COORDINATOR_RESTARTED.equals(job.evidence))) {

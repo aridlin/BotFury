@@ -1620,6 +1620,39 @@ class ProjectQueueTest {
         assertEquals("diamonds", restarted.claim(WORLD, "worker", Set.of(GATHER), "independent", 6).job().work().id());
     }
 
+    @Test void smeltingWithLostInputsCanUseAnotherWorkersSuppliesAfterRetryLimit() throws Exception {
+        var journal = directory.resolve("lost-furnace-input.json");
+        var ore = job("ore", GATHER, List.of());
+        var smelt = new ProjectQueue.Work("smelt", SMELT,
+                "{\"input\":\"minecraft:raw_iron\",\"fuel\":\"minecraft:coal\",\"count\":3}",
+                List.of("ore"), Set.of("block:4,64,0"), "ore");
+        var finish = new ProjectQueue.Work("next", CRAFT, "{}", List.of("smelt"), Set.of(), "smelt");
+        var project = new ProjectQueue.Project("tools", WORLD, List.of(
+                new ProjectQueue.Job(ore, ProjectQueue.State.DONE, 1, "original", null, 0, "Observed ore", null),
+                new ProjectQueue.Job(smelt, ProjectQueue.State.FAILED, 2, null, null, 0,
+                        "Missing furnace input minecraft:raw_iron after 2 supply recoveries", null),
+                new ProjectQueue.Job(finish, ProjectQueue.State.WAITING, 0, null, null, 0, null, null)),
+                null, "block:3,64,0", java.util.Map.of());
+        Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                "projects", java.util.Map.of(project.id(), project))));
+        var board = new ProjectQueue(journal);
+        var target = board.resumableSmelting(WORLD, 1).get(0);
+        assertNull(board.claim(WORLD, "helper", Set.of(SMELT), 1));
+        assertTrue(board.resumeCarriedSmelting(WORLD, target, "helper", "minecraft:oak_planks", 2));
+        board = new ProjectQueue(journal);
+        assertNull(board.claim(WORLD, "original", Set.of(SMELT), 3));
+        assertNull(board.claim(WORLD, "helper", Set.of(SMELT), 30_003));
+        var expired = board.resumableSmelting(WORLD, 30_003).get(0);
+        assertTrue(board.resumeCarriedSmelting(WORLD, expired, "helper", "minecraft:oak_planks", 30_004));
+        var lease = board.claim(WORLD, "helper", Set.of(SMELT), 30_005).job();
+        assertEquals("smelt", lease.work().id());
+        assertTrue(board.finish("tools", "smelt", lease.lease(), true, "Observed 3 iron ingots", 30_006));
+        assertEquals("next", board.claim(WORLD, "helper", Set.of(CRAFT), 30_007).job().work().id());
+        assertEquals("original", com.google.gson.JsonParser.parseString(Files.readString(journal))
+                .getAsJsonObject().getAsJsonObject("projects").getAsJsonObject("tools")
+                .getAsJsonArray("jobs").get(0).getAsJsonObject().get("worker").getAsString());
+    }
+
     @Test void stalledSmeltingResumesFromCarriedSuppliesWithoutReplayingPrivatePreparation() throws Exception {
         var journal = directory.resolve("resume-carried-smelting.json");
         var ore = job("ore", GATHER, List.of());
@@ -1638,12 +1671,12 @@ class ProjectQueueTest {
         Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
                 "projects", java.util.Map.of(project.id(), project))));
         var board = new ProjectQueue(journal);
-        var request = board.resumableSmelting(WORLD).get(0);
+        var request = board.resumableSmelting(WORLD, 1).get(0);
         assertFalse(board.resumeCarriedSmelting(WORLD, request, "worker", "minecraft:oak_planks", 1));
         assertNull(board.claim(WORLD, "worker", Set.of(SMELT), 2));
         assertTrue(board.resumeCarriedSmelting(WORLD, request, "worker", "minecraft:oak_planks", 3));
         board = new ProjectQueue(journal);
-        assertTrue(board.resumableSmelting(WORLD).isEmpty());
+        assertTrue(board.resumableSmelting(WORLD, 4).isEmpty());
         assertNull(board.claim(WORLD, "other", Set.of(SMELT, CRAFT), 4));
         var lease = board.claim(WORLD, "worker", Set.of(SMELT, CRAFT), 4).job();
         assertEquals("minecraft:oak_planks", com.google.gson.JsonParser.parseString(lease.work().payload())

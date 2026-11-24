@@ -146,7 +146,7 @@ final class ProjectBroker {
 
     private static void resumeCarriedSmelting(net.minecraft.client.MinecraftClient client, ProjectQueue board,
                                               String world) throws IOException {
-        for (var request : board.resumableSmelting(world)) {
+        for (var request : board.resumableSmelting(world, System.currentTimeMillis())) {
             for (var bot : BotTracker.all()) {
                 if (!bot.fresh() || !bot.connected() || !bot.alive() || !bot.sameWorld() || bot.items().isEmpty()) continue;
                 var fuel = ProjectProduction.carriedSmeltingFuel(client, request.work().payload(), bot.items());

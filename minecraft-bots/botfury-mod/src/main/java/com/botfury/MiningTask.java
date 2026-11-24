@@ -56,6 +56,7 @@ final class MiningTask {
     private static BlockPos deepExplorationGoal;
     private static BaritoneSettings caveSettings;
     private static int lastCaveProbeY, nextCaveProbe;
+    private static int lastProspectingCheckpointY;
     private static int rememberedUntil;
     private static ProjectQueue.ResourceSite observedSite;
 
@@ -100,6 +101,7 @@ final class MiningTask {
         if (client.world.isInBuildLimit(location) && client.world.getWorldBorder().contains(location)
                 && (exclude == null || !exclude.contains(location))) {
             rememberedSite = location;
+            lastProspectingCheckpointY = Math.min(lastProspectingCheckpointY, location.getY());
             double distance = client.player.getPos().distanceTo(Vec3d.ofBottomCenter(location));
             rememberedUntil = Math.min(2400, Math.max(600, (int) (distance * 12)));
         }
@@ -117,6 +119,7 @@ final class MiningTask {
         subsurface.reset();
         lastCaveProbeY = Integer.MAX_VALUE;
         nextCaveProbe = 0;
+        lastProspectingCheckpointY = client.player.getBlockY();
         rememberedSite = null;
         observedSite = null;
         excluded=exclude;
@@ -314,6 +317,13 @@ final class MiningTask {
         boolean deep = projectMining && client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)
                 && client.world.getBottomY() <= depth && SubsurfaceAccess.deepResource(job.resource);
         if (deep) {
+            var feet = client.player.getBlockPos();
+            if (lastProspectingCheckpointY - feet.getY() >= 8 && SubsurfaceAccess.hasFooting(client)
+                    && !BuildProtection.blocked(feet) && (excluded == null || !excluded.contains(feet))) {
+                // Reuse the descent after restocking, even if the worker has yet to find any ore.
+                observedSite = new ProjectQueue.ResourceSite(feet.getX(), feet.getY(), feet.getZ());
+                lastProspectingCheckpointY = feet.getY();
+            }
             if (pathActive) {
                 if (deepExplorationGoal != null && age < nextPath && BaritoneClient.pursuing(deepExplorationGoal)) {
                     return;

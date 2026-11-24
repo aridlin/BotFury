@@ -96,8 +96,8 @@ final class BotInventory {
         projectDelivery = false;
     }
 
-    static void startProjectDelivery(MinecraftClient client, Item item, String recipient, Destination destination) {
-        begin(client, new Request("deliver", item, 1, recipient, destination));
+    static void startProjectDelivery(MinecraftClient client, Item item, int quantity, String recipient, Destination destination) {
+        begin(client, new Request("deliver", item, quantity, recipient, destination));
         projectDelivery = true;
     }
 
@@ -170,7 +170,8 @@ final class BotInventory {
                 client.player.lookAt(EntityAnchorArgumentType.EntityAnchor.EYES, recipient.getEyePos());
                 client.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.LookAndOnGround(
                         client.player.getYaw(), client.player.getPitch(), client.player.isOnGround()));
-                delivered += projectDelivery ? dropProjectTool(client, task.item) : drop(client, task.item, task.count - delivered, false);
+                delivered += projectDelivery ? dropProjectItem(client, task.item)
+                        : drop(client, task.item, task.count - delivered, false);
             }
             case "drop" -> {
                 if (delivered >= task.count || held == 0) { completion="Dropped "+delivered;spread(client);return; }
@@ -234,7 +235,7 @@ final class BotInventory {
             total += client.player.getInventory().getStack(i).getCount();
         return total;
     }
-    private static int dropProjectTool(MinecraftClient client, Item item) {
+    private static int dropProjectItem(MinecraftClient client, Item item) {
         var player = client.player;
         var inventory = player.getInventory();
         int selected = -1;

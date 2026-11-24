@@ -160,7 +160,14 @@ final class ProjectQueue {
     }
     record RouteBenchStock(String payload, String location, int reserve, Set<String> locks) {}
     record RouteToolDelivery(String recipient, ResourceSite position, String item, int previousCount, int craftTarget,
-                             RouteBenchStock benchStock) {}
+                             RouteBenchStock benchStock, int count) {
+        RouteToolDelivery(String recipient, ResourceSite position, String item, int previousCount, int craftTarget,
+                          RouteBenchStock benchStock) {
+            this(recipient, position, item, previousCount, craftTarget, benchStock, 1);
+        }
+
+        int quantity() { return Math.max(1, count); }
+    }
     private final Map<UUID, Boolean> routeToolRequests = new HashMap<>();
 
     record FuelUse(String job, String recipe, String input, String expectedFuel, int count) {}
@@ -217,6 +224,7 @@ final class ProjectQueue {
     private static final String CONSTRUCTION_PICKUP = "Collecting replacement materials for a nearby builder";
     static final String ALTERNATIVE_FUEL = "Using carried smelting fuel ";
     static final String PREPARED_COMPATIBLE_STICKS = "Prepared sticks from compatible wood";
+    static final String PREPARED_REQUIRED_STICKS = "Prepared the required sticks";
     static final String TARGET_TIMEOUT = "Timed out approaching or changing the target";
     static final String PLACEMENT_REJECTED = "Placement was rejected at ";
     static final String GATHER_STALLED = "Gathering stalled without item or route progress";
@@ -1415,6 +1423,43 @@ final class ProjectQueue {
         var job = find(projects.get(projectId), jobId);
         return owns(job, token, now) && job.work.kind == Kind.RESUPPLY && !ROUTE_BENCH_RECEIVED.equals(job.evidence)
                 ? JSON.fromJson(job.work.payload, RouteToolDelivery.class) : null;
+    }
+
+    synchronized Assignment offerStickResupply(String world, String worker, String projectId, long now,
+                                                java.util.function.Function<String, ResourceSite> position,
+                                                java.util.function.ToIntBiFunction<String, String> held) throws IOException {
+        String item = "minecraft:stick";
+        int spare = held.applyAsInt(worker, item) - 2;
+        var origin = position.apply(worker);
+        if (spare < 1 || origin == null || pendingBuildMaterials(world, worker).contains(item)
+                || hasPendingDepositOf(world, worker, item)) return null;
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || cancelled(project) || project.jobs.size() >= MAX_JOBS
+                    || projectId != null && !projectId.equals(project.id)
+                    || !availableProjectWorker(project, worker, now)) continue;
+            for (var gather : project.jobs) {
+                if (gather.state != State.LEASED || gather.expiresAt <= now || gather.work.kind != Kind.GATHER
+                        || worker.equalsIgnoreCase(gather.worker) || handoffWorker(gather) != null) continue;
+                String id = "stick-resupply-" + gather.lease;
+                if (find(project, id) != null) continue;
+                var preparation = stickPreparation(project, gather);
+                if (preparation == null) continue;
+                var destination = position.apply(gather.worker);
+                if (destination == null || Math.abs(destination.y - origin.y) > 12
+                        || gatheringDistance(origin, destination) > 32) continue;
+                int existing = held.applyAsInt(gather.worker, item);
+                int missing = preparation.count - existing;
+                if (existing < 0 || missing < 1 || missing > spare) continue;
+                var payload = new RouteToolDelivery(gather.worker, destination, item, existing, 0, null, missing);
+                var work = new Work(id, Kind.RESUPPLY, JSON.toJson(payload), List.of(), Set.of());
+                var loan = new Job(work, State.LEASED, 1, worker, UUID.randomUUID(), now + LEASE_MS, null, null);
+                var jobs = new ArrayList<>(project.jobs);
+                jobs.add(loan);
+                commit(project.withJobs(jobs));
+                return assignment(project, loan);
+            }
+        }
+        return null;
     }
 
     synchronized Assignment offerRouteTool(String world, String worker, String projectId, long now,
@@ -2701,7 +2746,9 @@ final class ProjectQueue {
         Project project = active == null && validId(projectId) ? readArchived(projectId) : active;
         Job job = find(project, jobId);
         if (job != null && job.state == State.DONE) {
-            return success && Objects.equals(job.lease, token) && job.evidence.equals(evidence)
+            boolean sameEvidence = job.evidence.equals(evidence)
+                    || PREPARED_REQUIRED_STICKS.equals(job.evidence) && PREPARED_COMPATIBLE_STICKS.equals(evidence);
+            return success && Objects.equals(job.lease, token) && sameEvidence
                     && (job.work.kind == Kind.RESUPPLY && chest == null
                         || Objects.equals(job.chest == null ? null : job.chest.report, chest))
                     && (site == null || site.equals(job.resourceSite));
@@ -2714,11 +2761,17 @@ final class ProjectQueue {
         if (success && PREPARED_COMPATIBLE_STICKS.equals(evidence)) {
             var plan = stickPreparation(project, job);
             if (plan == null || chest != null) return false;
+            var resupply = find(project, "stick-resupply-" + token);
+            String prepared = resupply == null ? evidence : PREPARED_REQUIRED_STICKS;
             var jobs = project.jobs.stream().map(step -> {
                 if (step == job) return new Job(step.work, State.DONE, step.attempts, job.worker, token, 0,
-                        evidence, null, gatheringSite(step, site));
+                        prepared, null, gatheringSite(step, site));
                 if (step == plan.planks || step == plan.sticks) {
-                    return new Job(step.work, State.DONE, step.attempts, job.worker, null, 0, evidence, null);
+                    return new Job(step.work, State.DONE, step.attempts, job.worker, null, 0, prepared, null);
+                }
+                if (step == resupply && step.state == State.LEASED) {
+                    return new Job(step.work, State.DONE, step.attempts, step.worker, step.lease, 0,
+                            "Recipient prepared the required sticks", null);
                 }
                 return step;
             }).toList();

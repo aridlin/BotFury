@@ -48,6 +48,15 @@ final class PortableWoodPreparation {
 
     String status() { return status; }
 
+    boolean needsSticks(MinecraftClient client) {
+        return product == Items.STICK && production == null && client.player.getInventory().count(Items.STICK) < targetCount;
+    }
+
+    void pauseGathering() {
+        if (gathering) MiningTask.stop();
+        gathering = false;
+    }
+
     ProjectProduction.Result tick(MinecraftClient client, long now, int coordinator) {
         var inventory = client.player.getInventory();
         int held = inventory.count(product);
@@ -93,7 +102,7 @@ final class PortableWoodPreparation {
     }
 
     void close(MinecraftClient client) {
-        if (gathering) MiningTask.stop();
+        pauseGathering();
         if (production != null) production.close(client);
     }
 }

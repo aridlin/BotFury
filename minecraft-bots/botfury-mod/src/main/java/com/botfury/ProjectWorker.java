@@ -505,6 +505,7 @@ final class ProjectWorker {
                 if (result.success()) {
                     gatherSite = null;
                     finish(client, true, ProjectQueue.PREPARED_COMPATIBLE_STICKS);
+                    status = ProjectQueue.PREPARED_REQUIRED_STICKS;
                 }
                 return;
             }
@@ -579,7 +580,8 @@ final class ProjectWorker {
             receivedRouteBench = true;
             stationToolAttempt = null;
         }
-        if (!needsProductionBench && (!needsRouteTool || SubsurfaceAccess.canDigRoute(client))) {
+        boolean needsSticks = stickPreparation != null && stickPreparation.needsSticks(client);
+        if (!needsSticks && !needsProductionBench && (!needsRouteTool || SubsurfaceAccess.canDigRoute(client))) {
             if (pickingUpRouteTool) {
                 routeToolPickup.reset();
                 pickingUpRouteTool = false;
@@ -590,11 +592,12 @@ final class ProjectWorker {
             var player = client.player;
             if (client.world.getEntitiesByClass(net.minecraft.entity.ItemEntity.class,
                     player.getBoundingBox().expand(TOOL_DROP_RADIUS),
-                    entity -> entity.isAlive() && usableRouteTool(entity.getStack())).isEmpty()) return false;
-            halt(client);
+                    entity -> entity.isAlive() && usableRouteTool(entity.getStack(), needsSticks)).isEmpty()) return false;
+            if (needsSticks) stickPreparation.pauseGathering();
+            else halt(client);
             pickingUpRouteTool = true;
         }
-        if (routeToolPickup.tick(client, ProjectWorker::usableRouteTool, null) == DroppedItemSearch.State.APPROACHING) {
+        if (routeToolPickup.tick(client, stack -> usableRouteTool(stack, needsSticks), null) == DroppedItemSearch.State.APPROACHING) {
             status = assignment.project() + "/" + assignment.job().work().id() + ": Collecting emergency supplies";
             return true;
         }
@@ -602,8 +605,9 @@ final class ProjectWorker {
         return false;
     }
 
-    private static boolean usableRouteTool(net.minecraft.item.ItemStack stack) {
-        return (needsRouteBench || needsProductionBench) && stack.isOf(net.minecraft.item.Items.CRAFTING_TABLE)
+    private static boolean usableRouteTool(net.minecraft.item.ItemStack stack, boolean needsSticks) {
+        return needsSticks && stack.isOf(Items.STICK)
+                || (needsRouteBench || needsProductionBench) && stack.isOf(net.minecraft.item.Items.CRAFTING_TABLE)
                 || needsRouteTool && stack.getItem() instanceof net.minecraft.item.PickaxeItem
                         && stack.getMaxDamage() - stack.getDamage() >= 21;
     }
@@ -744,7 +748,7 @@ final class ProjectWorker {
         var destination = new BotInventory.Destination(here.server(), here.dimension(),
                 new Vec3d(position.x() + .5, position.y(), position.z() + .5), port);
         var item = Registries.ITEM.get(new Identifier(delivery.item()));
-        BotInventory.startProjectDelivery(client, item, delivery.recipient(), destination);
+        BotInventory.startProjectDelivery(client, item, delivery.quantity(), delivery.recipient(), destination);
         deliveringRouteTool = true;
         taskEnd = System.nanoTime() + seconds(180);
     }
@@ -1625,6 +1629,7 @@ final class ProjectWorker {
             if (enrollment.project() != null) args.put("project", enrollment.project());
             args.put("kinds", KINDS);
             args.put("returnRouteRevision", SubsurfaceAccess.RETURN_ROUTE_REVISION);
+            args.put("supportsStickResupply", true);
             args.put("supportsPickupReserve", true);
             var tools = new HashMap<String, Integer>();
             var inventory = client.player.getInventory();

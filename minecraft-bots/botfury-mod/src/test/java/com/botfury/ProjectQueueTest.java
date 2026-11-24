@@ -15,6 +15,42 @@ class ProjectQueueTest {
     @TempDir Path directory;
     private static final String WORLD = "test|overworld";
 
+    @Test void spareSticksCanBeDeliveredOnceWithoutMovingTheToolLease() throws Exception {
+        var journal = directory.resolve("stick-resupply.json");
+        var queue = new ProjectQueue(journal);
+        queue.submit("tools", WORLD, List.of(
+                new ProjectQueue.Work("log", GATHER,
+                        "{\"resource\":\"block:minecraft:oak_log\",\"variant\":\"both\",\"item\":\"minecraft:oak_log\",\"count\":1}",
+                        List.of(), Set.of()),
+                new ProjectQueue.Work("planks", CRAFT, "{\"recipe\":\"minecraft:oak_planks\",\"inventory\":true,\"count\":2}",
+                        List.of("log"), Set.of(), "log"),
+                new ProjectQueue.Work("sticks", CRAFT, "{\"recipe\":\"minecraft:stick\",\"inventory\":true,\"count\":2}",
+                        List.of("planks"), Set.of(), "planks"),
+                new ProjectQueue.Work("pickaxe", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\",\"count\":1}",
+                        List.of("sticks"), Set.of(), "sticks")));
+        var miner = queue.claim(WORLD, "miner", Set.of(GATHER), 1).job();
+        var field = new ProjectQueue.ResourceSite(8, 64, 0);
+        assertNull(queue.claim(WORLD, "courier", Set.of(RESUPPLY), "tools", 2, field));
+        assertNull(queue.offerStickResupply(WORLD, "courier", "tools", 3,
+                name -> name.equals("miner") ? new ProjectQueue.ResourceSite(8, 44, 0) : field,
+                (name, item) -> name.equals("courier") ? 4 : 0));
+        assertNull(queue.offerStickResupply(WORLD, "courier", "tools", 4, name -> field,
+                (name, item) -> name.equals("courier") ? 3 : 0));
+        var loan = queue.offerStickResupply(WORLD, "courier", "tools", 5, name -> field,
+                (name, item) -> name.equals("courier") ? 4 : 0).job();
+        assertEquals("miner", queue.routeToolDelivery("tools", loan.work().id(), loan.lease(), 6).recipient());
+        assertEquals(2, queue.routeToolDelivery("tools", loan.work().id(), loan.lease(), 6).quantity());
+        assertNull(queue.claim(WORLD, "alternate", Set.of(RESUPPLY), "tools", 7, field));
+        assertNull(queue.offerStickResupply(WORLD, "alternate", "tools", 8, name -> field,
+                (name, item) -> name.equals("alternate") ? 4 : 0));
+        queue = new ProjectQueue(journal);
+        assertTrue(queue.finish("tools", "log", miner.lease(), true, ProjectQueue.PREPARED_COMPATIBLE_STICKS, 9));
+        assertEquals(ProjectQueue.PREPARED_REQUIRED_STICKS, queue.snapshot(10).get(0).jobs().get(0).evidence());
+        assertTrue(queue.finish("tools", "log", miner.lease(), true, ProjectQueue.PREPARED_COMPATIBLE_STICKS, 10));
+        assertNull(queue.routeToolDelivery("tools", loan.work().id(), loan.lease(), 10));
+        assertEquals("pickaxe", queue.claim(WORLD, "miner", Set.of(CRAFT), 11).job().work().id());
+    }
+
     @Test void compatibleSticksCanSatisfyOnlyAStandaloneWoodPreparationChain() throws Exception {
         for (int mode = 0; mode < 3; mode++) {
             boolean eligible = mode == 0;

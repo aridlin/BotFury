@@ -483,6 +483,10 @@ final class ProjectBroker {
                     board.submit(request.project, world, work);
                     reply(exchange, 201, request.project);
                 }
+                case "safety-wait" -> {
+                    board.reportSafetyWait(world, request.worker, request.project, now);
+                    reply(exchange, 200, true);
+                }
                 case "claim" -> {
                     var position = workerPosition(request.worker);
                     int returnRevision = Math.max(0, Math.min(request.returnRouteRevision, SubsurfaceAccess.RETURN_ROUTE_REVISION));

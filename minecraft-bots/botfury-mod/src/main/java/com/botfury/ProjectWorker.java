@@ -59,6 +59,8 @@ final class ProjectWorker {
     private static ProjectGather.Area miningCraftArea;
     private static ProjectBlock portableWorkbench;
     private static WorkbenchPickup workbenchPickup;
+    private static long nextSafetyReport;
+    private static boolean waitingForSafety;
     private static boolean checkedMiningWeapon;
     private static boolean checkedExcavationTool;
     private static ProjectGather gather;
@@ -233,6 +235,8 @@ final class ProjectWorker {
     }
 
     private static void reset(MinecraftClient client) {
+        waitingForSafety = false;
+        nextSafetyReport = 0;
         idleRecovery.reset();
         halt(client);
         assignment = null;
@@ -364,18 +368,26 @@ final class ProjectWorker {
             }
         }
         if (assignment == null) {
-            if (recoverBreathing(client)) return;
-            if (TaskDefense.evade(client, false)) {
+            boolean busy = true;
+            if (recoverBreathing(client)) status = "Swimming toward air";
+            else if (TaskDefense.evade(client, true)) {
                 idleRecovery.reset();
-                status = "Sheltering from a nearby Phantom";
+                status = TaskDefense.sheltering() ? "Sheltering from a nearby Phantom" : "Avoiding danger";
+            } else if (TaskDefense.defendProject(client)) {
+                idleRecovery.reset();
+                status = "Defending or recovering";
+            } else if (!pending && idleRecovery.yieldWhileIdle(client)) status = "Yielding the work area";
+            else busy = false;
+            if (busy) {
+                waitingForSafety = true;
+                if (!pending && now >= nextSafetyReport) {
+                    nextSafetyReport = now + seconds(10);
+                    request(client, here, "safety-wait", now);
+                }
                 return;
             }
-            if (!pending && idleRecovery.yieldWhileIdle(client)) {
-                status = "Yielding the work area";
-                return;
-            }
-            if (status.equals("Yielding the work area") || status.equals("Sheltering from a nearby Phantom")
-                    || status.equals("Swimming toward air")) {
+            if (waitingForSafety) {
+                waitingForSafety = false;
                 status = "Waiting for project jobs";
             }
             if (!pending && now >= nextRequest) request(client, here, "claim", now);
@@ -1473,7 +1485,10 @@ final class ProjectWorker {
         int epoch = generation;
         var args = new HashMap<String, Object>();
         args.put("action", action);
-        if (assignment == null) {
+        if (action.equals("safety-wait")) {
+            args.put("worker", here.name());
+            if (enrollment.project() != null) args.put("project", enrollment.project());
+        } else if (assignment == null) {
             args.put("worker", here.name());
             if (enrollment.project() != null) args.put("project", enrollment.project());
             args.put("kinds", KINDS);
@@ -1513,13 +1528,13 @@ final class ProjectWorker {
             }
         }
         pending = true;
-        nextRequest = now + seconds(1);
+        if (!action.equals("safety-wait")) nextRequest = now + seconds(1);
         var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/projects"))
                 .timeout(Duration.ofSeconds(2)).POST(HttpRequest.BodyPublishers.ofString(JSON.toJson(args))).build();
         HTTP.sendAsync(request, HttpResponse.BodyHandlers.ofString()).whenComplete((reply, error) -> client.execute(() -> {
             if (generation != epoch) return;
             pending = false;
-            if (error != null || reply.statusCode() >= 500) return;
+            if (action.equals("safety-wait") || error != null || reply.statusCode() >= 500) return;
             boolean continuation = action.equals("finish") && reply.statusCode() == 200 && reply.body().startsWith("{");
             if (reply.statusCode() == 409 || action.equals("finish") && reply.statusCode() == 200 && !continuation) {
                 reset(client);

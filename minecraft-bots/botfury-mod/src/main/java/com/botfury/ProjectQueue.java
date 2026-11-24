@@ -227,6 +227,7 @@ final class ProjectQueue {
     private final Path journal;
     private final Path archive;
     private final Map<String, Long> workerSeen = new HashMap<>();
+    private final Map<String, Long> safetyWaits = new HashMap<>();
     private final Set<String> unscopedWorkers = new HashSet<>();
     private final Set<UUID> restoredLeases = new HashSet<>();
     private Map<String, Project> projects;
@@ -1790,7 +1791,8 @@ final class ProjectQueue {
     private boolean availableProjectWorker(Project project, String worker, long now) {
         long lastSeen = Math.max(workerSeen.getOrDefault(workerKey(project.world, worker, project.id), 0L),
                 workerSeen.getOrDefault(workerKey(project.world, worker, null), 0L));
-        return lastSeen > 0 && now - lastSeen <= LEASE_MS && projects.values().stream().flatMap(p -> p.jobs.stream())
+        return lastSeen > 0 && lastSeen >= lastSafetyWait(project.world, worker, project.id)
+                && now - lastSeen <= LEASE_MS && projects.values().stream().flatMap(p -> p.jobs.stream())
                 .noneMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker));
     }
 
@@ -2532,6 +2534,17 @@ final class ProjectQueue {
         return world + "\n" + worker.toLowerCase(Locale.ROOT) + "\n" + (project == null ? "" : project);
     }
 
+    synchronized void reportSafetyWait(String world, String worker, String project, long now) {
+        if (world == null || !validId(worker) || project != null && !validId(project))
+            throw new IllegalArgumentException("Invalid worker or project");
+        safetyWaits.put(workerKey(world, worker, project), now);
+    }
+
+    private long lastSafetyWait(String world, String worker, String project) {
+        return Math.max(safetyWaits.getOrDefault(workerKey(world, worker, project), 0L),
+                safetyWaits.getOrDefault(workerKey(world, worker, null), 0L));
+    }
+
     private void markSeen(String world, String worker, String project, long now) {
         workerSeen.put(workerKey(world, worker, project), now);
     }
@@ -2796,7 +2809,7 @@ final class ProjectQueue {
                 // After a coordinator restart, give workers the full window to reconnect.
                 long seen = Math.max(workerSeen.computeIfAbsent(key, ignored -> now),
                         workerSeen.getOrDefault(workerKey(world, supplier.worker, null), 0L));
-                if (now - seen < SUPPLIER_OFFLINE_MS) continue;
+                if (now - Math.max(seen, lastSafetyWait(world, supplier.worker, project.id)) < SUPPLIER_OFFLINE_MS) continue;
                 if (rewindSupply(project, job, supplier, jobs, "Supplier " + supplier.worker + " went offline",
                         job.chest)) break;
             }

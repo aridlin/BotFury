@@ -127,7 +127,8 @@ final class ProjectBroker {
         for (var request : blocked) {
             var builder = workerPosition(request.builder());
             if (builder == null) continue;
-            var plan = StructureProject.repairPlacementAccess(client, request.job(), builder, reservations);
+            var plan = StructureProject.repairPlacementAccess(client, request.job(), builder, reservations,
+                    request.repairId(), request.replacementScaffold());
             if (plan != null && board.installAccess(world, request, plan, System.currentTimeMillis())) {
                 BotEvents.add("info", "projects", "Planned temporary scaffold for " + request.job().id());
                 return;

@@ -735,31 +735,57 @@ final class StructureProject {
     }
 
     static AccessRepair repairPlacementAccess(MinecraftClient client, ProjectQueue.Work work,
-                                               ProjectQueue.ResourceSite worker, Set<String> reserved) {
+                                               ProjectQueue.ResourceSite worker, Set<String> reserved,
+                                               String repairId, boolean replacement) {
         var original = ProjectBlock.parse(work.payload());
         var target = original.target();
         var start = new BlockPos(worker.x(), worker.y(), worker.z());
         if (!loaded(client, target) || !client.world.isAir(target) || !start.isWithinDistance(target, 10)) return null;
-        String prefix = "repair-" + work.id();
+        var faces = replacement ? ProjectPlacement.faces(original.desired()) : List.of(original.face());
+        var grounded = replacement ? locallyReachableStands(client, start) : Set.<BlockPos>of();
+        AccessRepair best = null;
+        for (var face : faces) {
+            var placement = new ProjectBlock(target, original.stand(), original.block(), original.properties(), face);
+            var repair = repairPlacementAccess(client, work, placement, start, reserved, "repair-" + repairId, grounded, replacement);
+            if (repair == null) continue;
+            if (!replacement || repair.stone() == 1) return repair;
+            if (best == null || repair.stone() < best.stone()) best = repair;
+        }
+        return best;
+    }
+
+    private static AccessRepair repairPlacementAccess(MinecraftClient client, ProjectQueue.Work work, ProjectBlock original,
+                                                       BlockPos start, Set<String> reserved, String prefix,
+                                                       Set<BlockPos> grounded, boolean replacement) {
+        var target = original.target();
         String pickup = prefix + "-stock";
-        for (var top : BlockPos.iterateOutwards(target, 4, 2, 4)) {
+        var tops = BlockPos.iterateOutwards(target, 4, replacement ? 4 : 2, 4);
+        if (replacement) {
+            var sorted = new ArrayList<BlockPos>();
+            for (var top : tops) sorted.add(top.toImmutable());
+            sorted.sort(Comparator.comparingInt(BlockPos::getY));
+            tops = sorted;
+        }
+        for (var top : tops) {
             var stand = top.up();
             int rise = stand.getY() - start.getY();
             if (rise < 1 || rise > 4 || stand.equals(original.stand()) || stand.equals(target)
                     || stand.up().equals(target) || top.equals(target) || target.getSquaredDistance(stand) > 16
                     || !loaded(client, stand.up()) || !client.world.isAir(stand) || !client.world.isAir(stand.up())
-                    || !clearBuildFace(client, Vec3d.ofBottomCenter(stand).add(0, 1.62, 0), original, Map.of())) continue;
+                    || !scaffoldPlacementVisible(client, stand, original, Map.of(), replacement)) continue;
             for (var ascent : Direction.Type.HORIZONTAL) {
                 var base = top.down(rise - 1).offset(ascent.getOpposite(), rise - 1);
-                if (!base.isWithinDistance(start, 6) || !safeStand(client, base, Map.of())) continue;
+                if (!base.isWithinDistance(start, 6) || !safeStand(client, base, Map.of())
+                        || replacement && !grounded.contains(base)) continue;
                 var scaffold = planScaffold(client, top, ascent, rise, Map.of(), Map.of(), Map.of(), Map.of(),
                         Map.of(), Set.of(), List.of(pickup), prefix + "-");
                 if (scaffold == null || scaffold.layout.keySet().stream().anyMatch(pos -> pos.equals(target)
                         || pos.equals(original.support()) || reserved.contains(ProjectBlock.key(pos)))
                         || !safeStand(client, stand, scaffold.layout)
-                        || !clearBuildFace(client, Vec3d.ofBottomCenter(stand).add(0, 1.62, 0), original, scaffold.layout)) continue;
+                        || !scaffoldPlacementVisible(client, stand, original, scaffold.layout, replacement)) continue;
                 var firstStand = ProjectBlock.parse(scaffold.jobs.get(0).payload()).stand();
-                if (!firstStand.isWithinDistance(start, 7) || Math.abs(firstStand.getY() - start.getY()) > 1) continue;
+                if (!firstStand.isWithinDistance(start, 7) || Math.abs(firstStand.getY() - start.getY()) > 1
+                        || replacement && !grounded.contains(firstStand)) continue;
                 var depends = new ArrayList<>(work.needs());
                 depends.add(scaffold.lastPlacement());
                 var built = work(work.id(), ProjectQueue.Kind.BUILD, target, original.desired(), stand,
@@ -781,6 +807,41 @@ final class StructureProject {
             }
         }
         return null;
+    }
+
+    private static boolean scaffoldPlacementVisible(MinecraftClient client, BlockPos stand, ProjectBlock block,
+                                                       Map<BlockPos, BlockState> layout, boolean tryJump) {
+        var eye = Vec3d.ofBottomCenter(stand).add(0, 1.62, 0);
+        if (clearBuildFace(client, eye, block, layout)) return true;
+        if (!tryJump || ProjectWater.source(block.desired())
+                || !airAt(client, stand.up(2), layout)) return false;
+        for (double height : new double[]{.42, .76, 1, 1.15}) {
+            if (clearBuildFace(client, eye.add(0, height, 0), block, layout)) return true;
+        }
+        return false;
+    }
+
+    private static Set<BlockPos> locallyReachableStands(MinecraftClient client, BlockPos start) {
+        var seen = new HashSet<BlockPos>();
+        var open = new ArrayDeque<BlockPos>();
+        if (!loaded(client, start.up()) || !safeStand(client, start, Map.of())) return seen;
+        seen.add(start);
+        open.add(start);
+        while (!open.isEmpty()) {
+            var from = open.removeFirst();
+            for (var direction : Direction.Type.HORIZONTAL) {
+                var adjacent = from.offset(direction);
+                for (int height = -1; height <= 1; height++) {
+                    var next = adjacent.up(height);
+                    if (!next.isWithinDistance(start, 7) || !loaded(client, next.up())
+                            || !safeStand(client, next, Map.of())
+                            || height > 0 && !client.world.isAir(from.up(2))
+                            || height < 0 && !client.world.isAir(adjacent.up())) continue;
+                    if (seen.add(next)) open.addLast(next);
+                }
+            }
+        }
+        return seen;
     }
 
     private static Scaffold planScaffoldBlocks(MinecraftClient client, Map<BlockPos, BlockState> scaffold,

@@ -143,11 +143,12 @@ final class ProjectQueue {
             return new Project(id, world, updated, repeat, supplyChest, amounts, origins);
         }
     }
-    record Assignment(String project, String world, Job job, FuelUse fuelFor, List<ResourceSite> accessRoute) {
+    record Assignment(String project, String world, Job job, FuelUse fuelFor, List<ResourceSite> accessRoute,
+                      int cargoCheckpoint) {
         Assignment {
             accessRoute = accessRoute == null ? List.of() : List.copyOf(accessRoute);
         }
-        Assignment(String project, String world, Job job) { this(project, world, job, null, List.of()); }
+        Assignment(String project, String world, Job job) { this(project, world, job, null, List.of(), 0); }
     }
     record FuelUse(String job, String recipe, String input, String expectedFuel, int count) {}
     private record SmeltFuel(String recipe, String input, String fuel, String plannedFuel, int count) {}
@@ -180,6 +181,8 @@ final class ProjectQueue {
     private static final String CONTRIBUTION_ACTIVE = "Delivering a partial stock contribution";
     private static final String CONTRIBUTION_RETRY = "Partial deposit ended before chest observation";
     private static final String CONTRIBUTION_SETTLED = "Partial stock contribution settled";
+    static final String CARGO_CHECKPOINT = "Banking a mining checkpoint";
+    private static final int MINING_CARGO_LIMIT = 4;
     private static final String CONSTRUCTION_PICKUP = "Collecting replacement materials for a nearby builder";
     static final String ALTERNATIVE_FUEL = "Using carried smelting fuel ";
     static final String TARGET_TIMEOUT = "Timed out approaching or changing the target";
@@ -724,6 +727,7 @@ final class ProjectQueue {
                 if (ownedLane != null && !ownedLane.equals(lane(job.work.id))) continue;
                 if (deposit != null && job.work.kind == Kind.TRANSFER && !deposit.equals(job.work.id)) continue;
                 if (job.work.kind.coordinatorOnly() || cargoAwaitingHandoff.contains(job.work.sameWorkerAs)
+                        || CARGO_CHECKPOINT.equals(job.evidence) && checkpointDepositActive(project, job)
                         || retryDelayedFor(job, worker, now)
                         || !kinds.contains(job.work.kind)) continue;
                 boolean nearbyPickup = canRetryConstructionPickup(job, position);
@@ -916,7 +920,7 @@ final class ProjectQueue {
                             "Tool preparation satisfied by carried " + recipe.recipe, job.chest, job.resourceSite);
                 }).toList();
                 commit(project.withJobs(jobs));
-                return new Assignment(project.id, project.world, lease);
+                return assignment(project, lease);
             }
         }
         return null;
@@ -986,6 +990,19 @@ final class ProjectQueue {
     synchronized Assignment offerInterruptedDeposit(String world, String worker, String projectId, long now,
                                                      ResourceSite position,
                                                      java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
+        return offerInterruptedDeposit(world, worker, projectId, now, position, heldCount, false);
+    }
+
+    synchronized Assignment offerCheckpointDeposit(String world, String worker, String projectId, long now,
+                                                   ResourceSite position,
+                                                   java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
+        return offerInterruptedDeposit(world, worker, projectId, now, position, heldCount, true);
+    }
+
+    private Assignment offerInterruptedDeposit(String world, String worker, String projectId, long now,
+                                               ResourceSite position,
+                                               java.util.function.ToIntBiFunction<String, String> heldCount,
+                                               boolean checkpointsOnly) throws IOException {
         if (projects.values().stream().flatMap(project -> project.jobs.stream())
                 .anyMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker))) return null;
         var reserved = pendingBuildMaterials(world, worker);
@@ -996,8 +1013,10 @@ final class ProjectQueue {
                 if (gather.work.kind != Kind.GATHER || gather.state == State.DONE) continue;
                 var deposit = contributionDeposit(project, gather);
                 if (deposit == null) continue;
+                boolean checkpoint = CARGO_CHECKPOINT.equals(gather.evidence) && cargoCheckpoint(project, gather) > 0;
+                if (checkpointsOnly && !checkpoint) continue;
                 boolean interrupted = gather.state != State.LEASED && (RECOVERING_TOOLS.equals(gather.evidence)
-                        || GATHER_STALLED.equals(gather.evidence) || LEASE_EXPIRED.equals(gather.evidence));
+                        || GATHER_STALLED.equals(gather.evidence) || LEASE_EXPIRED.equals(gather.evidence) || checkpoint);
                 boolean returningCargo = deposit.chest != null && CONTRIBUTION_SETTLED.equals(deposit.evidence);
                 if (!interrupted && !returningCargo) continue;
                 var source = gatherSource(gather.work.payload);
@@ -1019,6 +1038,24 @@ final class ProjectQueue {
     private static Job contributionDeposit(Project project, Job gather) {
         return project.jobs.stream().filter(job -> job.state == State.WAITING && job.work.kind == Kind.TRANSFER
                 && gather.work.id.equals(job.work.sameWorkerAs) && depositTarget(job)).findFirst().orElse(null);
+    }
+
+    private static boolean checkpointDepositActive(Project project, Job gather) {
+        return project.jobs.stream().anyMatch(job -> job.state == State.LEASED && CONTRIBUTION_ACTIVE.equals(job.evidence)
+                && gather.work.id.equals(job.work.sameWorkerAs));
+    }
+
+    private static int cargoCheckpoint(Project project, Job gather) {
+        if (gather.work.kind != Kind.GATHER || project.repeat != null || project.supplyChest == null) return 0;
+        var source = gatherSource(gather.work.payload);
+        if (source == null) return 0;
+        Integer depth = SubsurfaceAccess.prospectingAltitude(source.resource);
+        if (depth == null || depth > 0) return 0;
+        var deposit = contributionDeposit(project, gather);
+        if (deposit == null || !deposit.work.locks.contains(project.supplyChest)
+                || project.jobs.stream().anyMatch(job -> job != deposit && job.work.needs.contains(gather.work.id))) return 0;
+        var count = JSON.fromJson(gather.work.payload, com.google.gson.JsonObject.class).get("count");
+        return count != null && count.getAsInt() > MINING_CARGO_LIMIT ? MINING_CARGO_LIMIT : 0;
     }
 
     synchronized Assignment offerGatheringStock(String world, String worker, String projectId, long now,
@@ -1186,7 +1223,8 @@ final class ProjectQueue {
     }
 
     private static Assignment assignment(Project project, Job job) {
-        return new Assignment(project.id, project.world, job, fuelUse(project, job), accessRoute(project, job));
+        return new Assignment(project.id, project.world, job, fuelUse(project, job), accessRoute(project, job),
+                cargoCheckpoint(project, job));
     }
 
     private static List<ResourceSite> accessRoute(Project project, Job job) {
@@ -1425,6 +1463,9 @@ final class ProjectQueue {
         Job result;
         if (success) {
             result = new Job(job.work, State.DONE, job.attempts, job.worker, job.lease, 0, evidence, observation, location);
+        } else if (CARGO_CHECKPOINT.equals(evidence) && cargoCheckpoint(project, job) > 0) {
+            result = new Job(job.work, State.WAITING, Math.max(0, job.attempts - 1), job.worker, null,
+                    now + STALLED_WORKER_COOLDOWN_MS, evidence, observation, location);
         } else if (job.attempts < MAX_ATTEMPTS && job.work.kind == Kind.GATHER && job.work.sameWorkerAs == null
                 && GATHER_STALLED.equals(evidence)) {
             result = new Job(job.work, State.WAITING, job.attempts, job.worker, null,
@@ -1586,7 +1627,8 @@ final class ProjectQueue {
                 var reduced = gather.state == State.FAILED
                         ? new Job(adjusted, State.WAITING, 0, null, null, 0, null, gather.chest)
                         : new Job(adjusted, gather.state, gather.attempts, gather.worker,
-                                gather.lease, gather.expiresAt, retry, gather.chest, gather.resourceSite);
+                                gather.lease, CARGO_CHECKPOINT.equals(gather.evidence) ? 0 : gather.expiresAt,
+                                CARGO_CHECKPOINT.equals(gather.evidence) ? null : retry, gather.chest, gather.resourceSite);
                 jobs.set(jobs.indexOf(gather), reduced);
             }
         }

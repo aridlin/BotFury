@@ -43,6 +43,13 @@ final class ResourceCatalog {
         var result=new ArrayList<>(resource.normal);result.addAll(resource.deepslate);return List.copyOf(result);
     }
 
+    static boolean isOre(String id) {
+        String block = id.startsWith("block:") ? id.substring(6) : null;
+        return RESOURCES.stream().anyMatch(resource -> resource.category.equals("Ores")
+                && (resource.id.equals(id) || block != null
+                    && (resource.normal.contains(block) || resource.deepslate.contains(block))));
+    }
+
     static List<String> trackedDrops(String resource, String variant) {
         var items = new LinkedHashSet<String>();
         String drop = switch (resource) {

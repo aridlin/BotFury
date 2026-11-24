@@ -611,21 +611,38 @@ final class MiningTask {
         }
         return null;
     }
-    private static boolean hasTool(MinecraftClient client, BlockState state) {
+    static boolean hasTool(MinecraftClient client, BlockState state) {
         if (!state.isToolRequired()) return true;
         for (int slot = 0; slot < 36; slot++) {
             if (client.player.getInventory().getStack(slot).isSuitableFor(state)) return true;
         }
         return false;
     }
-    private static boolean equip(MinecraftClient c,BlockPos p){
-        var state=c.world.getBlockState(p);int best=-1;float speed=-1;
-        for(int i=0;i<36;i++){var stack=c.player.getInventory().getStack(i);if(state.isToolRequired()&&!stack.isSuitableFor(state))continue;float s=stack.getMiningSpeedMultiplier(state);if(s>speed){speed=s;best=i;}}
-        if(best<0)return false;
-        if(best<9)c.player.getInventory().selectedSlot=best;
-        else if(c.player.currentScreenHandler==c.player.playerScreenHandler)c.interactionManager.clickSlot(c.player.playerScreenHandler.syncId,best,c.player.getInventory().selectedSlot,SlotActionType.SWAP,c.player);
+    static boolean equip(MinecraftClient client, BlockPos pos) {
+        var inventory = client.player.getInventory();
+        var state = client.world.getBlockState(pos);
+        int best = -1;
+        float speed = -1;
+        for (int offset = 0; offset < 36; offset++) {
+            int slot = (inventory.selectedSlot + offset) % 36;
+            var stack = inventory.getStack(slot);
+            if (state.isToolRequired() && !stack.isSuitableFor(state)) continue;
+            float candidate = stack.getMiningSpeedMultiplier(state);
+            if (candidate > speed || candidate == speed && !stack.isDamageable() && inventory.getStack(best).isDamageable()) {
+                speed = candidate;
+                best = slot;
+            }
+        }
+        if (best < 0) return false;
+        if (best < 9) inventory.selectedSlot = best;
+        else {
+            var handler = client.player.playerScreenHandler;
+            if (client.player.currentScreenHandler != handler || !handler.getCursorStack().isEmpty()) return false;
+            client.interactionManager.clickSlot(handler.syncId, best, inventory.selectedSlot, SlotActionType.SWAP, client.player);
+        }
         return true;
     }
+
     private static Vec3d standing(MinecraftClient client, BlockPos target) {
         var player = client.player;
         var world = client.world;

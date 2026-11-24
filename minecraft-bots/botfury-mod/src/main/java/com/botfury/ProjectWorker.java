@@ -61,7 +61,8 @@ final class ProjectWorker {
     private static WorkbenchPickup workbenchPickup;
     private static long nextSafetyReport;
     private static boolean waitingForSafety;
-    private static boolean checkedMiningWeapon;
+    private static long nextMiningWeaponCheck;
+    private static boolean pausedForWeapon;
     private static boolean checkedExcavationTool;
     private static ProjectGather gather;
     private static boolean checkedCarriedFuel;
@@ -270,7 +271,8 @@ final class ProjectWorker {
         miningCraftArea = null;
         portableWorkbench = null;
         workbenchPickup = null;
-        checkedMiningWeapon = false;
+        nextMiningWeaponCheck = 0;
+        pausedForWeapon = false;
         checkedExcavationTool = false;
         gather = null;
         checkedCarriedFuel = false;
@@ -475,11 +477,17 @@ final class ProjectWorker {
                 if (result == DroppedItemSearch.State.UNAVAILABLE) finish(client, false, "Baritone unavailable for pickup");
                 else status = (result == DroppedItemSearch.State.SEARCHING ? "Looking for dropped " : "Collecting ")
                         + gather.item() + " (" + held + "/" + gather.count() + ")";
+            } else if (prepareMiningWeapon(client, now)) {
+                pausedForWeapon = MiningTask.working();
+                if (pausedForWeapon) MiningTask.pause(true);
             } else if (!MiningTask.active()) {
-                if (prepareMiningWeapon(client, now)) return;
                 MiningTask.startProject(client, gather.mining(port), gather.exclude(), gatherSite, gather.item());
                 if (!MiningTask.active()) finish(client, false, MiningTask.lastStatus());
             } else {
+                if (pausedForWeapon) {
+                    MiningTask.pause(false);
+                    pausedForWeapon = false;
+                }
                 status = assignment.project() + "/" + assignment.job().work().id() + " (" + held + "/" + gather.count()
                         + "): " + MiningTask.status();
                 MiningTask.tick(client);
@@ -541,15 +549,18 @@ final class ProjectWorker {
     }
 
     private static boolean prepareMiningWeapon(MinecraftClient client, long now) {
-        if (checkedMiningWeapon) return false;
-        checkedMiningWeapon = true;
-        if (!TaskDefense.enabled() || !SubsurfaceAccess.deepResource(gather.resource())) return false;
+        if (now < nextMiningWeaponCheck || !TaskDefense.enabled()) return false;
+        nextMiningWeaponCheck = now + seconds(10);
+        if (!ResourceCatalog.isOre(gather.resource()) || !SubsurfaceAccess.hasFooting(client)
+                || client.player.isTouchingWater() || client.player.currentScreenHandler != client.player.playerScreenHandler) return false;
+        var ore = ResourceCatalog.blocks(gather.resource(), gather.variant()).get(0);
+        if (!MiningTask.hasTool(client, Registries.BLOCK.get(new Identifier(ore)).getDefaultState())) return false;
         var inventory = client.player.getInventory();
         for (int slot = 0; slot < 36; slot++) {
             var item = inventory.getStack(slot).getItem();
             if (item instanceof net.minecraft.item.SwordItem || item instanceof net.minecraft.item.AxeItem) return false;
         }
-        return startMiningCraft(client, now, MINING_SWORD, null);
+        return startMiningCraft(client, now, MINING_SWORD, gather.exclude());
     }
 
     private static boolean isPickaxeRecipe(Identifier recipe) {
@@ -558,11 +569,10 @@ final class ProjectWorker {
 
     private static boolean startMiningCraft(MinecraftClient client, long now, Identifier recipe, ProjectGather.Area excluded) {
         if (ProjectProduction.canCraft(client, recipe)) {
-            fieldWorkstation = isPickaxeRecipe(recipe) ? FieldWorkstation.findForMiningTool(client, now, excluded)
-                    : FieldWorkstation.find(client, now, ProjectQueue.Kind.CRAFT);
+            fieldWorkstation = FieldWorkstation.findForMiningTool(client, now, excluded);
             if (fieldWorkstation == null) return false;
         } else {
-            if (!isPickaxeRecipe(recipe) || !ProjectProduction.canCraft(client, ROUTE_STICKS)
+            if (!ProjectProduction.canCraft(client, ROUTE_STICKS)
                     || !ProjectProduction.canCraft(client, recipe, new net.minecraft.item.ItemStack(net.minecraft.item.Items.STICK, 4))) {
                 return false;
             }
@@ -583,7 +593,7 @@ final class ProjectWorker {
         boolean replacement = isPickaxeRecipe(recipe);
         boolean excavation = assignment.job().work().kind() == ProjectQueue.Kind.EXCAVATE;
         if (preparingMiningSticks) {
-            status = "Crafting sticks for a replacement pickaxe";
+            status = replacement ? "Crafting sticks for a replacement pickaxe" : "Crafting sticks for a stone sword";
             var sticks = miningCraft.tick(client, now);
             if (sticks == null) return;
             miningCraft.close(client);
@@ -594,8 +604,8 @@ final class ProjectWorker {
             miningRecipe = null;
             if (sticks.success() && startMiningCraft(client, now, recipe, area)) return;
             if (delivery != null) finish(client, false, ProjectQueue.ROUTE_PREPARATION_FAILED + "could not prepare pickaxe ingredients");
-            else if (gather != null) finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
-            else if (sticks.success()) stationToolAttempt = null;
+            else if (replacement && gather != null) finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
+            else if (replacement && sticks.success()) stationToolAttempt = null;
             return;
         }
         if (miningCraft == null) {
@@ -606,7 +616,7 @@ final class ProjectWorker {
                 return;
             }
             var station = fieldWorkstation.station();
-            if (replacement && delivery == null && fieldWorkstation.placedByWorker(client)) portableWorkbench = station;
+            if (delivery == null && fieldWorkstation.placedByWorker(client)) portableWorkbench = station;
             fieldWorkstation.close(client);
             fieldWorkstation = null;
             if (state != FieldWorkstation.State.READY) {
@@ -618,7 +628,7 @@ final class ProjectWorker {
             miningCraft = new ProjectProduction(new ProjectProduction.Spec(station, ProjectQueue.Kind.CRAFT,
                     miningRecipe, null, null, delivery == null ? 1 : delivery.craftTarget()));
         }
-        status = !replacement ? "Making a stone sword before prospecting"
+        status = !replacement ? "Crafting a stone sword for mining"
                 : delivery != null ? "Crafting a replacement pickaxe for " + delivery.recipient()
                 : excavation ? "Crafting a pickaxe for excavation"
                 : gather == null ? "Crafting a pickaxe for the return route" : "Crafting a replacement prospecting pickaxe";
@@ -641,7 +651,7 @@ final class ProjectWorker {
                 BotEvents.add("info", "mining", excavation ? "Crafted a pickaxe for excavation"
                         : gather == null ? "Crafted a pickaxe for the return route" : "Crafted a replacement prospecting pickaxe");
             } else if (gather != null) finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
-        } else if (result.success()) BotEvents.add("info", "defense", "Crafted a stone sword before prospecting");
+        } else if (result.success()) BotEvents.add("info", "defense", "Crafted a stone sword for mining");
     }
 
     private static int freshToolCount(MinecraftClient client, net.minecraft.item.Item item) {

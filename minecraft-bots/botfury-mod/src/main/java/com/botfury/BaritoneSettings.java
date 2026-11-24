@@ -33,8 +33,8 @@ final class BaritoneSettings implements AutoCloseable {
         this(allowBreak, preserveGates, recovery, false);
     }
 
-    static BaritoneSettings prospecting() throws ReflectiveOperationException {
-        return new BaritoneSettings(true, true, true, true);
+    static BaritoneSettings prospecting(boolean allowBreak) throws ReflectiveOperationException {
+        return new BaritoneSettings(allowBreak, true, true, true);
     }
 
     private BaritoneSettings(boolean allowBreak, boolean preserveGates, boolean recovery, boolean prospecting)

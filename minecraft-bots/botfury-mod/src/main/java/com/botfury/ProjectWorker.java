@@ -75,6 +75,7 @@ final class ProjectWorker {
     private static boolean attemptedJumpHeadroom;
     private static final StallRecovery approachRecovery = new StallRecovery();
     private static final SubsurfaceAccess stationReturn = new SubsurfaceAccess();
+    private static BlockPos stationToolAttempt;
     private static int approachAge;
     private static Vec3d approachProgress;
     private static long retryApproach;
@@ -190,6 +191,7 @@ final class ProjectWorker {
         nextInteractionStandSearch = 0;
         approachAge = 0;
         stationReturn.reset();
+        stationToolAttempt = null;
         inspection = null;
         fill = null;
         chest = null;
@@ -289,7 +291,9 @@ final class ProjectWorker {
             if (client.interactionManager != null) client.interactionManager.cancelBlockBreaking();
             return;
         }
-        if (gather != null) {
+        if (miningRecipe != null && gather == null) {
+            tickMiningCraft(client, now);
+        } else if (gather != null) {
             int held = gather.inventoryCount(client);
             if (!checkedCarriedFuel && held < gather.count() && assignment.fuelFor() != null) {
                 checkedCarriedFuel = true;
@@ -321,7 +325,7 @@ final class ProjectWorker {
                 var observation = MiningTask.observedSite();
                 if (observation != null) gatherSite = observation;
                 if (MiningTask.toolShortfall()) {
-                    if (MiningTask.routeToolShortfall() && startMiningCraft(client, now, ROUTE_PICKAXE)) {
+                    if (MiningTask.routeToolShortfall() && startMiningCraft(client, now, ROUTE_PICKAXE, gather.exclude())) {
                         MiningTask.stop();
                     } else finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
                 }
@@ -342,12 +346,12 @@ final class ProjectWorker {
             var item = inventory.getStack(slot).getItem();
             if (item instanceof net.minecraft.item.SwordItem || item instanceof net.minecraft.item.AxeItem) return false;
         }
-        return startMiningCraft(client, now, MINING_SWORD);
+        return startMiningCraft(client, now, MINING_SWORD, null);
     }
 
-    private static boolean startMiningCraft(MinecraftClient client, long now, Identifier recipe) {
+    private static boolean startMiningCraft(MinecraftClient client, long now, Identifier recipe, ProjectGather.Area excluded) {
         if (!ProjectProduction.canCraft(client, recipe)) return false;
-        fieldWorkstation = recipe.equals(ROUTE_PICKAXE) ? FieldWorkstation.findForMiningTool(client, now, gather.exclude())
+        fieldWorkstation = recipe.equals(ROUTE_PICKAXE) ? FieldWorkstation.findForMiningTool(client, now, excluded)
                 : FieldWorkstation.find(client, now, ProjectQueue.Kind.CRAFT);
         if (fieldWorkstation == null) return false;
         miningRecipe = recipe;
@@ -368,13 +372,14 @@ final class ProjectWorker {
             fieldWorkstation = null;
             if (state != FieldWorkstation.State.READY) {
                 miningRecipe = null;
-                if (replacement) finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
+                if (replacement && gather != null) finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
                 return;
             }
             miningCraft = new ProjectProduction(new ProjectProduction.Spec(station, ProjectQueue.Kind.CRAFT,
                     miningRecipe, null, null, 1));
         }
-        status = replacement ? "Crafting a replacement prospecting pickaxe" : "Making a stone sword before prospecting";
+        status = !replacement ? "Making a stone sword before prospecting"
+                : gather == null ? "Crafting a pickaxe for the return route" : "Crafting a replacement prospecting pickaxe";
         var result = miningCraft.tick(client, now);
         if (result == null) return;
         miningCraft.close(client);
@@ -383,8 +388,9 @@ final class ProjectWorker {
         if (replacement) {
             if (result.success() && SubsurfaceAccess.canDigRoute(client)) {
                 lastGatherProgress = now;
-                BotEvents.add("info", "mining", "Crafted a replacement prospecting pickaxe");
-            } else finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
+                BotEvents.add("info", "mining", gather == null ? "Crafted a pickaxe for the return route"
+                        : "Crafted a replacement prospecting pickaxe");
+            } else if (gather != null) finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
         } else if (result.success()) BotEvents.add("info", "defense", "Crafted a stone sword before prospecting");
     }
 
@@ -737,6 +743,15 @@ final class ProjectWorker {
         }
         var target = block.target();
         var excluded = StructureSupply.union(new ProjectGather.Area(target, target), block);
+        if (!SubsurfaceAccess.canDigRoute(client)
+                && (stationToolAttempt == null || !position.isWithinDistance(stationToolAttempt, 4))
+                && SubsurfaceAccess.hasFooting(client)) {
+            stationToolAttempt = position;
+            if (startMiningCraft(client, now, ROUTE_PICKAXE, excluded)) {
+                stationReturn.stop();
+                return true;
+            }
+        }
         if (!stationReturn.advanceToward(client, approachAge, destination, excluded)) return false;
         status = assignment.project() + "/" + assignment.job().work().id() + ": Opening a return route to the station";
         return true;

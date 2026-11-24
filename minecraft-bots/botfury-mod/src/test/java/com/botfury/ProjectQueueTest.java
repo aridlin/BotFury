@@ -258,17 +258,23 @@ class ProjectQueueTest {
         var recovery = restarted.offerInterruptedDeposit(WORLD, "miner", null, 8, (bot, material) -> 7).job();
         assertEquals("deposit", recovery.work().id());
         assertNull(restarted.offerInterruptedDeposit(WORLD, "helper", null, 9, (bot, material) -> 7));
+        assertTrue(restarted.finish(project, "deposit", recovery.lease(), false, ProjectQueue.TARGET_TIMEOUT, 10));
+        var restored = new ProjectQueue(journal);
+        assertNull(restored.offerInterruptedDeposit(WORLD, "miner", null, 11, (bot, material) -> 7));
+        var eligibleAt = restored.snapshot(11).get(0).jobs().get(3).expiresAt();
+        recovery = restored.offerInterruptedDeposit(WORLD, "miner", null, eligibleAt, (bot, material) -> 7).job();
+        assertEquals(1, recovery.attempts());
         var chestReport = new ProjectQueue.ChestReport(chest, java.util.Map.of(item, 7));
-        assertTrue(restarted.finish(project, "deposit", recovery.lease(), false, "Delivery is short by 57",
-                chestReport, null, true, 10));
-        var jobs = restarted.snapshot(11).get(0).jobs();
+        assertTrue(restored.finish(project, "deposit", recovery.lease(), false, "Delivery is short by 57",
+                chestReport, null, true, eligibleAt + 1));
+        var jobs = restored.snapshot(eligibleAt + 2).get(0).jobs();
         var remaining = jobs.get(2);
         assertEquals(ProjectQueue.State.WAITING, remaining.state());
         assertEquals(site, remaining.resourceSite());
         assertEquals(57, com.google.gson.JsonParser.parseString(remaining.work().payload()).getAsJsonObject().get("count").getAsInt());
         assertEquals(ProjectQueue.State.WAITING, jobs.get(3).state());
-        assertEquals(chestReport, restarted.chestStock(WORLD).get(chest).report());
-        assertNull(restarted.offerInterruptedDeposit(WORLD, "miner", null, 12, (bot, material) -> 7));
+        assertEquals(chestReport, restored.chestStock(WORLD).get(chest).report());
+        assertNull(restored.offerInterruptedDeposit(WORLD, "miner", null, eligibleAt + 3, (bot, material) -> 7));
     }
 
     @Test void stationaryGathererYieldsClaimWithoutAnchoringReplacementToTheOldSite() throws Exception {

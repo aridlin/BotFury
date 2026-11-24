@@ -106,6 +106,9 @@ final class ProjectBroker {
                     BotEvents.add("info", "projects", "Rebuilding missing station at " + target.toShortString());
                 }
             }
+            if (board.reopenLostManifestStock(world, System.currentTimeMillis())) {
+                BotEvents.add("info", "projects", "Reopened completed supply batches missing from rebuilt storage");
+            }
             reuseCarriedStationWood(board, world);
             checkOwnedPlacements(client, board, world);
             confirmLocalScaffoldClearance(client, board, world);

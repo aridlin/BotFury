@@ -430,18 +430,23 @@ final class ProjectQueue {
         var stand = replacement.checked();
         if (!project.supplyChest.equals(ProjectBlock.key(block))
                 || stand.equals(original) || !ProjectBlock.validStand(block, stand)) return false;
-        var payload = JSON.fromJson(deposit.work.payload, com.google.gson.JsonObject.class);
-        var locks = new HashSet<>(deposit.work.locks);
-        locks.removeAll(ProjectBlock.stationCells(block, original));
-        locks.addAll(ProjectBlock.stationCells(block, stand));
-        var partner = JSON.fromJson(payload.get("partner"), ProjectBlock.Position.class);
-        if (partner != null) locks.add(ProjectBlock.key(partner.checked()));
-        if (!Collections.disjoint(locks, leasedKeys(world, now))) return false;
-        payload.add("stand", JSON.toJsonTree(replacement));
-        var work = new Work(deposit.work.id, deposit.work.kind, payload.toString(), deposit.work.needs,
-                locks, deposit.work.sameWorkerAs, deposit.work.cleanup, deposit.work.constructionMaterial);
+        var work = withStorageStand(deposit.work, target, replacement);
+        if (!Collections.disjoint(work.locks, leasedKeys(world, now))) return false;
         replace(project, new Job(work, State.WAITING, 1, null, null, 0, CONTRIBUTION_RETRY, null));
         return true;
+    }
+
+    private static Work withStorageStand(Work work, StationTarget target, ProjectBlock.Position replacement) {
+        var block = target.target.checked();
+        var payload = JSON.fromJson(work.payload, com.google.gson.JsonObject.class);
+        var locks = new HashSet<>(work.locks);
+        locks.removeAll(ProjectBlock.stationCells(block, target.stand.checked()));
+        locks.addAll(ProjectBlock.stationCells(block, replacement.checked()));
+        var partner = JSON.fromJson(payload.get("partner"), ProjectBlock.Position.class);
+        if (partner != null) locks.add(ProjectBlock.key(partner.checked()));
+        payload.add("stand", JSON.toJsonTree(replacement));
+        return new Work(work.id, work.kind, payload.toString(), work.needs, locks, work.sameWorkerAs,
+                work.cleanup, work.constructionMaterial);
     }
 
     synchronized List<BlockedAccess> blockedAccess(String world) {
@@ -872,6 +877,67 @@ final class ProjectQueue {
     }
 
     private static String stationRepairKey(Job job) { return "station-repair:" + job.work.id; }
+
+    synchronized boolean reopenLostManifestStock(String world, long now) throws IOException {
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || project.supplyChest == null || project.repeat != null || cancelled(project)) continue;
+            var storage = find(project, "setup-storage");
+            if (storage == null || storage.state != State.DONE || !project.supplyChest.equals(stationKey(storage))
+                    || !project.supplyRecoveries.containsKey(stationRepairKey(storage))
+                    || leasedKeys(world, now).contains(project.supplyChest)) continue;
+            if (projects.values().stream().anyMatch(other -> other != project && world.equals(other.world)
+                    && project.supplyChest.equals(reservedStorage(other)))) continue;
+            var observed = project.jobs.stream().filter(job -> job.work.kind == Kind.TRANSFER && job.chest != null
+                            && job.chest.observedAt >= 1 && project.supplyChest.equals(job.chest.report.location))
+                    .max(Comparator.comparingLong(job -> job.chest.observedAt)).orElse(null);
+            if (observed == null) continue;
+            var access = JSON.fromJson(observed.work.payload, StationTarget.class);
+            if (access == null || access.target == null || access.stand == null
+                    || !project.supplyChest.equals(ProjectBlock.key(access.target.checked()))
+                    || !ProjectBlock.validStand(access.target.checked(), access.stand.checked())) continue;
+            for (var verify : project.jobs) {
+                var target = transferTarget(verify);
+                if (verify.state != State.WAITING || target == null || !"VERIFY_STOCK".equals(target.direction)
+                        || !verify.work.locks.contains(project.supplyChest) || target.item == null) continue;
+                int current = stockCount(observed.chest.report, target.item);
+                if (current < target.stock && reopenLostManifestStock(project, verify, target, current, access.stand)) return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean reopenLostManifestStock(Project project, Job verify, PickupTarget target, int current,
+                                            ProjectBlock.Position stand) throws IOException {
+        var deposits = new HashSet<Job>();
+        boolean finalDeposit = false;
+        for (var job : project.jobs) {
+            if (!job.work.locks.contains(project.supplyChest) || job.work.sameWorkerAs == null) continue;
+            var transfer = transferTarget(job);
+            if (transfer == null || !"DEPOSIT".equals(transfer.direction) || !target.item.equals(transfer.item)
+                    || transfer.stock <= current || transfer.stock > target.stock) continue;
+            if (job.state != State.DONE || job.chest != null) return false;
+            deposits.add(job);
+            finalDeposit |= transfer.stock == target.stock && verify.work.needs.contains(job.work.id);
+        }
+        if (!finalDeposit) return false;
+        var production = new HashSet<String>();
+        for (var deposit : deposits) {
+            for (var stage = find(project, deposit.work.sameWorkerAs); stage != null; stage = find(project, stage.work.sameWorkerAs)) {
+                if (stage.state != State.DONE || stage.work.kind != Kind.GATHER && !productionWork(stage.work)) return false;
+                production.add(stage.work.id);
+            }
+        }
+        if (project.jobs.stream().anyMatch(job -> !deposits.contains(job) && !production.contains(job.work.id)
+                && job.work.needs.stream().anyMatch(production::contains))) return false;
+        var jobs = project.jobs.stream().map(job -> {
+            if (production.contains(job.work.id)) return freshStockWork(job.work);
+            if (job != verify && !deposits.contains(job)) return job;
+            var location = JSON.fromJson(job.work.payload, StationTarget.class);
+            return freshStockWork(withStorageStand(job.work, location, stand));
+        }).toList();
+        commit(project.withJobs(jobs));
+        return true;
+    }
 
     private static boolean canRepairOwnedStation(Project project, Job job) {
         if (job.state == State.DONE) return true;

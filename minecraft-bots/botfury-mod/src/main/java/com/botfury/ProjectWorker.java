@@ -1722,7 +1722,7 @@ final class ProjectWorker {
                         gatherSite = assignment.job().resourceSite();
                         if (assignment.flexibleStickCount() > 0) {
                             stickPreparation = new PortableWoodPreparation(Items.STICK,
-                                    assignment.flexibleStickCount(), gather.exclude());
+                                    assignment.flexibleStickCount(), gather.exclude(), gatherSite);
                         }
                         if (gather.fromDrops()) pickup = new DroppedItemSearch();
                     } else if (work.kind() == ProjectQueue.Kind.TRANSFER) {

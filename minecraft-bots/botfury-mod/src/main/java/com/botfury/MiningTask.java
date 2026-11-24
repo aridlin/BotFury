@@ -72,6 +72,7 @@ final class MiningTask {
     private static BlockPos surfaceSearchAnchor, lastExplorationExit;
     private static BlockPos surfaceRouteGoal;
     private static boolean surfaceResource;
+    private static int nextSurfaceSurvey;
     private static int surfaceSearchFailures, explorationExits;
     private static BaritoneSettings caveSettings;
     private static int lastCaveProbeY, nextCaveProbe;
@@ -167,6 +168,7 @@ final class MiningTask {
                 .allMatch(block -> block.getDefaultState().isIn(BlockTags.LOGS)
                         || block instanceof FlowerBlock || block instanceof TallFlowerBlock);
         surfaceRouteGoal = null;
+        nextSurfaceSurvey = 0;
         toolShortfall = false;
         routeToolShortfall = false;
         subsurface.reset();
@@ -347,7 +349,7 @@ final class MiningTask {
             status = "Opening a local exit to continue gathering " + job.resource;
             return;
         }
-        if (pathActive && recoverRoute(client, rememberedSite)) return;
+        if (pathActive && recoverRoute(client, surfaceRouteGoal == null ? rememberedSite : surfaceRouteGoal)) return;
         if (requesting) return;
         if (pendingCandidates.isEmpty()) {
             if (age < nextSearch) return;
@@ -538,30 +540,51 @@ final class MiningTask {
     private static boolean seekSurface(MinecraftClient client) {
         if (!client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)) return false;
         var feet = client.player.getBlockPos();
-        if (surfaceRouteGoal == null && client.world.getTopY(Heightmap.Type.MOTION_BLOCKING,
-                feet.getX(), feet.getZ()) - feet.getY() >= SURFACE_ROUTE_DEPTH) {
-            for (var column : BlockPos.iterateOutwards(feet, 8, 0, 8)) {
-                if (!client.world.isChunkLoaded(column.getX() >> 4, column.getZ() >> 4)) continue;
-                int top = client.world.getTopY(Heightmap.Type.MOTION_BLOCKING, column.getX(), column.getZ());
-                var exit = column.withY(top);
-                if (top <= feet.getY() || !client.world.isInBuildLimit(exit.up())
-                        || !client.world.getWorldBorder().contains(exit)
-                        || !client.world.getFluidState(exit.down()).isEmpty()
-                        || BuildProtection.blocked(exit) || excluded != null && excluded.contains(exit)) continue;
-                if (surfaceRouteGoal == null || top < surfaceRouteGoal.getY()) surfaceRouteGoal = exit;
-            }
+        if (surfaceRouteGoal == null && age >= nextSurfaceSurvey) {
+            nextSurfaceSurvey = age + 80;
+            surfaceRouteGoal = localSurfaceExit(client, feet);
         }
         if (surfaceRouteGoal == null) return false;
-        if (feet.getY() >= surfaceRouteGoal.getY() - 2 || client.world.isSkyVisible(feet)) {
+        if (feet.getY() >= surfaceRouteGoal.getY() - 2) {
             surfaceRouteGoal = null;
             subsurface.stop();
+            if (pathActive) stopPath();
             return false;
         }
-        if (pathActive) stopPath();
-        if (!subsurface.tryNaturalAscent(client, age, surfaceRouteGoal.getY(), 3)
-                && !subsurface.advanceToward(client, age, surfaceRouteGoal, excluded, true)) return false;
+        if (!pathActive || !BaritoneClient.pursuing(surfaceRouteGoal)) {
+            if (pathActive) stopPath();
+            if (!subsurface.tryNaturalAscent(client, age, surfaceRouteGoal.getY(), 3)
+                    && !subsurface.advanceToward(client, age, surfaceRouteGoal, excluded, true) && age >= nextPath) {
+                nextPath = age + 100;
+                path(surfaceRouteGoal);
+            }
+        }
         status = "Climbing toward the surface for " + job.resource;
         return true;
+    }
+
+    private static BlockPos localSurfaceExit(MinecraftClient client, BlockPos feet) {
+        var world = client.world;
+        var exits = new ArrayList<BlockPos>();
+        for (int dx = -8; dx <= 8; dx += 4) {
+            for (int dz = -8; dz <= 8; dz += 4) {
+                int x = feet.getX() + dx;
+                int z = feet.getZ() + dz;
+                if (!world.isChunkLoaded(x >> 4, z >> 4)) continue;
+                var exit = new BlockPos(x, world.getTopY(Heightmap.Type.MOTION_BLOCKING, x, z), z);
+                if (!world.isInBuildLimit(exit.up()) || !world.getWorldBorder().contains(exit)
+                        || world.getBlockState(exit.down()).isAir() || !world.getFluidState(exit.down()).isEmpty()
+                        || BuildProtection.blocked(exit) || excluded != null && excluded.contains(exit)) continue;
+                exits.add(exit);
+            }
+        }
+        if (exits.isEmpty()) return null;
+        exits.sort(Comparator.comparingInt(BlockPos::getY));
+        // The surrounding terrain can be far above the floor of a skylit ravine.
+        int typicalHeight = exits.get(exits.size() / 2).getY();
+        if (typicalHeight - feet.getY() < SURFACE_ROUTE_DEPTH) return null;
+        return exits.stream().filter(exit -> exit.getY() >= typicalHeight - 4)
+                .min(Comparator.comparingDouble(exit -> exit.getSquaredDistance(feet))).orElse(null);
     }
 
     private static boolean recoverExploration(MinecraftClient client) {

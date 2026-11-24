@@ -13,6 +13,7 @@ import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
@@ -57,7 +58,10 @@ final class ProjectWorker {
     private static BlockPos interactionStand;
     private static List<BlockPos> interactionGoals = List.of();
     private static final Set<BlockPos> rejectedInteractionStands = new HashSet<>();
+    private static final Set<BlockPos> triedJumpStands = new HashSet<>();
     private static long nextInteractionStandSearch;
+    private static long jumpEnds;
+    private static boolean jumpPressed;
     private static final StallRecovery approachRecovery = new StallRecovery();
     private static final SubsurfaceAccess stationReturn = new SubsurfaceAccess();
     private static int approachAge;
@@ -170,6 +174,7 @@ final class ProjectWorker {
         interactionStand = null;
         interactionGoals = List.of();
         rejectedInteractionStands.clear();
+        triedJumpStands.clear();
         nextInteractionStandSearch = 0;
         approachAge = 0;
         stationReturn.reset();
@@ -198,6 +203,8 @@ final class ProjectWorker {
         approachRecovery.reset();
         stationReturn.stop();
         releaseCentering(client);
+        releaseJump(client);
+        jumpEnds = 0;
         if (chest != null) chest.close(client);
         if (production != null) production.close(client);
         if (fieldWorkstation != null) fieldWorkstation.close(client);
@@ -233,6 +240,7 @@ final class ProjectWorker {
 
     static void tick(MinecraftClient client, LocalFormation.Peer here) {
         if (!enabled()) return;
+        releaseJump(client);
         long now = System.nanoTime();
         if (assignment == null) {
             TaskDefense.evade(client, false);
@@ -257,6 +265,7 @@ final class ProjectWorker {
         }
         if (TaskDefense.evade(client, true)) {
             releaseCentering(client);
+            jumpEnds = 0;
             return;
         }
         if (!centering && TaskDefense.defendProject(client)) {
@@ -375,9 +384,22 @@ final class ProjectWorker {
         boolean canExcavateHere = excavate && targetLoaded && player.isOnGround() && !centering
                 && !player.getBlockPos().down().equals(target) && excavationHit(client, target) != null;
         boolean ordinaryBuild = build && !block.edgePlacement();
+        if (jumpEnds != 0 && tickPlacementJump(client, now)) return;
         boolean canBuildHere = ordinaryBuild && targetLoaded && player.isOnGround() && !centering
-                && !player.getBoundingBox().intersects(new net.minecraft.util.math.Box(target))
+                && !player.getBoundingBox().intersects(new Box(target))
                 && ProjectPlacement.supportHit(client, block) != null;
+        if (ordinaryBuild && targetLoaded && !canBuildHere && player.isOnGround() && !centering
+                && client.world.isAir(target) && canJumpToPlace(client, player.getPos(), player.getBlockPos())) {
+            halt(client);
+            triedJumpStands.add(player.getBlockPos());
+            player.setSprinting(false);
+            client.options.jumpKey.setPressed(true);
+            jumpPressed = true;
+            jumpEnds = now + seconds(1);
+            nextPlacement = now;
+            status = assignment.project() + "/" + work.id() + ": Jumping to reach the placement face";
+            return;
+        }
         boolean stationJob = production != null || chest != null;
         boolean stationNearby = targetLoaded && (production != null && production.reachableFromHere(client)
                 || chest != null && chest.reachableFromHere(client));
@@ -650,10 +672,45 @@ final class ProjectWorker {
                 case BUILD -> ProjectPlacement.supportHit(client, block, eye);
                 default -> ProjectProduction.workstationHit(client, target, eye);
             };
-            if (hit != null) candidates.add(pos.toImmutable());
+            if (hit != null || kind == ProjectQueue.Kind.BUILD && canJumpToPlace(client, feet, pos)) {
+                candidates.add(pos.toImmutable());
+            }
         }
         candidates.sort(Comparator.comparingDouble(pos -> client.player.squaredDistanceTo(Vec3d.ofBottomCenter(pos))));
         return candidates.stream().limit(24).toList();
+    }
+
+    private static boolean canJumpToPlace(MinecraftClient client, Vec3d feet, BlockPos stand) {
+        if (triedJumpStands.contains(stand) || block.edgePlacement() || ProjectWater.source(block.desired())
+                || client.player.isSneaking() || !client.world.getFluidState(stand).isEmpty()
+                || feet.squaredDistanceTo(Vec3d.ofCenter(block.target())) > 25) return false;
+        var player = client.player;
+        var body = player.getBoundingBox().offset(feet.subtract(player.getPos()));
+        var sweep = body.stretch(0, 1.1, 0);
+        return !sweep.intersects(new Box(block.target())) && client.world.isSpaceEmpty(player, sweep)
+                && ProjectPlacement.supportHit(client, block, feet.add(0, player.getEyeY() - player.getY() + 1, 0)) != null;
+    }
+
+    private static boolean tickPlacementJump(MinecraftClient client, long now) {
+        if (now >= jumpEnds) {
+            jumpEnds = 0;
+            return false;
+        }
+        var player = client.player;
+        if (now >= nextPlacement && !player.isOnGround() && client.world.isAir(block.target())
+                && !player.getBoundingBox().intersects(new Box(block.target()))
+                && ProjectPlacement.supportHit(client, block) != null) {
+            nextPlacement = now + TimeUnit.MILLISECONDS.toNanos(75);
+            var failure = BuildProtection.projectAction(assignment.project(), () -> ProjectPlacement.attempt(client, block));
+            if (failure != null) finish(client, false, failure);
+        }
+        return true;
+    }
+
+    private static void releaseJump(MinecraftClient client) {
+        if (!jumpPressed) return;
+        client.options.jumpKey.setPressed(false);
+        jumpPressed = false;
     }
 
     private static boolean usableInteractionStand(MinecraftClient client, BlockPos pos, BlockPos target) {

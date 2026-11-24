@@ -230,7 +230,7 @@ class ProjectQueueTest {
                 lease.expiresAt() + 2).job().work().id());
     }
 
-    @Test void stationaryGathererYieldsClaimToAnotherWorkerAfterRestart() throws Exception {
+    @Test void stationaryGathererYieldsClaimWithoutAnchoringReplacementToTheOldSite() throws Exception {
         var journal = directory.resolve("stalled-gather.json");
         var queue = new ProjectQueue(journal);
         queue.submit("gathering", WORLD, List.of(job("gather", GATHER, List.of()),
@@ -241,9 +241,11 @@ class ProjectQueueTest {
         var restored = new ProjectQueue(journal);
         assertNull(restored.claim(WORLD, "first", Set.of(GATHER), 3));
         var retry = restored.claim(WORLD, "second", Set.of(GATHER), 4).job();
-        assertEquals(site, retry.resourceSite());
+        assertNull(retry.resourceSite());
         assertNull(restored.claim(WORLD, "first", Set.of(GATHER), 5));
-        assertTrue(restored.finish("gathering", "gather", retry.lease(), true, "Collected", null, site, 6));
+        var newSite = new ProjectQueue.ResourceSite(32, 68, -10);
+        assertTrue(restored.finish("gathering", "gather", retry.lease(), true, "Collected", null, newSite, 6));
+        assertEquals(newSite, restored.snapshot(6).get(0).jobs().get(0).resourceSite());
         assertEquals("refine", restored.claim(WORLD, "second", Set.of(CRAFT), 7).job().work().id());
     }
 
@@ -636,16 +638,26 @@ class ProjectQueueTest {
     @Test void reopensExhaustedGatheringStallsThroughExistingRetry() throws Exception {
         var journal = directory.resolve("stalled-gather-retry.json");
         var queue = new ProjectQueue(journal);
-        queue.submit("supplies", WORLD, List.of(job("collect", GATHER, List.of())));
+        String logs = "{\"resource\":\"any_logs\",\"variant\":\"both\",\"item\":\"any_logs\"}";
+        queue.submit("supplies", WORLD, List.of(
+                new ProjectQueue.Work("previous", GATHER, logs, List.of(), Set.of()),
+                new ProjectQueue.Work("collect", GATHER, logs, List.of("previous"), Set.of())));
+        var oldSite = new ProjectQueue.ResourceSite(5, 68, -3);
+        var previous = queue.claim(WORLD, "scout", Set.of(GATHER), 0).job();
+        assertTrue(queue.finish("supplies", "previous", previous.lease(), true, "Collected", null, oldSite, 1));
         for (int attempt = 1; attempt <= 3; attempt++) {
             long now = 2L * attempt;
             var lease = queue.claim(WORLD, "worker" + attempt, Set.of(GATHER), now).job();
-            assertTrue(queue.finish("supplies", "collect", lease.lease(), false, ProjectQueue.GATHER_STALLED, now + 1));
+            assertEquals(attempt == 1 ? oldSite : null, lease.resourceSite());
+            assertTrue(queue.finish("supplies", "collect", lease.lease(), false,
+                    ProjectQueue.GATHER_STALLED, null, oldSite, now + 1));
         }
-        assertEquals(ProjectQueue.State.FAILED, queue.snapshot(8).get(0).jobs().get(0).state());
+        assertEquals(ProjectQueue.State.FAILED, queue.snapshot(8).get(0).jobs().get(1).state());
         assertEquals(1, queue.retryInterruptedGathering(WORLD, "supplies"));
         var reopened = new ProjectQueue(journal);
-        assertEquals(1, reopened.claim(WORLD, "replacement", Set.of(GATHER), 9).job().attempts());
+        var retry = reopened.claim(WORLD, "replacement", Set.of(GATHER), 9).job();
+        assertEquals(1, retry.attempts());
+        assertNull(retry.resourceSite());
     }
 
     @Test void workerHoldsCargoWhileAnotherDeliveryHasTheChest() throws Exception {

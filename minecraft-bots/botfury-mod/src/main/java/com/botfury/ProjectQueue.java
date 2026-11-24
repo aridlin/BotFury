@@ -879,6 +879,8 @@ final class ProjectQueue {
     }
 
     private static ResourceSite gatheringSite(Project project, Job job) {
+        // A route stall invalidates the previous approach, including an inherited site for this material.
+        if (job.work.kind == Kind.GATHER && GATHER_STALLED.equals(job.evidence)) return null;
         if (job.resourceSite != null || job.work.kind != Kind.GATHER) return job.resourceSite;
         var source = gatherSource(job.work.payload);
         if (source == null) return null;

@@ -2,6 +2,7 @@ package com.botfury;
 
 import com.google.gson.Gson;
 import net.minecraft.block.BlockState;
+import net.minecraft.client.world.ClientWorld;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
@@ -70,6 +71,12 @@ record ProjectInspection(BlockPos stand, Map<BlockPos, BlockState> expected, boo
         locks.add(ProjectBlock.key(stand.up()));
         locks.add(ProjectBlock.key(stand.down()));
         return new ProjectQueue.Work(work.id(), work.kind(), work.payload(), work.needs(), locks, work.sameWorkerAs());
+    }
+
+    boolean loaded(ClientWorld world) {
+        // ClientWorld.isChunkLoaded returns true even for empty placeholder chunks.
+        var cell = expected.keySet().iterator().next();
+        return world.getChunkManager().isChunkLoaded(cell.getX() >> 4, cell.getZ() >> 4);
     }
 
     String mismatch(BlockView world) {

@@ -171,6 +171,7 @@ final class ProjectQueue {
         String repairId() { return job.id + (replacementScaffold ? "-v2" : ""); }
     }
     record ScaffoldClearance(String project, Work job) {}
+    record LocalInspection(String project, Work job) {}
     private static final java.util.regex.Pattern SCHEMATIC_PLACEMENT = java.util.regex.Pattern.compile("place-[0-9]+");
     private record StationTarget(ProjectBlock.Position target, ProjectBlock.Position stand, String block) {}
     private record Board(int schema, Map<String, Project> projects) {}
@@ -460,6 +461,51 @@ final class ProjectQueue {
             }
         }
         return reserved;
+    }
+
+    synchronized List<LocalInspection> localInspections(String world) {
+        var result = new ArrayList<LocalInspection>();
+        var writes = activeInspectionWrites(world);
+        for (var project : projects.values()) {
+            if (!project.world.equals(world) || cancelled(project)) continue;
+            for (var job : project.jobs) {
+                if (localInspectionReady(project, job, writes)) result.add(new LocalInspection(project.id, job.work));
+            }
+        }
+        return result;
+    }
+
+    synchronized boolean confirmLocalInspection(String world, LocalInspection check, String evidence) throws IOException {
+        var project = projects.get(check.project);
+        if (project == null || !world.equals(project.world) || cancelled(project)) return false;
+        var job = find(project, check.job.id);
+        if (job == null || !job.work.equals(check.job) || !localInspectionReady(project, job, activeInspectionWrites(world))) {
+            return false;
+        }
+        replace(project, new Job(job.work, State.DONE, job.attempts, null, null, 0, evidence, null));
+        restoredLeases.remove(job.lease);
+        return true;
+    }
+
+    private Set<String> activeInspectionWrites(String world) {
+        var writes = new HashSet<String>();
+        for (var project : projects.values()) {
+            if (!world.equals(project.world)) continue;
+            for (var job : project.jobs) {
+                if (job.state == State.LEASED && (job.work.kind == Kind.BUILD || job.work.kind == Kind.EXCAVATE
+                        || job.work.kind == Kind.FILL_BUCKETS || job.work.kind == Kind.SMELT)) {
+                    writes.addAll(job.work.locks);
+                }
+            }
+        }
+        return writes;
+    }
+
+    private static boolean localInspectionReady(Project project, Job job, Set<String> writes) {
+        return job.work.kind == Kind.INSPECT && job.state != State.DONE && job.work.sameWorkerAs == null
+                && Collections.disjoint(job.work.locks, writes)
+                && job.work.needs.stream().allMatch(need -> find(project, need).state == State.DONE)
+                && project.jobs.stream().noneMatch(other -> job.work.id.equals(other.work.sameWorkerAs));
     }
 
     synchronized List<ScaffoldClearance> scaffoldClearances(String world) {

@@ -703,7 +703,7 @@ final class ProjectWorker {
             finish(client, false, "Block is in an exclusion zone at " + target.toShortString());
             return;
         }
-        boolean targetLoaded = client.world.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4);
+        boolean targetLoaded = client.world.getChunkManager().isChunkLoaded(target.getX() >> 4, target.getZ() >> 4);
         if ((excavate || build) && targetLoaded) {
             var observed = client.world.getBlockState(target);
             if (excavate ? observed.isAir() : block.matches(observed)) {
@@ -901,6 +901,11 @@ final class ProjectWorker {
             return;
         }
         if (inspection != null) {
+            if (!inspection.loaded(client.world)) {
+                inspectionStarted = stableSince = 0;
+                status = "Waiting for the inspection chunk";
+                return;
+            }
             if (inspectionStarted == 0) inspectionStarted = now;
             for (var pos : inspection.expected().keySet()) {
                 if (!client.world.isInBuildLimit(pos) || !client.world.getWorldBorder().contains(pos)) {

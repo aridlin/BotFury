@@ -3,11 +3,13 @@ package com.botfury;
 import com.google.gson.Gson;
 import com.google.gson.JsonParseException;
 import com.sun.net.httpserver.HttpExchange;
+import net.minecraft.client.world.ClientWorld;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -21,6 +23,9 @@ final class ProjectBroker {
     private static long nextStationCheck;
     private static long nextAccessCheck;
     private static int ownedPlacementCursor;
+    private static String inspectionWorld;
+    private static ClientWorld inspectionView;
+    private static Map<ProjectQueue.LocalInspection, Long> matchingInspections = new HashMap<>();
     record Overview(List<ProjectQueue.Project> projects, Map<String, ProjectQueue.ChestObservation> stock) {}
 
     private record Request(String action, String project, String worker, Set<ProjectQueue.Kind> kinds,
@@ -65,7 +70,12 @@ final class ProjectBroker {
     }
 
     static void checkOwnedWork(net.minecraft.client.MinecraftClient client) {
-        if (Boolean.getBoolean("botfury.managedHttp") || client.world == null || client.player == null) return;
+        if (Boolean.getBoolean("botfury.managedHttp")) return;
+        if (client.world == null || client.player == null) {
+            matchingInspections.clear();
+            inspectionView = null;
+            return;
+        }
         long now = System.nanoTime();
         if (nextStationCheck != 0 && now < nextStationCheck) return;
         nextStationCheck = now + java.time.Duration.ofSeconds(5).toNanos();
@@ -77,7 +87,7 @@ final class ProjectBroker {
             for (var station : board.ownedStations(world)) {
                 var block = ProjectBlock.parse(station.payload());
                 var target = block.target();
-                if (!client.world.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
+                if (!client.world.getChunkManager().isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
                         || !client.world.isAir(target)) continue;
                 if (BuildProtection.blocked(world, target, station.project())) continue;
                 var footing = ProjectWorkstations.repairFooting(client, world, station, block);
@@ -88,6 +98,7 @@ final class ProjectBroker {
             }
             checkOwnedPlacements(client, board, world);
             confirmLocalScaffoldClearance(client, board, world);
+            confirmLocalInspections(client, board, world, now);
             resumeCarriedSmelting(client, board, world);
             useCarriedCraftingIngredients(client, board, world);
             if (now >= nextAccessCheck) {
@@ -126,12 +137,36 @@ final class ProjectBroker {
         }
     }
 
+    private static void confirmLocalInspections(net.minecraft.client.MinecraftClient client, ProjectQueue board,
+                                                String world, long now) throws IOException {
+        if (!world.equals(inspectionWorld) || inspectionView != client.world) {
+            matchingInspections.clear();
+            inspectionWorld = world;
+            inspectionView = client.world;
+        }
+        var matching = new HashMap<ProjectQueue.LocalInspection, Long>();
+        for (var check : board.localInspections(world)) {
+            var inspection = ProjectInspection.parse(check.job().payload());
+            if (!inspection.loaded(client.world)
+                    || inspection.expected().keySet().stream().anyMatch(pos -> !client.world.isInBuildLimit(pos)
+                        || !client.world.getWorldBorder().contains(pos))
+                    || inspection.mismatch(client.world) != null) continue;
+            long firstMatch = matchingInspections.getOrDefault(check, now);
+            long stableFor = java.time.Duration.ofSeconds(inspection.settleFlow() ? 3 : 1).toNanos();
+            if (now - firstMatch < stableFor || !board.confirmLocalInspection(world, check,
+                    "Coordinator verified " + inspection.expected().size() + " loaded block states")) {
+                matching.put(check, firstMatch);
+            }
+        }
+        matchingInspections = matching;
+    }
+
     private static void confirmLocalScaffoldClearance(net.minecraft.client.MinecraftClient client, ProjectQueue board,
                                                        String world) throws IOException {
         for (var check : board.scaffoldClearances(world)) {
             var block = ProjectBlock.parse(check.job().payload());
             var target = block.target();
-            if (!client.world.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
+            if (!client.world.getChunkManager().isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
                     || !block.desired().isAir() || !client.world.isAir(target)) continue;
             board.confirmScaffoldClearance(world, check, "Observed clear scaffold cell at " + target.toShortString());
         }
@@ -206,7 +241,7 @@ final class ProjectBroker {
             var placement = placements.get(ownedPlacementCursor++);
             var block = ProjectBlock.parse(placement.payload());
             var target = block.target();
-            if (!client.world.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
+            if (!client.world.getChunkManager().isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
                     || !client.world.isAir(target) || BuildProtection.blocked(world, target, placement.project())) continue;
             var support = block.support();
             if (!ProjectPlacement.support(client.world.getBlockState(support), block.desired(), block.face(), client.world, support)) continue;

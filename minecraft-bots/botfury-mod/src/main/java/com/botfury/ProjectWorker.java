@@ -52,6 +52,7 @@ final class ProjectWorker {
     private static final Identifier MINING_SWORD = Identifier.of("minecraft", "stone_sword");
     private static final Identifier ROUTE_STICKS = Identifier.of("minecraft", "stick");
     private static final Identifier ROUTE_PICKAXE = Identifier.of("minecraft", "stone_pickaxe");
+    private static final Identifier WOODEN_PICKAXE = Identifier.of("minecraft", "wooden_pickaxe");
     private static Identifier miningRecipe;
     private static ProjectProduction miningCraft;
     private static boolean preparingMiningSticks;
@@ -538,13 +539,17 @@ final class ProjectWorker {
         return startMiningCraft(client, now, MINING_SWORD, null);
     }
 
+    private static boolean isPickaxeRecipe(Identifier recipe) {
+        return recipe.equals(ROUTE_PICKAXE) || recipe.equals(WOODEN_PICKAXE);
+    }
+
     private static boolean startMiningCraft(MinecraftClient client, long now, Identifier recipe, ProjectGather.Area excluded) {
         if (ProjectProduction.canCraft(client, recipe)) {
-            fieldWorkstation = recipe.equals(ROUTE_PICKAXE) ? FieldWorkstation.findForMiningTool(client, now, excluded)
+            fieldWorkstation = isPickaxeRecipe(recipe) ? FieldWorkstation.findForMiningTool(client, now, excluded)
                     : FieldWorkstation.find(client, now, ProjectQueue.Kind.CRAFT);
             if (fieldWorkstation == null) return false;
         } else {
-            if (!recipe.equals(ROUTE_PICKAXE) || !ProjectProduction.canCraft(client, ROUTE_STICKS)
+            if (!isPickaxeRecipe(recipe) || !ProjectProduction.canCraft(client, ROUTE_STICKS)
                     || !ProjectProduction.canCraft(client, recipe, new net.minecraft.item.ItemStack(net.minecraft.item.Items.STICK, 4))) {
                 return false;
             }
@@ -561,7 +566,8 @@ final class ProjectWorker {
 
     private static void tickMiningCraft(MinecraftClient client, long now) {
         var delivery = craftingRouteDelivery;
-        boolean replacement = miningRecipe.equals(ROUTE_PICKAXE);
+        var recipe = miningRecipe;
+        boolean replacement = isPickaxeRecipe(recipe);
         boolean excavation = assignment.job().work().kind() == ProjectQueue.Kind.EXCAVATE;
         if (preparingMiningSticks) {
             status = "Crafting sticks for a replacement pickaxe";
@@ -573,7 +579,7 @@ final class ProjectWorker {
             var area = miningCraftArea;
             miningCraftArea = null;
             miningRecipe = null;
-            if (sticks.success() && startMiningCraft(client, now, ROUTE_PICKAXE, area)) return;
+            if (sticks.success() && startMiningCraft(client, now, recipe, area)) return;
             if (delivery != null) finish(client, false, ProjectQueue.ROUTE_PREPARATION_FAILED + "could not prepare pickaxe ingredients");
             else if (gather != null) finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
             else if (sticks.success()) stationToolAttempt = null;
@@ -1015,15 +1021,18 @@ final class ProjectWorker {
             while (slot < 36 && !inventory.getStack(slot).isSuitableFor(state)) slot++;
             boolean temporaryCobblestone = work.cleanup() != null && work.cleanup().site().equals(ProjectBlock.key(target))
                     && state.isOf(Blocks.COBBLESTONE);
-            if (slot == 36 && !temporaryCobblestone) {
+            if (slot == 36) {
                 if (!checkedExcavationTool) {
                     checkedExcavationTool = true;
+                    var excluded = StructureSupply.union(new ProjectGather.Area(target, target), block);
                     if (net.minecraft.item.Items.STONE_PICKAXE.getDefaultStack().isSuitableFor(state)
-                            && startMiningCraft(client, now, ROUTE_PICKAXE,
-                                StructureSupply.union(new ProjectGather.Area(target, target), block))) return;
+                            && startMiningCraft(client, now, ROUTE_PICKAXE, excluded)) return;
+                    if (temporaryCobblestone && startMiningCraft(client, now, WOODEN_PICKAXE, excluded)) return;
                 }
-                finish(client, false, ProjectQueue.EXCAVATION_TOOL_NEEDED + actual);
-                return;
+                if (!temporaryCobblestone) {
+                    finish(client, false, ProjectQueue.EXCAVATION_TOOL_NEEDED + actual);
+                    return;
+                }
             }
             if (slot >= 9 && slot < 36) {
                 if (player.currentScreenHandler != player.playerScreenHandler

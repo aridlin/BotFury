@@ -1561,6 +1561,36 @@ class ProjectQueueTest {
         assertEquals("ladders", board.claim(WORLD, "helper", Set.of(CRAFT), original.expiresAt() + 2).job().work().id());
     }
 
+    @Test void helperCanFinishPinnedPreparationOnlyAfterLeaseExpiryAndFreshInventory() throws Exception {
+        var journal = directory.resolve("pinned-recipe.json");
+        var board = new ProjectQueue(journal);
+        var prior = job("old-tool", CRAFT, List.of());
+        var wood = new ProjectQueue.Work("logs", GATHER,
+                "{\"resource\":\"any_logs\",\"variant\":\"both\",\"item\":\"any_logs\"}", List.of("old-tool"), Set.of(), "old-tool");
+        var ladder = new ProjectQueue.Work("ladders", CRAFT, "{\"recipe\":\"minecraft:ladder\"}",
+                List.of("logs"), Set.of(), "logs");
+        board.submitSupplied("order", WORLD, List.of(prior, wood, ladder), "block:1,64,0");
+        var tool = board.claim(WORLD, "scout", Set.of(CRAFT), 1).job();
+        assertTrue(board.finish("order", "old-tool", tool.lease(), true, "Observed old tool", 2));
+        var gather = board.claim(WORLD, "scout", Set.of(GATHER), 3).job();
+        var sticks = Set.of("minecraft:stick");
+        assertNull(board.claim(WORLD, "helper", Set.of(CRAFT, GATHER), 4));
+        var request = board.carriedCraftCandidates(WORLD, 5).get(0);
+        assertTrue(board.offerCarriedCraftHandoff(WORLD, request, "helper", sticks, (w,i) -> 0, 5));
+        board = new ProjectQueue(journal);
+        assertNull(board.renew("order", "logs", gather.lease(), 6));
+        assertTrue(board.carriedCraftCandidates(WORLD, gather.expiresAt() - 1).isEmpty());
+        board.submit("other", WORLD, List.of(job("spare", GATHER, List.of())));
+        assertNull(board.claim(WORLD, "helper", Set.of(GATHER, CRAFT), gather.expiresAt()));
+        var released = board.carriedCraftCandidates(WORLD, gather.expiresAt()).get(0);
+        assertEquals("helper", released.worker());
+        assertFalse(board.useCarriedCraftingIngredients(WORLD, request, sticks, gather.expiresAt()));
+        assertFalse(board.useCarriedCraftingIngredients(WORLD, released, Set.of(), gather.expiresAt()));
+        assertTrue(board.useCarriedCraftingIngredients(WORLD, released, sticks, gather.expiresAt()));
+        assertEquals("ladders", board.claim(WORLD, "helper", Set.of(CRAFT), gather.expiresAt() + 1).job().work().id());
+        assertNull(board.claim(WORLD, "scout", Set.of(CRAFT), gather.expiresAt() + 2));
+    }
+
     @Test void carriedIngredientsRetireOnlyThePrivateGatherForTheCurrentWorker() throws Exception {
         var journal = directory.resolve("carried-crafting.json");
         var board = new ProjectQueue(journal);

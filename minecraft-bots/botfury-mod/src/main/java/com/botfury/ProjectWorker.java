@@ -324,10 +324,11 @@ final class ProjectWorker {
         boolean stationJob = production != null || chest != null;
         boolean stationNearby = targetLoaded && (production != null && production.reachableFromHere(client)
                 || chest != null && chest.reachableFromHere(client));
+        boolean belowStation = stationJob && stand.getY() - player.getBlockY() >= 5;
         boolean searchingForStand = excavate && !canExcavateHere || ordinaryBuild && !canBuildHere
                 && client.world.getBlockState(target).isAir()
                 || stationJob && !stationNearby && block.matches(client.world.getBlockState(target));
-        if (searchingForStand && targetLoaded && now >= nextInteractionStandSearch
+        if (searchingForStand && !belowStation && !stationReturn.active() && targetLoaded && now >= nextInteractionStandSearch
                 && client.world.isChunkLoaded(stand.getX() >> 4, stand.getZ() >> 4)
                 && (!usableInteractionStand(client, stand, target) || !centering && player.getBlockPos().equals(stand)
                     || approach != null && now >= retryApproach && !BaritoneClient.pursuing(stand))) {
@@ -350,7 +351,8 @@ final class ProjectWorker {
                 && (client.world.getBlockState(target).isAir() || excavationHit(client, target) != null);
         boolean atStand = nearStand && (!exactFooting || player.getBlockPos().equals(stand) || canCleanFromHere
                 || edge && centering && player.getBlockPos().equals(target.up()));
-        if (!player.isOnGround() || !atStand && !inspectNearby && !stationNearby && !canExcavateHere && !canBuildHere) {
+        boolean onFooting = stationJob ? SubsurfaceAccess.hasFooting(client) : player.isOnGround();
+        if (!onFooting || !atStand && !inspectNearby && !stationNearby && !canExcavateHere && !canBuildHere) {
             releaseCentering(client);
             stableSince = 0;
             approachAge++;

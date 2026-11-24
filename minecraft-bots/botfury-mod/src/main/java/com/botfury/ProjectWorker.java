@@ -672,7 +672,7 @@ final class ProjectWorker {
             }
             return;
         }
-        if (approach != null || stationReturn.active()) halt(client);
+        if (approach != null || stationReturn.active() || stationReturn.openingReturnStep()) halt(client);
         if (!targetLoaded) {
             stableSince = 0;
             return;
@@ -924,6 +924,12 @@ final class ProjectWorker {
             stationReturnHeight = position.getY();
             taskEnd = Math.max(taskEnd, Math.min(stationReturnDeadline, now + seconds(90)));
         }
+        var target = block.target();
+        var excluded = StructureSupply.union(new ProjectGather.Area(target, target), block);
+        if (!placement && stationReturn.openingReturnStep() && stationReturn.continuePassage(client, approachAge, excluded)) {
+            status = assignment.project() + "/" + assignment.job().work().id() + ": Opening a protected return step";
+            return true;
+        }
         if (!stationReturn.active()) {
             if (!placement && approach == null && stationReturn.tryNaturalAscent(client, approachAge, destination.getY())) {
                 status = assignment.project() + "/" + assignment.job().work().id() + ": Following a natural ascent to the station";
@@ -936,8 +942,6 @@ final class ProjectWorker {
             approach = null;
             recoveryOrigin = null;
         }
-        var target = block.target();
-        var excluded = StructureSupply.union(new ProjectGather.Area(target, target), block);
         // Placement cargo can include the very planks needed for a new workbench.
         if (!placement && !SubsurfaceAccess.canDigRoute(client)
                 && (stationToolAttempt == null || !position.isWithinDistance(stationToolAttempt, 4))
@@ -952,7 +956,7 @@ final class ProjectWorker {
         if (!stationReturn.advanceToward(client, approachAge, destination, excluded, !placement)) return false;
         String detail = placement ? "Opening a short climb to the placement stand"
                 : stationReturn.followingNaturalAscent() ? "Following a natural ascent to the station"
-                : "Opening a return route to the station";
+                : stationReturn.openingReturnStep() ? "Opening a protected return step" : "Opening a return route to the station";
         if (placement && !alreadyClimbing) BotEvents.add("info", "movement", detail);
         status = assignment.project() + "/" + assignment.job().work().id() + ": " + detail;
         return true;

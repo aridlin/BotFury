@@ -86,6 +86,9 @@ final class ProjectWorker {
     private static final SubsurfaceAccess stationReturn = new SubsurfaceAccess();
     private static BlockPos stationToolAttempt;
     private static boolean needsRouteTool;
+    private static final int TOOL_DROP_RADIUS = 5;
+    private static final DroppedItemSearch routeToolPickup = new DroppedItemSearch(TOOL_DROP_RADIUS);
+    private static boolean pickingUpRouteTool;
     private static boolean deliveringRouteTool;
     private static int approachAge;
     private static Vec3d approachProgress;
@@ -257,6 +260,8 @@ final class ProjectWorker {
 
     private static void halt(MinecraftClient client) {
         approachRecovery.reset();
+        routeToolPickup.reset();
+        pickingUpRouteTool = false;
         if (deliveringRouteTool) {
             BotInventory.hold();
             deliveringRouteTool = false;
@@ -356,6 +361,7 @@ final class ProjectWorker {
             if (client.interactionManager != null) client.interactionManager.cancelBlockBreaking();
             return;
         }
+        if (pickupRouteTool(client)) return;
         if (deliveringRouteTool) {
             BotInventory.tick(client);
             status = BotInventory.status();
@@ -413,6 +419,35 @@ final class ProjectWorker {
             if (result != null) finish(client, result.success(), result.detail());
             else if (block != null && !prepareFieldWorkstation(client, now)) execute(client, now);
         } else execute(client, now);
+    }
+
+    private static boolean pickupRouteTool(MinecraftClient client) {
+        if (!needsRouteTool || SubsurfaceAccess.canDigRoute(client)) {
+            if (pickingUpRouteTool) {
+                routeToolPickup.reset();
+                pickingUpRouteTool = false;
+            }
+            return false;
+        }
+        if (!pickingUpRouteTool) {
+            var player = client.player;
+            if (client.world.getEntitiesByClass(net.minecraft.entity.ItemEntity.class,
+                    player.getBoundingBox().expand(TOOL_DROP_RADIUS),
+                    entity -> entity.isAlive() && usableRouteTool(entity.getStack())).isEmpty()) return false;
+            halt(client);
+            pickingUpRouteTool = true;
+        }
+        if (routeToolPickup.tick(client, ProjectWorker::usableRouteTool, null) == DroppedItemSearch.State.APPROACHING) {
+            status = assignment.project() + "/" + assignment.job().work().id() + ": Collecting a replacement pickaxe";
+            return true;
+        }
+        pickingUpRouteTool = false;
+        return false;
+    }
+
+    private static boolean usableRouteTool(net.minecraft.item.ItemStack stack) {
+        return stack.getItem() instanceof net.minecraft.item.PickaxeItem
+                && stack.getMaxDamage() - stack.getDamage() >= 21;
     }
 
     private static boolean prepareMiningWeapon(MinecraftClient client, long now) {

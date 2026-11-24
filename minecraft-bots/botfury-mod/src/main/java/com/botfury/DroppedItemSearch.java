@@ -17,14 +17,18 @@ import java.util.UUID;
 final class DroppedItemSearch {
     enum State { SEARCHING, APPROACHING, UNAVAILABLE }
 
-    private static final int RADIUS = 32;
     private static final int ROUTE_RETRY_TICKS = 30;
+    private final int radius;
     private final Map<UUID, Integer> retry = new HashMap<>();
     private ItemEntity target;
     private BlockPos goal;
     private Vec3d progress;
     private int age, started, lastProgress, nextScan, nextPath;
     private BaritoneSettings settings;
+
+    DroppedItemSearch() { this(32); }
+
+    DroppedItemSearch(int radius) { this.radius = radius; }
 
     State tick(MinecraftClient client, Item item) {
         return tick(client, stack -> stack.isOf(item), null);
@@ -34,7 +38,7 @@ final class DroppedItemSearch {
         age++;
         var player = client.player;
         if (target != null) {
-            if (!target.isAlive() || !matches.test(target.getStack()) || player.squaredDistanceTo(target) > RADIUS * RADIUS) {
+            if (!target.isAlive() || !matches.test(target.getStack()) || player.squaredDistanceTo(target) > radius * radius) {
                 stop();
             } else if (age - started >= 400 || age - lastProgress >= 120) {
                 retry.put(target.getUuid(), age + 200);
@@ -47,9 +51,9 @@ final class DroppedItemSearch {
         if (target == null && age >= nextScan) {
             retry.values().removeIf(retryAt -> retryAt <= age);
             nextScan = age + 5;
-            target = client.world.getEntitiesByClass(ItemEntity.class, player.getBoundingBox().expand(RADIUS),
+            target = client.world.getEntitiesByClass(ItemEntity.class, player.getBoundingBox().expand(radius),
                     entity -> entity.isAlive() && matches.test(entity.getStack())
-                            && player.squaredDistanceTo(entity) <= RADIUS * RADIUS
+                            && player.squaredDistanceTo(entity) <= radius * radius
                             && !retry.containsKey(entity.getUuid())
                             && (minedAt == null || Math.abs(entity.getX() - minedAt.x) <= 5
                             && Math.abs(entity.getZ() - minedAt.z) <= 5)).stream()

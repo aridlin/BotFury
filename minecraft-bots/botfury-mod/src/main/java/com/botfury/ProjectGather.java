@@ -5,6 +5,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.util.math.BlockPos;
 
 record ProjectGather(String resource, String variant, ProjectItem item, int count, Area exclude) {
+    static final int MAX_COUNT = 576;
     private record Payload(String resource, String variant, String item, Integer count, Bounds exclude) {}
 
     record Bounds(ProjectBlock.Position min, ProjectBlock.Position max) {
@@ -29,7 +30,7 @@ record ProjectGather(String resource, String variant, ProjectItem item, int coun
     static ProjectGather parse(String json) {
         var payload = new Gson().fromJson(json, Payload.class);
         if (payload == null || payload.resource == null || payload.variant == null || payload.item == null
-                || payload.count == null || payload.count < 1 || payload.count > 576) {
+                || payload.count == null || payload.count < 1 || payload.count > MAX_COUNT) {
             throw new IllegalArgumentException("Provide mining resource, variant, item and count (1–576)");
         }
         if (!payload.resource.equals("dropped")) ResourceCatalog.blocks(payload.resource, payload.variant);

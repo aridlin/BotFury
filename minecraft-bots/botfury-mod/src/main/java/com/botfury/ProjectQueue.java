@@ -880,6 +880,43 @@ final class ProjectQueue {
 
     private static String stationRepairKey(Job job) { return "station-repair:" + job.work.id; }
 
+    synchronized boolean refreshUnderfilledStockGather(String world,
+                                                      java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || project.supplyChest == null || project.repeat != null || cancelled(project)) continue;
+            var stock = new HashMap<String, ChestObservation>();
+            collectChestStock(world, project, stock);
+            var observation = stock.get(project.supplyChest);
+            if (observation == null) continue;
+            for (var gather : project.jobs) {
+                if (gather.work.kind != Kind.GATHER || gather.state != State.DONE || gather.work.sameWorkerAs != null
+                        || gather.worker == null) continue;
+                var deposit = contributionDeposit(project, gather);
+                if (deposit == null || !deposit.work.locks.contains(project.supplyChest)
+                        || !depositPrerequisitesReady(project, gather, deposit)
+                        || project.jobs.stream().anyMatch(job -> job != deposit && job.work.needs.contains(gather.work.id))) continue;
+                var target = transferTarget(deposit);
+                var source = gatherSource(gather.work.payload);
+                if (target == null || source == null || !source.item.equals(target.item)) continue;
+                var payload = JSON.fromJson(gather.work.payload, com.google.gson.JsonObject.class);
+                var count = payload.get("count");
+                int missing = Math.min(ProjectGather.MAX_COUNT, target.stock - stockCount(observation.report, target.item));
+                if (count == null || count.isJsonNull() || missing <= count.getAsInt()) continue;
+                int held = heldCount.applyAsInt(gather.worker, target.item);
+                if (held < 0 || held >= missing) continue;
+
+                payload.addProperty("count", missing);
+                var refill = freshStockWork(gather.work.withPayload(JSON.toJson(payload)));
+                var waiting = new Job(deposit.work, State.WAITING, deposit.attempts, null, null,
+                        deposit.expiresAt, CONTRIBUTION_SETTLED, observation);
+                var jobs = project.jobs.stream().map(job -> job == gather ? refill : job == deposit ? waiting : job).toList();
+                commit(project.withJobs(jobs));
+                return true;
+            }
+        }
+        return false;
+    }
+
     synchronized boolean reopenLostManifestStock(String world, long now) throws IOException {
         for (var project : projects.values()) {
             if (!world.equals(project.world) || project.supplyChest == null || project.repeat != null || cancelled(project)) continue;

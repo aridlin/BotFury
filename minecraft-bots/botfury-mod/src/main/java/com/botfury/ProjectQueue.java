@@ -1436,6 +1436,7 @@ final class ProjectQueue {
                 if (mining != null) return mining;
             }
             if (recoverStalledGathering(world, projectId, now, heldCount)
+                    || recoverStalledStockGathering(world, projectId, now)
                     || heldCount != null && recoverToolsAfterBanking(world, projectId)) {
                 return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
                         returnRevision, supportsPickupReserve);
@@ -3342,13 +3343,10 @@ final class ProjectQueue {
         } else if (CARGO_CHECKPOINT.equals(evidence) && cargoCheckpoint(project, job) > 0) {
             result = new Job(job.work, State.WAITING, Math.max(0, job.attempts - 1), job.worker, null,
                     now + STALLED_WORKER_COOLDOWN_MS, evidence, observation, location);
-        } else if (job.attempts < MAX_ATTEMPTS && job.work.kind == Kind.GATHER && job.work.sameWorkerAs == null
-                && GATHER_STALLED.equals(evidence)) {
-            result = new Job(job.work, State.WAITING, job.attempts, job.worker, null,
-                    now + STALLED_WORKER_COOLDOWN_MS, evidence, observation, location);
-        } else if (job.attempts >= MAX_ATTEMPTS && job.work.kind == Kind.GATHER && job.work.sameWorkerAs != null
-                && GATHER_STALLED.equals(evidence)) {
-            result = new Job(job.work, State.FAILED, job.attempts, job.worker, null,
+        } else if (job.work.kind == Kind.GATHER && GATHER_STALLED.equals(evidence)
+                && (job.attempts >= MAX_ATTEMPTS || job.work.sameWorkerAs == null)) {
+            var state = job.attempts < MAX_ATTEMPTS ? State.WAITING : State.FAILED;
+            result = new Job(job.work, state, job.attempts, job.worker, null,
                     now + STALLED_WORKER_COOLDOWN_MS, evidence, observation, location);
         } else if (job.attempts < MAX_ATTEMPTS && project.supplyChest != null && job.work.kind == Kind.BUILD
                 && job.work.sameWorkerAs != null && SCHEMATIC_PLACEMENT.matcher(job.work.id).matches()
@@ -3670,6 +3668,32 @@ final class ProjectQueue {
 
     private static String stalledSupplyKey(Job job) {
         return "stalled-supply:" + job.work.id;
+    }
+
+    private boolean recoverStalledStockGathering(String world, String projectId, long now) throws IOException {
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || project.supplyChest == null || project.repeat != null
+                    || cancelled(project) || projectId != null && !projectId.equals(project.id)) continue;
+            for (var gather : project.jobs) {
+                String key = "stalled-stock-gather:" + gather.work.id;
+                if (gather.work.kind != Kind.GATHER || gather.state != State.FAILED || gather.work.sameWorkerAs != null
+                        || !GATHER_STALLED.equals(gather.evidence) || now < gather.expiresAt
+                        || project.supplyRecoveries.containsKey(key)) continue;
+                var deposit = contributionDeposit(project, gather);
+                if (deposit == null || !deposit.work.locks.contains(project.supplyChest)
+                        || ownChestContributionBlocked(project, gather, deposit)
+                        || gather.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) continue;
+                // Keep the failed site so route selection can pick a different area or search from the worker.
+                var retry = new Job(gather.work, State.WAITING, MAX_ATTEMPTS - 1, null, null, 0,
+                        GATHER_STALLED, gather.chest, gather.resourceSite);
+                var recoveries = new HashMap<>(project.supplyRecoveries);
+                recoveries.put(key, 1);
+                var jobs = project.jobs.stream().map(job -> job == gather ? retry : job).toList();
+                commit(project.withRecovery(jobs, recoveries));
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean recoverToolsAfterBanking(String world, String projectId) throws IOException {

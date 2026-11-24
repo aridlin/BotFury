@@ -16,6 +16,7 @@ final class StallRecovery {
 
     private static final long STALL = Duration.ofMinutes(1).toNanos();
     private static final long OVERLAP = Duration.ofSeconds(6).toNanos();
+    private static final long IDLE_OVERLAP = Duration.ofSeconds(2).toNanos();
     private static final long DETOUR_TIME = Duration.ofSeconds(7).toNanos();
     private static final long CLEAR_TIME = Duration.ofSeconds(2).toNanos();
     private static final long COOLDOWN = Duration.ofSeconds(12).toNanos();
@@ -67,10 +68,7 @@ final class StallRecovery {
             lastRouteProgress = now;
         }
         if (now < retryAt) return State.FOLLOW_ROUTE;
-        var blocker = client.world.getOtherEntities(player, player.getBoundingBox().expand(.4, .05, .4),
-                entity -> entity instanceof PlayerEntity other && other.isAlive() && !other.isSpectator()
-                        && BotCollisionPolicy.known(other.getGameProfile().getName())).stream()
-                .map(PlayerEntity.class::cast).min(java.util.Comparator.comparingDouble(player::squaredDistanceTo)).orElse(null);
+        var blocker = overlappingBot(client, .4);
         if (blocker == null) overlapSince = 0;
         else if (overlapSince == 0) overlapSince = now;
         boolean overlapStall = overlapSince != 0 && now - overlapSince >= OVERLAP && now - lastMoved >= OVERLAP;
@@ -78,27 +76,103 @@ final class StallRecovery {
         if (!overlapStall && !routeStall) return State.FOLLOW_ROUTE;
 
         var waypoint = waypoint(client, goal, blocker, allowed);
-        if (waypoint == null) {
+        if (waypoint == null || !beginDetour(waypoint, now)) {
             retryAt = now + COOLDOWN;
             return State.REPLAN;
         }
-        try {
-            settings = new BaritoneSettings(false);
-        } catch (ReflectiveOperationException | LinkageError error) {
-            retryAt = now + COOLDOWN;
-            return State.REPLAN;
-        }
-        if (!BaritoneClient.goTo(waypoint)) {
-            endDetour();
-            retryAt = now + COOLDOWN;
-            return State.REPLAN;
-        }
-        detour = previousDetour = waypoint;
-        detourEnds = now + DETOUR_TIME;
         BotEvents.add("info", "movement", blocker != null
                 ? "Moving aside for fleet bot " + blocker.getGameProfile().getName()
                 : "Trying a short detour after a stalled route");
         return State.DETOUR;
+    }
+
+    boolean yieldWhileIdle(MinecraftClient client) {
+        var player = client.player;
+        if (player == null || client.world == null || !player.isAlive() || player.isTouchingWater()
+                || client.currentScreen != null || player.currentScreenHandler != player.playerScreenHandler) {
+            reset();
+            return false;
+        }
+        long now = System.nanoTime();
+        if (detour != null) {
+            if (now < detourEnds && (!player.isOnGround()
+                    || player.getPos().squaredDistanceTo(Vec3d.ofBottomCenter(detour)) >= .36)) return true;
+            endDetour();
+            overlapSince = 0;
+            retryAt = now + COOLDOWN;
+            return false;
+        }
+        if (now < retryAt || !player.isOnGround()) return false;
+        var blocker = overlappingBot(client, .15);
+        if (blocker == null) {
+            overlapSince = 0;
+            return false;
+        }
+        if (overlapSince == 0) overlapSince = now;
+        if (now - overlapSince < IDLE_OVERLAP) return false;
+
+        var step = idleStep(client, blocker);
+        if (step == null || !beginDetour(step, now)) {
+            retryAt = now + COOLDOWN;
+            return false;
+        }
+        BotEvents.add("info", "movement", "Yielding the work area to fleet bot " + blocker.getGameProfile().getName());
+        return true;
+    }
+
+    private boolean beginDetour(BlockPos waypoint, long now) {
+        try {
+            settings = new BaritoneSettings(false);
+        } catch (ReflectiveOperationException | LinkageError error) {
+            return false;
+        }
+        if (!BaritoneClient.goTo(waypoint)) {
+            endDetour();
+            return false;
+        }
+        detour = previousDetour = waypoint;
+        detourEnds = now + DETOUR_TIME;
+        return true;
+    }
+
+    private static PlayerEntity overlappingBot(MinecraftClient client, double margin) {
+        var player = client.player;
+        return client.world.getOtherEntities(player, player.getBoundingBox().expand(margin, .05, margin),
+                entity -> entity instanceof PlayerEntity other && other.isAlive() && !other.isSpectator()
+                        && BotCollisionPolicy.known(other.getGameProfile().getName())).stream()
+                .map(PlayerEntity.class::cast).min(java.util.Comparator.comparingDouble(player::squaredDistanceTo)).orElse(null);
+    }
+
+    private static BlockPos idleStep(MinecraftClient client, PlayerEntity blocker) {
+        var player = client.player;
+        var origin = player.getBlockPos();
+        var away = outward(player, blocker);
+        double bestScore = -Double.MAX_VALUE;
+        BlockPos best = null;
+        for (var direction : net.minecraft.util.math.Direction.Type.HORIZONTAL) {
+            var adjacent = origin.offset(direction);
+            for (int height = -1; height <= 1; height++) {
+                var candidate = adjacent.up(height);
+                var point = Vec3d.ofBottomCenter(candidate);
+                if (!walkable(client, candidate, true) || blocker.squaredDistanceTo(point) < .81) continue;
+                var travel = point.subtract(player.getPos()).multiply(1, 0, 1);
+                if (!ThreatEvasion.walkableStep(client, player.getBoundingBox(), travel, candidate, height)) continue;
+                double score = travel.normalize().dotProduct(away) - Math.abs(height) * .2;
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = candidate;
+                }
+            }
+        }
+        return best;
+    }
+
+    private static Vec3d outward(PlayerEntity player, PlayerEntity blocker) {
+        if (blocker == null) return Vec3d.ZERO;
+        var away = player.getPos().subtract(blocker.getPos()).multiply(1, 0, 1);
+        if (away.horizontalLengthSquared() >= .04) return away.normalize();
+        boolean first = player.getGameProfile().getName().compareToIgnoreCase(blocker.getGameProfile().getName()) < 0;
+        return new Vec3d(first ? -1 : 1, 0, 0);
     }
 
     private static double distance(PlayerEntity player, BlockPos destination) {
@@ -108,16 +182,8 @@ final class StallRecovery {
     private BlockPos waypoint(MinecraftClient client, BlockPos goal, PlayerEntity blocker, Predicate<BlockPos> allowed) {
         var player = client.player;
         var origin = player.getBlockPos();
-        Vec3d away = Vec3d.ZERO;
-        if (blocker != null) {
-            away = player.getPos().subtract(blocker.getPos()).multiply(1, 0, 1);
-            if (away.horizontalLengthSquared() < .04) {
-                boolean first = player.getGameProfile().getName().compareToIgnoreCase(blocker.getGameProfile().getName()) < 0;
-                away = new Vec3d(first ? -1 : 1, 0, 0);
-            }
-        }
         var heading = goal == null ? Vec3d.ZERO : Vec3d.ofCenter(goal).subtract(player.getPos()).multiply(1, 0, 1).normalize();
-        var outward = away.normalize();
+        var outward = outward(player, blocker);
         double best = -Double.MAX_VALUE;
         BlockPos choice = null;
         for (var direction : net.minecraft.util.math.Direction.Type.HORIZONTAL) {

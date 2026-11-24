@@ -175,6 +175,12 @@ final class MaterialRecipe {
             }
             // Earlier stages provide the tools for this recipe before the production batch begins.
             stages.addAll(quantities(item, copies, false, resolveSteps(item, false)).quantities);
+            if (tier == 1 && deepProspecting && BotUiConfig.defense) {
+                var sword = Registries.ITEM.getId(Items.STONE_SWORD);
+                if (recipes.containsKey(sword)) {
+                    stages.addAll(quantities(sword, 1, false, resolveSteps(sword, false)).quantities);
+                }
+            }
         }
         stages.addAll(plan.quantities);
         return new Plan(stages);

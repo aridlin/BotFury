@@ -56,7 +56,8 @@ final class FieldWorkstation {
         boolean table = wanted.equals(TABLE);
         int planks = table && !held ? plankCount(client) : 0;
         var plankRecipe = table && !held && planks < PLANK_BUDGET ? plankRecipe(client, PLANK_BUDGET - planks) : null;
-        boolean canPrepare = held || (table ? planks >= PLANK_BUDGET || plankRecipe != null : canCraftFurnace(client));
+        boolean canPrepare = held || (table ? planks >= PLANK_BUDGET || plankRecipe != null
+                : ProjectProduction.canCraft(client, FURNACE));
         for (var position : BlockPos.iterateOutwards(feet, 3, 2, 3)) {
             if (position.equals(feet) || position.equals(feet.up()) || position.equals(feet.down())
                     || position.equals(reserved)
@@ -223,14 +224,6 @@ final class FieldWorkstation {
             if (client.player.getInventory().getStack(slot).isOf(item)) return true;
         }
         return false;
-    }
-
-    private static boolean canCraftFurnace(MinecraftClient client) {
-        var recipe = client.world.getRecipeManager().get(FURNACE).orElse(null);
-        if (!(recipe instanceof net.minecraft.recipe.CraftingRecipe)) return false;
-        var matcher = new RecipeMatcher();
-        client.player.getInventory().populateRecipeFinder(matcher);
-        return matcher.match(recipe, null);
     }
 
     private static int plankCount(MinecraftClient client) {

@@ -70,6 +70,14 @@ final class ProjectProduction {
         return spec;
     }
 
+    static boolean canCraft(MinecraftClient client, Identifier id) {
+        var recipe = client.world.getRecipeManager().get(id).orElse(null);
+        if (!(recipe instanceof CraftingRecipe)) return false;
+        var matcher = new net.minecraft.recipe.RecipeMatcher();
+        client.player.getInventory().populateRecipeFinder(matcher);
+        return matcher.match(recipe, null);
+    }
+
     static Identifier alternativeFuel(MinecraftClient client, ProjectQueue.FuelUse plan) {
         var recipe = client.world.getRecipeManager().get(Identifier.tryParse(plan.recipe())).orElse(null);
         if (!(recipe instanceof SmeltingRecipe smelting)) return null;

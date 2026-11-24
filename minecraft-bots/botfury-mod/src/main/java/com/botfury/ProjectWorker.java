@@ -48,6 +48,8 @@ final class ProjectWorker {
     private static ProjectProduction production;
     private static FieldWorkstation fieldWorkstation;
     private static long nextWorkstationSearch;
+    private static ProjectProduction miningWeapon;
+    private static boolean checkedMiningWeapon;
     private static ProjectGather gather;
     private static boolean checkedCarriedFuel;
     private static ProjectQueue.ResourceSite gatherSite;
@@ -191,6 +193,8 @@ final class ProjectWorker {
         production = null;
         fieldWorkstation = null;
         nextWorkstationSearch = 0;
+        miningWeapon = null;
+        checkedMiningWeapon = false;
         gather = null;
         checkedCarriedFuel = false;
         gatherSite = null;
@@ -216,6 +220,7 @@ final class ProjectWorker {
         if (chest != null) chest.close(client);
         if (production != null) production.close(client);
         if (fieldWorkstation != null) fieldWorkstation.close(client);
+        if (miningWeapon != null) miningWeapon.close(client);
         if (pickup != null) pickup.stop();
         if (gather != null && MiningTask.active()) MiningTask.stop();
         if (breaking && client.interactionManager != null) client.interactionManager.cancelBlockBreaking();
@@ -300,6 +305,7 @@ final class ProjectWorker {
                 else status = (result == DroppedItemSearch.State.SEARCHING ? "Looking for dropped " : "Collecting ")
                         + gather.item() + " (" + held + "/" + gather.count() + ")";
             } else if (!MiningTask.active()) {
+                if (prepareMiningWeapon(client, now)) return;
                 MiningTask.startProject(client, gather.mining(port), gather.exclude(), gatherSite, gather.item());
                 if (!MiningTask.active()) finish(client, false, MiningTask.lastStatus());
             } else {
@@ -315,6 +321,43 @@ final class ProjectWorker {
             if (result != null) finish(client, result.success(), result.detail());
             else if (block != null && !prepareFieldWorkstation(client, now)) execute(client, now);
         } else execute(client, now);
+    }
+
+    private static boolean prepareMiningWeapon(MinecraftClient client, long now) {
+        var sword = Identifier.of("minecraft", "stone_sword");
+        if (!checkedMiningWeapon) {
+            checkedMiningWeapon = true;
+            if (!TaskDefense.enabled() || !SubsurfaceAccess.deepResource(gather.resource())
+                    || !ProjectProduction.canCraft(client, sword)) return false;
+            var inventory = client.player.getInventory();
+            for (int slot = 0; slot < 36; slot++) {
+                var item = inventory.getStack(slot).getItem();
+                if (item instanceof net.minecraft.item.SwordItem || item instanceof net.minecraft.item.AxeItem) return false;
+            }
+            fieldWorkstation = FieldWorkstation.find(client, now, ProjectQueue.Kind.CRAFT);
+        }
+        if (miningWeapon == null && fieldWorkstation != null) {
+            var state = fieldWorkstation.tick(client, now);
+            if (state == FieldWorkstation.State.WORKING) {
+                status = "Setting up a workbench for a mining weapon";
+                return true;
+            }
+            var station = fieldWorkstation.station();
+            fieldWorkstation.close(client);
+            fieldWorkstation = null;
+            if (state == FieldWorkstation.State.READY) {
+                miningWeapon = new ProjectProduction(new ProjectProduction.Spec(station, ProjectQueue.Kind.CRAFT,
+                        sword, null, null, 1));
+            }
+        }
+        if (miningWeapon == null) return false;
+        status = "Making a stone sword before prospecting";
+        var result = miningWeapon.tick(client, now);
+        if (result == null) return true;
+        miningWeapon.close(client);
+        miningWeapon = null;
+        if (result.success()) BotEvents.add("info", "defense", "Crafted a stone sword before prospecting");
+        return false;
     }
 
     private static boolean prepareFieldWorkstation(MinecraftClient client, long now) {

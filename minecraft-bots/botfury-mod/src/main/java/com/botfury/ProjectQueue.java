@@ -1049,9 +1049,11 @@ final class ProjectQueue {
         for (Project project : projects.values()) {
             for (Job job : project.jobs) {
                 if (job.state != State.LEASED) continue;
+                if (world.equals(project.world) && (projectId == null || projectId.equals(project.id))
+                        && worker.equalsIgnoreCase(handoffWorker(job))) return null;
                 if (worker.equalsIgnoreCase(job.worker) && !BATCH_RESERVED.equals(job.evidence)) {
                     // A claim response can be lost. Repeating a claim returns the original assignment.
-                    return world.equals(project.world) && kinds.contains(job.work.kind) && !cancelled(project)
+                    return handoffWorker(job) == null && world.equals(project.world) && kinds.contains(job.work.kind) && !cancelled(project)
                             && (projectId == null || projectId.equals(project.id))
                             ? assignment(project, job) : null;
                 }
@@ -1402,7 +1404,7 @@ final class ProjectQueue {
                                            java.util.function.ToIntBiFunction<String, String> held, boolean fromStock) throws IOException {
         if (routeToolRequests.isEmpty()
                 || projects.values().stream().flatMap(project -> project.jobs.stream())
-                    .anyMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker))) return null;
+                    .anyMatch(job -> workerCommittedToLease(job, worker))) return null;
         var spare = tools == null ? null : PICKAXE_TIERS.stream().skip(1)
                 .filter(tool -> tools.get(tool) != null && tools.get(tool) >= 64 && held.applyAsInt(worker, tool) >= 2)
                 .findFirst().orElse(null);
@@ -1528,7 +1530,7 @@ final class ProjectQueue {
     private Assignment offerEquippedMiner(String world, String worker, String projectId,
                                           Map<String, Integer> toolUses, long now, boolean exhaustedOnly) throws IOException {
         if (toolUses == null || toolUses.isEmpty() || projects.values().stream().flatMap(project -> project.jobs.stream())
-                .anyMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker))) return null;
+                .anyMatch(job -> workerCommittedToLease(job, worker))) return null;
         for (var project : projects.values()) {
             if (project.supplyChest == null || !world.equals(project.world) || cancelled(project)
                     || projectId != null && !project.id.equals(projectId)) continue;
@@ -1683,22 +1685,20 @@ final class ProjectQueue {
         return new Job(work, State.WAITING, 0, null, null, 0, null, null);
     }
 
-    synchronized List<CarriedCraft> craftableToolPreparation(String world, long now) {
+    synchronized List<CarriedCraft> carriedCraftCandidates(String world, long now) {
         var result = new ArrayList<CarriedCraft>();
         for (var project : projects.values()) {
             if (!world.equals(project.world) || project.supplyChest == null || cancelled(project)) continue;
-            var toolConsumers = new HashSet<String>();
+            var intermediates = new HashSet<String>();
             for (var job : project.jobs) {
-                if (job.work.kind == Kind.GATHER && job.state == State.WAITING && job.work.sameWorkerAs != null) {
-                    toolConsumers.add(job.work.sameWorkerAs);
-                }
+                if (job.work.kind == Kind.CRAFT && job.work.sameWorkerAs != null) intermediates.add(job.work.sameWorkerAs);
             }
             for (var craft : project.jobs) {
                 if (craft.work.kind != Kind.CRAFT || craft.state != State.WAITING || craft.work.sameWorkerAs == null
-                        || craft.work.needs.size() != 1 || !toolConsumers.contains(craft.work.id)
+                        || !craft.work.needs.equals(List.of(craft.work.sameWorkerAs)) || intermediates.contains(craft.work.id)
                         || project.supplyRecoveries.containsKey("carried-craft:" + craft.work.id)) continue;
                 var recipe = JSON.fromJson(craft.work.payload, ToolRecipe.class);
-                if (recipe == null || recipe.recipe == null || !PICKAXE_TIERS.contains(recipe.recipe)) continue;
+                if (recipe == null || recipe.recipe == null) continue;
                 var path = privateActiveCraftPreparation(project, craft, now);
                 if (path.isEmpty()) continue;
                 var gathering = path.get(path.size() - 1);
@@ -1723,9 +1723,42 @@ final class ProjectQueue {
         return List.of();
     }
 
+    synchronized boolean offerCarriedCraftHandoff(String world, CarriedCraft request, String helper, Set<String> inputs,
+                                                 java.util.function.ToIntBiFunction<String, String> heldCount,
+                                                 long now) throws IOException {
+        if (inputs.isEmpty() || helper.equalsIgnoreCase(request.worker)
+                || !carriedCraftCandidates(world, now).contains(request)) return false;
+        var project = projects.get(request.project);
+        if (!availableProjectWorker(project, helper, now)) return false;
+        var craft = find(project, request.work.id);
+        var path = privateActiveCraftPreparation(project, craft, now);
+        var gather = path.get(path.size() - 1);
+        var source = gatherSource(gather.work.payload);
+        String key = "carried-handoff:" + craft.work.id;
+        if (source == null || gather.work.sameWorkerAs != null || heldCount.applyAsInt(request.worker, source.item) != 0
+                || project.supplyRecoveries.containsKey(key)
+                || !Collections.disjoint(inputs, pendingBuildMaterials(world, helper))) return false;
+        for (var other : projects.values()) {
+            if (!world.equals(other.world) || cancelled(other)) continue;
+            for (var job : other.jobs) {
+                if (job.state != State.WAITING) continue;
+                if (helper.equalsIgnoreCase(job.worker) && job.expiresAt > now) return false;
+                if (job.work.sameWorkerAs == null) continue;
+                var supplier = find(other, job.work.sameWorkerAs);
+                if (supplier.state == State.DONE && helper.equalsIgnoreCase(supplier.worker)) return false;
+            }
+        }
+        var handoff = new Job(gather.work, State.LEASED, gather.attempts, gather.worker, gather.lease, gather.expiresAt,
+                GATHER_HANDOFF + helper, gather.chest, gather.resourceSite);
+        var counts = new HashMap<>(project.supplyRecoveries);
+        counts.put(key, 1);
+        commit(project.withRecovery(project.jobs.stream().map(job -> job == gather ? handoff : job).toList(), counts));
+        return true;
+    }
+
     synchronized boolean useCarriedCraftingIngredients(String world, CarriedCraft request, Set<String> inputs,
                                                          long now) throws IOException {
-        if (inputs.isEmpty() || !craftableToolPreparation(world, now).contains(request)) return false;
+        if (inputs.isEmpty() || !carriedCraftCandidates(world, now).contains(request)) return false;
         var project = projects.get(request.project);
         var craft = find(project, request.work.id);
         if (!Collections.disjoint(inputs, pendingBuildMaterials(world, request.worker))
@@ -1793,14 +1826,12 @@ final class ProjectQueue {
                 workerSeen.getOrDefault(workerKey(project.world, worker, null), 0L));
         return lastSeen > 0 && lastSeen >= lastSafetyWait(project.world, worker, project.id)
                 && now - lastSeen <= LEASE_MS && projects.values().stream().flatMap(p -> p.jobs.stream())
-                .noneMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker));
+                .noneMatch(job -> workerCommittedToLease(job, worker));
     }
 
     synchronized Assignment offerGatheringHandoff(String world, String worker, String projectId, long now,
                                                   java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
-        if (projects.values().stream().flatMap(project -> project.jobs.stream()).anyMatch(job ->
-                job.state == State.LEASED && (worker.equalsIgnoreCase(job.worker)
-                        || worker.equalsIgnoreCase(handoffWorker(job))))) return null;
+        if (projects.values().stream().flatMap(project -> project.jobs.stream()).anyMatch(job -> workerCommittedToLease(job, worker))) return null;
         for (Project project : projects.values()) {
             if (!world.equals(project.world) || cancelled(project)
                     || projectId != null && !projectId.equals(project.id)) continue;
@@ -1867,7 +1898,7 @@ final class ProjectQueue {
                                                java.util.function.ToIntBiFunction<String, String> heldCount,
                                                CargoRecovery mode, int returnRevision) throws IOException {
         if (projects.values().stream().flatMap(project -> project.jobs.stream())
-                .anyMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker))) return null;
+                .anyMatch(job -> workerCommittedToLease(job, worker))) return null;
         var reserved = pendingBuildMaterials(world, worker);
         for (var project : projects.values()) {
             if (!world.equals(project.world) || project.supplyChest == null || project.repeat != null
@@ -1938,7 +1969,7 @@ final class ProjectQueue {
                                                 ResourceSite position,
                                                 java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
         if (position == null || projects.values().stream().flatMap(project -> project.jobs.stream())
-                .anyMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker))) return null;
+                .anyMatch(job -> workerCommittedToLease(job, worker))) return null;
         var carried = pendingBuildMaterials(world, worker);
         for (var project : projects.values()) {
             if (!world.equals(project.world) || project.supplyChest == null || project.repeat != null
@@ -2093,6 +2124,10 @@ final class ProjectQueue {
             }
         }
         return false;
+    }
+
+    private static boolean workerCommittedToLease(Job job, String worker) {
+        return job.state == State.LEASED && (worker.equalsIgnoreCase(job.worker) || worker.equalsIgnoreCase(handoffWorker(job)));
     }
 
     private static String handoffWorker(Job job) {

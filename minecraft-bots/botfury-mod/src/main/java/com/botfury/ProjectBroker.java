@@ -32,7 +32,7 @@ final class ProjectBroker {
     private record Request(String action, String project, String worker, Set<ProjectQueue.Kind> kinds,
                            List<ProjectQueue.Work> work, String job, UUID token, Boolean success,
                            String evidence, ProjectQueue.ChestReport chest, ProjectQueue.ChestReport routeStock, ProjectQueue.ResourceSite resourceSite,
-                           boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool, int routeCraftTarget, boolean needsRouteBench, boolean canSupplyBench, boolean receivedRouteBench, boolean supportsPickupReserve) {}
+                           boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool, int routeCraftTarget, boolean needsRouteBench, boolean canSupplyBench, boolean receivedRouteBench, boolean supportsPickupReserve, boolean supportsStickResupply) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
         if (queue == null) {
@@ -511,6 +511,10 @@ final class ProjectBroker {
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.RESUPPLY)) {
                         assignment = board.offerRouteTool(world, request.worker, request.project, now, request.toolUses, request.routeCraftTarget, request.canSupplyBench,
                                 ProjectBroker::workerPosition, ProjectBroker::heldCount, returnRevision >= 8);
+                        if (assignment == null && request.supportsStickResupply) {
+                            assignment = board.offerStickResupply(world, request.worker, request.project, now,
+                                    ProjectBroker::workerPosition, ProjectBroker::heldCount);
+                        }
                     }
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.TRANSFER)) {
                         assignment = board.offerInterruptedDeposit(world, request.worker, request.project, now,
@@ -553,7 +557,7 @@ final class ProjectBroker {
                     board.recordRouteStock(request.project, request.job, request.token, now, request.routeStock);
                     var delivery = board.routeToolDelivery(request.project, request.job, request.token, now);
                     if (request.success && delivery != null
-                            && heldCount(delivery.recipient(), delivery.item()) <= delivery.previousCount()) {
+                            && heldCount(delivery.recipient(), delivery.item()) < delivery.previousCount() + delivery.quantity()) {
                         reply(exchange, 202, "Waiting for the recipient to pick up the resupply item");
                         return;
                     }

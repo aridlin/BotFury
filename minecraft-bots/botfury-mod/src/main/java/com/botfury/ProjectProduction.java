@@ -33,6 +33,8 @@ final class ProjectProduction {
                 Identifier fuel, int count) {}
     record Result(boolean success, String detail) {}
     private record Payload(String recipe, String input, String fuel, Integer count, boolean inventory) {}
+    private static final int FURNACE_BURN_TIME = 0;
+    private static final int FURNACE_COOK_TIME = 2;
     private static final long SETTLE = Duration.ofMillis(750).toNanos();
     private final Spec spec;
     private ScreenHandler screen;
@@ -404,8 +406,9 @@ final class ProjectProduction {
             return null;
         }
         if (queued == 0) return failure("Missing furnace input " + spec.input);
-        var progress = (com.botfury.mixin.FurnaceProgressAccess) furnace;
-        long fuelNeeded = (long) recipe.getCookTime() * inputs - progress.botfury$cookTime() - progress.botfury$burnTime();
+        var progress = ((com.botfury.mixin.FurnaceProgressAccess) furnace).botfury$properties();
+        long fuelNeeded = (long) recipe.getCookTime() * inputs
+                - progress.get(FURNACE_COOK_TIME) - progress.get(FURNACE_BURN_TIME);
         if (existingFuel.isEmpty() && fuelNeeded > 0
                 && !addFuel(client, furnace, fuel, fuelNeeded) && !furnace.isBurning()) {
             return failure("Missing furnace fuel " + spec.fuel);

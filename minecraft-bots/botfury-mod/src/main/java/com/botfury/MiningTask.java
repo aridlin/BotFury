@@ -92,6 +92,10 @@ final class MiningTask {
     private static volatile String status="";
     static boolean active(){return job!=null;}
     static boolean working(){return job!=null&&!paused&&!dead;}
+    static boolean seekingDeepOre(MinecraftClient client) {
+        return working() && projectMining && target == null && pickup == null
+                && client.player.getBlockY() <= 8 && SubsurfaceAccess.deepResource(job.resource);
+    }
     static String status(){return job==null?"":status;}
     static String lastStatus(){return status;}
     static boolean toolShortfall() { return toolShortfall; }

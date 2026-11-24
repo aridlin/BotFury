@@ -876,7 +876,9 @@ final class ProjectQueue {
                 var target = JSON.fromJson(pickup.work.payload, PickupTarget.class);
                 if (target == null || !"TAKE".equals(target.direction) || !material.equals(target.item)) continue;
                 String key = "pickup:" + pickup.work.id;
-                int attempts = recovery.getOrDefault(key, 0);
+                String pendingKey = "pickup-pending:" + pickup.work.id;
+                int previouslyPending = recovery.getOrDefault(pendingKey, target.stock);
+                int attempts = previouslyPending == builds.size() ? recovery.getOrDefault(key, 0) : 0;
                 if (attempts >= MAX_SUPPLY_RECOVERIES) continue;
                 if (reservedStorage(project) == null && projects.values().stream().anyMatch(other ->
                         !other.id.equals(project.id) && other.world.equals(world)
@@ -884,7 +886,8 @@ final class ProjectQueue {
                 long outstanding = builds.stream().filter(job -> job.state == State.WAITING
                         || missingBuildMaterial(job, material)).count();
                 var payload = JSON.fromJson(pickup.work.payload, com.google.gson.JsonObject.class);
-                payload.addProperty("stock", Math.min(outstanding, target.stock));
+                // A repaired placement can increase demand after a previous retry shrank the pickup.
+                payload.addProperty("stock", Math.min(outstanding, payload.has("partner") ? 3456 : 1728));
                 var work = new Work(pickup.work.id, pickup.work.kind, JSON.toJson(payload), pickup.work.needs,
                         pickup.work.locks, pickup.work.sameWorkerAs, pickup.work.cleanup, material);
                 changes.put(work.id, new Job(work, State.WAITING, 0, null, null, 0,
@@ -894,6 +897,7 @@ final class ProjectQueue {
                             "Waiting for replacement build materials", job.chest, job.resourceSite));
                 }
                 recovery.put(key, attempts + 1);
+                recovery.put(pendingKey, builds.size());
             }
             if (!changes.isEmpty()) {
                 var jobs = project.jobs.stream().map(job -> changes.getOrDefault(job.work.id, job)).toList();

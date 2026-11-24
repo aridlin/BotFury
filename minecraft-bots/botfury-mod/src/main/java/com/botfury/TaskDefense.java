@@ -19,6 +19,7 @@ final class TaskDefense {
     private static long lastWalkEvent;
     private static boolean pathPaused;
     private static boolean retreatingFromWarden;
+    private static boolean sheltering;
     private static boolean protectingWork;
     private static boolean eating;
     private static Vec3d walkingDirection;
@@ -45,12 +46,14 @@ final class TaskDefense {
         stopWalking(client);
         stopEating(client);
         ThreatEvasion.clearWardenDetour();
+        PhantomShelter.clear();
         protectingWork = false;
         pathPaused=false;
         holdUntil=0;
+        sheltering=false;
     }
     static boolean evade(MinecraftClient client,boolean working){
-        if(!eligible(client,working)){
+        if(!eligible(client,true)){
             if(pathPaused)BaritoneClient.execute("stop");
             cancelEvasion();return false;
         }
@@ -61,12 +64,18 @@ final class TaskDefense {
             stopWalking(client);
             holdUntil = 0;
         }
-        if(System.nanoTime()<holdUntil){
+        if((working||sheltering)&&System.nanoTime()<holdUntil){
             if(walkingDirection!=null)walk(client);
             return true;
         }
         stopWalking(client);
-        var action=ThreatEvasion.dodge(client);
+        var action=working ? ThreatEvasion.dodge(client) : null;
+        boolean shelter = false;
+        if (action == null) {
+            action = PhantomShelter.seek(client);
+            shelter = action != null;
+        }
+        sheltering = shelter;
         if(action!=null){
             stopEating(client);
             walkingDirection=action.walkingDirection();
@@ -78,9 +87,10 @@ final class TaskDefense {
             BotInventory.evaded();
             long now=System.nanoTime();
             if(walkingDirection!=null) walk(client);
-            if ((walkingDirection != null || retreatingFromWarden) && now - lastWalkEvent >= 5_000_000_000L) {
+            if ((shelter || walkingDirection != null || retreatingFromWarden) && now - lastWalkEvent >= 5_000_000_000L) {
                 lastWalkEvent = now;
-                String reason = !retreatingFromWarden ? "Stepping out of a projectile or blast path"
+                String reason = shelter ? "Sheltering from a nearby Phantom"
+                        : !retreatingFromWarden ? "Stepping out of a projectile or blast path"
                         : retreatStep != null ? "Changing elevation to escape a Warden"
                         : walkingDirection == null ? "Holding position near a Warden" : "Sneaking away from a Warden";
                 BotEvents.add("info", "defense", reason);
@@ -88,7 +98,13 @@ final class TaskDefense {
             holdUntil = now + (retreatStep == null ? 200_000_000L : 750_000_000L);
             return true;
         }
-        if (!protectingWork) resumePath();
+        if (!working) {
+            if (pathPaused) BaritoneClient.execute("stop");
+            pathPaused = protectingWork = false;
+            stopEating(client);
+            ThreatEvasion.clearWardenDetour();
+            holdUntil = 0;
+        } else if (!protectingWork) resumePath();
         return false;
     }
 

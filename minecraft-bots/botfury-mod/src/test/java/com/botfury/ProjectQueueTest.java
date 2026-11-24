@@ -2,6 +2,7 @@ package com.botfury;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -241,6 +242,53 @@ class ProjectQueueTest {
         assertEquals(60, com.google.gson.JsonParser.parseString(rescue.work().payload()).getAsJsonObject().get("count").getAsInt());
         assertTrue(queue.finish("stock", "ore", rescue.lease(), false, ProjectQueue.GATHER_TOOLS_NEEDED, null, site, now++));
         assertEquals("ingredients", queue.claim(WORLD, "replacement", Set.of(GATHER), now).job().work().id());
+    }
+
+    @Test void aBystanderCanFinishTheChestOrderWhileTheOriginalMinerHasALease() throws Exception {
+        var journal = directory.resolve("mining-drop-bystander.json");
+        String world = WORLD;
+        String chest = "block:3,64,0";
+        String diamond = "minecraft:diamond";
+        String project = "mine";
+        var craftWork = new ProjectQueue.Work("tool", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\"}", List.of(), Set.of());
+        var gatherWork = new ProjectQueue.Work("gather", GATHER,
+                "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":4}",
+                List.of("tool"), Set.of(), "tool");
+        var depositWork = new ProjectQueue.Work("deposit", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":4}",
+                List.of("gather"), Set.of(chest), "gather");
+        var site = new ProjectQueue.ResourceSite(4, -20, 0);
+        var jobs = List.of(new ProjectQueue.Job(craftWork, ProjectQueue.State.DONE, 1, "old-miner", null,
+                        0, "Crafted", null),
+                new ProjectQueue.Job(gatherWork, ProjectQueue.State.FAILED, 3, null, null, 0,
+                        ProjectQueue.GATHER_TOOLS_NEEDED + " after 2 supply recoveries", null, site),
+                new ProjectQueue.Job(depositWork, ProjectQueue.State.WAITING, 0, null, null, 0, null, null));
+        var seeded = new ProjectQueue.Project(project, world, jobs, null, chest, java.util.Map.of());
+        Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                "projects", java.util.Map.of(project, seeded))));
+        var queue = new ProjectQueue(journal);
+        var bank = queue.offerInterruptedDeposit(world, "carrier", null, 1, site, (bot, item) -> 3).job();
+        assertTrue(queue.finish(project, "deposit", bank.lease(), false, "Delivery is short by 1",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(diamond, 3)), null, true, 2));
+        var ore = queue.offerEquippedMiner(world, "replacement", null,
+                java.util.Map.of("minecraft:iron_pickaxe", 200), 3).job();
+        assertNull(queue.claim(world, "carrier", Set.of(TRANSFER), null, 4, site, material -> false,
+                (bot, item) -> 0, null));
+        assertNull(queue.claim(world, "carrier", Set.of(TRANSFER), null, 5, site, material -> false,
+                (bot, item) -> 1, null));
+        bank = queue.claim(world, "carrier", Set.of(TRANSFER), null, 6, site, material -> false,
+                (bot, item) -> bot.equals("carrier") ? 1 : 0, null).job();
+        assertEquals("deposit", bank.work().id());
+        assertTrue(queue.finish(project, "deposit", bank.lease(), true, "Delivered",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(diamond, 4)), null, 7));
+        queue = new ProjectQueue(journal);
+        assertNull(queue.renew(project, "gather", ore.lease(), 8));
+        assertEquals(ProjectQueue.State.LEASED, queue.snapshot(8).get(0).jobs().get(1).state());
+        var settled = queue.snapshot(ore.expiresAt()).get(0).jobs().get(1);
+        assertEquals(ProjectQueue.State.DONE, settled.state());
+        assertEquals("carrier", settled.worker());
+        assertEquals(site, settled.resourceSite());
+        assertEquals(4, queue.chestStock(world).get(chest).report().items().get(diamond));
     }
 
     @Test void expiredGatheringWithASavedSiteAllowsTheOriginalWorkerToReconnect() throws Exception {

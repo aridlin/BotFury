@@ -133,11 +133,16 @@ final class ProjectQueue {
             return new Project(id, world, updated, value, supplyChest, supplyRecoveries, contributionOrigins);
         }
 
-        Project withContribution(List<Job> updated, String key, int count, ResourceSite origin) {
+        Project withContribution(List<Job> updated, String key, int count, ResourceSite origin, int stock) {
             var amounts = new HashMap<>(supplyRecoveries);
             var origins = new HashMap<>(contributionOrigins);
-            if (count > 0) amounts.put(key, count);
-            else amounts.remove(key);
+            if (count > 0) {
+                amounts.put(key, count);
+                amounts.put(key + ":stock", stock);
+            } else {
+                amounts.remove(key);
+                amounts.remove(key + ":stock");
+            }
             if (origin != null) origins.put(key, origin);
             else origins.remove(key);
             return new Project(id, world, updated, repeat, supplyChest, amounts, origins);
@@ -161,7 +166,7 @@ final class ProjectQueue {
     private record Board(int schema, Map<String, Project> projects) {}
     private record PickupTarget(String direction, String item, int stock) {}
     private record ToolRecipe(String recipe) {}
-    private enum CargoRecovery { ANY, CHECKPOINT, TOOL_FAILURE }
+    private enum CargoRecovery { ANY, CHECKPOINT, TOOL_FAILURE, CARRIED_GOAL }
 
     private static final Gson JSON = new Gson();
     private static final long LEASE_MS = 15_000;
@@ -177,6 +182,7 @@ final class ProjectQueue {
     private static final int MAX_DEPENDENCIES = 250_000;
     private static final String LEASE_EXPIRED = "Worker lease expired";
     private static final String COORDINATOR_RESTARTED = "Coordinator restarted during work";
+    private static final String GATHER_STOCK_CONFIRMED = "Gathering target confirmed by chest stock";
     private static final String GATHER_HANDOFF = "Gathering handoff to ";
     private static final String GATHER_REASSIGNED = "Gathering reassigned to a worker with cargo";
     private static final String CONTRIBUTION_ACTIVE = "Delivering a partial stock contribution";
@@ -787,6 +793,9 @@ final class ProjectQueue {
         // Existing leases and ready handoffs were checked above. Prefer rescuing mining work over a new independent job.
         if (heldCount != null && kinds.contains(Kind.TRANSFER)) {
             var deposit = offerInterruptedDeposit(world, worker, projectId, now, position, heldCount, CargoRecovery.TOOL_FAILURE);
+            if (deposit == null) {
+                deposit = offerInterruptedDeposit(world, worker, projectId, now, position, heldCount, CargoRecovery.CARRIED_GOAL);
+            }
             if (deposit != null) return deposit;
         }
         if (toolUses != null && kinds.contains(Kind.GATHER)) {
@@ -1029,7 +1038,7 @@ final class ProjectQueue {
                 if (deposit == null) continue;
                 if (candidate < current + 16 || candidate <= 2 * current) {
                     var contribution = offerContribution(project, job, deposit, source.item, worker, current + candidate,
-                            false, now, null);
+                            false, now, null, false);
                     if (contribution != null) return contribution;
                     continue;
                 }
@@ -1079,17 +1088,29 @@ final class ProjectQueue {
                 boolean interrupted = gather.state != State.LEASED && (missingTools
                         || GATHER_STALLED.equals(gather.evidence) || LEASE_EXPIRED.equals(gather.evidence) || checkpoint);
                 boolean returningCargo = deposit.chest != null && CONTRIBUTION_SETTLED.equals(deposit.evidence);
-                if (!interrupted && !returningCargo) continue;
+                boolean coveringActiveGather = mode == CargoRecovery.CARRIED_GOAL;
+                if (coveringActiveGather) {
+                    if (gather.state != State.LEASED || now >= gather.expiresAt
+                            || GATHER_STOCK_CONFIRMED.equals(gather.evidence) || handoffWorker(gather) != null) continue;
+                } else if (!interrupted && !returningCargo) continue;
                 var source = gatherSource(gather.work.payload);
                 if (source == null || reserved.contains(source.item) || hasPendingDepositOf(world, worker, source.item)) continue;
                 int held = heldCount.applyAsInt(worker, source.item);
                 var cargo = contributionCargo(deposit, worker);
                 if (held == 0 && CONTRIBUTION_SETTLED.equals(deposit.evidence) && project.supplyRecoveries.containsKey(cargo)) {
-                    commit(project.withContribution(project.jobs, cargo, 0, null));
+                    commit(project.withContribution(project.jobs, cargo, 0, null, 0));
                     return null;
                 }
                 if (held <= 0) continue;
-                var assignment = offerContribution(project, gather, deposit, source.item, worker, held, true, now, position);
+                if (coveringActiveGather) {
+                    var target = transferTarget(deposit);
+                    if (target == null) continue;
+                    int missing = target.stock - (deposit.chest == null ? 0 : stockCount(deposit.chest.report, source.item));
+                    int originalHeld = heldCount.applyAsInt(gather.worker, source.item);
+                    if (missing < 1 || held < missing || originalHeld < 0 || originalHeld >= missing) continue;
+                }
+                var assignment = offerContribution(project, gather, deposit, source.item, worker,
+                        held, true, now, position, coveringActiveGather);
                 if (assignment != null) return assignment;
             }
         }
@@ -1195,7 +1216,8 @@ final class ProjectQueue {
     }
 
     private Assignment offerContribution(Project project, Job gather, Job deposit, String item, String worker,
-                                         int carriedTotal, boolean interrupted, long now, ResourceSite position) throws IOException {
+                                         int carriedTotal, boolean interrupted, long now, ResourceSite position,
+                                         boolean coveringActiveGather) throws IOException {
         // Older journals used the settled marker even when the worker never reached the chest.
         boolean legacyRetry = deposit.attempts == 0 && CONTRIBUTION_SETTLED.equals(deposit.evidence);
         boolean retry = legacyRetry || (deposit.attempts == 1 && CONTRIBUTION_RETRY.equals(deposit.evidence));
@@ -1209,13 +1231,18 @@ final class ProjectQueue {
         var payload = JSON.fromJson(gather.work.payload, com.google.gson.JsonObject.class);
         if (target == null || !item.equals(target.item) || !payload.has("count")) return null;
         String cargo = contributionCargo(deposit, worker);
+        int stock = deposit.chest == null ? 0 : stockCount(deposit.chest.report, item);
         if (additionalCargo) {
-            if (stockCount(deposit.chest.report, item) >= target.stock) return null;
+            if (stock >= target.stock) return null;
             int earlierCount = project.supplyRecoveries.getOrDefault(cargo, 0);
             var origin = project.contributionOrigins.get(cargo);
             // Older journals recorded the count but lacked a location. Let a live position anchor one new attempt.
             boolean missingOldOrigin = origin == null && position != null;
-            if (carriedTotal <= earlierCount && !missingOldOrigin
+            // A smaller stack can cover the remainder after the chest advanced since this carrier's attempt.
+            Integer earlierStock = project.supplyRecoveries.get(cargo + ":stock");
+            boolean newCargoAfterDeposit = coveringActiveGather && carriedTotal < earlierCount
+                    && earlierStock != null && stock > earlierStock;
+            if (carriedTotal <= earlierCount && !missingOldOrigin && !newCargoAfterDeposit
                     && !differentContributionApproach(deposit, origin, position)) return null;
         }
         int goal = payload.get("count").getAsInt();
@@ -1224,7 +1251,7 @@ final class ProjectQueue {
                 UUID.randomUUID(), now + LEASE_MS, CONTRIBUTION_ACTIVE, deposit.chest);
         if (interrupted) {
             var jobs = project.jobs.stream().map(job -> job == deposit ? assigned : job).toList();
-            commit(project.withContribution(jobs, cargo, carriedTotal, position));
+            commit(project.withContribution(jobs, cargo, carriedTotal, position, stock));
         } else replace(project, assigned);
         return new Assignment(project.id, project.world, assigned);
     }
@@ -1416,7 +1443,8 @@ final class ProjectQueue {
     synchronized Job renew(String projectId, String jobId, UUID token, ResourceSite site, long now) throws IOException {
         Project project = projects.get(projectId);
         Job job = find(project, jobId);
-        if (!owns(job, token, now) || cancelled(project) || handoffWorker(job) != null) return null;
+        if (!owns(job, token, now) || cancelled(project) || handoffWorker(job) != null
+                || GATHER_STOCK_CONFIRMED.equals(job.evidence)) return null;
         Job renewed = new Job(job.work, State.LEASED, job.attempts, job.worker,
                 job.lease, now + LEASE_MS, job.evidence, job.chest, gatheringSite(job, site), job.gatheringAfterPickup);
         replace(project, renewed);
@@ -1454,7 +1482,8 @@ final class ProjectQueue {
                     && Objects.equals(job.chest == null ? null : job.chest.report, chest)
                     && (site == null || site.equals(job.resourceSite));
         }
-        if (!owns(job, token, now) || !success && handoffWorker(job) != null) return false;
+        if (!owns(job, token, now) || !success && handoffWorker(job) != null
+                || GATHER_STOCK_CONFIRMED.equals(job.evidence)) return false;
         var fuelPlan = success ? fuelUse(project, job) : null;
         boolean substituted = success && evidence.startsWith(ALTERNATIVE_FUEL);
         if (substituted || fuelPlan != null && !fuelPlan.expectedFuel.equals(currentFuel(project, fuelPlan))) {
@@ -1674,9 +1703,13 @@ final class ProjectQueue {
         var jobs = new ArrayList<>(project.jobs);
         jobs.set(jobs.indexOf(deposit), result);
         var recoveries = new HashMap<>(project.supplyRecoveries);
-        if (gather.state != State.LEASED && remaining <= 0) {
-            jobs.set(jobs.indexOf(gather), new Job(gather.work, State.DONE, gather.attempts, deposit.worker,
-                    null, 0, "Gathering target confirmed by chest stock", null, gather.resourceSite));
+        if (remaining <= 0 && gather.state != State.DONE) {
+            // Keep the signed lease until its expiry so the miner has time to stop acting.
+            var confirmed = gather.state == State.LEASED && gather.expiresAt > now
+                    ? new Job(gather.work, State.LEASED, gather.attempts, gather.worker, gather.lease,
+                            gather.expiresAt, GATHER_STOCK_CONFIRMED, gather.chest, gather.resourceSite)
+                    : completedGatherFromChest(gather, deposit.worker);
+            jobs.set(jobs.indexOf(gather), confirmed);
         } else if (gather.state == State.WAITING || gather.state == State.LEASED || gather.state == State.FAILED) {
             var work = gather.work;
             var payload = JSON.fromJson(work.payload, com.google.gson.JsonObject.class);
@@ -1699,6 +1732,11 @@ final class ProjectQueue {
             }
         }
         commit(project.withRecovery(jobs, recoveries));
+    }
+
+    private static Job completedGatherFromChest(Job gather, String worker) {
+        return new Job(gather.work, State.DONE, gather.attempts, worker, null, 0,
+                GATHER_STOCK_CONFIRMED, null, gather.resourceSite);
     }
 
     private static Job interruptedContribution(Job deposit, long now) {
@@ -1920,6 +1958,13 @@ final class ProjectQueue {
                     if (restored) interrupted.add(job.lease);
                     if (CONTRIBUTION_ACTIVE.equals(job.evidence)) {
                         jobs.set(i, interruptedContribution(job, now));
+                        continue;
+                    }
+                    if (job.work.kind == Kind.GATHER && GATHER_STOCK_CONFIRMED.equals(job.evidence)) {
+                        var depositor = project.jobs.stream().filter(candidate -> candidate.state == State.DONE
+                                && job.work.id.equals(candidate.work.sameWorkerAs) && depositTarget(candidate))
+                                .findFirst().map(Job::worker).orElse(job.worker);
+                        jobs.set(i, completedGatherFromChest(job, depositor));
                         continue;
                     }
                     if (handoff != null) {

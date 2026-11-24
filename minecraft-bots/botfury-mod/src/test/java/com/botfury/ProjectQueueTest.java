@@ -276,6 +276,18 @@ class ProjectQueueTest {
         assertEquals(ProjectQueue.State.WAITING, jobs.get(3).state());
         assertEquals(chestReport, restored.chestStock(WORLD).get(chest).report());
         assertNull(restored.offerInterruptedDeposit(WORLD, "miner", null, eligibleAt + 3, (bot, material) -> 7));
+        var loaded = new ProjectQueue(journal);
+        var additional = loaded.offerInterruptedDeposit(WORLD, "helper", null, eligibleAt + 4, (bot, material) -> 3).job();
+        assertEquals(chestReport, additional.chest().report());
+        var combined = new ProjectQueue.ChestReport(chest, java.util.Map.of(item, 10));
+        assertTrue(loaded.finish(project, "deposit", additional.lease(), false, "Delivery is short by 54", combined,
+                null, true, eligibleAt + 5));
+        assertEquals(combined, loaded.chestStock(WORLD).get(chest).report());
+        var outstanding = loaded.snapshot(eligibleAt + 6).get(0).jobs().get(2);
+        assertEquals(54, com.google.gson.JsonParser.parseString(outstanding.work().payload()).getAsJsonObject().get("count").getAsInt());
+        assertNull(loaded.offerInterruptedDeposit(WORLD, "helper", null, eligibleAt + 7, (bot, material) -> 3));
+        assertNull(loaded.offerInterruptedDeposit(WORLD, "helper", null, eligibleAt + 8, (bot, material) -> 0));
+        assertNotNull(loaded.offerInterruptedDeposit(WORLD, "helper", null, eligibleAt + 9, (bot, material) -> 2));
     }
 
     @Test void stationaryGathererYieldsClaimWithoutAnchoringReplacementToTheOldSite() throws Exception {

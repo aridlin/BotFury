@@ -971,6 +971,13 @@ final class ProjectQueue {
                 var source = gatherSource(gather.work.payload);
                 if (source == null || reserved.contains(source.item) || hasPendingDepositOf(world, worker, source.item)) continue;
                 int held = heldCount.applyAsInt(worker, source.item);
+                var cargo = contributionCargo(deposit, worker);
+                if (held == 0 && CONTRIBUTION_SETTLED.equals(deposit.evidence) && project.supplyRecoveries.containsKey(cargo)) {
+                    var recoveries = new HashMap<>(project.supplyRecoveries);
+                    recoveries.remove(cargo);
+                    commit(new Project(project.id, project.world, project.jobs, project.repeat, project.supplyChest, recoveries));
+                    return null;
+                }
                 if (held <= 0) continue;
                 var assignment = offerContribution(project, gather, deposit, source.item, worker, held, true, now);
                 if (assignment != null) return assignment;
@@ -1064,19 +1071,33 @@ final class ProjectQueue {
         // Older journals used the settled marker even when the worker never reached the chest.
         boolean legacyRetry = deposit.attempts == 0 && CONTRIBUTION_SETTLED.equals(deposit.evidence);
         boolean retry = legacyRetry || (deposit.attempts == 1 && CONTRIBUTION_RETRY.equals(deposit.evidence));
-        if (project.repeat != null || project.supplyChest == null || deposit.chest != null
-                || (!retry && (deposit.attempts != 0 || CONTRIBUTION_SETTLED.equals(deposit.evidence)))
+        boolean additionalCargo = interrupted && deposit.chest != null && CONTRIBUTION_SETTLED.equals(deposit.evidence);
+        if (project.repeat != null || project.supplyChest == null
+                || !additionalCargo && (deposit.chest != null
+                    || !retry && (deposit.attempts != 0 || CONTRIBUTION_SETTLED.equals(deposit.evidence)))
                 || now < deposit.expiresAt || !deposit.work.locks.contains(project.supplyChest)
                 || project.jobs.stream().anyMatch(job -> job != deposit && job.work.needs.contains(gather.work.id))) return null;
         var target = transferTarget(deposit);
         var payload = JSON.fromJson(gather.work.payload, com.google.gson.JsonObject.class);
         if (target == null || !item.equals(target.item) || !payload.has("count")) return null;
+        String cargo = contributionCargo(deposit, worker);
+        if (additionalCargo && (stockCount(deposit.chest.report, item) >= target.stock
+                || carriedTotal <= project.supplyRecoveries.getOrDefault(cargo, 0))) return null;
         int goal = payload.get("count").getAsInt();
         if (!interrupted && carriedTotal < goal || ownChestContributionBlocked(project, gather, deposit)) return null;
-        var assigned = new Job(deposit.work, State.LEASED, retry ? 1 : 0, worker, UUID.randomUUID(), now + LEASE_MS,
-                CONTRIBUTION_ACTIVE, null);
-        replace(project, assigned);
+        var assigned = new Job(deposit.work, State.LEASED, retry || additionalCargo ? 1 : 0, worker,
+                UUID.randomUUID(), now + LEASE_MS, CONTRIBUTION_ACTIVE, deposit.chest);
+        if (interrupted) {
+            var recoveries = new HashMap<>(project.supplyRecoveries);
+            recoveries.put(cargo, carriedTotal);
+            var jobs = project.jobs.stream().map(job -> job == deposit ? assigned : job).toList();
+            commit(new Project(project.id, project.world, jobs, project.repeat, project.supplyChest, recoveries));
+        } else replace(project, assigned);
         return new Assignment(project.id, project.world, assigned);
+    }
+
+    private static String contributionCargo(Job deposit, String worker) {
+        return "contribution:" + deposit.work.id + ":" + worker.toLowerCase(Locale.ROOT);
     }
 
     private boolean ownChestContributionBlocked(Project project, Job gather, Job deposit) {

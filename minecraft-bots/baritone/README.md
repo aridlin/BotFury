@@ -18,6 +18,12 @@ Use the remapped Fabric jar from `fabric/build/libs` (exclude the dev and dev-sh
 
 Scaffold recovery currently reserves up to eight steps together. Each observed step still goes back to the coordinator for an atomic completion and handoff. This is the first migration.
 
+## Workstation access
+
+A chest or table job needs a reachable interaction face. Its saved stand is a starting suggestion. The worker can test line of sight from its current position and pass several usable stands to one Baritone search. After walk-only routes fail near the station, the worker can open a short passage through permitted terrain with the tools it has. Protect the station, its support, reserved footing, occupied footing and exclusion zones. Treating every candidate floor as reserved can make the worker veto the path it just found.
+
+For other kinds of work, keep three facts distinct when extending the native API: the outcome the world must confirm, the cells this worker may change, and the cells other workers own. In particular, a worker waiting for one chest interaction need only hold the transfer reservation while it can actually use the chest. After a disconnect during a transfer, read the chest and worker inventory before issuing another transfer.
+
 ## Next migrations and measurements
 
 1. Measure elapsed ticks separately for tool preparation, travel, productive work, server confirmation, and waiting for the coordinator. Correlate by lease and step. Compare median and slowest workers on identical copied worlds. Include lost cargo and damage to protected blocks alongside throughput.

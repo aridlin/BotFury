@@ -334,7 +334,8 @@ final class ProjectWorker {
                 || pos.equals(block.target()) || pos.equals(block.support()) || pos.equals(block.target().down())
                 || pos.equals(block.stand().down())
                 || (interactionStand != null && pos.equals(interactionStand.down()))
-                || interactionGoals.contains(pos.up())) return true;
+                // The station worker can route through the floors of unused candidate stands.
+                || !stationJob && interactionGoals.contains(pos.up())) return true;
         var world = client.world;
         var state = world.getBlockState(pos);
         if (canopy || elevatedPlacementStand != null && state.getBlock() instanceof LeavesBlock) {
@@ -795,7 +796,8 @@ final class ProjectWorker {
         }
         if (ordinaryBuild && !belowPlacement && stationReturn.active()) stationReturn.stop();
         // Try a protected exit once after both the planned and an alternate approach fail.
-        boolean recoverBeforeSwitching = (excavate || ordinaryBuild) && interactionStand != null
+        boolean localStation = stationJob && currentCell.isWithinDistance(target, 12);
+        boolean recoverBeforeSwitching = (excavate || ordinaryBuild || localStation) && interactionStand != null
                 && recoveryOrigin == null && routeFailed;
         if (searchingForStand && elevatedPlacementStand == null && !recoverBeforeSwitching && !belowStation && !stationReturn.active()
                 && targetLoaded && now >= nextInteractionStandSearch
@@ -808,7 +810,7 @@ final class ProjectWorker {
                 rejectedInteractionStands.add(stand);
                 halt(client);
                 interactionStand = stand = alternatives.get(0);
-                interactionGoals = excavate || ordinaryBuild ? alternatives : List.of();
+                interactionGoals = alternatives;
                 status = assignment.project() + "/" + work.id() + ": Approaching from another side";
             }
         }
@@ -861,14 +863,13 @@ final class ProjectWorker {
                     var pos = stand;
                     var feetBlock = player.getBlockPos();
                     boolean localWork = excavate || build;
-                    boolean stationClimb = stationJob && pos.getY() - feetBlock.getY() >= 2
-                            && feetBlock.isWithinDistance(pos, 12);
-                    if (approach != null && recoveryOrigin == null && (localWork || stationClimb)
+                    if (approach != null && recoveryOrigin == null && (localWork || localStation)
                             && !BaritoneClient.pursuing(pos)) {
                         BaritoneClient.execute("stop");
                         approach.close();
                         approach = null;
-                        approach = elevatedPlacementStand == null ? new BaritoneSettings(true, true, true)
+                        if (localStation) approach = BaritoneSettings.explorationExit(SubsurfaceAccess.canDigRoute(client));
+                        else approach = elevatedPlacementStand == null ? new BaritoneSettings(true, true, true)
                                 : BaritoneSettings.lowerStandApproach();
                         recoveryOrigin = feetBlock;
                         String detail = elevatedPlacementStand == null ? "Opening a short approach through natural terrain"

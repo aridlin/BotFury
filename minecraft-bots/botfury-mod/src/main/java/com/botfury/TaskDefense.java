@@ -3,6 +3,11 @@ package com.botfury;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor;
 import net.minecraft.entity.mob.WardenEntity;
+import net.minecraft.item.AxeItem;
+import net.minecraft.item.Items;
+import net.minecraft.item.SwordItem;
+import net.minecraft.screen.slot.SlotActionType;
+import net.minecraft.util.Hand;
 import net.minecraft.util.math.Vec3d;
 import java.util.List;
 
@@ -13,6 +18,8 @@ final class TaskDefense {
     private static long lastWalkEvent;
     private static boolean pathPaused;
     private static boolean retreatingFromWarden;
+    private static boolean protectingWork;
+    private static boolean eating;
     private static Vec3d walkingDirection;
     static Config parse(String value){
         String[] parts=value.split("\\|",-1);
@@ -30,7 +37,10 @@ final class TaskDefense {
                 &&config.server.equals(here.server())&&config.dimension.equals(here.dimension());
     }
     static void cancelEvasion(){
-        stopWalking(MinecraftClient.getInstance());
+        var client = MinecraftClient.getInstance();
+        stopWalking(client);
+        stopEating(client);
+        protectingWork = false;
         pathPaused=false;
         holdUntil=0;
     }
@@ -50,6 +60,7 @@ final class TaskDefense {
         stopWalking(client);
         var action=ThreatEvasion.dodge(client);
         if(action!=null){
+            stopEating(client);
             walkingDirection=action.walkingDirection();
             retreatingFromWarden = action.wardensNearby();
             if(!pathPaused&&BaritoneClient.available())pathPaused=BaritoneClient.execute("pause");
@@ -66,7 +77,7 @@ final class TaskDefense {
             holdUntil=now+200_000_000L;
             return true;
         }
-        if(pathPaused){BaritoneClient.execute("resume");pathPaused=false;}
+        if (!protectingWork) resumePath();
         return false;
     }
 
@@ -86,10 +97,101 @@ final class TaskDefense {
         retreatingFromWarden = false;
     }
     static boolean defendProject(MinecraftClient client) {
-        return eligible(client, true) && client.player.currentScreenHandler == client.player.playerScreenHandler
-                && LocalFormation.defend(client, config.owner, config.protectedNames,
-                other -> other instanceof net.minecraft.entity.mob.Monster
-                        && !(other instanceof net.minecraft.entity.mob.CreeperEntity || other instanceof WardenEntity));
+        protectingWork = false;
+        if (eligible(client, true) && client.currentScreen == null && client.interactionManager != null
+                && client.player.currentScreenHandler == client.player.playerScreenHandler
+                && client.player.playerScreenHandler.getCursorStack().isEmpty()) {
+            var target = LocalFormation.defenseTarget(client, config.owner, config.protectedNames,
+                    other -> other instanceof net.minecraft.entity.mob.Monster
+                            && !(other instanceof net.minecraft.entity.mob.CreeperEntity || other instanceof WardenEntity));
+            if (target != null) {
+                stopEating(client);
+                protectingWork = true;
+                if (equipWeapon(client) && client.player.getAttackCooldownProgress(.5f) >= .95f) {
+                    LocalFormation.punch(client, target);
+                }
+            } else protectingWork = eatWhenNeeded(client);
+        }
+        if (protectingWork) {
+            if (!pathPaused && BaritoneClient.available()) pathPaused = BaritoneClient.execute("pause");
+        } else {
+            stopEating(client);
+            resumePath();
+        }
+        return protectingWork;
+    }
+
+    private static void resumePath() {
+        if (!pathPaused) return;
+        BaritoneClient.execute("resume");
+        pathPaused = false;
+    }
+
+    private static boolean equipWeapon(MinecraftClient client) {
+        var inventory = client.player.getInventory();
+        int slot = -1;
+        double best = 0;
+        for (int i = 0; i < 36; i++) {
+            var stack = inventory.getStack(i);
+            var item = stack.getItem();
+            double score = item instanceof SwordItem sword ? sword.getAttackDamage() * 1.6
+                    : item instanceof AxeItem axe ? axe.getAttackDamage() : 0;
+            if (score > best || score == best && score > 0 && i == inventory.selectedSlot) {
+                slot = i;
+                best = score;
+            }
+        }
+        return slot < 0 || select(client, slot);
+    }
+
+    private static boolean eatWhenNeeded(MinecraftClient client) {
+        var player = client.player;
+        int hunger = player.getHungerManager().getFoodLevel();
+        if (hunger >= 18 || (!eating && hunger > 15 && player.getHealth() > player.getMaxHealth() / 2)) return false;
+        if (eating && player.isUsingItem()) return true;
+        var inventory = player.getInventory();
+        int slot = -1;
+        double best = 0;
+        for (int i = 0; i < 36; i++) {
+            var stack = inventory.getStack(i);
+            var food = stack.getItem().getFoodComponent();
+            if (food == null) continue;
+            boolean harmful = food.getStatusEffects().stream().anyMatch(effect -> !effect.getFirst().getEffectType().isBeneficial());
+            if (harmful && (hunger > 5 || !stack.isOf(Items.ROTTEN_FLESH))) continue;
+            double score = Math.min(20 - hunger, food.getHunger()) + food.getSaturationModifier() - (harmful ? 4 : 0);
+            if (slot == -1 || score > best) {
+                best = score;
+                slot = i;
+            }
+        }
+        if (slot < 0) return false;
+        if (!select(client, slot)) return true;
+        if (client.interactionManager.interactItem(player, Hand.MAIN_HAND).isAccepted()) {
+            if (!eating) BotEvents.add("info", "defense", "Eating carried food");
+            eating = true;
+            client.options.useKey.setPressed(true);
+            return true;
+        }
+        return false;
+    }
+
+    private static boolean select(MinecraftClient client, int slot) {
+        var player = client.player;
+        var inventory = player.getInventory();
+        if (slot == inventory.selectedSlot) return true;
+        if (slot < 9) inventory.selectedSlot = slot;
+        else client.interactionManager.clickSlot(player.playerScreenHandler.syncId, slot, inventory.selectedSlot,
+                SlotActionType.SWAP, player);
+        return false;
+    }
+
+    private static void stopEating(MinecraftClient client) {
+        if (!eating) return;
+        client.options.useKey.setPressed(false);
+        if (client.player != null && client.player.isUsingItem() && client.interactionManager != null) {
+            client.interactionManager.stopUsingItem(client.player);
+        }
+        eating = false;
     }
 
     static boolean tick(MinecraftClient client,boolean working){

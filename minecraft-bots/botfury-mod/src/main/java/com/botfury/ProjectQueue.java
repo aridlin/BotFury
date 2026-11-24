@@ -189,9 +189,11 @@ final class ProjectQueue {
     static final String GATHER_STALLED = "Gathering stalled without item or route progress";
     static final String EXCAVATION_TOOL_NEEDED = "No suitable tool in inventory for ";
     static final String GATHER_TOOLS_NEEDED = "Gathering needs renewed tools";
+    private static final String EXHAUSTED_TOOLS = GATHER_TOOLS_NEEDED + " after " + MAX_SUPPLY_RECOVERIES
+            + " supply recoveries";
     private static final String RECOVERING_TOOLS = GATHER_TOOLS_NEEDED + "; reacquiring materials";
-    private static final Set<String> PICKAXE_RECIPES = Set.of("minecraft:wooden_pickaxe", "minecraft:stone_pickaxe",
-            "minecraft:iron_pickaxe", "minecraft:diamond_pickaxe");
+    private static final List<String> PICKAXE_TIERS = List.of("minecraft:wooden_pickaxe", "minecraft:stone_pickaxe",
+            "minecraft:iron_pickaxe", "minecraft:diamond_pickaxe", "minecraft:netherite_pickaxe");
     private static final long STALLED_WORKER_COOLDOWN_MS = 30_000;
     private static final int GATHERING_RETRY_RADIUS = 64;
     private static final int GATHERING_RETRY_CLIMB = 12;
@@ -919,29 +921,46 @@ final class ProjectQueue {
             if (project.supplyChest == null || !world.equals(project.world) || cancelled(project)
                     || projectId != null && !project.id.equals(projectId)) continue;
             for (var gather : project.jobs) {
-                if (gather.state != State.WAITING || gather.work.kind != Kind.GATHER || gather.work.sameWorkerAs == null
-                        || gather.work.needs.size() != 1 || gatherSource(gather.work.payload) == null) continue;
+                boolean exhausted = gather.state == State.FAILED && EXHAUSTED_TOOLS.equals(gather.evidence);
+                if ((!exhausted && gather.state != State.WAITING) || gather.work.kind != Kind.GATHER
+                        || gather.work.sameWorkerAs == null || gather.work.needs.size() != 1
+                        || gatherSource(gather.work.payload) == null || checkpointDepositActive(project, gather)) continue;
                 var craft = find(project, gather.work.sameWorkerAs);
-                if (craft.state == State.DONE || craft.work.kind != Kind.CRAFT) continue;
+                if (craft.work.kind != Kind.CRAFT) continue;
                 var recipe = JSON.fromJson(craft.work.payload, ToolRecipe.class);
-                if (recipe == null || recipe.recipe == null || !PICKAXE_RECIPES.contains(recipe.recipe)) continue;
-                Integer remaining = toolUses.get(recipe.recipe);
-                if (remaining == null || remaining < 32) continue;
-                var prep = stalledToolPreparation(project, gather, craft);
-                if (prep.isEmpty()) continue;
+                int tier = recipe == null || recipe.recipe == null ? -1 : PICKAXE_TIERS.indexOf(recipe.recipe);
+                if (tier < 0) continue;
+                String carriedTool = PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
+                        .filter(tool -> toolUses.get(tool) != null && toolUses.get(tool) >= 32)
+                        .findFirst().orElse(null);
+                if (carriedTool == null) continue;
+                var key = equippedRescueKey(gather);
+                if (exhausted && (craft.state != State.DONE || project.supplyRecoveries.containsKey(key))) continue;
+                if (!exhausted && craft.state == State.DONE) continue;
+                if (exhausted && gather.work.needs.stream().anyMatch(need -> find(project, need).state != State.DONE)) continue;
+                var prep = exhausted ? Set.<String>of() : stalledToolPreparation(project, gather, craft);
+                if (!exhausted && prep.isEmpty()) continue;
                 var lease = new Job(gather.work, State.LEASED, gather.attempts + 1, worker, UUID.randomUUID(),
                         now + LEASE_MS, null, gather.chest, gatheringSite(project, gather));
                 var jobs = project.jobs.stream().map(job -> {
                     if (job == gather) return lease;
                     if (!prep.contains(job.work.id)) return job;
                     return new Job(job.work, State.DONE, job.attempts, worker, null, 0,
-                            "Tool preparation satisfied by carried " + recipe.recipe, job.chest, job.resourceSite);
+                            "Tool preparation satisfied by carried " + carriedTool, job.chest, job.resourceSite);
                 }).toList();
-                commit(project.withJobs(jobs));
+                if (exhausted) {
+                    var recoveries = new HashMap<>(project.supplyRecoveries);
+                    recoveries.put(key, 1);
+                    commit(project.withRecovery(jobs, recoveries));
+                } else commit(project.withJobs(jobs));
                 return assignment(project, lease);
             }
         }
         return null;
+    }
+
+    private static String equippedRescueKey(Job gather) {
+        return "equipped-miner:" + gather.work.id;
     }
 
     private static Set<String> stalledToolPreparation(Project project, Job gather, Job craft) {
@@ -1034,7 +1053,7 @@ final class ProjectQueue {
                 boolean checkpoint = CARGO_CHECKPOINT.equals(gather.evidence) && cargoCheckpoint(project, gather) > 0;
                 if (checkpointsOnly && !checkpoint) continue;
                 boolean interrupted = gather.state != State.LEASED && (RECOVERING_TOOLS.equals(gather.evidence)
-                        || GATHER_STALLED.equals(gather.evidence) || LEASE_EXPIRED.equals(gather.evidence) || checkpoint);
+                        || EXHAUSTED_TOOLS.equals(gather.evidence) || GATHER_STALLED.equals(gather.evidence) || LEASE_EXPIRED.equals(gather.evidence) || checkpoint);
                 boolean returningCargo = deposit.chest != null && CONTRIBUTION_SETTLED.equals(deposit.evidence);
                 if (!interrupted && !returningCargo) continue;
                 var source = gatherSource(gather.work.payload);
@@ -1630,6 +1649,7 @@ final class ProjectQueue {
                 remaining <= 0 ? evidence : CONTRIBUTION_SETTLED, observation);
         var jobs = new ArrayList<>(project.jobs);
         jobs.set(jobs.indexOf(deposit), result);
+        var recoveries = new HashMap<>(project.supplyRecoveries);
         if (gather.state != State.LEASED && remaining <= 0) {
             jobs.set(jobs.indexOf(gather), new Job(gather.work, State.DONE, gather.attempts, deposit.worker,
                     null, 0, "Gathering target confirmed by chest stock", null, gather.resourceSite));
@@ -1637,20 +1657,24 @@ final class ProjectQueue {
             var work = gather.work;
             var payload = JSON.fromJson(work.payload, com.google.gson.JsonObject.class);
             int outstanding = Math.max(1, remaining);
-            if (outstanding < payload.get("count").getAsInt()) {
+            int previousCount = payload.get("count").getAsInt();
+            if (outstanding < previousCount) {
                 payload.addProperty("count", outstanding);
                 var adjusted = new Work(work.id, work.kind, JSON.toJson(payload), work.needs, work.locks, work.sameWorkerAs);
                 String retry = gather.state == State.LEASED && gather.expiresAt > now
                         ? GATHER_HANDOFF + gather.worker : gather.evidence;
-                var reduced = gather.state == State.FAILED
-                        ? new Job(adjusted, State.WAITING, 0, null, null, 0, null, gather.chest)
+                boolean toolFailure = gather.state == State.FAILED && EXHAUSTED_TOOLS.equals(gather.evidence);
+                boolean afterRescue = recoveries.remove(equippedRescueKey(gather)) != null;
+                if (toolFailure || afterRescue) recoveries.putIfAbsent("tool-stock:" + work.id, previousCount);
+                var reduced = gather.state == State.FAILED && !toolFailure
+                        ? new Job(adjusted, State.WAITING, 0, null, null, 0, null, gather.chest, gather.resourceSite)
                         : new Job(adjusted, gather.state, gather.attempts, gather.worker,
                                 gather.lease, CARGO_CHECKPOINT.equals(gather.evidence) ? 0 : gather.expiresAt,
                                 CARGO_CHECKPOINT.equals(gather.evidence) ? null : retry, gather.chest, gather.resourceSite);
                 jobs.set(jobs.indexOf(gather), reduced);
             }
         }
-        commit(project.withJobs(jobs));
+        commit(project.withRecovery(jobs, recoveries));
     }
 
     private static Job interruptedContribution(Job deposit, long now) {
@@ -1732,7 +1756,7 @@ final class ProjectQueue {
             if (stage.state != State.DONE) return false;
             if (stage.work.kind != Kind.CRAFT) continue;
             var recipe = JSON.fromJson(stage.work.payload, ToolRecipe.class);
-            if (recipe != null && recipe.recipe != null && PICKAXE_RECIPES.contains(recipe.recipe)) {
+            if (recipe != null && recipe.recipe != null && PICKAXE_TIERS.contains(recipe.recipe)) {
                 return rewindSupply(project, gathering, supplier, jobs, GATHER_TOOLS_NEEDED, gathering.chest, site, now);
             }
         }
@@ -1822,6 +1846,18 @@ final class ProjectQueue {
                 // Renew while a miner opens deeper ground, with a fixed limit at each checkpoint.
                 recoveries.put(checkpoint, site.y);
                 attempts = 0;
+                recoveries.remove(equippedRescueKey(waiting));
+            }
+            var payload = JSON.fromJson(waiting.work.payload, com.google.gson.JsonObject.class);
+            var count = payload == null ? null : payload.get("count");
+            if (count != null) {
+                int outstanding = count.getAsInt();
+                String stockCheckpoint = "tool-stock:" + waiting.work.id;
+                Integer previous = recoveries.put(stockCheckpoint, outstanding);
+                if (previous != null && outstanding < previous) {
+                    attempts = 0;
+                    recoveries.remove(equippedRescueKey(waiting));
+                }
             }
             if (waiting.state == State.FAILED) attempts = 0;
         }
@@ -1917,8 +1953,7 @@ final class ProjectQueue {
                 && (LEASE_EXPIRED.equals(job.evidence) || GATHER_STALLED.equals(job.evidence)));
         var project = projects.get(id);
         for (var job : project.jobs) {
-            if (job.state != State.FAILED || !(GATHER_TOOLS_NEEDED + " after " + MAX_SUPPLY_RECOVERIES
-                    + " supply recoveries").equals(job.evidence)) continue;
+            if (job.state != State.FAILED || !EXHAUSTED_TOOLS.equals(job.evidence)) continue;
             project = projects.get(id);
             var current = find(project, job.work.id);
             if (current.state != State.FAILED) continue;

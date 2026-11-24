@@ -549,8 +549,15 @@ final class MiningTask {
         if (rememberedSite == null) return false;
         var point = Vec3d.ofBottomCenter(rememberedSite);
         if (age < rememberedUntil && client.player.squaredDistanceTo(point) > 25) {
-            if (age < nextPath || path(rememberedSite)) {
-                if (age >= nextPath) nextPath = age + 100;
+            if (age >= nextPath && (!pathActive || !BaritoneClient.pursuing(rememberedSite))) {
+                if (path(rememberedSite)) {
+                    nextPath = age + 100;
+                    BotEvents.add("debug", "mining", "Sent route to recorded gathering site " + rememberedSite.toShortString());
+                } else {
+                    rememberedSite = null;
+                }
+            }
+            if (rememberedSite != null) {
                 status = "Returning to gathering site " + rememberedSite.toShortString();
                 return true;
             }
@@ -569,7 +576,13 @@ final class MiningTask {
             status = "Clearing a stalled mining route";
             return true;
         }
-        if (recovery == StallRecovery.State.REPLAN) nextPath = age;
+        if (recovery == StallRecovery.State.REPLAN) {
+            nextPath = age;
+            if (rememberedSite != null && rememberedSite.equals(goal)) {
+                BaritoneClient.execute("stop");
+                pathActive = false;
+            }
+        }
         return false;
     }
 

@@ -1135,6 +1135,39 @@ class ProjectQueueTest {
                 .getAsJsonObject().get("count").getAsInt());
     }
 
+    @Test void freshDeepMinersReuseAnUnoccupiedSiteInterruptedByToolRecovery() throws Exception {
+        var journal = directory.resolve("interrupted-deep-site.json");
+        var ore = """
+                {"resource":"diamond","variant":"both","item":"minecraft:diamond","count":4}
+                """;
+        var tool = new ProjectQueue.Work("tool", CRAFT, "", List.of(), Set.of());
+        var jobs = new ArrayList<ProjectQueue.Job>();
+        jobs.add(new ProjectQueue.Job(tool, ProjectQueue.State.WAITING, 0, null, null, 0, null, null));
+        var sites = List.of(new ProjectQueue.ResourceSite(48, -54, 0),
+                new ProjectQueue.ResourceSite(15, -54, 0), new ProjectQueue.ResourceSite(6, -30, 0),
+                new ProjectQueue.ResourceSite(8, -50, 0));
+        for (int i = 0; i < sites.size(); i++) {
+            var work = new ProjectQueue.Work("paused-" + i, GATHER,
+                    i == 3 ? ore.replace("both", "normal") : ore, List.of("tool"), Set.of(), "tool");
+            jobs.add(new ProjectQueue.Job(work, ProjectQueue.State.WAITING, 0, null, null, 0,
+                    ProjectQueue.GATHER_TOOLS_NEEDED + "; reacquiring materials", null, sites.get(i)));
+        }
+        for (String id : List.of("first", "second", "third")) {
+            var work = new ProjectQueue.Work(id, GATHER, ore, List.of(), Set.of());
+            jobs.add(new ProjectQueue.Job(work, ProjectQueue.State.WAITING, 0, null, null, 0, null, null));
+        }
+        var project = new ProjectQueue.Project("stock", WORLD, jobs, null, null, java.util.Map.of());
+        Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                "projects", java.util.Map.of("stock", project))));
+        var queue = new ProjectQueue(journal);
+        var position = new ProjectQueue.ResourceSite(0, 64, 0);
+        for (int i = 0; i < 3; i++) {
+            var assignment = queue.claim(WORLD, "miner-" + i, Set.of(GATHER), "stock", i + 1, position);
+            assertEquals(List.of("first", "second", "third").get(i), assignment.job().work().id());
+            assertEquals(i == 2 ? null : sites.get(1 - i), assignment.job().resourceSite());
+        }
+    }
+
     @Test void stalledGatheringUsesNearestCompatibleSiteOutsideFailedAreaAfterRestart() throws Exception {
         var journal = directory.resolve("stalled-gather-alternate.json");
         var queue = new ProjectQueue(journal);

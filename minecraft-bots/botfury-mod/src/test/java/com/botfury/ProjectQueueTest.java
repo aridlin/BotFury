@@ -348,6 +348,42 @@ class ProjectQueueTest {
                 .getAsJsonObject().get("count").getAsInt());
     }
 
+    @Test void deepMinerBanksACheckpointBeforeResumingItsOutstandingOrder() throws Exception {
+        var journal = directory.resolve("mining-checkpoint.json");
+        var queue = new ProjectQueue(journal);
+        String chest = "block:3,64,0";
+        String item = "minecraft:diamond";
+        var gather = new ProjectQueue.Work("dig", GATHER,
+                "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":64}",
+                List.of(), Set.of());
+        var deposit = new ProjectQueue.Work("deposit", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":64}",
+                List.of("dig"), Set.of(chest), "dig");
+        queue.submitSupplied("stock", WORLD, List.of(gather, deposit), chest);
+        var assignment = queue.claim(WORLD, "miner", Set.of(GATHER), 1);
+        assertEquals(4, assignment.cargoCheckpoint());
+        var cave = new ProjectQueue.ResourceSite(12, -54, 23);
+        assertTrue(queue.finish("stock", "dig", assignment.job().lease(), false, ProjectQueue.CARGO_CHECKPOINT,
+                null, cave, 2));
+
+        var restored = new ProjectQueue(journal);
+        var paused = restored.snapshot(3).get(0).jobs().get(0);
+        assertEquals(0, paused.attempts());
+        assertNull(restored.claim(WORLD, "replacement", Set.of(GATHER), 3));
+        long nearExpiry = paused.expiresAt() - 1;
+        var carrier = restored.offerCheckpointDeposit(WORLD, "miner", null, nearExpiry, cave, (name, material) -> 4).job();
+        assertEquals("deposit", carrier.work().id());
+        assertNull(restored.claim(WORLD, "replacement", Set.of(GATHER), nearExpiry + 2));
+        assertTrue(restored.finish("stock", "deposit", carrier.lease(), false, "Partial delivery",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(item, 4)), null, true, nearExpiry + 3));
+
+        var resumed = restored.claim(WORLD, "miner", Set.of(GATHER), nearExpiry + 4);
+        assertEquals(cave, resumed.job().resourceSite());
+        assertEquals(1, resumed.job().attempts());
+        assertEquals(60, com.google.gson.JsonParser.parseString(resumed.job().work().payload())
+                .getAsJsonObject().get("count").getAsInt());
+    }
+
     @Test void stalledGatheringUsesNearestCompatibleSiteOutsideFailedAreaAfterRestart() throws Exception {
         var journal = directory.resolve("stalled-gather-alternate.json");
         var queue = new ProjectQueue(journal);

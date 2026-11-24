@@ -59,6 +59,7 @@ final class ProjectWorker {
     private static long lastGatherProgress;
     private static int gatheredHighWater;
     private static Vec3d gatherProgressPosition;
+    private static int checkpointAt;
     private static DroppedItemSearch pickup;
     private static ProjectQueue.ChestReport chestReport;
     private static boolean pickupShortfall;
@@ -213,6 +214,7 @@ final class ProjectWorker {
         lastGatherProgress = 0;
         gatheredHighWater = 0;
         gatherProgressPosition = null;
+        checkpointAt = 0;
         pickup = null;
         chestReport = null;
         pickupShortfall = false;
@@ -315,6 +317,10 @@ final class ProjectWorker {
             tickMiningCraft(client, now);
         } else if (gather != null) {
             int held = gather.inventoryCount(client);
+            if (checkpointAt == 0 && assignment.cargoCheckpoint() > 0) {
+                checkpointAt = held >= assignment.cargoCheckpoint()
+                        ? held + assignment.cargoCheckpoint() : assignment.cargoCheckpoint();
+            }
             if (!checkedCarriedFuel && held < gather.count() && assignment.fuelFor() != null) {
                 checkedCarriedFuel = true;
                 var fuel = ProjectProduction.alternativeFuel(client, assignment.fuelFor());
@@ -325,6 +331,8 @@ final class ProjectWorker {
             }
             if (held >= gather.count()) {
                 finish(client, true, "Observed " + held + " " + gather.item() + " in worker inventory");
+            } else if (checkpointAt > 0 && held >= checkpointAt && client.player.getBlockY() <= 8) {
+                finish(client, false, ProjectQueue.CARGO_CHECKPOINT);
             } else if (miningRecipe != null) {
                 tickMiningCraft(client, now);
             } else if (!gatherProgress(client, held, now)) {

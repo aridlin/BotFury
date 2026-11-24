@@ -315,8 +315,11 @@ final class ProjectBroker {
                 }
                 case "claim" -> {
                     var position = workerPosition(request.worker);
-                    var assignment = board.claim(world, request.worker, request.kinds, request.project, now,
-                            position);
+                    var assignment = request.kinds.contains(ProjectQueue.Kind.TRANSFER)
+                            ? board.offerCheckpointDeposit(world, request.worker, request.project, now,
+                                position, ProjectBroker::heldCount) : null;
+                    if (assignment == null) assignment = board.claim(world, request.worker, request.kinds,
+                            request.project, now, position);
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.TRANSFER)) {
                         assignment = board.offerInterruptedDeposit(world, request.worker, request.project, now,
                                 position, ProjectBroker::heldCount);

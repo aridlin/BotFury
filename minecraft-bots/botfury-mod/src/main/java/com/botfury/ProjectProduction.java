@@ -64,11 +64,16 @@ final class ProjectProduction {
 
     static Spec useInventoryGrid(MinecraftClient client, Spec spec) {
         if (client.world == null || spec.station == null || spec.kind != ProjectQueue.Kind.CRAFT) return spec;
-        var recipe = client.world.getRecipeManager().get(spec.recipe).orElse(null);
-        if (recipe instanceof CraftingRecipe craft && craft.fits(2, 2)) {
+        if (fitsInventory(client, spec.recipe)) {
             return new Spec(null, spec.kind, spec.recipe, spec.input, spec.fuel, spec.count);
         }
         return spec;
+    }
+
+    static boolean fitsInventory(MinecraftClient client, Identifier id) {
+        if (id == null || client.world == null) return false;
+        var recipe = client.world.getRecipeManager().get(id).orElse(null);
+        return recipe instanceof CraftingRecipe craft && craft.fits(2, 2);
     }
 
     static boolean canCraft(MinecraftClient client, Identifier id) {

@@ -92,6 +92,7 @@ final class ProjectBroker {
             }
             if (!stationCheckDue) return;
             nextStationCheck = now + java.time.Duration.ofSeconds(5).toNanos();
+            board.releasePortableCraftStations(world, recipe -> ProjectProduction.fitsInventory(client, Identifier.tryParse(recipe)));
             for (var station : board.ownedStations(world)) {
                 var block = ProjectBlock.parse(station.payload());
                 var target = block.target();

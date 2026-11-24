@@ -18,7 +18,15 @@ import java.util.List;
 /** Makes short, reversible Baritone approaches when a cave does not reach the ore layer. */
 final class SubsurfaceAccess {
     private record Passage(BlockPos from, BlockPos to) {
-        int clearance() { return 2 + from.getY() - to.getY(); }
+        boolean climbing() { return to.getY() > from.getY(); }
+        int clearance() { return 2 + Math.max(0, from.getY() - to.getY()); }
+
+        List<BlockPos> blocksToClear() {
+            var blocks = new ArrayList<BlockPos>(3);
+            if (climbing()) blocks.add(from.up(2));
+            for (int dy = clearance() - 1; dy >= 0; dy--) blocks.add(to.up(dy));
+            return blocks;
+        }
     }
 
     private static final Direction[] HEADINGS = {Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST};
@@ -42,6 +50,7 @@ final class SubsurfaceAccess {
     private final java.util.LinkedHashSet<Passage> attemptedPassages = new java.util.LinkedHashSet<>();
 
     boolean active() { return settings != null; }
+    boolean openingReturnStep() { return passage != null && passage.climbing(); }
     boolean followingNaturalAscent() { return ascentGoal != Integer.MIN_VALUE; }
 
     static boolean deepResource(String resource) {
@@ -162,11 +171,15 @@ final class SubsurfaceAccess {
         int segmentY = position.getY() + Math.max(-4, Math.min(4, height - position.getY()));
         if (destinationHint != null) {
             var exits = returnExits(client, position, destinationHint, area, segmentY);
-            return !exits.isEmpty() && start(client, position, exits, area, age, true);
+            if (allowNaturalAscent && height > position.getY()
+                    && (exits.isEmpty() || routeFailures >= 2 && position.equals(stalledAt))
+                    && openPassage(client, age, position, area, headingToward(position, destinationHint), 1)) return true;
+            if (!exits.isEmpty() && start(client, position, exits, area, age, true)) return true;
+            return false;
         }
         int initial = Math.floorMod(client.player.getUuid().hashCode(), HEADINGS.length);
         if (routeFailures >= 2 && position.equals(stalledAt)
-                && openPassage(client, age, position, area, initial + heading / 2, height < position.getY())) return true;
+                && openPassage(client, age, position, area, initial + heading / 2, height < position.getY() ? -1 : 0)) return true;
         // Shorter, shallower alternatives can get around a wall without returning up the cave.
         int delta = height - position.getY();
         int fallbackY = position.getY() + (delta == 0 ? 1 : Math.abs(delta) <= 2 ? 0 : Integer.signum(delta) * 2);
@@ -208,37 +221,43 @@ final class SubsurfaceAccess {
     }
 
     private boolean openPassage(MinecraftClient client, int age, BlockPos from, ProjectGather.Area area,
-                                int heading, boolean descend) {
+                                int heading, int preferredHeight) {
         if (client.currentScreen != null) return false;
-        for (int drop = descend ? 1 : 0; drop >= 0; drop--) {
+        for (int delta : preferredHeight < 0 ? new int[]{-1, 0} : new int[]{preferredHeight}) {
             for (int turn = 0; turn < HEADINGS.length; turn++) {
-                var cell = from.offset(HEADINGS[Math.floorMod(heading + turn, HEADINGS.length)]).down(drop);
+                var cell = from.offset(HEADINGS[Math.floorMod(heading + turn, HEADINGS.length)]).up(delta);
                 var candidate = new Passage(from, cell);
                 if (attemptedPassages.contains(candidate) || attemptedPassages.contains(new Passage(cell, from))
                         || !safePassage(client, candidate, area)) continue;
-                var first = passageBlock(client, candidate);
-                if (first != null && (ProjectWorker.excavationHit(client, first) == null
-                        || !equipDiggingTool(client, false))) continue;
+                boolean clear = passageOpen(client, candidate);
+                if (!clear && (passageHit(client, candidate) == null || !equipDiggingTool(client, candidate.climbing()))) continue;
                 if (attemptedPassages.size() >= 24) attemptedPassages.remove(attemptedPassages.iterator().next());
                 attemptedPassages.add(candidate);
-                if (first == null) {
-                    if (start(client, from, List.of(cell), area, age, false)) return true;
+                if (clear) {
+                    if (start(client, from, List.of(cell), area, age, candidate.climbing())) return true;
                     continue;
                 }
                 passage = candidate;
                 passageDeadline = age + 220;
-                BotEvents.add("info", "mining", (drop == 0 ? "Opening a short prospecting passage at "
-                        : "Opening a safe prospecting step at ") + cell.toShortString());
+                String detail = candidate.climbing() ? "Opening a protected return step at "
+                        : delta == 0 ? "Opening a short prospecting passage at " : "Opening a safe prospecting step at ";
+                BotEvents.add("info", "mining", detail + cell.toShortString());
                 return true;
             }
         }
         return false;
     }
 
-    private static BlockPos passageBlock(MinecraftClient client, Passage passage) {
-        for (int dy = passage.clearance() - 1; dy >= 0; dy--) {
-            var pos = passage.to().up(dy);
-            if (!client.world.isAir(pos)) return pos;
+    private static boolean passageOpen(MinecraftClient client, Passage passage) {
+        return passage.blocksToClear().stream().allMatch(client.world::isAir);
+    }
+
+    private static net.minecraft.util.hit.BlockHitResult passageHit(MinecraftClient client, Passage passage) {
+        for (var pos : passage.blocksToClear()) {
+            if (client.world.isAir(pos)) continue;
+            var hit = ProjectWorker.excavationHit(client, pos);
+            if (hit != null) return hit;
+            if (!passage.climbing()) return null;
         }
         return null;
     }
@@ -252,18 +271,17 @@ final class SubsurfaceAccess {
             stopPassage();
             return false;
         }
-        var next = passageBlock(client, opening);
-        if (next == null) {
+        if (passageOpen(client, opening)) {
             stopPassage();
-            return start(client, position, List.of(opening.to()), area, age, false);
+            return start(client, position, List.of(opening.to()), area, age, opening.climbing());
         }
-        var ray = ProjectWorker.excavationHit(client, next);
-        if (ray == null || !equipDiggingTool(client, false)) {
+        var ray = passageHit(client, opening);
+        if (ray == null || !equipDiggingTool(client, opening.climbing())) {
             stopPassage();
             return false;
         }
         client.player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, ray.getPos());
-        if (client.interactionManager.updateBlockBreakingProgress(next, ray.getSide())) {
+        if (client.interactionManager.updateBlockBreakingProgress(ray.getBlockPos(), ray.getSide())) {
             client.player.swingHand(Hand.MAIN_HAND);
         }
         return true;
@@ -281,9 +299,9 @@ final class SubsurfaceAccess {
                     entity -> entity instanceof LivingEntity && entity.isAlive()).isEmpty()) {
             return false;
         }
-        for (int dy = 0; dy < passage.clearance(); dy++) {
-            var block = cell.up(dy);
-            if (BuildProtection.blocked(block) || area != null && area.contains(block)
+        for (var block : passage.blocksToClear()) {
+            if (!world.isInBuildLimit(block) || world.getBlockState(block.up()).getBlock() instanceof FallingBlock
+                    || BuildProtection.blocked(block) || area != null && area.contains(block)
                     || world.getPlayers().stream().anyMatch(player -> player.isAlive() && !player.isSpectator()
                     && player.getBlockPos().down().equals(block))) return false;
             var state = world.getBlockState(block);

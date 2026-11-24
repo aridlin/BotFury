@@ -165,6 +165,7 @@ final class ProjectQueue {
     private record SmeltFuel(String recipe, String input, String fuel, String plannedFuel, int count) {}
     record OwnedStation(String project, String job, String payload) {}
     record OwnedPlacement(String project, String job, String payload) {}
+    record CarriedSmelt(String project, Work work) {}
     record BlockedAccess(String project, Work job, String builder, boolean replacementScaffold) {
         String repairId() { return job.id + (replacementScaffold ? "-v2" : ""); }
     }
@@ -359,10 +360,7 @@ final class ProjectQueue {
                 || !blockedLocalHandoffs(world).contains(request) || !replacement.id.equals(request.job.id)
                 || !replacement.needs.equals(request.job.needs)
                 || !Objects.equals(replacement.sameWorkerAs, request.job.sameWorkerAs)) return false;
-        long lastSeen = Math.max(workerSeen.getOrDefault(workerKey(world, worker, project.id), 0L),
-                workerSeen.getOrDefault(workerKey(world, worker, null), 0L));
-        if (lastSeen == 0 || now - lastSeen > LEASE_MS || projects.values().stream().flatMap(p -> p.jobs.stream())
-                .anyMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker))) return false;
+        if (!availableProjectWorker(project, worker, now)) return false;
         var pickup = find(project, replacement.sameWorkerAs);
         String material = pickup.work.constructionMaterial;
         if (hasPendingDepositOf(world, worker, material)
@@ -1321,7 +1319,7 @@ final class ProjectQueue {
                 if (exhausted && (craft.state != State.DONE || project.supplyRecoveries.containsKey(key))) continue;
                 if (!exhausted && craft.state == State.DONE) continue;
                 if (exhausted && gather.work.needs.stream().anyMatch(need -> find(project, need).state != State.DONE)) continue;
-                var prep = exhausted ? Set.<String>of() : stalledToolPreparation(project, gather, craft);
+                var prep = exhausted ? Set.<String>of() : stalledPrivatePreparation(project, gather, craft);
                 if (!exhausted && prep.isEmpty()) continue;
                 var lease = new Job(gather.work, State.LEASED, gather.attempts + 1, worker, UUID.randomUUID(),
                         now + LEASE_MS, null, gather.chest, gatheringSite(project, gather));
@@ -1346,10 +1344,10 @@ final class ProjectQueue {
         return "equipped-miner:" + gather.work.id;
     }
 
-    private static Set<String> stalledToolPreparation(Project project, Job gather, Job craft) {
+    private static Set<String> stalledPrivatePreparation(Project project, Job consumer, Job preparation) {
         var stages = new HashSet<String>();
         boolean failed = false;
-        for (var job = craft; job != null && job.state != State.DONE;
+        for (var job = preparation; job != null && job.state != State.DONE;
              job = job.work.sameWorkerAs == null ? null : find(project, job.work.sameWorkerAs)) {
             if (job.state == State.LEASED || (job.work.kind != Kind.GATHER && job.work.kind != Kind.CRAFT
                     && job.work.kind != Kind.SMELT)) return Set.of();
@@ -1362,9 +1360,62 @@ final class ProjectQueue {
                 if (job.work.needs.stream().anyMatch(id -> !stages.contains(id) && find(project, id).state != State.DONE)) {
                     return Set.of();
                 }
-            } else if (job != gather && job.work.needs.stream().anyMatch(stages::contains)) return Set.of();
+            } else if (job != consumer && job.work.needs.stream().anyMatch(stages::contains)) return Set.of();
         }
         return stages;
+    }
+
+    synchronized List<CarriedSmelt> resumableSmelting(String world) {
+        var result = new ArrayList<CarriedSmelt>();
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || project.supplyChest == null || cancelled(project)) continue;
+            for (var job : project.jobs) {
+                if (job.work.kind != Kind.SMELT || job.state != State.WAITING || job.work.sameWorkerAs == null
+                        || job.work.needs.size() != 1 || job.evidence == null || !job.evidence.startsWith("Missing furnace fuel ")
+                        || !job.evidence.endsWith("; reacquiring materials")
+                        || project.supplyRecoveries.containsKey("carried-smelt:" + job.work.id)) continue;
+                if (!stalledPrivatePreparation(project, job, find(project, job.work.sameWorkerAs)).isEmpty()) {
+                    result.add(new CarriedSmelt(project.id, job.work));
+                }
+            }
+        }
+        return result;
+    }
+
+    synchronized boolean resumeCarriedSmelting(String world, CarriedSmelt request, String worker, String fuel,
+                                                long now) throws IOException {
+        if (!resumableSmelting(world).contains(request) || fuel == null || !fuel.matches("[a-z0-9_.-]+:[a-z0-9_./-]+")) return false;
+        var project = projects.get(request.project);
+        if (!availableProjectWorker(project, worker, now)) return false;
+        var smelt = find(project, request.work.id);
+        var spec = JSON.fromJson(smelt.work.payload, SmeltFuel.class);
+        var reserved = pendingBuildMaterials(world, worker);
+        if (reserved.contains(spec.input) || reserved.contains(fuel) || hasPendingDepositOf(world, worker, spec.input)
+                || hasPendingDepositOf(world, worker, fuel)) return false;
+        var stages = stalledPrivatePreparation(project, smelt, find(project, smelt.work.sameWorkerAs));
+        var payload = JSON.fromJson(smelt.work.payload, com.google.gson.JsonObject.class);
+        if (!payload.has("plannedFuel")) payload.addProperty("plannedFuel", spec.fuel);
+        payload.addProperty("fuel", fuel);
+        var work = new Work(smelt.work.id, smelt.work.kind, JSON.toJson(payload), smelt.work.needs,
+                smelt.work.locks, smelt.work.sameWorkerAs);
+        var jobs = project.jobs.stream().map(job -> {
+            if (job == smelt) return new Job(work, State.WAITING, job.attempts, null, null, 0,
+                    "Resuming smelting with observed carried supplies", job.chest, job.resourceSite);
+            if (!stages.contains(job.work.id)) return job;
+            return new Job(job.work, State.DONE, job.attempts, worker, null, 0,
+                    "Preparation satisfied by observed carried smelting supplies", job.chest, job.resourceSite);
+        }).toList();
+        var counts = new HashMap<>(project.supplyRecoveries);
+        counts.put("carried-smelt:" + smelt.work.id, 1);
+        commit(project.withRecovery(jobs, counts));
+        return true;
+    }
+
+    private boolean availableProjectWorker(Project project, String worker, long now) {
+        long lastSeen = Math.max(workerSeen.getOrDefault(workerKey(project.world, worker, project.id), 0L),
+                workerSeen.getOrDefault(workerKey(project.world, worker, null), 0L));
+        return lastSeen > 0 && now - lastSeen <= LEASE_MS && projects.values().stream().flatMap(p -> p.jobs.stream())
+                .noneMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker));
     }
 
     synchronized Assignment offerGatheringHandoff(String world, String worker, String projectId, long now,

@@ -94,8 +94,6 @@ final class ProjectProduction {
     }
 
     private static Identifier alternativeFuel(MinecraftClient client, Identifier input, Identifier preferred, long cookTicks) {
-        if (cookTicks <= 0) return null;
-        var burnTimes = net.minecraft.block.entity.AbstractFurnaceBlockEntity.createFuelTimeMap();
         var carried = new java.util.LinkedHashMap<Identifier, Integer>();
         var inventory = client.player.getInventory();
         for (int slot = 0; slot < 36; slot++) {
@@ -104,6 +102,35 @@ final class ProjectProduction {
                 carried.merge(Registries.ITEM.getId(stack.getItem()), stack.getCount(), Integer::sum);
             }
         }
+        return alternativeFuel(carried, input, preferred, cookTicks);
+    }
+
+    static Identifier carriedSmeltingFuel(MinecraftClient client, String work, Map<String, Integer> inventory) {
+        var spec = parse(work, ProjectQueue.Kind.SMELT);
+        if (inventory.getOrDefault(spec.input.toString(), 0) == 0) return null;
+        var recipe = client.world.getRecipeManager().get(spec.recipe).orElse(null);
+        if (!(recipe instanceof SmeltingRecipe smelt)
+                || !smelt.getIngredients().get(0).test(Registries.ITEM.get(spec.input).getDefaultStack())) return null;
+        int output = smelt.getOutput(client.world.getRegistryManager()).getCount();
+        if (output < 1) return null;
+        int required = (spec.count + output - 1) / output;
+        if (inventory.getOrDefault(spec.input.toString(), 0) < required) return null;
+        long cookTicks = (long) smelt.getCookTime() * required;
+        var burnTimes = net.minecraft.block.entity.AbstractFurnaceBlockEntity.createFuelTimeMap();
+        if (!spec.fuel.equals(spec.input) && (long) burnTimes.getOrDefault(Registries.ITEM.get(spec.fuel), 0)
+                * inventory.getOrDefault(spec.fuel.toString(), 0) >= cookTicks && cookTicks > 0) return spec.fuel;
+        var carried = new LinkedHashMap<Identifier, Integer>();
+        inventory.forEach((key, count) -> {
+            var id = Identifier.tryParse(key);
+            if (id != null && count != null && count > 0) carried.put(id, count);
+        });
+        return alternativeFuel(carried, spec.input, spec.fuel, cookTicks);
+    }
+
+    private static Identifier alternativeFuel(Map<Identifier, Integer> carried, Identifier input,
+                                              Identifier preferred, long cookTicks) {
+        if (cookTicks <= 0) return null;
+        var burnTimes = net.minecraft.block.entity.AbstractFurnaceBlockEntity.createFuelTimeMap();
         Identifier best = null;
         long bestWaste = Long.MAX_VALUE;
         for (var entry : carried.entrySet()) {

@@ -88,12 +88,27 @@ final class ProjectBroker {
             }
             checkOwnedPlacements(client, board, world);
             confirmLocalScaffoldClearance(client, board, world);
+            resumeCarriedSmelting(client, board, world);
             if (now >= nextAccessCheck) {
                 nextAccessCheck = now + java.time.Duration.ofSeconds(20).toNanos();
                 repairBlockedAccess(client, board, world);
             }
         } catch (IOException | IllegalArgumentException failure) {
             BotEvents.add("warn", "projects", "Could not check owned project work. " + failure.getMessage());
+        }
+    }
+
+    private static void resumeCarriedSmelting(net.minecraft.client.MinecraftClient client, ProjectQueue board,
+                                              String world) throws IOException {
+        for (var request : board.resumableSmelting(world)) {
+            for (var bot : BotTracker.all()) {
+                if (!bot.fresh() || !bot.connected() || !bot.alive() || !bot.sameWorld() || bot.items().isEmpty()) continue;
+                var fuel = ProjectProduction.carriedSmeltingFuel(client, request.work().payload(), bot.items());
+                if (fuel != null && board.resumeCarriedSmelting(world, request, bot.name(), fuel.toString(), System.currentTimeMillis())) {
+                    BotEvents.add("info", "projects", "Resumed " + request.work().id() + " with supplies carried by " + bot.name());
+                    return;
+                }
+            }
         }
     }
 

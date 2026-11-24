@@ -121,13 +121,25 @@ final class ProjectBroker {
 
     private static void useCarriedCraftingIngredients(net.minecraft.client.MinecraftClient client, ProjectQueue board,
                                                        String world) throws IOException {
-        for (var request : board.craftableToolPreparation(world, System.currentTimeMillis())) {
+        for (var request : board.carriedCraftCandidates(world, System.currentTimeMillis())) {
             var bot = liveWorker(request.worker());
-            if (bot == null || bot.items().isEmpty()) continue;
-            var inputs = ProjectProduction.carriedCraftingIngredients(client, request.work().payload(), bot.items());
-            if (board.useCarriedCraftingIngredients(world, request, inputs, System.currentTimeMillis())) {
-                BotEvents.add("info", "projects", bot.name() + " already carries the ingredients for " + request.work().id());
-                return;
+            if (bot == null || !bot.sameWorld()) continue;
+            if (!bot.items().isEmpty()) {
+                var inputs = ProjectProduction.carriedCraftingIngredients(client, request.work().payload(), bot.items());
+                if (board.useCarriedCraftingIngredients(world, request, inputs, System.currentTimeMillis())) {
+                    BotEvents.add("info", "projects", bot.name() + " already carries the ingredients for " + request.work().id());
+                    return;
+                }
+            }
+            for (var helper : BotTracker.all()) {
+                if (!helper.fresh() || !helper.connected() || !helper.alive() || !helper.sameWorld()
+                        || helper.name().equalsIgnoreCase(bot.name()) || helper.items().isEmpty()) continue;
+                var inputs = ProjectProduction.carriedCraftingIngredients(client, request.work().payload(), helper.items());
+                if (board.offerCarriedCraftHandoff(world, request, helper.name(), inputs,
+                        ProjectBroker::heldCount, System.currentTimeMillis())) {
+                    BotEvents.add("info", "projects", helper.name() + " can supply the recipe for " + request.work().id());
+                    return;
+                }
             }
         }
     }

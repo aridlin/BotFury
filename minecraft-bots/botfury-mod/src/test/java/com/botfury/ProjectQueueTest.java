@@ -1524,6 +1524,43 @@ class ProjectQueueTest {
                 true, ProjectQueue.ALTERNATIVE_FUEL + "minecraft:oak_planks", 5));
     }
 
+    @Test void helperWithRecipeIngredientsTakesOverAfterTheGatherLeaseEnds() throws Exception {
+        var journal = directory.resolve("craft-handoff.json");
+        var board = new ProjectQueue(journal);
+        var wood = new ProjectQueue.Work("logs", GATHER,
+                "{\"resource\":\"any_logs\",\"variant\":\"both\",\"item\":\"any_logs\"}", List.of(), Set.of());
+        var ladder = new ProjectQueue.Work("ladders", CRAFT, "{\"recipe\":\"minecraft:ladder\"}",
+                List.of("logs"), Set.of(), "logs");
+        board.submitSupplied("order", WORLD, List.of(wood, ladder), "block:1,64,0");
+        var original = board.claim(WORLD, "scout", Set.of(GATHER), 1).job();
+        var request = board.carriedCraftCandidates(WORLD, 2).get(0);
+        var sticks = Set.of("minecraft:stick");
+        assertFalse(board.offerCarriedCraftHandoff(WORLD, request, "helper", sticks, (w,i) -> 0, 2));
+        assertNull(board.claim(WORLD, "helper", Set.of(GATHER, CRAFT), 3));
+        assertFalse(board.offerCarriedCraftHandoff(WORLD, request, "helper", sticks, (w,i) -> 1, 4));
+        assertTrue(board.offerCarriedCraftHandoff(WORLD, request, "helper", sticks, (w,i) -> 0, 4));
+        board.submit("other", WORLD, List.of(job("stone", GATHER, List.of())));
+        board = new ProjectQueue(journal);
+        assertNull(board.claim(WORLD, "scout", Set.of(GATHER), 5));
+        assertNull(board.claim(WORLD, "helper", Set.of(GATHER), original.expiresAt() - 1));
+        assertNull(board.renew("order", "logs", original.lease(), 5));
+        board.submitSupplied("second", WORLD, List.of(wood, ladder), "block:2,64,0");
+        board.claim(WORLD, "second-scout", Set.of(GATHER), "second", original.expiresAt() - 1);
+        // The helper also owns the short window between expiry and collecting the promised lease.
+        board.snapshot(original.expiresAt());
+
+        var second = board.carriedCraftCandidates(WORLD, original.expiresAt()).stream()
+                .filter(candidate -> candidate.project().equals("second")).findFirst().orElseThrow();
+        assertFalse(board.offerCarriedCraftHandoff(WORLD, second, "helper", sticks, (w,i) -> 0, original.expiresAt()));
+        var next = board.claim(WORLD, "helper", Set.of(GATHER), original.expiresAt()).job();
+        assertEquals("logs", next.work().id());
+        assertFalse(board.useCarriedCraftingIngredients(WORLD, request, sticks, original.expiresAt() + 1));
+        var transferred = board.carriedCraftCandidates(WORLD, original.expiresAt() + 1).stream()
+                .filter(candidate -> candidate.project().equals("order")).findFirst().orElseThrow();
+        assertTrue(board.useCarriedCraftingIngredients(WORLD, transferred, sticks, original.expiresAt() + 1));
+        assertEquals("ladders", board.claim(WORLD, "helper", Set.of(CRAFT), original.expiresAt() + 2).job().work().id());
+    }
+
     @Test void carriedIngredientsRetireOnlyThePrivateGatherForTheCurrentWorker() throws Exception {
         var journal = directory.resolve("carried-crafting.json");
         var board = new ProjectQueue(journal);
@@ -1537,7 +1574,7 @@ class ProjectQueueTest {
         board.submitSupplied("shared", WORLD, List.of(wood, sticks, craft, mine, shared), "block:2,64,0");
         var gather = board.claim(WORLD, "worker", Set.of(GATHER), "independent", 1).job();
         var sharedGather = board.claim(WORLD, "other", Set.of(GATHER), "shared", 1).job();
-        var candidates = board.craftableToolPreparation(WORLD, 2);
+        var candidates = board.carriedCraftCandidates(WORLD, 2);
         assertEquals(1, candidates.size());
         var request = candidates.get(0);
         assertEquals("independent", request.project());

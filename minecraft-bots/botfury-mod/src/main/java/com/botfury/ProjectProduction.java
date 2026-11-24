@@ -100,7 +100,10 @@ final class ProjectProduction {
         inventory.forEach((key, count) -> {
             var id = Identifier.tryParse(key);
             if (id == null || count == null || count <= 0) return;
-            Registries.ITEM.getOrEmpty(id).ifPresent(item -> matcher.addInput(new ItemStack(item, Math.min(count, 64))));
+            Registries.ITEM.getOrEmpty(id).ifPresent(item -> {
+                int held = Math.min(count, 36 * item.getMaxCount());
+                matcher.addInput(new ItemStack(item, held), held);
+            });
         });
         var matched = new IntArrayList();
         if (!matcher.match(recipe, matched, (spec.count + yield - 1) / yield)) return java.util.Set.of();

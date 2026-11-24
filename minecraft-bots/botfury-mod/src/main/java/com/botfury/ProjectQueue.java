@@ -117,6 +117,8 @@ final class ProjectQueue {
     }
     record Assignment(String project, String world, Job job) {}
     record OwnedStation(String project, String job, String payload) {}
+    record OwnedPlacement(String project, String job, String payload) {}
+    private static final java.util.regex.Pattern SCHEMATIC_PLACEMENT = java.util.regex.Pattern.compile("place-[0-9]+");
     private record StationTarget(ProjectBlock.Position target, String block) {}
     private record Board(int schema, Map<String, Project> projects) {}
     private record PickupTarget(String direction, String item, int stock) {}
@@ -233,6 +235,48 @@ final class ProjectQueue {
             }
         }
         return result;
+    }
+
+    synchronized List<OwnedPlacement> ownedPlacements(String world) {
+        var result = new ArrayList<OwnedPlacement>();
+        for (var project : projects.values()) {
+            if (!project.world.equals(world) || project.supplyChest == null || cancelled(project)
+                    || project.jobs.stream().allMatch(job -> job.state == State.DONE)) continue;
+            for (var job : project.jobs) {
+                if (repairablePlacement(job)) result.add(new OwnedPlacement(project.id, job.work.id, job.work.payload));
+            }
+        }
+        return result;
+    }
+
+    private static boolean repairablePlacement(Job job) {
+        return job != null && job.state == State.DONE && job.work.kind == Kind.BUILD && job.work.sameWorkerAs != null
+                && SCHEMATIC_PLACEMENT.matcher(job.work.id).matches();
+    }
+
+    synchronized boolean repairMissingPlacement(String world, String projectId, String jobId) throws IOException {
+        var project = projects.get(projectId);
+        var lost = find(project, jobId);
+        if (project == null || !world.equals(project.world) || project.supplyChest == null || cancelled(project)
+                || !repairablePlacement(lost)
+                || project.jobs.stream().anyMatch(job -> job.state == State.LEASED && job.work.needs.contains(jobId))) return false;
+        var repairCounts = new HashMap<>(project.supplyRecoveries);
+        String key = "placement:" + jobId;
+        int repairs = repairCounts.getOrDefault(key, 0);
+        if (repairs >= MAX_SUPPLY_RECOVERIES) return false;
+        var jobs = new ArrayList<Job>();
+        for (var job : project.jobs) {
+            if (job == lost || job.state == State.FAILED && job.work.kind == Kind.BUILD
+                    && job.work.needs.contains(jobId) && placementApproachFailure(job)) {
+                job = new Job(job.work, State.WAITING, 0, null, null, 0,
+                        job == lost ? "Previously built block is missing" : "Waiting for missing support to be rebuilt",
+                        job.chest, job.resourceSite);
+            }
+            jobs.add(job);
+        }
+        repairCounts.put(key, repairs + 1);
+        commit(new Project(project.id, project.world, jobs, project.repeat, project.supplyChest, repairCounts));
+        return true;
     }
 
     synchronized boolean restoreOwnedStation(String world, String projectId, String jobId) throws IOException {
@@ -1001,8 +1045,12 @@ final class ProjectQueue {
     }
 
     synchronized int retryPlacementApproaches(String world, String id) throws IOException {
-        return retryFailures(world, id, job -> job.work.kind == Kind.BUILD && job.evidence != null
-                && (TARGET_TIMEOUT.equals(job.evidence) || job.evidence.startsWith("No reachable solid support face for ")));
+        return retryFailures(world, id, job -> job.work.kind == Kind.BUILD && placementApproachFailure(job));
+    }
+
+    private static boolean placementApproachFailure(Job job) {
+        return job.evidence != null && (TARGET_TIMEOUT.equals(job.evidence)
+                || job.evidence.startsWith("No reachable solid support face for "));
     }
 
     private int retryFailures(String world, String id, java.util.function.Predicate<Job> applicable) throws IOException {

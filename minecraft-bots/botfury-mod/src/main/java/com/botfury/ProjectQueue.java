@@ -109,14 +109,38 @@ final class ProjectQueue {
         int limit() { return capacity > 0 ? capacity : 1728; }
     }
     record Project(String id, String world, List<Job> jobs, Repeat repeat, String supplyChest,
-                   Map<String, Integer> supplyRecoveries) {
+                   Map<String, Integer> supplyRecoveries, Map<String, ResourceSite> contributionOrigins) {
+        Project(String id, String world, List<Job> jobs, Repeat repeat, String supplyChest,
+                Map<String, Integer> supplyRecoveries) {
+            this(id, world, jobs, repeat, supplyChest, supplyRecoveries, Map.of());
+        }
+
         Project {
             jobs = List.copyOf(jobs);
             supplyRecoveries = supplyRecoveries == null ? Map.of() : Map.copyOf(supplyRecoveries);
+            contributionOrigins = contributionOrigins == null ? Map.of() : Map.copyOf(contributionOrigins);
         }
 
         Project withJobs(List<Job> updated) {
-            return new Project(id, world, updated, repeat, supplyChest, supplyRecoveries);
+            return withRecovery(updated, supplyRecoveries);
+        }
+
+        Project withRecovery(List<Job> updated, Map<String, Integer> recovery) {
+            return new Project(id, world, updated, repeat, supplyChest, recovery, contributionOrigins);
+        }
+
+        Project withRepeat(List<Job> updated, Repeat value) {
+            return new Project(id, world, updated, value, supplyChest, supplyRecoveries, contributionOrigins);
+        }
+
+        Project withContribution(List<Job> updated, String key, int count, ResourceSite origin) {
+            var amounts = new HashMap<>(supplyRecoveries);
+            var origins = new HashMap<>(contributionOrigins);
+            if (count > 0) amounts.put(key, count);
+            else amounts.remove(key);
+            if (origin != null) origins.put(key, origin);
+            else origins.remove(key);
+            return new Project(id, world, updated, repeat, supplyChest, amounts, origins);
         }
     }
     record Assignment(String project, String world, Job job, FuelUse fuelFor, List<ResourceSite> accessRoute) {
@@ -377,7 +401,7 @@ final class ProjectQueue {
         for (var work : repair.cleanup()) jobs.add(new Job(work, State.WAITING, 0, null, null, 0, null, null));
         var counts = new HashMap<>(project.supplyRecoveries);
         counts.put("access:" + waiting.work.id, 1);
-        commit(new Project(project.id, project.world, jobs, project.repeat, project.supplyChest, counts));
+        commit(project.withRecovery(jobs, counts));
         return true;
     }
 
@@ -407,7 +431,7 @@ final class ProjectQueue {
             jobs.add(job);
         }
         repairCounts.put(key, repairs + 1);
-        commit(new Project(project.id, project.world, jobs, project.repeat, project.supplyChest, repairCounts));
+        commit(project.withRecovery(jobs, repairCounts));
         return true;
     }
 
@@ -531,7 +555,7 @@ final class ProjectQueue {
             if (!project.world.equals(world) || repeat == null || repeat.cancelled || !repeat.chest.equals(chest)
                     || projectId != null && !projectId.equals(project.id)) continue;
             var cancelled = new Repeat(repeat.batch, repeat.item, repeat.chest, repeat.completed, repeat.lastStock, true, repeat.capacity);
-            commit(new Project(project.id, project.world, project.jobs, cancelled, project.supplyChest, project.supplyRecoveries));
+            commit(project.withRepeat(project.jobs, cancelled));
             return true;
         }
         return false;
@@ -840,7 +864,7 @@ final class ProjectQueue {
             }
             return job;
         }).toList();
-        var reopened = new Project(project.id, project.world, jobs, project.repeat, project.supplyChest, recovery);
+        var reopened = project.withRecovery(jobs, recovery);
         // Reopening this placement can revive a separate batch already supplied by the replacement worker.
         if (pendingBuildMaterials(reopened, worker, pickup.work.id).contains(pickup.work.constructionMaterial)) return false;
         commit(reopened);
@@ -941,7 +965,7 @@ final class ProjectQueue {
                 if (deposit == null) continue;
                 if (candidate < current + 16 || candidate <= 2 * current) {
                     var contribution = offerContribution(project, job, deposit, source.item, worker, current + candidate,
-                            false, now);
+                            false, now, null);
                     if (contribution != null) return contribution;
                     continue;
                 }
@@ -956,6 +980,12 @@ final class ProjectQueue {
 
     synchronized Assignment offerInterruptedDeposit(String world, String worker, String projectId, long now,
                                                      java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
+        return offerInterruptedDeposit(world, worker, projectId, now, null, heldCount);
+    }
+
+    synchronized Assignment offerInterruptedDeposit(String world, String worker, String projectId, long now,
+                                                     ResourceSite position,
+                                                     java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
         if (projects.values().stream().flatMap(project -> project.jobs.stream())
                 .anyMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker))) return null;
         var reserved = pendingBuildMaterials(world, worker);
@@ -963,23 +993,23 @@ final class ProjectQueue {
             if (!world.equals(project.world) || project.supplyChest == null || project.repeat != null
                     || projectId != null && !projectId.equals(project.id)) continue;
             for (var gather : project.jobs) {
-                if (gather.work.kind != Kind.GATHER || (gather.state != State.WAITING && gather.state != State.FAILED)
-                        || !(RECOVERING_TOOLS.equals(gather.evidence) || GATHER_STALLED.equals(gather.evidence)
-                            || LEASE_EXPIRED.equals(gather.evidence))) continue;
+                if (gather.work.kind != Kind.GATHER || gather.state == State.DONE) continue;
                 var deposit = contributionDeposit(project, gather);
                 if (deposit == null) continue;
+                boolean interrupted = gather.state != State.LEASED && (RECOVERING_TOOLS.equals(gather.evidence)
+                        || GATHER_STALLED.equals(gather.evidence) || LEASE_EXPIRED.equals(gather.evidence));
+                boolean returningCargo = deposit.chest != null && CONTRIBUTION_SETTLED.equals(deposit.evidence);
+                if (!interrupted && !returningCargo) continue;
                 var source = gatherSource(gather.work.payload);
                 if (source == null || reserved.contains(source.item) || hasPendingDepositOf(world, worker, source.item)) continue;
                 int held = heldCount.applyAsInt(worker, source.item);
                 var cargo = contributionCargo(deposit, worker);
                 if (held == 0 && CONTRIBUTION_SETTLED.equals(deposit.evidence) && project.supplyRecoveries.containsKey(cargo)) {
-                    var recoveries = new HashMap<>(project.supplyRecoveries);
-                    recoveries.remove(cargo);
-                    commit(new Project(project.id, project.world, project.jobs, project.repeat, project.supplyChest, recoveries));
+                    commit(project.withContribution(project.jobs, cargo, 0, null));
                     return null;
                 }
                 if (held <= 0) continue;
-                var assignment = offerContribution(project, gather, deposit, source.item, worker, held, true, now);
+                var assignment = offerContribution(project, gather, deposit, source.item, worker, held, true, now, position);
                 if (assignment != null) return assignment;
             }
         }
@@ -1020,7 +1050,7 @@ final class ProjectQueue {
                 var recoveries = new HashMap<>(project.supplyRecoveries);
                 recoveries.put(key, 1);
                 var jobs = project.jobs.stream().map(job -> job == gather ? lease : job).toList();
-                commit(new Project(project.id, project.world, jobs, project.repeat, project.supplyChest, recoveries));
+                commit(project.withRecovery(jobs, recoveries));
                 return assignment(project, lease);
             }
         }
@@ -1067,7 +1097,7 @@ final class ProjectQueue {
     }
 
     private Assignment offerContribution(Project project, Job gather, Job deposit, String item, String worker,
-                                         int carriedTotal, boolean interrupted, long now) throws IOException {
+                                         int carriedTotal, boolean interrupted, long now, ResourceSite position) throws IOException {
         // Older journals used the settled marker even when the worker never reached the chest.
         boolean legacyRetry = deposit.attempts == 0 && CONTRIBUTION_SETTLED.equals(deposit.evidence);
         boolean retry = legacyRetry || (deposit.attempts == 1 && CONTRIBUTION_RETRY.equals(deposit.evidence));
@@ -1081,19 +1111,31 @@ final class ProjectQueue {
         var payload = JSON.fromJson(gather.work.payload, com.google.gson.JsonObject.class);
         if (target == null || !item.equals(target.item) || !payload.has("count")) return null;
         String cargo = contributionCargo(deposit, worker);
-        if (additionalCargo && (stockCount(deposit.chest.report, item) >= target.stock
-                || carriedTotal <= project.supplyRecoveries.getOrDefault(cargo, 0))) return null;
+        if (additionalCargo) {
+            if (stockCount(deposit.chest.report, item) >= target.stock) return null;
+            int earlierCount = project.supplyRecoveries.getOrDefault(cargo, 0);
+            var origin = project.contributionOrigins.get(cargo);
+            // Older journals recorded the count but lacked a location. Let a live position anchor one new attempt.
+            boolean missingOldOrigin = origin == null && position != null;
+            if (carriedTotal <= earlierCount && !missingOldOrigin
+                    && !differentContributionApproach(deposit, origin, position)) return null;
+        }
         int goal = payload.get("count").getAsInt();
         if (!interrupted && carriedTotal < goal || ownChestContributionBlocked(project, gather, deposit)) return null;
         var assigned = new Job(deposit.work, State.LEASED, retry || additionalCargo ? 1 : 0, worker,
                 UUID.randomUUID(), now + LEASE_MS, CONTRIBUTION_ACTIVE, deposit.chest);
         if (interrupted) {
-            var recoveries = new HashMap<>(project.supplyRecoveries);
-            recoveries.put(cargo, carriedTotal);
             var jobs = project.jobs.stream().map(job -> job == deposit ? assigned : job).toList();
-            commit(new Project(project.id, project.world, jobs, project.repeat, project.supplyChest, recoveries));
+            commit(project.withContribution(jobs, cargo, carriedTotal, position));
         } else replace(project, assigned);
         return new Assignment(project.id, project.world, assigned);
+    }
+
+    private static boolean differentContributionApproach(Job deposit, ResourceSite origin, ResourceSite position) {
+        if (origin == null || position == null || gatheringDistance(origin, position) < 12) return false;
+        var target = JSON.fromJson(deposit.work.payload, StationTarget.class).target;
+        return target != null && (position.y - origin.y >= 8 && position.y <= target.y()
+                || distance(origin, target) - distance(position, target) >= 16);
     }
 
     private static String contributionCargo(Job deposit, String worker) {
@@ -1403,7 +1445,7 @@ final class ProjectQueue {
                     ? project.jobs.stream().map(entry -> entry == job ? result : entry).toList()
                     : project.jobs.stream().map(entry -> lane(entry.work.id).equals(lane(job.work.id))
                             ? new Job(entry.work, State.WAITING, 0, null, null, 0, null, null, entry.resourceSite) : entry).toList();
-            commit(new Project(project.id, project.world, reset, next, project.supplyChest, project.supplyRecoveries));
+            commit(project.withRepeat(reset, next));
         } else replace(project, result);
         markAssignmentSeen(project, job.worker, now);
         restoredLeases.remove(token);
@@ -1609,7 +1651,7 @@ final class ProjectQueue {
             }
             if (!changes.isEmpty()) {
                 var jobs = project.jobs.stream().map(job -> changes.getOrDefault(job.work.id, job)).toList();
-                commit(new Project(project.id, project.world, jobs, project.repeat, project.supplyChest, recovery));
+                commit(project.withRecovery(jobs, recovery));
             }
         }
     }
@@ -1738,7 +1780,7 @@ final class ProjectQueue {
                     evidence + "; reacquiring materials", job == waiting ? observation : job.chest,
                     job == waiting ? site : job.resourceSite);
         }).toList();
-        commit(new Project(project.id, project.world, updated, project.repeat, project.supplyChest, recoveries));
+        commit(project.withRecovery(updated, recoveries));
         return true;
     }
 

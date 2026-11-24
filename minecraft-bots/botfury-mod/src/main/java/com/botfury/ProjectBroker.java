@@ -318,7 +318,8 @@ final class ProjectBroker {
                     var assignment = board.claim(world, request.worker, request.kinds, request.project, now,
                             position);
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.TRANSFER)) {
-                        assignment = board.offerInterruptedDeposit(world, request.worker, request.project, now, ProjectBroker::heldCount);
+                        assignment = board.offerInterruptedDeposit(world, request.worker, request.project, now,
+                                position, ProjectBroker::heldCount);
                         if (assignment == null) {
                             assignment = board.offerGatheringStock(world, request.worker, request.project, now, position,
                                     ProjectBroker::heldCount);

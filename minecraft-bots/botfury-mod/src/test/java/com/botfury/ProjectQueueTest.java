@@ -240,7 +240,8 @@ class ProjectQueueTest {
         var gather = new ProjectQueue.Work("dig", GATHER,
                 "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":64}",
                 List.of("craft-pickaxe"), Set.of(), "craft-pickaxe");
-        var deposit = new ProjectQueue.Work("deposit", TRANSFER, "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":64}",
+        var deposit = new ProjectQueue.Work("deposit", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":64,\"target\":{\"x\":3,\"y\":64,\"z\":0}}",
                 List.of("dig"), Set.of(chest), "dig");
         queue.submitSupplied(project, WORLD, List.of(
                 job("find-tool-materials", GATHER, List.of()),
@@ -276,8 +277,14 @@ class ProjectQueueTest {
         assertEquals(ProjectQueue.State.WAITING, jobs.get(3).state());
         assertEquals(chestReport, restored.chestStock(WORLD).get(chest).report());
         assertNull(restored.offerInterruptedDeposit(WORLD, "miner", null, eligibleAt + 3, (bot, material) -> 7));
+        var legacy = restored.offerInterruptedDeposit(WORLD, "miner", null, eligibleAt + 4, site,
+                (bot, material) -> 7).job();
+        assertTrue(restored.finish(project, "deposit", legacy.lease(), false, ProjectQueue.TARGET_TIMEOUT, eligibleAt + 5));
+        assertNull(restored.offerInterruptedDeposit(WORLD, "miner", null, eligibleAt + 6, site, (bot, material) -> 7));
+        eligibleAt += 3;
         var loaded = new ProjectQueue(journal);
-        var additional = loaded.offerInterruptedDeposit(WORLD, "helper", null, eligibleAt + 4, (bot, material) -> 3).job();
+        var additional = loaded.offerInterruptedDeposit(WORLD, "helper", null, eligibleAt + 4, site,
+                (bot, material) -> 3).job();
         assertEquals(chestReport, additional.chest().report());
         var combined = new ProjectQueue.ChestReport(chest, java.util.Map.of(item, 10));
         assertTrue(loaded.finish(project, "deposit", additional.lease(), false, "Delivery is short by 54", combined,
@@ -285,9 +292,17 @@ class ProjectQueueTest {
         assertEquals(combined, loaded.chestStock(WORLD).get(chest).report());
         var outstanding = loaded.snapshot(eligibleAt + 6).get(0).jobs().get(2);
         assertEquals(54, com.google.gson.JsonParser.parseString(outstanding.work().payload()).getAsJsonObject().get("count").getAsInt());
-        assertNull(loaded.offerInterruptedDeposit(WORLD, "helper", null, eligibleAt + 7, (bot, material) -> 3));
-        assertNull(loaded.offerInterruptedDeposit(WORLD, "helper", null, eligibleAt + 8, (bot, material) -> 0));
-        assertNotNull(loaded.offerInterruptedDeposit(WORLD, "helper", null, eligibleAt + 9, (bot, material) -> 2));
+        var reopened = new ProjectQueue(journal);
+        assertNull(reopened.offerInterruptedDeposit(WORLD, "helper", null, eligibleAt + 7, site, (bot, material) -> 3));
+        var minorMove = new ProjectQueue.ResourceSite(12, -52, 4);
+        assertNull(reopened.offerInterruptedDeposit(WORLD, "helper", null, eligibleAt + 8, minorMove, (bot, material) -> 3));
+        var ascent = new ProjectQueue.ResourceSite(10, -40, 4);
+        var newRoute = reopened.offerInterruptedDeposit(WORLD, "helper", null, eligibleAt + 9, ascent,
+                (bot, material) -> 3).job();
+        assertTrue(reopened.finish(project, "deposit", newRoute.lease(), false, ProjectQueue.TARGET_TIMEOUT, eligibleAt + 10));
+        assertNull(reopened.offerInterruptedDeposit(WORLD, "helper", null, eligibleAt + 11, ascent, (bot, material) -> 3));
+        assertNull(reopened.offerInterruptedDeposit(WORLD, "helper", null, eligibleAt + 12, ascent, (bot, material) -> 0));
+        assertNotNull(reopened.offerInterruptedDeposit(WORLD, "helper", null, eligibleAt + 13, ascent, (bot, material) -> 2));
     }
 
     @Test void stationaryGathererYieldsClaimWithoutAnchoringReplacementToTheOldSite() throws Exception {
@@ -307,6 +322,30 @@ class ProjectQueueTest {
         assertTrue(restored.finish("gathering", "gather", retry.lease(), true, "Collected", null, newSite, 6));
         assertEquals(newSite, restored.snapshot(6).get(0).jobs().get(0).resourceSite());
         assertEquals("refine", restored.claim(WORLD, "second", Set.of(CRAFT), 7).job().work().id());
+    }
+
+    @Test void returningCargoCanBankWhileAnotherWorkerIsGathering() throws Exception {
+        var queue = new ProjectQueue(directory.resolve("parallel-retained-cargo.json"));
+        String chest = "block:3,64,0";
+        var gather = new ProjectQueue.Work("dig", GATHER,
+                "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":64}",
+                List.of(), Set.of());
+        var deposit = new ProjectQueue.Work("deposit", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":64}",
+                List.of("dig"), Set.of(chest), "dig");
+        queue.submitSupplied("stock", WORLD, List.of(gather, deposit), chest);
+        var failed = queue.claim(WORLD, "first", Set.of(GATHER), 1).job();
+        assertTrue(queue.finish("stock", "dig", failed.lease(), false, ProjectQueue.GATHER_STALLED, 2));
+        var earlier = queue.offerInterruptedDeposit(WORLD, "first", null, 3, (worker, item) -> 2).job();
+        assertTrue(queue.finish("stock", "deposit", earlier.lease(), false, "Partial delivery",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:diamond", 2)), null, true, 4));
+        var miner = queue.claim(WORLD, "miner", Set.of(GATHER), 5).job();
+        var delivery = queue.offerInterruptedDeposit(WORLD, "carrier", null, 6, (worker, item) -> 3).job();
+        assertNotNull(queue.renew("stock", "dig", miner.lease(), 7));
+        assertTrue(queue.finish("stock", "deposit", delivery.lease(), false, "Partial delivery",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:diamond", 5)), null, true, 8));
+        assertEquals(59, com.google.gson.JsonParser.parseString(queue.snapshot(9).get(0).jobs().get(0).work().payload())
+                .getAsJsonObject().get("count").getAsInt());
     }
 
     @Test void stalledGatheringUsesNearestCompatibleSiteOutsideFailedAreaAfterRestart() throws Exception {

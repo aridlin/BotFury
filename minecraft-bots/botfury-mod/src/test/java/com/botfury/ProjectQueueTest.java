@@ -1197,6 +1197,54 @@ class ProjectQueueTest {
                 .getAsJsonObject().get("count").getAsInt());
     }
 
+    @Test void carrierCanRebankAgainstARebuiltChestAfterItsOldReceiptWasCleared() throws Exception {
+        var journal = directory.resolve("rebank-after-owned-storage-loss.json");
+        String chest = "block:3,64,0";
+        String item = "minecraft:diamond";
+        var wood = job("wood", GATHER, List.of());
+        var craft = new ProjectQueue.Work("craft-chest", CRAFT, "", List.of("wood"), Set.of(), "wood");
+        var station = new ProjectQueue.Work("setup-storage", BUILD,
+                "{\"target\":{\"x\":3,\"y\":64,\"z\":0},\"block\":\"minecraft:chest\"}",
+                List.of("craft-chest"), Set.of(chest), "craft-chest");
+        var gather = new ProjectQueue.Work("dig", GATHER,
+                "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":12}",
+                List.of("setup-storage"), Set.of());
+        var deposit = new ProjectQueue.Work("deposit", TRANSFER,
+                "{\"target\":{\"x\":3,\"y\":64,\"z\":0},\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":32}",
+                List.of("dig"), Set.of(chest), "dig");
+        var jobs = new ArrayList<ProjectQueue.Job>();
+        for (var work : List.of(wood, craft, station)) {
+            jobs.add(new ProjectQueue.Job(work, ProjectQueue.State.DONE, 1, "builder", null, 0, "Observed", null));
+        }
+        jobs.add(new ProjectQueue.Job(gather, ProjectQueue.State.WAITING, 0, null, null, 0,
+                ProjectQueue.GATHER_TOOLS_NEEDED + "; reacquiring materials", null));
+        jobs.add(new ProjectQueue.Job(deposit, ProjectQueue.State.WAITING, 1, null, null, 0,
+                "Partial stock contribution settled", null));
+        String cargoKey = "contribution:deposit:carrier";
+        var position = new ProjectQueue.ResourceSite(3, 64, 1);
+        var project = new ProjectQueue.Project("stock", WORLD, jobs, null, chest,
+                java.util.Map.of("station-repair:setup-storage", 1, cargoKey, 8, cargoKey + ":stock", 20),
+                java.util.Map.of(cargoKey, position));
+        Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                "projects", java.util.Map.of("stock", project))));
+
+        var queue = new ProjectQueue(journal);
+        var carrier = queue.offerUrgentMiningDeposit(WORLD, "carrier", null, 1, position,
+                (worker, material) -> 8, 8).job();
+        assertEquals("deposit", carrier.work().id());
+        var restored = new ProjectQueue(journal);
+        assertNull(restored.offerUrgentMiningDeposit(WORLD, "another", null, 2, position,
+                (worker, material) -> 8, 8));
+        assertTrue(restored.finish("stock", "deposit", carrier.lease(), false, "Partial delivery",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(item, 8)), null, true, 3));
+        var observed = restored.snapshot(4).get(0).jobs();
+        assertEquals(24, com.google.gson.JsonParser.parseString(observed.get(3).work().payload())
+                .getAsJsonObject().get("count").getAsInt());
+        assertEquals(8, observed.get(4).chest().report().items().get(item));
+        assertNull(restored.offerUrgentMiningDeposit(WORLD, "carrier", null, 5, position,
+                (worker, material) -> 8, 8));
+    }
+
     @Test void deepMinerBanksACheckpointBeforeResumingItsOutstandingOrder() throws Exception {
         var journal = directory.resolve("mining-checkpoint.json");
         var queue = new ProjectQueue(journal);

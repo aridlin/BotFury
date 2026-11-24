@@ -2011,6 +2011,39 @@ class ProjectQueueTest {
         assertNull(retry.resourceSite());
     }
 
+    @Test void settledConstructionDepositsDoNotReserveTheOriginalBatchSizeForever() throws Exception {
+        String chest = "block:3,64,0";
+        String item = "minecraft:cobblestone";
+        String station = "\"target\":{\"x\":3,\"y\":64,\"z\":0},";
+        var deposit = new ProjectQueue.Work("deposit", TRANSFER,
+                "{" + station + "\"direction\":\"DEPOSIT\",\"item\":\"minecraft:cobblestone\",\"stock\":38}",
+                List.of(), Set.of(chest));
+        var take = new ProjectQueue.Work("take", TRANSFER,
+                "{" + station + "\"direction\":\"TAKE\",\"item\":\"minecraft:cobblestone\",\"stock\":4}",
+                List.of("deposit"), Set.of(chest), null, null, item);
+        var build = new ProjectQueue.Work("place", BUILD, "{}", List.of("take"), Set.of(), "take");
+        for (var state : List.of(ProjectQueue.State.DONE, ProjectQueue.State.WAITING)) {
+            var journal = directory.resolve("historical-construction-stock-" + state + ".json");
+            var stock = new ProjectQueue.ChestObservation(new ProjectQueue.ChestReport(chest, java.util.Map.of(item, 4)), 2);
+            var supplier = new ProjectQueue.Project("structure", WORLD, List.of(
+                    new ProjectQueue.Job(deposit, ProjectQueue.State.DONE, 1, "builder", null, 0, "Deposited", null),
+                    new ProjectQueue.Job(take, ProjectQueue.State.DONE, 1, "builder", null, 0, "Took materials", stock),
+                    new ProjectQueue.Job(build, state, 1, "builder", null, 0, "Placement", null)),
+                    null, chest, java.util.Map.of());
+            Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                    "projects", java.util.Map.of(supplier.id(), supplier))));
+            var queue = new ProjectQueue(journal);
+            var gather = new ProjectQueue.Work("gather", GATHER,
+                    "{\"resource\":\"stone\",\"item\":\"minecraft:cobblestone\",\"variant\":\"both\",\"count\":3}",
+                    List.of(), Set.of());
+            var craft = new ProjectQueue.Work("craft", CRAFT, "{}", List.of("gather"), Set.of(), "gather");
+            queue.submitSupplied("tools", WORLD, List.of(gather, craft), "block:4,64,0");
+            var assigned = queue.claim(WORLD, "worker", Set.of(GATHER, CRAFT, TRANSFER), "tools", 3,
+                    new ProjectQueue.ResourceSite(0, 64, 0), x -> true, (worker,itemId) -> 0, null, 0, true).job();
+            assertEquals(state == ProjectQueue.State.DONE ? TRANSFER : GATHER, assigned.work().kind());
+        }
+    }
+
     @Test void nearbySurplusCanReplacePreparationGatheringWhileProtectingOutputAndFallingBack() throws Exception {
         var journal = directory.resolve("preparation-stock.json");
         var queue = new ProjectQueue(journal);

@@ -157,7 +157,7 @@ final class ProjectQueue {
         Assignment(String project, String world, Job job) { this(project, world, job, null, List.of(), 0); }
     }
     record RouteToolDelivery(String recipient, ResourceSite position, String item, int previousCount, int craftTarget) {}
-    private final Set<UUID> routeToolRequests = new HashSet<>();
+    private final Map<UUID, Boolean> routeToolRequests = new HashMap<>();
 
     record FuelUse(String job, String recipe, String input, String expectedFuel, int count) {}
     private record SmeltFuel(String recipe, String input, String fuel, String plannedFuel, int count) {}
@@ -951,14 +951,29 @@ final class ProjectQueue {
         return new Job(work, State.WAITING, 0, worker, null, now + LEASE_MS, CONSTRUCTION_PICKUP, pickup.chest);
     }
 
+    private static final String ROUTE_BENCH_RECEIVED = "Recipient picked up the emergency workbench";
+
+    synchronized void recordRouteBenchReceipt(String projectId, String jobId, UUID token, long now) throws IOException {
+        var project = projects.get(projectId);
+        var receiver = find(project, jobId);
+        if (!owns(receiver, token, now) || receiver.work.kind != Kind.TRANSFER || !depositTarget(receiver)) return;
+        var supply = find(project, "route-tool-" + token);
+        if (supply == null || supply.state != State.LEASED || supply.work.kind != Kind.RESUPPLY
+                || ROUTE_BENCH_RECEIVED.equals(supply.evidence)) return;
+        var delivery = JSON.fromJson(supply.work.payload, RouteToolDelivery.class);
+        if (!"minecraft:crafting_table".equals(delivery.item) || !receiver.worker.equals(delivery.recipient)) return;
+        replace(project, new Job(supply.work, supply.state, supply.attempts, supply.worker, supply.lease,
+                supply.expiresAt, ROUTE_BENCH_RECEIVED, null));
+    }
+
     synchronized RouteToolDelivery routeToolDelivery(String projectId, String jobId, UUID token, long now) {
         var job = find(projects.get(projectId), jobId);
-        return owns(job, token, now) && job.work.kind == Kind.RESUPPLY
+        return owns(job, token, now) && job.work.kind == Kind.RESUPPLY && !ROUTE_BENCH_RECEIVED.equals(job.evidence)
                 ? JSON.fromJson(job.work.payload, RouteToolDelivery.class) : null;
     }
 
     synchronized Assignment offerRouteTool(String world, String worker, String projectId, long now,
-                                           Map<String, Integer> tools, int routeCraftTarget,
+                                           Map<String, Integer> tools, int routeCraftTarget, boolean canSupplyBench,
                                            java.util.function.Function<String, ResourceSite> position,
                                            java.util.function.ToIntBiFunction<String, String> held) throws IOException {
         if (routeToolRequests.isEmpty()
@@ -967,15 +982,18 @@ final class ProjectQueue {
         var spare = tools == null ? null : PICKAXE_TIERS.stream().skip(1)
                 .filter(tool -> tools.get(tool) != null && tools.get(tool) >= 64 && held.applyAsInt(worker, tool) >= 2)
                 .findFirst().orElse(null);
-        if (spare == null && (routeCraftTarget < 1 || routeCraftTarget > 36)) return null;
-        String item = spare == null ? "minecraft:stone_pickaxe" : spare;
-        int craftTarget = spare == null ? routeCraftTarget : 0;
+        boolean canCraftPickaxe = routeCraftTarget >= 1 && routeCraftTarget <= 36;
+        if (spare == null && !canCraftPickaxe && !canSupplyBench) return null;
         for (var project : projects.values()) {
             if (!world.equals(project.world) || cancelled(project) || project.jobs.size() >= MAX_JOBS
                     || projectId != null && !project.id.equals(projectId)) continue;
             for (var deposit : project.jobs) {
-                if (deposit.state != State.LEASED || deposit.expiresAt <= now || !routeToolRequests.contains(deposit.lease)
+                if (deposit.state != State.LEASED || deposit.expiresAt <= now || !routeToolRequests.containsKey(deposit.lease)
                         || worker.equalsIgnoreCase(deposit.worker)) continue;
+                boolean sendBench = spare == null && !canCraftPickaxe && canSupplyBench && routeToolRequests.get(deposit.lease);
+                if (spare == null && !canCraftPickaxe && !sendBench) continue;
+                String item = sendBench ? "minecraft:crafting_table" : spare == null ? "minecraft:stone_pickaxe" : spare;
+                int craftTarget = sendBench || spare != null ? 0 : routeCraftTarget;
                 String id = "route-tool-" + deposit.lease;
                 var destination = position.apply(deposit.worker);
                 if (destination == null || find(project, id) != null) continue;
@@ -1520,11 +1538,16 @@ final class ProjectQueue {
 
     synchronized Job renew(String projectId, String jobId, UUID token, ResourceSite site, long now,
                            boolean needsRouteTool) throws IOException {
+        return renew(projectId, jobId, token, site, now, needsRouteTool, false);
+    }
+
+    synchronized Job renew(String projectId, String jobId, UUID token, ResourceSite site, long now,
+                           boolean needsRouteTool, boolean needsRouteBench) throws IOException {
         Project project = projects.get(projectId);
         Job job = find(project, jobId);
         if (!owns(job, token, now) || cancelled(project) || handoffWorker(job) != null
                 || GATHER_STOCK_CONFIRMED.equals(job.evidence)) return null;
-        if (needsRouteTool && job.work.kind == Kind.TRANSFER && depositTarget(job)) routeToolRequests.add(token);
+        if (needsRouteTool && job.work.kind == Kind.TRANSFER && depositTarget(job)) routeToolRequests.put(token, needsRouteBench);
         else routeToolRequests.remove(token);
         Job renewed = new Job(job.work, State.LEASED, job.attempts, job.worker,
                 job.lease, now + LEASE_MS, job.evidence, job.chest, gatheringSite(job, site), job.gatheringAfterPickup);

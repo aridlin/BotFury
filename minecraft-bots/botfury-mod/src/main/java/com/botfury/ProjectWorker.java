@@ -86,6 +86,9 @@ final class ProjectWorker {
     private static final SubsurfaceAccess stationReturn = new SubsurfaceAccess();
     private static BlockPos stationToolAttempt;
     private static boolean needsRouteTool;
+    private static boolean needsRouteBench;
+    private static boolean receivedRouteBench;
+    private static RouteWorkbench routeWorkbench;
     private static final int TOOL_DROP_RADIUS = 5;
     private static final DroppedItemSearch routeToolPickup = new DroppedItemSearch(TOOL_DROP_RADIUS);
     private static boolean pickingUpRouteTool;
@@ -232,7 +235,7 @@ final class ProjectWorker {
         approachAge = 0;
         stationReturn.reset();
         stationToolAttempt = null;
-        needsRouteTool = false;
+        needsRouteTool = needsRouteBench = receivedRouteBench = false;
         craftingRouteDelivery = null;
         inspection = null;
         fill = null;
@@ -264,6 +267,10 @@ final class ProjectWorker {
         approachRecovery.reset();
         routeToolPickup.reset();
         pickingUpRouteTool = false;
+        if (routeWorkbench != null) {
+            routeWorkbench.close(client);
+            routeWorkbench = null;
+        }
         if (deliveringRouteTool) {
             BotInventory.hold();
             deliveringRouteTool = false;
@@ -364,12 +371,21 @@ final class ProjectWorker {
             return;
         }
         if (pickupRouteTool(client)) return;
-        if (deliveringRouteTool) {
+        if (routeWorkbench != null) {
+            var result = routeWorkbench.tick(client, now, port);
+            status = routeWorkbench.status();
+            if (result == null) return;
+            routeWorkbench.close(client);
+            routeWorkbench = null;
+            if (result.success()) startRouteDelivery(client, craftingRouteDelivery);
+            else finish(client, false, result.detail());
+            craftingRouteDelivery = null;
+        } else if (deliveringRouteTool) {
             BotInventory.tick(client);
             status = BotInventory.status();
             if (!BotInventory.working()) {
                 boolean dropped = BotInventory.deliveredItems() > 0;
-                finish(client, dropped, dropped ? "Dropped a replacement pickaxe beside the worker" : status);
+                finish(client, dropped, dropped ? "Dropped the requested resupply beside the worker" : status);
             }
         } else if (miningRecipe != null && gather == null) {
             tickMiningCraft(client, now);
@@ -424,6 +440,11 @@ final class ProjectWorker {
     }
 
     private static boolean pickupRouteTool(MinecraftClient client) {
+        if (needsRouteBench && client.player.getInventory().contains(net.minecraft.item.Items.CRAFTING_TABLE.getDefaultStack())) {
+            needsRouteBench = false;
+            receivedRouteBench = true;
+            stationToolAttempt = null;
+        }
         if (!needsRouteTool || SubsurfaceAccess.canDigRoute(client)) {
             if (pickingUpRouteTool) {
                 routeToolPickup.reset();
@@ -440,7 +461,7 @@ final class ProjectWorker {
             pickingUpRouteTool = true;
         }
         if (routeToolPickup.tick(client, ProjectWorker::usableRouteTool, null) == DroppedItemSearch.State.APPROACHING) {
-            status = assignment.project() + "/" + assignment.job().work().id() + ": Collecting a replacement pickaxe";
+            status = assignment.project() + "/" + assignment.job().work().id() + ": Collecting emergency supplies";
             return true;
         }
         pickingUpRouteTool = false;
@@ -448,8 +469,8 @@ final class ProjectWorker {
     }
 
     private static boolean usableRouteTool(net.minecraft.item.ItemStack stack) {
-        return stack.getItem() instanceof net.minecraft.item.PickaxeItem
-                && stack.getMaxDamage() - stack.getDamage() >= 21;
+        return needsRouteBench && stack.isOf(net.minecraft.item.Items.CRAFTING_TABLE)
+                || stack.getItem() instanceof net.minecraft.item.PickaxeItem && stack.getMaxDamage() - stack.getDamage() >= 21;
     }
 
     private static boolean prepareMiningWeapon(MinecraftClient client, long now) {
@@ -995,7 +1016,7 @@ final class ProjectWorker {
     private static boolean tryElevatedApproach(MinecraftClient client, BlockPos destination, long now, boolean placement) {
         var position = client.player.getBlockPos();
         if (destination.getY() - position.getY() < (placement ? 3 : 5)) {
-            needsRouteTool = false;
+            needsRouteTool = needsRouteBench = false;
             stationReturn.stop();
             return false;
         }
@@ -1023,7 +1044,7 @@ final class ProjectWorker {
         }
         // Placement cargo can include the very planks needed for a new workbench.
         boolean hasRouteTool = SubsurfaceAccess.canDigRoute(client);
-        if (hasRouteTool) needsRouteTool = false;
+        if (hasRouteTool) needsRouteTool = needsRouteBench = false;
         if (!placement && !hasRouteTool
                 && (stationToolAttempt == null || !position.isWithinDistance(stationToolAttempt, 4))
                 && SubsurfaceAccess.hasFooting(client)) {
@@ -1033,6 +1054,8 @@ final class ProjectWorker {
                 return true;
             }
             needsRouteTool = chest != null && chest.depositing();
+            needsRouteBench = needsRouteTool && ProjectProduction.canCraft(client, ROUTE_PICKAXE)
+                    && !client.player.getInventory().contains(net.minecraft.item.Items.CRAFTING_TABLE.getDefaultStack());
         }
         boolean alreadyClimbing = stationReturn.active();
         if (!stationReturn.advanceToward(client, approachAge, destination, excluded, !placement)) return false;
@@ -1301,6 +1324,7 @@ final class ProjectWorker {
                 }
             }
             if (!tools.isEmpty()) args.put("toolUses", tools);
+            if (RouteWorkbench.canSupply(client)) args.put("canSupplyBench", true);
             if (ProjectProduction.canCraft(client, ROUTE_PICKAXE)
                     && FieldWorkstation.findForMiningTool(client, now, null) != null) {
                 args.put("routeCraftTarget", freshToolCount(client, net.minecraft.item.Items.STONE_PICKAXE) + 1);
@@ -1309,7 +1333,11 @@ final class ProjectWorker {
             args.put("project", assignment.project());
             args.put("job", assignment.job().work().id());
             args.put("token", assignment.job().lease());
-            if (needsRouteTool && !SubsurfaceAccess.canDigRoute(client)) args.put("needsRouteTool", true);
+            if (receivedRouteBench) args.put("receivedRouteBench", true);
+            if (needsRouteTool && !SubsurfaceAccess.canDigRoute(client)) {
+                args.put("needsRouteTool", true);
+                if (needsRouteBench) args.put("needsRouteBench", true);
+            }
             if (gatherSite != null && !gather.fromDrops()) args.put("resourceSite", gatherSite);
             if (success != null && action.equals("finish")) {
                 args.put("success", success);
@@ -1352,13 +1380,17 @@ final class ProjectWorker {
                         case GATHER -> 1800;
                         case SMELT -> 300;
                         case CRAFT, TRANSFER, FILL_BUCKETS -> 180;
-                        case RESUPPLY -> 120;
+                        case RESUPPLY -> 180;
                         default -> 90;
                     });
                     if (work.kind() == ProjectQueue.Kind.RESUPPLY) {
                         var delivery = JSON.fromJson(work.payload(), ProjectQueue.RouteToolDelivery.class);
                         var item = Registries.ITEM.get(new Identifier(delivery.item()));
-                        if (freshToolCount(client, item) < delivery.craftTarget()) {
+                        if (item == net.minecraft.item.Items.CRAFTING_TABLE
+                                && !client.player.getInventory().contains(item.getDefaultStack())) {
+                            craftingRouteDelivery = delivery;
+                            routeWorkbench = new RouteWorkbench();
+                        } else if (freshToolCount(client, item) < delivery.craftTarget()) {
                             if (startMiningCraft(client, started, ROUTE_PICKAXE, null)) craftingRouteDelivery = delivery;
                             else finish(client, false, "Replacement pickaxe ingredients or workbench became unavailable");
                         } else startRouteDelivery(client, delivery);

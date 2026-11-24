@@ -26,7 +26,7 @@ final class ProjectBroker {
     private record Request(String action, String project, String worker, Set<ProjectQueue.Kind> kinds,
                            List<ProjectQueue.Work> work, String job, UUID token, Boolean success,
                            String evidence, ProjectQueue.ChestReport chest, ProjectQueue.ResourceSite resourceSite,
-                           boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool, int routeCraftTarget) {}
+                           boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool, int routeCraftTarget, boolean needsRouteBench, boolean canSupplyBench, boolean receivedRouteBench) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
         if (queue == null) {
@@ -289,6 +289,9 @@ final class ProjectBroker {
             String world = here.server() + "|" + here.dimension();
             ProjectQueue board = queue();
             long now = System.currentTimeMillis();
+            if (request.receivedRouteBench && ("renew".equals(request.action) || "finish".equals(request.action))) {
+                board.recordRouteBenchReceipt(request.project, request.job, request.token, now);
+            }
             switch (request.action) {
                 case "submit" -> {
                     if (request.work == null) throw new IllegalArgumentException("Missing project jobs");
@@ -329,7 +332,7 @@ final class ProjectBroker {
                             request.project, now, position, material -> hasExcavationTool(request.toolUses, material),
                             ProjectBroker::heldCount, request.toolUses, returnRevision);
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.RESUPPLY)) {
-                        assignment = board.offerRouteTool(world, request.worker, request.project, now, request.toolUses, request.routeCraftTarget,
+                        assignment = board.offerRouteTool(world, request.worker, request.project, now, request.toolUses, request.routeCraftTarget, request.canSupplyBench,
                                 ProjectBroker::workerPosition, ProjectBroker::heldCount);
                     }
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.TRANSFER)) {
@@ -355,7 +358,7 @@ final class ProjectBroker {
                     reply(exchange, 200, assignment);
                 }
                 case "renew" -> {
-                    var renewed = board.renew(request.project, request.job, request.token, request.resourceSite, now, request.needsRouteTool);
+                    var renewed = board.renew(request.project, request.job, request.token, request.resourceSite, now, request.needsRouteTool, request.needsRouteBench);
                     reply(exchange, renewed == null ? 409 : 200, renewed);
                 }
                 case "finish" -> {
@@ -363,7 +366,7 @@ final class ProjectBroker {
                     var delivery = board.routeToolDelivery(request.project, request.job, request.token, now);
                     if (request.success && delivery != null
                             && heldCount(delivery.recipient(), delivery.item()) <= delivery.previousCount()) {
-                        reply(exchange, 202, "Waiting for the recipient to pick up the replacement tool");
+                        reply(exchange, 202, "Waiting for the recipient to pick up the resupply item");
                         return;
                     }
                     boolean accepted = board.finish(request.project, request.job, request.token,

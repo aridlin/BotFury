@@ -2,6 +2,17 @@ package com.botfury;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 class MiningClaimsTest {
+    @Test void protectedTargetsDenyNewClaimsAndRevokeExistingReservations() {
+        var protectedTargets = new java.util.HashSet<Integer>();
+        var claims = new MiningClaims(request -> protectedTargets.contains(request.x()));
+        assertTrue(claims.handle(req("miner:1", 0, 1.5), 0).granted());
+        protectedTargets.add(0);
+        assertFalse(claims.handle(new MiningClaims.Request("renew", "miner:1", "server|world", 0, 64, 0, 1.5, 64, .5), 1).granted());
+        assertFalse(claims.handle(req("other:1", 0, 1.5), 2).granted());
+        protectedTargets.clear();
+        assertTrue(claims.handle(req("other:1", 0, 1.5), 3).granted());
+    }
+
     private MiningClaims.Request req(String owner,int x,double stand){return new MiningClaims.Request("claim",owner,"server|world",x,64,0,stand,64,.5);}
     @Test void oreAndStandingPositionsAreExclusive(){
         var c=new MiningClaims();assertTrue(c.handle(req("first:1",0,1.5),0).granted());

@@ -7,6 +7,14 @@ final class MiningClaims {
     record Reply(boolean granted,String reason,long leaseMillis) {}
     private record Lease(Request request,long expires) {}
     private final Map<String,Lease> leases=new HashMap<>();
+    private final java.util.function.Predicate<Request> protectedTarget;
+
+    MiningClaims() { this(request -> false); }
+
+    MiningClaims(java.util.function.Predicate<Request> protectedTarget) {
+        this.protectedTarget = protectedTarget;
+    }
+
     synchronized Reply handle(Request r,long now){
         leases.values().removeIf(lease->lease.expires<=now);
         if(r==null||r.action==null||r.owner==null||r.owner.length()>96||r.world==null||r.world.length()>200)return new Reply(false,"Invalid claim",0);
@@ -15,6 +23,10 @@ final class MiningClaims {
                 ||Math.abs((long)r.x)>30000000||Math.abs((long)r.z)>30000000||r.y< -128||r.y>512
                 ||Math.pow(r.x+.5-r.sx,2)+Math.pow(r.y+.5-(r.sy+1.62),2)+Math.pow(r.z+.5-r.sz,2)>25)
             return new Reply(false,"Invalid mining position",0);
+        if (protectedTarget.test(r)) {
+            leases.remove(r.owner);
+            return new Reply(false, "Mining target is in an exclusion zone", 0);
+        }
         if (r.action.equals("renew")) {
             Lease existing = leases.get(r.owner);
             if (existing == null || !samePosition(existing.request, r)) {

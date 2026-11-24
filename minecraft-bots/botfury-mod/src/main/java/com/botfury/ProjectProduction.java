@@ -57,6 +57,15 @@ final class ProjectProduction {
                 smelt ? item(payload.fuel) : null, payload.count);
     }
 
+    static Spec useInventoryGrid(MinecraftClient client, Spec spec) {
+        if (client.world == null || spec.station == null || spec.kind != ProjectQueue.Kind.CRAFT) return spec;
+        var recipe = client.world.getRecipeManager().get(spec.recipe).orElse(null);
+        if (recipe instanceof CraftingRecipe craft && craft.fits(2, 2)) {
+            return new Spec(null, spec.kind, spec.recipe, spec.input, spec.fuel, spec.count);
+        }
+        return spec;
+    }
+
     private static Identifier item(String name) {
         Identifier id = name == null ? null : Identifier.tryParse(name);
         if (id == null || !Registries.ITEM.containsId(id) || id.equals(Identifier.of("minecraft", "air"))) {
@@ -83,6 +92,30 @@ final class ProjectProduction {
         if (screen != null && client.player.currentScreenHandler == screen) return true;
         if (client.player.isTouchingWater() || client.player.isClimbing()) return false;
         return workstationHit(client, spec.station.target()) != null;
+    }
+
+    Result finishedFromInventory(MinecraftClient client) {
+        var recipe = client.world.getRecipeManager().get(spec.recipe).orElse(null);
+        if (!(spec.kind == ProjectQueue.Kind.CRAFT ? recipe instanceof CraftingRecipe : recipe instanceof SmeltingRecipe)) {
+            return null;
+        }
+        var output = recipe.getOutput(client.world.getRegistryManager());
+        return output.isEmpty() ? null : observedOutput(output, inventoryCount(client, output));
+    }
+
+    private Result observedOutput(ItemStack output, int held) {
+        return held >= spec.count ? new Result(true, "Observed " + held + " "
+                + Registries.ITEM.getId(output.getItem()) + " in worker inventory") : null;
+    }
+
+    private static int inventoryCount(MinecraftClient client, ItemStack output) {
+        var inventory = client.player.getInventory();
+        int held = 0;
+        for (int i = 0; i < 36; i++) {
+            var stack = inventory.getStack(i);
+            if (ItemStack.canCombine(stack, output)) held += stack.getCount();
+        }
+        return held;
     }
 
     private static BlockHitResult workstationHit(MinecraftClient client, BlockPos target) {
@@ -129,12 +162,9 @@ final class ProjectProduction {
         if (target == null && !recipe.fits(2, 2)) return failure("Recipe does not fit the inventory crafting grid");
         var output = recipe.getOutput(client.world.getRegistryManager());
         if (output.isEmpty()) return failure("Recipe does not declare an output");
-        int held = 0;
-        for (int i = 0; i < 36; i++) {
-            var stack = client.player.getInventory().getStack(i);
-            if (ItemStack.canCombine(stack, output)) held += stack.getCount();
-        }
-        if (held >= spec.count) return new Result(true, "Observed " + held + " " + Registries.ITEM.getId(output.getItem()) + " in worker inventory");
+        int held = inventoryCount(client, output);
+        var available = observedOutput(output, held);
+        if (available != null) return available;
         var player = client.player;
         if (target == null) {
             screen = player.playerScreenHandler;

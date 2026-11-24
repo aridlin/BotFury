@@ -537,9 +537,19 @@ final class ProjectBroker {
                     var assignment = request.kinds.contains(ProjectQueue.Kind.TRANSFER)
                             ? board.offerUrgentMiningDeposit(world, request.worker, request.project, now,
                                 position, ProjectBroker::heldCount, returnRevision) : null;
+                    if (assignment == null && request.kinds.contains(ProjectQueue.Kind.TRANSFER)
+                            && board.awaitingContributionRetry(world, request.worker, request.project, now,
+                                    ProjectBroker::heldCount)) {
+                        reply(exchange, 200, null);
+                        break;
+                    }
                     if (assignment == null) assignment = board.claim(world, request.worker, request.kinds,
                             request.project, now, position, material -> hasExcavationTool(request.toolUses, material),
                             ProjectBroker::heldCount, request.toolUses, returnRevision, request.supportsPickupReserve);
+                    if (assignment == null && request.kinds.contains(ProjectQueue.Kind.TRANSFER)) {
+                        assignment = board.offerInterruptedDeposit(world, request.worker, request.project, now,
+                                position, ProjectBroker::heldCount, returnRevision);
+                    }
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.RESUPPLY)) {
                         assignment = board.offerRouteTool(world, request.worker, request.project, now, request.toolUses, request.routeCraftTarget, request.canSupplyBench,
                                 ProjectBroker::workerPosition, ProjectBroker::heldCount, returnRevision >= 8);
@@ -555,12 +565,8 @@ final class ProjectBroker {
                         }
                     }
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.TRANSFER)) {
-                        assignment = board.offerInterruptedDeposit(world, request.worker, request.project, now,
-                                position, ProjectBroker::heldCount, returnRevision);
-                        if (assignment == null) {
-                            assignment = board.offerGatheringStock(world, request.worker, request.project, now, position,
-                                    ProjectBroker::heldCount);
-                        }
+                        assignment = board.offerGatheringStock(world, request.worker, request.project, now, position,
+                                ProjectBroker::heldCount);
                     }
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.GATHER)) {
                         assignment = board.offerEquippedMiner(world, request.worker, request.project, request.toolUses, now, position);

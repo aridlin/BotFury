@@ -32,7 +32,7 @@ final class ProjectBroker {
     private record Request(String action, String project, String worker, Set<ProjectQueue.Kind> kinds,
                            List<ProjectQueue.Work> work, String job, UUID token, Boolean success,
                            String evidence, ProjectQueue.ChestReport chest, ProjectQueue.ChestReport routeStock, ProjectQueue.ResourceSite resourceSite,
-                           boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool, int routeCraftTarget, boolean needsRouteBench, boolean canSupplyBench, boolean receivedRouteBench) {}
+                           boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool, int routeCraftTarget, boolean needsRouteBench, boolean canSupplyBench, boolean receivedRouteBench, boolean supportsPickupReserve) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
         if (queue == null) {
@@ -507,7 +507,7 @@ final class ProjectBroker {
                                 position, ProjectBroker::heldCount, returnRevision) : null;
                     if (assignment == null) assignment = board.claim(world, request.worker, request.kinds,
                             request.project, now, position, material -> hasExcavationTool(request.toolUses, material),
-                            ProjectBroker::heldCount, request.toolUses, returnRevision);
+                            ProjectBroker::heldCount, request.toolUses, returnRevision, request.supportsPickupReserve);
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.RESUPPLY)) {
                         assignment = board.offerRouteTool(world, request.worker, request.project, now, request.toolUses, request.routeCraftTarget, request.canSupplyBench,
                                 ProjectBroker::workerPosition, ProjectBroker::heldCount, returnRevision >= 8);
@@ -533,13 +533,13 @@ final class ProjectBroker {
                             && board.offerConstructionHandoff(world, request.worker, request.project,
                                     request.kinds, now, ProjectBroker::workerPosition, ProjectBroker::heldCount)) {
                         assignment = board.claim(world, request.worker, request.kinds, request.project, now, position,
-                                material -> hasExcavationTool(request.toolUses, material), ProjectBroker::heldCount, request.toolUses, returnRevision);
+                                material -> hasExcavationTool(request.toolUses, material), ProjectBroker::heldCount, request.toolUses, returnRevision, request.supportsPickupReserve);
                     }
                     if (assignment == null && request.kinds.containsAll(java.util.Set.of(ProjectQueue.Kind.GATHER,
                             ProjectQueue.Kind.CRAFT, ProjectQueue.Kind.SMELT, ProjectQueue.Kind.TRANSFER))
                             && board.shareBlockedStock(world, request.worker, request.project, now)) {
                         assignment = board.claim(world, request.worker, request.kinds, request.project, now, position,
-                                material -> hasExcavationTool(request.toolUses, material), ProjectBroker::heldCount, request.toolUses, returnRevision);
+                                material -> hasExcavationTool(request.toolUses, material), ProjectBroker::heldCount, request.toolUses, returnRevision, request.supportsPickupReserve);
                     }
                     reply(exchange, 200, assignment);
                 }

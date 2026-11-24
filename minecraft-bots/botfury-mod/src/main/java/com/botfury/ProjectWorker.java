@@ -1524,6 +1524,7 @@ final class ProjectWorker {
             if (enrollment.project() != null) args.put("project", enrollment.project());
             args.put("kinds", KINDS);
             args.put("returnRouteRevision", SubsurfaceAccess.RETURN_ROUTE_REVISION);
+            args.put("supportsPickupReserve", true);
             var tools = new HashMap<String, Integer>();
             var inventory = client.player.getInventory();
             for (int slot = 0; slot < 36; slot++) {

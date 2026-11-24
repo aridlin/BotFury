@@ -1026,6 +1026,13 @@ final class ProjectQueue {
                                   ResourceSite position, java.util.function.Predicate<String> hasExcavationTool,
                                   java.util.function.ToIntBiFunction<String, String> heldCount,
                                   Map<String, Integer> toolUses, int returnRevision) throws IOException {
+        return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses, returnRevision, false);
+    }
+
+    synchronized Assignment claim(String world, String worker, Set<Kind> kinds, String projectId, long now,
+                                  ResourceSite position, java.util.function.Predicate<String> hasExcavationTool,
+                                  java.util.function.ToIntBiFunction<String, String> heldCount,
+                                  Map<String, Integer> toolUses, int returnRevision, boolean supportsPickupReserve) throws IOException {
         if (world == null || !validId(worker) || kinds == null || kinds.isEmpty()
                 || projectId != null && !validId(projectId)) {
             throw new IllegalArgumentException("Invalid worker or world");
@@ -1059,6 +1066,7 @@ final class ProjectQueue {
                 if (worker.equalsIgnoreCase(job.worker) && !BATCH_RESERVED.equals(job.evidence)) {
                     // A claim response can be lost. Repeating a claim returns the original assignment.
                     return handoffWorker(job) == null && world.equals(project.world) && kinds.contains(job.work.kind) && !cancelled(project)
+                            && (supportsPickupReserve || !PREPARATION_STOCK_PICKUP.equals(job.evidence))
                             && (projectId == null || projectId.equals(project.id))
                             ? assignment(project, job) : null;
                 }
@@ -1144,7 +1152,7 @@ final class ProjectQueue {
                 // Finish using inventory already gathered for a chain before starting unrelated work.
                 if (job.work.sameWorkerAs != null || ownedOrder != null || gatherReconnectPending(job, now)
                         || CONSTRUCTION_PICKUP.equals(job.evidence) && job.expiresAt > now) {
-                    return assignWithPreparationStock(project, job, worker, now, position, kinds, heldCount);
+                    return assignWithPreparationStock(project, job, worker, now, position, kinds, supportsPickupReserve ? heldCount : null);
                 }
                 if (fallbackJob == null || (nearbyPickup || nearbyCleanup) && fallbackJob.state != State.FAILED) {
                     fallbackProject = project;
@@ -1167,11 +1175,12 @@ final class ProjectQueue {
                 if (mining != null) return mining;
             }
             if (recoverStalledGathering(world, projectId, now) || heldCount != null && recoverToolsAfterBanking(world, projectId)) {
-                return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses, returnRevision);
+                return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
+                        returnRevision, supportsPickupReserve);
             }
         }
         return fallbackJob == null ? null
-                : assignWithPreparationStock(fallbackProject, fallbackJob, worker, now, position, kinds, heldCount);
+                : assignWithPreparationStock(fallbackProject, fallbackJob, worker, now, position, kinds, supportsPickupReserve ? heldCount : null);
     }
 
     private static String excavationToolMaterial(Job job) {

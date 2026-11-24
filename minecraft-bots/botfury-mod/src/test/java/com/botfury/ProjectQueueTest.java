@@ -2032,14 +2032,15 @@ class ProjectQueueTest {
         queue.submitSupplied("tools", WORLD, List.of(gather, craft), "block:4,64,0");
         var position = new ProjectQueue.ResourceSite(0, 64, 0);
         var kinds = Set.of(GATHER, CRAFT, TRANSFER);
-        var pickup = queue.claim(WORLD, "worker", kinds, "tools", 3, position, x -> true, (w,i) -> 0, null).job();
+        var pickup = queue.claim(WORLD, "worker", kinds, "tools", 3, position, x -> true, (w,i) -> 0, null, 0, true).job();
         assertEquals(TRANSFER, pickup.work().kind());
+        assertNull(queue.claim(WORLD, "worker", kinds, "tools", 4));
         assertEquals(5, com.google.gson.JsonParser.parseString(pickup.work().payload())
                 .getAsJsonObject().get("stockReserve").getAsInt());
         assertNull(queue.claim(WORLD, "observer", Set.of(TRANSFER), "supplies", 4));
         assertTrue(queue.finish("tools", "gather", pickup.lease(), false, "Insufficient unreserved cobblestone",
                 new ProjectQueue.ChestReport(chest, java.util.Map.of(item, 7)), 5));
-        var mining = queue.claim(WORLD, "worker", kinds, "tools", 6, position, x -> true, (w,i) -> 0, null).job();
+        var mining = queue.claim(WORLD, "worker", kinds, "tools", 6, position, x -> true, (w,i) -> 0, null, 0, true).job();
         assertEquals(GATHER, mining.work().kind());
         assertEquals(1, mining.attempts());
     }

@@ -47,6 +47,8 @@ final class ProjectWorker {
     private static ProjectWater.Fill fill;
     private static ProjectChest chest;
     private static ProjectProduction production;
+    private static boolean carriedUnstartedSmeltingInput;
+    private static java.util.UUID interruptedSmeltingLease;
     private static FieldWorkstation fieldWorkstation;
     private static long nextWorkstationSearch;
     private static final Identifier MINING_SWORD = Identifier.of("minecraft", "stone_sword");
@@ -175,6 +177,7 @@ final class ProjectWorker {
     }
 
     static void suspend(MinecraftClient client) {
+        interruptedSmeltingLease = null;
         breathing.stop(client);
         generation++;
         port = 0;
@@ -230,6 +233,10 @@ final class ProjectWorker {
 
     static void interrupt(MinecraftClient client) {
         if (assignment == null && !pending) return;
+        if (assignment != null && production != null && success == null && assignment.job().attempts() == 1
+                && carriedUnstartedSmeltingInput && !production.contactedStation()) {
+            interruptedSmeltingLease = assignment.job().lease();
+        }
         generation++;
         reset(client);
         status = "Waiting to respawn before claiming project work";
@@ -263,6 +270,7 @@ final class ProjectWorker {
         fill = null;
         chest = null;
         production = null;
+        carriedUnstartedSmeltingInput = false;
         fieldWorkstation = null;
         nextWorkstationSearch = 0;
         miningRecipe = null;
@@ -407,6 +415,17 @@ final class ProjectWorker {
         if (success != null) {
             TaskDefense.evade(client, false);
             return;
+        }
+        if (production != null) {
+            if (assignment.job().lease().equals(interruptedSmeltingLease)) {
+                interruptedSmeltingLease = null;
+                var result = production.failedIfSmeltingInputLost(client);
+                if (result != null) {
+                    finish(client, result.success(), result.detail());
+                    return;
+                }
+            }
+            carriedUnstartedSmeltingInput = production.carryingUnstartedSmeltingInput(client);
         }
         if (now >= taskEnd) {
             String reason = craftingRouteDelivery == null ? ProjectQueue.TARGET_TIMEOUT

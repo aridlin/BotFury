@@ -1,12 +1,16 @@
 package com.botfury;
 
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.entity.LivingEntity;
 import net.minecraft.item.PickaxeItem;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.block.Blocks;
+import net.minecraft.block.FallingBlock;
+import net.minecraft.util.Hand;
+import net.minecraft.util.math.Box;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -24,6 +28,11 @@ final class SubsurfaceAccess {
     private int started, movedAt, retryAt, heading;
     private Vec3d lastMovement;
     private BaritoneSettings settings;
+    private BlockPos passage;
+    private int passageDeadline;
+    private BlockPos stalledAt;
+    private int routeFailures;
+    private final java.util.LinkedHashSet<BlockPos> openedFrom = new java.util.LinkedHashSet<>();
 
     boolean active() { return settings != null; }
 
@@ -92,8 +101,18 @@ final class SubsurfaceAccess {
             boolean arrived = goals.contains(position);
             if (!arrived && age - started < 600 && age - movedAt < 240
                     && (age - started < 60 || BaritoneClient.pursuing(goals.get(0)))) return true;
-            if (!arrived) heading++;
-            else if (destinationHint != null) heading = 0;
+            if (!arrived) {
+                heading++;
+                if (position.equals(stalledAt)) routeFailures++;
+                else {
+                    stalledAt = position;
+                    routeFailures = 1;
+                }
+            } else {
+                stalledAt = null;
+                routeFailures = 0;
+            }
+            if (arrived && destinationHint != null) heading = 0;
             stop();
         }
         if (age < retryAt) return true;
@@ -106,6 +125,8 @@ final class SubsurfaceAccess {
             return !exits.isEmpty() && start(client, position, exits, area, age, true);
         }
         int initial = Math.floorMod(client.player.getUuid().hashCode(), HEADINGS.length);
+        if (height < position.getY() && routeFailures >= 2 && position.equals(stalledAt)
+                && openPassage(client, age, position, area, initial + heading / 2)) return true;
         // Shorter, shallower alternatives can get around a wall without returning up the cave.
         int delta = height - position.getY();
         int fallbackY = position.getY() + Math.max(-2, Math.min(2, delta));
@@ -119,6 +140,80 @@ final class SubsurfaceAccess {
             }
         }
         return false;
+    }
+
+    private boolean openPassage(MinecraftClient client, int age, BlockPos from, ProjectGather.Area area, int heading) {
+        if (openedFrom.contains(from) || client.currentScreen != null) return false;
+        for (int turn = 0; turn < HEADINGS.length; turn++) {
+            var cell = from.offset(HEADINGS[Math.floorMod(heading + turn, HEADINGS.length)]);
+            if (!safePassage(client, cell, area)
+                    || client.world.isAir(cell) && client.world.isAir(cell.up())) continue;
+            var first = client.world.isAir(cell.up()) ? cell : cell.up();
+            if (ProjectWorker.excavationHit(client, first) == null || !equipDiggingTool(client, false)) continue;
+            if (openedFrom.size() >= 24) openedFrom.remove(openedFrom.iterator().next());
+            openedFrom.add(from);
+            passage = cell;
+            passageDeadline = age + 220;
+            BotEvents.add("info", "mining", "Opening a short prospecting passage at " + cell.toShortString());
+            return true;
+        }
+        return false;
+    }
+
+    boolean continuePassage(MinecraftClient client, int age, ProjectGather.Area area) {
+        var opening = passage;
+        if (opening == null) return false;
+        var position = client.player.getBlockPos();
+        if (age >= passageDeadline || !hasFooting(client) || client.currentScreen != null
+                || position.getManhattanDistance(opening) != 1 || !safePassage(client, opening, area)) {
+            stopPassage();
+            return false;
+        }
+        var next = client.world.isAir(opening.up()) ? opening : opening.up();
+        if (client.world.isAir(next)) {
+            stopPassage();
+            return start(client, position, List.of(opening), area, age, false);
+        }
+        var ray = ProjectWorker.excavationHit(client, next);
+        if (ray == null || !equipDiggingTool(client, false)) {
+            stopPassage();
+            return false;
+        }
+        client.player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, ray.getPos());
+        if (client.interactionManager.updateBlockBreakingProgress(next, ray.getSide())) {
+            client.player.swingHand(Hand.MAIN_HAND);
+        }
+        return true;
+    }
+
+    private static boolean safePassage(MinecraftClient client, BlockPos cell, ProjectGather.Area area) {
+        var world = client.world;
+        if (!validDestination(client, cell, area) || !world.isInBuildLimit(cell.up(2))
+                || BuildProtection.blocked(cell.down()) || area != null && area.contains(cell.down())
+                || !ProjectPlacement.flushFloor(world.getBlockState(cell.down()), world, cell.down())
+                || world.getBlockState(cell.up(2)).getBlock() instanceof FallingBlock
+                || !world.getOtherEntities(client.player, new Box(cell).stretch(0, 2, 0),
+                    entity -> entity instanceof LivingEntity && entity.isAlive()).isEmpty()) {
+            return false;
+        }
+        for (var block : List.of(cell, cell.up())) {
+            var state = world.getBlockState(block);
+            if (!state.getFluidState().isEmpty()
+                    || !state.isAir() && (state.hasBlockEntity() || !BaritoneSettings.recoverableTerrain(state.getBlock()))) return false;
+            for (var side : Direction.values()) {
+                var neighbor = block.offset(side);
+                if (!world.isChunkLoaded(neighbor.getX() >> 4, neighbor.getZ() >> 4)
+                        || !world.getFluidState(neighbor).isEmpty()) return false;
+            }
+        }
+        return true;
+    }
+
+    private void stopPassage() {
+        if (passage == null) return;
+        var client = MinecraftClient.getInstance();
+        if (client.interactionManager != null) client.interactionManager.cancelBlockBreaking();
+        passage = null;
     }
 
     private List<BlockPos> returnExits(MinecraftClient client, BlockPos position, BlockPos destination,
@@ -229,6 +324,7 @@ final class SubsurfaceAccess {
     }
 
     void stop() {
+        stopPassage();
         if (settings == null) return;
         BaritoneClient.execute("stop");
         settings.close();
@@ -242,5 +338,8 @@ final class SubsurfaceAccess {
     void reset() {
         stop();
         retryAt = heading = 0;
+        stalledAt = null;
+        routeFailures = 0;
+        openedFrom.clear();
     }
 }

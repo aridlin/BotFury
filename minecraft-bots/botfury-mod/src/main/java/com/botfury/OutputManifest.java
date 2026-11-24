@@ -111,13 +111,13 @@ final class OutputManifest {
     private static String addBatches(List<ProjectQueue.Work> jobs, Target target, int index,
                                      ProjectChest.Storage storage, ProjectBlock chest, ProjectWorkstations stations,
                                      boolean newStorage) {
-        String previous = newStorage ? "setup-storage" : null;
+        String previousDeposit = null;
         int total = 0;
         int batchIndex = 0;
         while (total < target.count) {
             String prefix = "stock-" + index + "-" + batchIndex + "-";
             var deps = new ArrayList<String>();
-            if (previous != null) deps.add(previous);
+            if (newStorage) deps.add("setup-storage");
             String produced;
             if (target.item.grouped()) {
                 int count = Math.min(BATCH_SIZE, target.count - total);
@@ -138,12 +138,13 @@ final class OutputManifest {
                 produced = production.get(production.size() - 1).id();
                 total += batch.count();
             }
-            previous = prefix + "deposit";
-            jobs.add(transfer(previous, storage, chest, target.item, total, ProjectChest.Direction.DEPOSIT,
-                    List.of(produced), produced));
+            var depositNeeds = previousDeposit == null ? List.of(produced) : List.of(produced, previousDeposit);
+            previousDeposit = prefix + "deposit";
+            jobs.add(transfer(previousDeposit, storage, chest, target.item, total, ProjectChest.Direction.DEPOSIT,
+                    depositNeeds, produced));
             batchIndex++;
         }
-        return previous;
+        return previousDeposit;
     }
 
     private static ProjectQueue.Work transfer(String id, ProjectChest.Storage storage, ProjectBlock chest,

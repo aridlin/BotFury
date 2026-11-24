@@ -153,6 +153,17 @@ final class ProjectQueue {
                 throw new IOException("Invalid project journal schema");
             }
             projects = new LinkedHashMap<>(board.projects);
+            var upgraded = new LinkedHashMap<>(projects);
+            boolean changed = false;
+            for (var entry : projects.entrySet()) {
+                var current = entry.getValue();
+                var revised = parallelizeSavedManifest(current);
+                if (revised != current) {
+                    upgraded.put(entry.getKey(), revised);
+                    changed = true;
+                }
+            }
+            if (changed) persist(upgraded);
             for (var project : projects.values()) for (var job : project.jobs) {
                 if (job.state == State.LEASED && job.lease != null) restoredLeases.add(job.lease);
             }
@@ -166,6 +177,48 @@ final class ProjectQueue {
     synchronized List<Project> snapshot(long now) throws IOException {
         expire(now);
         return List.copyOf(projects.values());
+    }
+
+    private static Project parallelizeSavedManifest(Project project) {
+        if (!project.id.startsWith("manifest-") || project.supplyChest == null || project.repeat != null) return project;
+        var jobs = new LinkedHashMap<String, Job>();
+        project.jobs.forEach(job -> jobs.put(job.work.id, job));
+        boolean changed = false;
+        for (var deposit : project.jobs) {
+            if (deposit.state != State.WAITING || deposit.work.needs.size() != 1 || deposit.work.sameWorkerAs == null
+                    || !deposit.work.locks.contains(project.supplyChest)) continue;
+            var target = transferTarget(deposit);
+            if (target == null || !"DEPOSIT".equals(target.direction) || target.item == null) continue;
+            var root = cargoRoot(jobs, deposit);
+            if (root == null || root.work.kind != Kind.GATHER || root.state != State.WAITING) continue;
+            for (String need : root.work.needs) {
+                var earlier = jobs.get(need);
+                var previous = transferTarget(earlier);
+                if (previous == null || !"DEPOSIT".equals(previous.direction) || !target.item.equals(previous.item)
+                        || previous.stock >= target.stock || !earlier.work.locks.contains(project.supplyChest)) continue;
+                jobs.put(root.work.id, withNeeds(root, root.work.needs.stream().filter(id -> !id.equals(need)).toList()));
+                jobs.put(deposit.work.id, withNeeds(deposit, List.of(deposit.work.sameWorkerAs, need)));
+                changed = true;
+                break;
+            }
+        }
+        return changed ? project.withJobs(List.copyOf(jobs.values())) : project;
+    }
+
+    private static PickupTarget transferTarget(Job job) {
+        return job != null && job.work.kind == Kind.TRANSFER ? JSON.fromJson(job.work.payload, PickupTarget.class) : null;
+    }
+
+    private static Job cargoRoot(Map<String, Job> jobs, Job job) {
+        var stage = jobs.get(job.work.sameWorkerAs);
+        while (stage != null && stage.work.sameWorkerAs != null) stage = jobs.get(stage.work.sameWorkerAs);
+        return stage;
+    }
+
+    private static Job withNeeds(Job job, List<String> needs) {
+        var w = job.work;
+        var work = new Work(w.id, w.kind, w.payload, needs, w.locks, w.sameWorkerAs, w.cleanup, w.constructionMaterial);
+        return new Job(work, job.state, job.attempts, job.worker, job.lease, job.expiresAt, job.evidence, job.chest, job.resourceSite);
     }
 
     synchronized List<OwnedStation> ownedStations(String world) {
@@ -446,7 +499,11 @@ final class ProjectQueue {
             if (!world.equals(project.world) || cancelled(project) || (ownedOrder != null && ownedOrder != project)
                     || projectId != null && !projectId.equals(project.id)) continue;
             Set<String> done = new HashSet<>();
-            for (Job job : project.jobs) if (job.state == State.DONE) done.add(job.work.id);
+            var byId = new HashMap<String, Job>();
+            for (Job job : project.jobs) {
+                byId.put(job.work.id, job);
+                if (job.state == State.DONE) done.add(job.work.id);
+            }
             var unavailableStations = new HashSet<String>();
             for (var job : project.jobs) {
                 if (job.state == State.DONE) continue;
@@ -460,13 +517,20 @@ final class ProjectQueue {
                 if (ownedLane != null && !ownedLane.equals(lane(job.work.id))) continue;
                 if (deposit != null && job.work.kind == Kind.TRANSFER && !deposit.equals(job.work.id)) continue;
                 if (job.state != State.WAITING || job.work.kind.coordinatorOnly()
-                        || retryDelayedFor(job, worker, now) || !kinds.contains(job.work.kind)
-                        || !done.containsAll(job.work.needs)) continue;
+                        || retryDelayedFor(job, worker, now) || !kinds.contains(job.work.kind)) continue;
+                if (!done.containsAll(job.work.needs)) {
+                    if (job.work.kind == Kind.TRANSFER && job.work.needs.size() > 1 && !blocked.contains(job.work.id)
+                            && job.work.sameWorkerAs != null && done.contains(job.work.sameWorkerAs)
+                            && worker.equalsIgnoreCase(byId.get(job.work.sameWorkerAs).worker)) {
+                        waitingWithCargo |= earlierDepositInProgress(job, byId, done);
+                    }
+                    continue;
+                }
                 if (job.work.cleanup != null && (!settled(job.work.cleanup.afterSettled, done, blocked)
                         || job.work.cleanup.alsoSettled.stream().anyMatch(id -> !settled(id, done, blocked)))) continue;
                 boolean pinned = job.work.sameWorkerAs != null;
                 if (pinned
-                        && !worker.equalsIgnoreCase(find(project, job.work.sameWorkerAs).worker)) continue;
+                        && !worker.equalsIgnoreCase(byId.get(job.work.sameWorkerAs).worker)) continue;
                 boolean usesStation = job.work.kind == Kind.TRANSFER || job.work.kind == Kind.CRAFT || job.work.kind == Kind.SMELT;
                 if (usesStation && !Collections.disjoint(unavailableStations, job.work.locks)
                         || !Collections.disjoint(reserved, job.work.locks) || job.work.locks.stream().anyMatch(key ->
@@ -483,6 +547,17 @@ final class ProjectQueue {
             }
         }
         return fallbackJob == null || waitingWithCargo ? null : assign(fallbackProject, fallbackJob, worker, now);
+    }
+
+    private static boolean earlierDepositInProgress(Job deposit, Map<String, Job> jobs, Set<String> done) {
+        for (String id : deposit.work.needs) {
+            if (done.contains(id)) continue;
+            var earlier = jobs.get(id);
+            if (earlier.work.kind != Kind.TRANSFER || earlier.work.sameWorkerAs == null) continue;
+            var root = cargoRoot(jobs, earlier);
+            if (root != null && (root.state == State.DONE || root.state == State.LEASED)) return true;
+        }
+        return false;
     }
 
     private Assignment assign(Project project, Job job, String worker, long now) throws IOException {
@@ -714,11 +789,13 @@ final class ProjectQueue {
     private boolean recoverShortTransfer(Project project, Job transfer, String evidence, ChestObservation observation)
             throws IOException {
         var chest = observation.report;
-        if (!chest.location.equals(project.supplyChest) || transfer.work.needs.size() != 1) return false;
-        var target = JSON.fromJson(transfer.work.payload, PickupTarget.class);
+        if (!chest.location.equals(project.supplyChest)) return false;
+        var target = transferTarget(transfer);
         if (target == null || target.item == null) return false;
         boolean deposit = "DEPOSIT".equals(target.direction);
-        if (!(deposit && transfer.work.sameWorkerAs != null || "TAKE".equals(target.direction))) return false;
+        String production = deposit ? transfer.work.sameWorkerAs
+                : "TAKE".equals(target.direction) && transfer.work.needs.size() == 1 ? transfer.work.needs.get(0) : null;
+        if (production == null) return false;
         int stock = "any_logs".equals(target.item)
                 ? ResourceCatalog.blocks(target.item, "both").stream().mapToInt(id -> chest.items.getOrDefault(id, 0)).sum()
                 : chest.items.getOrDefault(target.item, 0);
@@ -726,7 +803,7 @@ final class ProjectQueue {
 
         var jobs = new HashMap<String, Job>();
         project.jobs.forEach(job -> jobs.put(job.work.id, job));
-        var prerequisite = jobs.get(transfer.work.needs.get(0));
+        var prerequisite = jobs.get(production);
         return rewindSupply(project, transfer, prerequisite, jobs, evidence, observation);
     }
 

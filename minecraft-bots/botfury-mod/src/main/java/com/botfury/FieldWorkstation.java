@@ -1,5 +1,7 @@
 package com.botfury;
 
+import net.minecraft.block.BlockState;
+import net.minecraft.block.FallingBlock;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.ItemStack;
 import net.minecraft.recipe.RecipeMatcher;
@@ -7,6 +9,7 @@ import net.minecraft.recipe.RecipeType;
 import net.minecraft.registry.Registries;
 import net.minecraft.registry.tag.ItemTags;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.Hand;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
@@ -21,14 +24,19 @@ final class FieldWorkstation {
     private final ProjectBlock station;
     private final long expires;
     private final FieldWorkstation workbench;
+    private final BlockState recess;
     private ProjectProduction preparation;
     private ProjectProduction plankPreparation;
     private long nextPlacement;
+    private boolean openingRecess;
 
-    private FieldWorkstation(ProjectBlock station, long now, ProjectProduction.Spec plankRecipe, FieldWorkstation workbench) {
+    private FieldWorkstation(ProjectBlock station, long now, ProjectProduction.Spec plankRecipe,
+                             FieldWorkstation workbench, BlockState recess) {
         this.station = station;
         this.workbench = workbench;
-        expires = now + (workbench == null ? 20_000_000_000L : 35_000_000_000L);
+        this.recess = recess;
+        long preparationTime = workbench == null ? 20_000_000_000L : workbench.expires - now + 15_000_000_000L;
+        expires = now + preparationTime + (recess == null ? 0 : 20_000_000_000L);
         if (plankRecipe != null) plankPreparation = new ProjectProduction(plankRecipe);
     }
 
@@ -43,6 +51,7 @@ final class FieldWorkstation {
                 || client.player.currentScreenHandler != client.player.playerScreenHandler) return null;
         var feet = client.player.getBlockPos();
         ProjectBlock site = null;
+        ProjectBlock recessSite = null;
         boolean held = hasStationItem(client, wanted);
         boolean table = wanted.equals(TABLE);
         int planks = table && !held ? plankCount(client) : 0;
@@ -54,16 +63,26 @@ final class FieldWorkstation {
                     || !client.world.isChunkLoaded(position.getX() >> 4, position.getZ() >> 4)) continue;
             if (client.world.getBlockState(position).isOf(Registries.BLOCK.get(wanted))
                     && ProjectProduction.workstationHit(client, position, client.player.getEyePos()) != null) {
-                return new FieldWorkstation(new ProjectBlock(position.toImmutable(), feet, wanted), now, null, null);
+                return new FieldWorkstation(new ProjectBlock(position.toImmutable(), feet, wanted), now, null, null, null);
             }
-            if (!canPrepare || site != null || !safeSite(client, position)) continue;
-            var block = new ProjectBlock(position.toImmutable(), feet, wanted);
-            if (ProjectPlacement.supportHit(client, block) != null) site = block;
+            if (!canPrepare || site != null) continue;
+            if (safeSite(client, position)) {
+                var block = new ProjectBlock(position.toImmutable(), feet, wanted);
+                if (ProjectPlacement.supportHit(client, block) != null) site = block;
+            } else if (recessSite == null && position.getY() == feet.getY() && safeRecess(client, position)
+                    && ProjectWorker.excavationHit(client, position) != null) {
+                recessSite = new ProjectBlock(position.toImmutable(), feet, wanted);
+            }
+        }
+        BlockState recess = null;
+        if (site == null && recessSite != null) {
+            site = recessSite;
+            recess = client.world.getBlockState(site.target());
         }
         if (site == null) return null;
         var workbench = table || held ? null : find(client, now, TABLE, site.target());
         if (!table && !held && workbench == null) return null;
-        return new FieldWorkstation(site, now, plankRecipe, workbench);
+        return new FieldWorkstation(site, now, plankRecipe, workbench, recess);
     }
 
     State tick(MinecraftClient client, long now) {
@@ -72,7 +91,10 @@ final class FieldWorkstation {
             return ProjectProduction.workstationHit(client, position, client.player.getEyePos()) == null
                     ? State.UNAVAILABLE : State.READY;
         }
-        if (now >= expires || !safeSite(client, position) || !SubsurfaceAccess.hasFooting(client)) return State.UNAVAILABLE;
+        if (now >= expires || !SubsurfaceAccess.hasFooting(client)) return State.UNAVAILABLE;
+        if (recess != null && client.world.getBlockState(position).equals(recess)) return openRecess(client, position);
+        stopOpening(client);
+        if (!safeSite(client, position)) return State.UNAVAILABLE;
         if (!hasStationItem(client, station.block())) {
             if (plankPreparation != null) {
                 var result = plankPreparation.tick(client, now);
@@ -108,9 +130,31 @@ final class FieldWorkstation {
     }
 
     void close(MinecraftClient client) {
+        stopOpening(client);
         if (workbench != null) workbench.close(client);
         if (plankPreparation != null) plankPreparation.close(client);
         if (preparation != null) preparation.close(client);
+    }
+
+    private State openRecess(MinecraftClient client, BlockPos position) {
+        if (!safeRecess(client, position) || client.player.currentScreenHandler != client.player.playerScreenHandler) {
+            return State.UNAVAILABLE;
+        }
+        var ray = ProjectWorker.excavationHit(client, position);
+        if (ray == null) return State.UNAVAILABLE;
+        if (!openingRecess) BotEvents.add("info", "projects", "Opening a workstation recess at " + position.toShortString());
+        openingRecess = true;
+        client.player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, ray.getPos());
+        if (client.interactionManager.updateBlockBreakingProgress(position, ray.getSide())) {
+            client.player.swingHand(Hand.MAIN_HAND);
+        }
+        return State.WORKING;
+    }
+
+    private void stopOpening(MinecraftClient client) {
+        if (!openingRecess) return;
+        if (client.interactionManager != null) client.interactionManager.cancelBlockBreaking();
+        openingRecess = false;
     }
 
     private static ProjectProduction.Spec plankRecipe(MinecraftClient client, int needed) {
@@ -139,12 +183,38 @@ final class FieldWorkstation {
                 || BuildProtection.blocked(position) || BuildProtection.blocked(floor)
                 || !ProjectPlacement.flushFloor(world.getBlockState(floor), world, floor)
                 || !world.getOtherEntities(client.player, new Box(position), entity -> entity.isAlive()).isEmpty()) return false;
+        return horizontalExits(client, position) != 2;
+    }
+
+    private static boolean safeRecess(MinecraftClient client, BlockPos position) {
+        var world = client.world;
+        var state = world.getBlockState(position);
+        var floor = position.down();
+        float hardness = state.getHardness(world, position);
+        if (!world.isInBuildLimit(position.up()) || !world.getWorldBorder().contains(position)
+                || !BaritoneSettings.recoverableTerrain(state.getBlock()) || state.hasBlockEntity()
+                || !state.getFluidState().isEmpty()
+                || hardness < 0 || hardness > 3 || BuildProtection.blocked(position) || BuildProtection.blocked(floor)
+                || !ProjectPlacement.flushFloor(world.getBlockState(floor), world, floor)
+                || world.getBlockState(position.up()).getBlock() instanceof FallingBlock
+                || horizontalExits(client, position) != 1
+                || !world.getOtherEntities(client.player, new Box(position).stretch(0, 1, 0),
+                    entity -> entity.isAlive()).isEmpty()) return false;
+        for (var side : Direction.values()) {
+            var neighbor = position.offset(side);
+            if (!world.isChunkLoaded(neighbor.getX() >> 4, neighbor.getZ() >> 4)
+                    || !world.getFluidState(neighbor).isEmpty()) return false;
+        }
+        return true;
+    }
+
+    private static int horizontalExits(MinecraftClient client, BlockPos position) {
         int exits = 0;
         for (var side : Direction.Type.HORIZONTAL) {
             var neighbor = position.offset(side);
-            if (world.isAir(neighbor) && world.isAir(neighbor.up())) exits++;
+            if (client.world.isAir(neighbor) && client.world.isAir(neighbor.up())) exits++;
         }
-        return exits != 2;
+        return exits;
     }
 
     private static boolean hasStationItem(MinecraftClient client, Identifier station) {

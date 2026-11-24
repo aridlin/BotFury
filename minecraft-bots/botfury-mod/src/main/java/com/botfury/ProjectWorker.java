@@ -102,7 +102,7 @@ final class ProjectWorker {
     private static final WorkerReturnTrail returnTrail = new WorkerReturnTrail();
     private static final WorkerCargoRecovery cargoRecovery = new WorkerCargoRecovery();
     private static ProjectItem projectCargoItem;
-    private static int recentCargo;
+    private static final Map<String, Integer> recentInventory = new HashMap<>();
     private static boolean observedDeath;
     private static List<ProjectQueue.ResourceSite> returnWaypoints;
     private static long nextTrailSave;
@@ -189,6 +189,7 @@ final class ProjectWorker {
     static void suspend(MinecraftClient client) {
         interruptedSmeltingLease = null;
         cargoRecovery.stop();
+        recentInventory.clear();
         breathing.stop(client);
         generation++;
         port = 0;
@@ -250,11 +251,13 @@ final class ProjectWorker {
     static void interrupt(MinecraftClient client) {
         if (observedDeath) return;
         observedDeath = true;
-        if (cargoRecovery.pending()) cargoRecovery.clear(cargoPath());
-        if (assignment == null && !pending) return;
-        if (projectCargoItem != null && recentCargo > 0 && success == null) {
-            cargoRecovery.remember(cargoPath(), enrollment, projectCargoItem, recentCargo, client.player.getBlockPos());
+        if (cargoRecovery.pending()) {
+            cargoRecovery.clear(cargoPath());
+        } else if (!recentInventory.isEmpty()) {
+            cargoRecovery.remember(cargoPath(), enrollment, projectCargoItem, recentInventory, client.player.getBlockPos());
         }
+        recentInventory.clear();
+        if (assignment == null && !pending) return;
         if (assignment != null && production != null && success == null && assignment.job().attempts() == 1
                 && carriedUnstartedSmeltingInput && !production.contactedStation()) {
             interruptedSmeltingLease = assignment.job().lease();
@@ -309,7 +312,6 @@ final class ProjectWorker {
         checkedExcavationTool = false;
         gather = null;
         projectCargoItem = null;
-        recentCargo = 0;
         checkedCarriedFuel = false;
         gatherSite = null;
         lastGatherProgress = 0;
@@ -402,7 +404,7 @@ final class ProjectWorker {
         observedDeath = false;
         releaseJump(client);
         long now = System.nanoTime();
-        if (projectCargoItem != null && client.player.isAlive()) recentCargo = projectCargoItem.count(client);
+        if (client.player.isAlive()) WorkerCargoRecovery.snapshotInventory(client, recentInventory);
         if (enrollment.matches(here.name(), world(here)) && client.player.isAlive() && client.player.isOnGround()
                 && !client.player.isTouchingWater() && (returnWaypoints == null || waypoint >= returnWaypoints.size())) {
             var feet = client.player.getBlockPos();

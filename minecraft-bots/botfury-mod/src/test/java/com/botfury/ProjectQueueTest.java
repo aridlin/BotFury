@@ -1013,7 +1013,8 @@ class ProjectQueueTest {
         long now = 3;
         for (int attempt = 0; attempt < 3; attempt++) {
             var placement = queue.claim(WORLD, "builder", Set.of(BUILD), now++).job();
-            assertTrue(queue.finish("house", "place-1", placement.lease(), false, ProjectQueue.TARGET_TIMEOUT, now++));
+            assertTrue(queue.finish("house", "place-1", placement.lease(), false,
+                    ProjectQueue.PLACEMENT_REJECTED + "6, 65, 1", now++));
             now += ProjectQueue.PLACEMENT_HANDOFF_WINDOW_MS;
         }
         var blocked = queue.blockedPlacementPoses(WORLD).get(0);

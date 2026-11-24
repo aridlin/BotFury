@@ -72,7 +72,9 @@ final class MiningTask {
     private static BlockPos deepExplorationGoal;
     private static BlockPos surfaceSearchAnchor, lastExplorationExit;
     private static BlockPos surfaceRouteGoal, surfaceExplorationGoal;
+    private static final int WIDE_SEARCH_RADIUS = 48;
     private static boolean surfaceResource;
+    private static boolean checkedWiderBeforeRememberedSite;
     private static int nextSurfaceSurvey;
     private static int surfaceSearchFailures, explorationExits;
     private static BaritoneSettings caveSettings;
@@ -175,6 +177,7 @@ final class MiningTask {
         projectMining = project;
         localOnly = false;
         surfaceResource = surface;
+        checkedWiderBeforeRememberedSite = false;
         surfaceRouteGoal = surfaceExplorationGoal = null;
         nextSurfaceSurvey = 0;
         toolShortfall = false;
@@ -449,7 +452,7 @@ final class MiningTask {
         var nearbyHits = new ArrayList<BlockPos>();
         boolean safeFooting = canMineFromCurrentFooting(client, position);
         scanNeedsTool = false;
-        int radius = MiningViewDistance.active() ? 48 : surfaceResource ? 20 : 12;
+        int radius = MiningViewDistance.active() ? WIDE_SEARCH_RADIUS : surfaceResource ? 20 : 12;
         for (var pos : BlockPos.iterateOutwards(position, radius, 10, radius)) {
             if (excluded != null && excluded.contains(pos) || rejected.containsKey(pos)
                     || !world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)
@@ -504,15 +507,22 @@ final class MiningTask {
         }
         // A nearby cave exit is more useful than a distant surface waypoint while buried.
         if (surfaceResource && seekSurface(client)) return;
+        if (surfaceResource && rememberedSite != null
+                && !rememberedSite.isWithinDistance(client.player.getBlockPos(), WIDE_SEARCH_RADIUS)) {
+            if (MiningViewDistance.active()) {
+                status = "Checking more loaded chunks for " + job.resource;
+                return;
+            }
+            if (!checkedWiderBeforeRememberedSite) {
+                checkedWiderBeforeRememberedSite = true;
+                if (widenSearch(client)) return;
+            }
+        }
         if (returnToResourceSite(client)) return;
         Integer depth = prospectingAltitude(client);
         boolean probeAtThisHeight = depth == null || Math.abs(client.player.getBlockY() - depth) <= 12;
         if ((projectMining || Boolean.getBoolean("botfury.managedHttp")) && probeAtThisHeight
-                && MiningViewDistance.begin(client, age)) {
-            if (pathActive) stopPath();
-            status = "Checking more loaded chunks for " + job.resource;
-            return;
-        }
+                && widenSearch(client)) return;
         if (surfaceResource) {
             exploreSurface(client);
             return;
@@ -697,6 +707,13 @@ final class MiningTask {
         status = "Following a cave toward Y " + lower;
         return true;
     }
+    private static boolean widenSearch(MinecraftClient client) {
+        if (!MiningViewDistance.begin(client, age)) return false;
+        if (pathActive) stopPath();
+        status = "Checking more loaded chunks for " + job.resource;
+        return true;
+    }
+
     private static boolean returnToResourceSite(MinecraftClient client) {
         if (rememberedSite == null) return false;
         var point = Vec3d.ofBottomCenter(rememberedSite);

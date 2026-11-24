@@ -723,7 +723,10 @@ final class ProjectQueue {
             }
             return job;
         }).toList();
-        commit(new Project(project.id, project.world, jobs, project.repeat, project.supplyChest, recovery));
+        var reopened = new Project(project.id, project.world, jobs, project.repeat, project.supplyChest, recovery);
+        // Reopening this placement can revive a separate batch already supplied by the replacement worker.
+        if (pendingBuildMaterials(reopened, worker, pickup.work.id).contains(pickup.work.constructionMaterial)) return false;
+        commit(reopened);
         return true;
     }
 
@@ -1015,21 +1018,26 @@ final class ProjectQueue {
         var materials = new HashSet<String>();
         for (var project : projects.values()) {
             if (project.supplyChest == null || !project.world.equals(world)) continue;
-            var pickups = new HashMap<String, String>();
-            for (var job : project.jobs) {
-                if (job.state == State.DONE && job.work.constructionMaterial != null
-                        && worker.equalsIgnoreCase(job.worker)) {
-                    pickups.put(job.work.id, job.work.constructionMaterial);
-                }
+            materials.addAll(pendingBuildMaterials(project, worker, null));
+        }
+        return materials;
+    }
+
+    private static Set<String> pendingBuildMaterials(Project project, String worker, String incomingPickup) {
+        var pickups = new HashMap<String, String>();
+        for (var job : project.jobs) {
+            if (job.state == State.DONE && job.work.constructionMaterial != null
+                    && worker.equalsIgnoreCase(job.worker) && !job.work.id.equals(incomingPickup)) {
+                pickups.put(job.work.id, job.work.constructionMaterial);
             }
-            if (pickups.isEmpty()) continue;
-            var blocked = blockedJobs(project);
-            for (var job : project.jobs) {
-                if (job.work.kind != Kind.BUILD || job.work.sameWorkerAs == null
-                        || job.state != State.WAITING || blocked.contains(job.work.id)) continue;
-                var material = pickups.get(job.work.sameWorkerAs);
-                if (material != null) materials.add(material);
-            }
+        }
+        if (pickups.isEmpty()) return Set.of();
+        var blocked = blockedJobs(project);
+        var materials = new HashSet<String>();
+        for (var job : project.jobs) {
+            if (job.work.kind != Kind.BUILD || job.state != State.WAITING || blocked.contains(job.work.id)) continue;
+            var material = pickups.get(job.work.sameWorkerAs);
+            if (material != null) materials.add(material);
         }
         return materials;
     }

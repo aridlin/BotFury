@@ -388,6 +388,47 @@ class ProjectQueueTest {
         checkConstructionHandoff(true, false, true);
     }
 
+    @Test void placementHandoffAccountsForCargoInTheBatchesItUnblocks() throws Exception {
+        var journal = directory.resolve("reopened-construction-cargo.json");
+        var queue = new ProjectQueue(journal);
+        String chest = "block:3,64,0";
+        String material = "minecraft:oak_log";
+        String pickup = "{\"direction\":\"TAKE\",\"item\":\"" + material + "\",\"stock\":1}";
+        var stock = new ProjectQueue.ChestReport(chest, java.util.Map.of(material, 2));
+        queue.submitSupplied("house", WORLD, List.of(
+                job("prepare", EXCAVATE, List.of()),
+                new ProjectQueue.Work("pickup", TRANSFER, pickup, List.of("prepare"), Set.of(chest), null, null, material),
+                new ProjectQueue.Work("roof-cargo", TRANSFER, pickup, List.of("prepare"), Set.of(chest), null, null, material),
+                new ProjectQueue.Work("place-1", BUILD, "{\"target\":{\"x\":8,\"y\":64,\"z\":8}}",
+                        List.of("pickup"), Set.of("wall"), "pickup"),
+                new ProjectQueue.Work("place-2", BUILD, "", List.of("roof-cargo", "place-1"), Set.of("roof"), "roof-cargo")), chest);
+        var prep = queue.claim(WORLD, "first", Set.of(EXCAVATE), 1).job();
+        assertTrue(queue.finish("house", "prepare", prep.lease(), true, "Cleared", 2));
+        var wallCargo = queue.claim(WORLD, "first", Set.of(TRANSFER), 3).job();
+        assertTrue(queue.finish("house", "pickup", wallCargo.lease(), true, "Carrying wall cargo", stock, 4));
+        var roofCargo = queue.claim(WORLD, "roofer", Set.of(TRANSFER), 5).job();
+        assertTrue(queue.finish("house", "roof-cargo", roofCargo.lease(), true, "Carrying roof cargo", stock, 6));
+        for (long now = 7; now <= 11; now += 2) {
+            var lease = queue.claim(WORLD, "first", Set.of(BUILD), now).job();
+            assertTrue(queue.finish("house", "place-1", lease.lease(), false, ProjectQueue.TARGET_TIMEOUT, now + 1));
+        }
+        java.util.function.Function<String, ProjectQueue.ResourceSite> locate = worker -> "first".equals(worker)
+                ? new ProjectQueue.ResourceSite(8, 60, 8) : new ProjectQueue.ResourceSite(16, 64, 8);
+        var kinds = Set.of(BUILD, TRANSFER);
+        assertFalse(queue.offerConstructionHandoff(WORLD, "roofer", null, kinds, 13, locate, (worker, item) -> 0));
+        assertFalse(queue.offerConstructionHandoff(WORLD, "roofer", null, kinds, 13, locate, (worker, item) -> 1));
+        assertEquals(ProjectQueue.State.FAILED, queue.snapshot(13).get(0).jobs().get(3).state());
+        assertTrue(queue.offerConstructionHandoff(WORLD, "helper", null, kinds, 14, locate, (worker, item) -> 0));
+        var restored = new ProjectQueue(journal);
+        var replacement = restored.claim(WORLD, "helper", kinds, 15).job();
+        assertEquals("pickup", replacement.work().id());
+        assertTrue(restored.finish("house", "pickup", replacement.lease(), true, "Carrying replacement wall cargo", stock, 16));
+        var wall = restored.claim(WORLD, "helper", kinds, 17).job();
+        assertEquals("place-1", wall.work().id());
+        assertTrue(restored.finish("house", "place-1", wall.lease(), true, "Placed wall", 18));
+        assertEquals("place-2", restored.claim(WORLD, "roofer", kinds, 19).job().work().id());
+    }
+
     private void checkConstructionHandoff(boolean stockAvailable, boolean busySupplier, boolean closeSupplier) throws Exception {
         var journal = directory.resolve("construction-handoff-" + stockAvailable + ".json");
         var queue = new ProjectQueue(journal);

@@ -161,6 +161,7 @@ final class ProjectQueue {
     private record Board(int schema, Map<String, Project> projects) {}
     private record PickupTarget(String direction, String item, int stock) {}
     private record ToolRecipe(String recipe) {}
+    private enum CargoRecovery { ANY, CHECKPOINT, TOOL_FAILURE }
 
     private static final Gson JSON = new Gson();
     private static final long LEASE_MS = 15_000;
@@ -657,6 +658,13 @@ final class ProjectQueue {
 
     synchronized Assignment claim(String world, String worker, Set<Kind> kinds, String projectId, long now,
                                   ResourceSite position, java.util.function.Predicate<String> hasExcavationTool) throws IOException {
+        return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, null, null);
+    }
+
+    synchronized Assignment claim(String world, String worker, Set<Kind> kinds, String projectId, long now,
+                                  ResourceSite position, java.util.function.Predicate<String> hasExcavationTool,
+                                  java.util.function.ToIntBiFunction<String, String> heldCount,
+                                  Map<String, Integer> toolUses) throws IOException {
         if (world == null || !validId(worker) || kinds == null || kinds.isEmpty()
                 || projectId != null && !validId(projectId)) {
             throw new IllegalArgumentException("Invalid worker or world");
@@ -775,7 +783,17 @@ final class ProjectQueue {
                 }
             }
         }
-        return fallbackJob == null || waitingWithCargo ? null : assign(fallbackProject, fallbackJob, worker, now, position);
+        if (waitingWithCargo) return null;
+        // Existing leases and ready handoffs were checked above. Prefer rescuing mining work over a new independent job.
+        if (heldCount != null && kinds.contains(Kind.TRANSFER)) {
+            var deposit = offerInterruptedDeposit(world, worker, projectId, now, position, heldCount, CargoRecovery.TOOL_FAILURE);
+            if (deposit != null) return deposit;
+        }
+        if (toolUses != null && kinds.contains(Kind.GATHER)) {
+            var mining = offerEquippedMiner(world, worker, projectId, toolUses, now, true);
+            if (mining != null) return mining;
+        }
+        return fallbackJob == null ? null : assign(fallbackProject, fallbackJob, worker, now, position);
     }
 
     private static String excavationToolMaterial(Job job) {
@@ -915,6 +933,11 @@ final class ProjectQueue {
 
     synchronized Assignment offerEquippedMiner(String world, String worker, String projectId,
                                                 Map<String, Integer> toolUses, long now) throws IOException {
+        return offerEquippedMiner(world, worker, projectId, toolUses, now, false);
+    }
+
+    private Assignment offerEquippedMiner(String world, String worker, String projectId,
+                                          Map<String, Integer> toolUses, long now, boolean exhaustedOnly) throws IOException {
         if (toolUses == null || toolUses.isEmpty() || projects.values().stream().flatMap(project -> project.jobs.stream())
                 .anyMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker))) return null;
         for (var project : projects.values()) {
@@ -922,7 +945,7 @@ final class ProjectQueue {
                     || projectId != null && !project.id.equals(projectId)) continue;
             for (var gather : project.jobs) {
                 boolean exhausted = gather.state == State.FAILED && EXHAUSTED_TOOLS.equals(gather.evidence);
-                if ((!exhausted && gather.state != State.WAITING) || gather.work.kind != Kind.GATHER
+                if ((!exhausted && (exhaustedOnly || gather.state != State.WAITING)) || gather.work.kind != Kind.GATHER
                         || gather.work.sameWorkerAs == null || gather.work.needs.size() != 1
                         || gatherSource(gather.work.payload) == null || checkpointDepositActive(project, gather)) continue;
                 var craft = find(project, gather.work.sameWorkerAs);
@@ -1027,19 +1050,19 @@ final class ProjectQueue {
     synchronized Assignment offerInterruptedDeposit(String world, String worker, String projectId, long now,
                                                      ResourceSite position,
                                                      java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
-        return offerInterruptedDeposit(world, worker, projectId, now, position, heldCount, false);
+        return offerInterruptedDeposit(world, worker, projectId, now, position, heldCount, CargoRecovery.ANY);
     }
 
     synchronized Assignment offerCheckpointDeposit(String world, String worker, String projectId, long now,
                                                    ResourceSite position,
                                                    java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
-        return offerInterruptedDeposit(world, worker, projectId, now, position, heldCount, true);
+        return offerInterruptedDeposit(world, worker, projectId, now, position, heldCount, CargoRecovery.CHECKPOINT);
     }
 
     private Assignment offerInterruptedDeposit(String world, String worker, String projectId, long now,
                                                ResourceSite position,
                                                java.util.function.ToIntBiFunction<String, String> heldCount,
-                                               boolean checkpointsOnly) throws IOException {
+                                               CargoRecovery mode) throws IOException {
         if (projects.values().stream().flatMap(project -> project.jobs.stream())
                 .anyMatch(job -> job.state == State.LEASED && worker.equalsIgnoreCase(job.worker))) return null;
         var reserved = pendingBuildMaterials(world, worker);
@@ -1051,9 +1074,10 @@ final class ProjectQueue {
                 var deposit = contributionDeposit(project, gather);
                 if (deposit == null) continue;
                 boolean checkpoint = CARGO_CHECKPOINT.equals(gather.evidence) && cargoCheckpoint(project, gather) > 0;
-                if (checkpointsOnly && !checkpoint) continue;
-                boolean interrupted = gather.state != State.LEASED && (RECOVERING_TOOLS.equals(gather.evidence)
-                        || EXHAUSTED_TOOLS.equals(gather.evidence) || GATHER_STALLED.equals(gather.evidence) || LEASE_EXPIRED.equals(gather.evidence) || checkpoint);
+                boolean missingTools = RECOVERING_TOOLS.equals(gather.evidence) || EXHAUSTED_TOOLS.equals(gather.evidence);
+                if (mode == CargoRecovery.CHECKPOINT && !checkpoint || mode == CargoRecovery.TOOL_FAILURE && !missingTools) continue;
+                boolean interrupted = gather.state != State.LEASED && (missingTools
+                        || GATHER_STALLED.equals(gather.evidence) || LEASE_EXPIRED.equals(gather.evidence) || checkpoint);
                 boolean returningCargo = deposit.chest != null && CONTRIBUTION_SETTLED.equals(deposit.evidence);
                 if (!interrupted && !returningCargo) continue;
                 var source = gatherSource(gather.work.payload);

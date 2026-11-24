@@ -322,7 +322,8 @@ final class ProjectBroker {
                             ? board.offerCheckpointDeposit(world, request.worker, request.project, now,
                                 position, ProjectBroker::heldCount) : null;
                     if (assignment == null) assignment = board.claim(world, request.worker, request.kinds,
-                            request.project, now, position, material -> hasExcavationTool(request.toolUses, material));
+                            request.project, now, position, material -> hasExcavationTool(request.toolUses, material),
+                            ProjectBroker::heldCount, request.toolUses);
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.TRANSFER)) {
                         assignment = board.offerInterruptedDeposit(world, request.worker, request.project, now,
                                 position, ProjectBroker::heldCount);
@@ -341,7 +342,7 @@ final class ProjectBroker {
                             && board.offerConstructionHandoff(world, request.worker, request.project,
                                     request.kinds, now, ProjectBroker::workerPosition, ProjectBroker::heldCount)) {
                         assignment = board.claim(world, request.worker, request.kinds, request.project, now, position,
-                                material -> hasExcavationTool(request.toolUses, material));
+                                material -> hasExcavationTool(request.toolUses, material), ProjectBroker::heldCount, request.toolUses);
                     }
                     reply(exchange, 200, assignment);
                 }

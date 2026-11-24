@@ -1422,6 +1422,43 @@ class ProjectQueueTest {
         assertEquals("deliver", restored.claim(WORLD, "hauler", Set.of(TRANSFER), now).job().work().id());
     }
 
+    @Test void repairsALostChestFromAnExhaustedJournalAndForgetsItsOldStock() throws Exception {
+        var journal = directory.resolve("lost-chest-attempts.json");
+        String chest = "block:3,64,0";
+        var wood = job("wood", GATHER, List.of());
+        var craft = new ProjectQueue.Work("craft-chest", CRAFT, "", List.of("wood"), Set.of(), "wood");
+        var station = new ProjectQueue.Work("setup-storage", BUILD,
+                "{\"target\":{\"x\":3,\"y\":64,\"z\":0},\"block\":\"minecraft:chest\"}",
+                List.of("craft-chest"), Set.of(chest), "craft-chest");
+        var stock = new ProjectQueue.ChestObservation(
+                new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:diamond", 15)), 1);
+        var jobs = List.of(
+                new ProjectQueue.Job(wood, ProjectQueue.State.DONE, 1, "builder", null, 0, "Collected", null),
+                new ProjectQueue.Job(craft, ProjectQueue.State.DONE, 1, "builder", null, 0, "Crafted", null),
+                new ProjectQueue.Job(station, ProjectQueue.State.FAILED, 1, null, null, 0,
+                        "Owned station is missing after 2 supply recoveries", null),
+                new ProjectQueue.Job(job("old-stock", TRANSFER, List.of("setup-storage"), chest),
+                        ProjectQueue.State.DONE, 1, "hauler", null, 0, "Observed stock", stock),
+                new ProjectQueue.Job(job("next", TRANSFER, List.of("setup-storage"), chest),
+                        ProjectQueue.State.WAITING, 0, null, null, 0, null, null));
+        var project = new ProjectQueue.Project("stock", WORLD, jobs, null, chest, java.util.Map.of("wood", 2));
+        Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                "projects", java.util.Map.of("stock", project))));
+        long now = 2;
+        for (int loss = 0; loss < 3; loss++) {
+            var queue = new ProjectQueue(journal);
+            assertEquals("setup-storage", queue.ownedStations(WORLD).get(0).job());
+            assertTrue(queue.restoreOwnedStation(WORLD, "stock", "setup-storage"));
+            assertTrue(queue.chestStock(WORLD).isEmpty());
+            assertEquals(ProjectQueue.State.DONE, queue.snapshot(now).get(0).jobs().get(3).state());
+            assertFalse(queue.restoreOwnedStation(WORLD, "stock", "setup-storage"));
+            for (var kind : List.of(GATHER, CRAFT, BUILD)) {
+                var assigned = queue.claim(WORLD, "repairer", Set.of(kind), now++).job();
+                assertTrue(queue.finish("stock", assigned.work().id(), assigned.lease(), true, "Restored", now++));
+            }
+        }
+    }
+
     @Test void stalledPlacementCanUseANearbyBuildersExistingMaterials() throws Exception {
         checkConstructionHandoff(false, false, false);
     }

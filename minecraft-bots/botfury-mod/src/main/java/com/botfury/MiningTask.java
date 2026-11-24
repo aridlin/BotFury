@@ -54,6 +54,8 @@ final class MiningTask {
     private static final DroppedItemSearch minedDrops = new DroppedItemSearch();
     private static BlockPos rememberedSite;
     private static BlockPos deepExplorationGoal;
+    private static BaritoneSettings caveSettings;
+    private static int lastCaveProbeY, nextCaveProbe;
     private static int rememberedUntil;
     private static ProjectQueue.ResourceSite observedSite;
 
@@ -113,6 +115,8 @@ final class MiningTask {
         projectMining=project;
         toolShortfall = false;
         subsurface.reset();
+        lastCaveProbeY = Integer.MAX_VALUE;
+        nextCaveProbe = 0;
         rememberedSite = null;
         observedSite = null;
         excluded=exclude;
@@ -313,6 +317,7 @@ final class MiningTask {
                 }
                 stopPath();
             }
+            if (tryNaturalDescent(client, depth)) return;
             if (subsurface.advance(client, age, depth, excluded)) {
                 status = "Prospecting for " + job.resource + " toward Y " + depth;
                 return;
@@ -338,6 +343,31 @@ final class MiningTask {
                 path(deepExplorationGoal);
             } else path("explore " + x + " " + z);
         }
+    }
+
+    private static boolean tryNaturalDescent(MinecraftClient client, int depth) {
+        var position = client.player.getBlockPos();
+        int y = position.getY();
+        if (y - depth < 12 || age < nextCaveProbe || y > lastCaveProbeY - 12) return false;
+        lastCaveProbeY = y;
+        nextCaveProbe = age + 600;
+        stopPath();
+        try {
+            caveSettings = new BaritoneSettings(false, true);
+        } catch (ReflectiveOperationException | LinkageError unavailable) {
+            return false;
+        }
+        int lower = y - 12;
+        if (!BaritoneClient.goToAltitude(lower)) {
+            caveSettings.close();
+            caveSettings = null;
+            return false;
+        }
+        deepExplorationGoal = position.withY(lower);
+        pathActive = true;
+        nextPath = age + 400;
+        status = "Following a cave toward Y " + lower;
+        return true;
     }
     private static boolean returnToResourceSite(MinecraftClient client) {
         if (rememberedSite == null) return false;
@@ -374,6 +404,10 @@ final class MiningTask {
         if (pathActive) {
             BaritoneClient.execute("stop");
             pathActive = false;
+        }
+        if (caveSettings != null) {
+            caveSettings.close();
+            caveSettings = null;
         }
     }
     private static boolean path(BlockPos target) {

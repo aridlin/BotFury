@@ -2916,8 +2916,29 @@ final class ProjectQueue {
 
     private Assignment assignment(Project project, Job job) {
         var sticks = stickPreparation(project, job);
-        return new Assignment(project.id, project.world, job, fuelUse(project, job), accessRoute(project, job),
-                cargoCheckpoint(project, job), batchPeerStands(project, job), sticks == null ? 0 : sticks.count);
+        return new Assignment(project.id, project.world, stockGatheringAssignment(project, job), fuelUse(project, job),
+                accessRoute(project, job), cargoCheckpoint(project, job), batchPeerStands(project, job),
+                sticks == null ? 0 : sticks.count);
+    }
+
+    private static Job stockGatheringAssignment(Project project, Job gather) {
+        if (gather.work.kind != Kind.GATHER || project.supplyChest == null || project.repeat != null) return gather;
+        var deposit = contributionDeposit(project, gather);
+        if (deposit == null || deposit.chest == null || !project.supplyChest.equals(deposit.chest.report.location)
+                || project.jobs.stream().anyMatch(job -> job != deposit && job.work.needs.contains(gather.work.id))) return gather;
+        var target = transferTarget(deposit);
+        var source = gatherSource(gather.work.payload);
+        if (target == null || source == null || !source.item.equals(target.item)) return gather;
+        var payload = JSON.fromJson(gather.work.payload, com.google.gson.JsonObject.class);
+        var count = payload.get("count");
+        if (count == null || count.isJsonNull()) return gather;
+        int missing = target.stock - stockCount(deposit.chest.report, target.item);
+        if (missing <= 0 || missing >= count.getAsInt()) return gather;
+
+        // Keep the plan's original batch in the journal in case a later inspection finds a larger shortfall.
+        payload.addProperty("count", missing);
+        return new Job(gather.work.withPayload(JSON.toJson(payload)), gather.state, gather.attempts, gather.worker,
+                gather.lease, gather.expiresAt, gather.evidence, gather.chest, gather.resourceSite);
     }
 
     private static StickPreparation stickPreparation(Project project, Job gather) {

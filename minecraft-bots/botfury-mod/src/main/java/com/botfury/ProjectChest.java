@@ -138,12 +138,44 @@ final class ProjectChest {
                 && ProjectProduction.workstationHit(client, spec.location.target(), client.player.getEyePos()) != null;
     }
 
+    static BlockPos replacementStand(MinecraftClient client, Spec spec, BlockPos carrier) {
+        var target = spec.location.target();
+        var oldStand = spec.location.stand();
+        var world = client.world;
+        if (!world.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
+                || !world.isChunkLoaded(oldStand.getX() >> 4, oldStand.getZ() >> 4)
+                || !matchesStorage(world.getBlockState(target), spec)
+                || usableStand(client, target, oldStand)) return null;
+        BlockPos best = null;
+        double bestDistance = Double.POSITIVE_INFINITY;
+        for (var pos : BlockPos.iterateOutwards(target, 4, 4, 4)) {
+            if (!usableStand(client, target, pos)) continue;
+            double distance = pos.getSquaredDistance(carrier);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = pos.toImmutable();
+            }
+        }
+        return best;
+    }
+
+    private static boolean usableStand(MinecraftClient client, BlockPos target, BlockPos pos) {
+        return ProjectBlock.validStand(target, pos) && client.world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)
+                && ProjectWorker.usableInteractionStand(client, pos, target)
+                && ProjectProduction.workstationHit(client, target, Vec3d.ofBottomCenter(pos).add(0, 1.62, 0)) != null;
+    }
+
+    private static boolean matchesStorage(net.minecraft.block.BlockState block, Spec spec) {
+        return block.isOf(Blocks.CHEST)
+                && (spec.partner == null) == (block.get(ChestBlock.CHEST_TYPE) == ChestType.SINGLE)
+                && (spec.partner == null || spec.partner.equals(spec.location.target().offset(ChestBlock.getFacing(block))));
+    }
+
     Result tick(MinecraftClient client, long now) {
         if (now < nextAction) return null;
         var target = spec.location.target();
         var block = client.world.getBlockState(target);
-        if (!block.isOf(Blocks.CHEST) || (spec.partner == null) != (block.get(ChestBlock.CHEST_TYPE) == ChestType.SINGLE)
-                || spec.partner != null && !spec.partner.equals(target.offset(ChestBlock.getFacing(block)))) {
+        if (!matchesStorage(block, spec)) {
             return failure("Storage chest changed size or location");
         }
         var player = client.player;

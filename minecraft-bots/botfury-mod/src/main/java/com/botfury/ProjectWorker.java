@@ -920,15 +920,25 @@ final class ProjectWorker {
         boolean stationJob = production != null || chest != null;
         boolean stationNearby = targetLoaded && (production != null && production.reachableFromHere(client)
                 || chest != null && chest.reachableFromHere(client));
+        boolean needsStationApproach = stationJob && targetLoaded && !stationNearby
+                && block.matches(client.world.getBlockState(target));
         boolean belowStation = stationJob && stand.getY() - player.getBlockY() >= 5;
         boolean searchingForStand = excavate && !canExcavateHere || ordinaryBuild && !canBuildHere
                 && client.world.getBlockState(target).isAir()
-                || stationJob && !stationNearby && block.matches(client.world.getBlockState(target));
+                || needsStationApproach;
         if (searchingForStand && (excavate || ordinaryBuild) && targetLoaded && currentCell.equals(stand)
                 && player.isOnGround() && canCenterForInteraction(client, target, stand, kind)) {
             if (approach != null) halt(client);
             centerOnStand(client, Vec3d.ofBottomCenter(stand));
             return;
+        }
+        if (needsStationApproach && currentCell.equals(stand) && player.isOnGround()
+                && usableInteractionStand(client, stand, target)) {
+            var center = Vec3d.ofBottomCenter(stand);
+            if (ProjectProduction.workstationHit(client, target, center.add(0, 1.62, 0)) != null) {
+                if (approach != null) halt(client);
+                if (centerOnStand(client, center)) return;
+            }
         }
         boolean routeFailed = approach != null && now >= retryApproach && !BaritoneClient.pursuing(stand);
         if (ordinaryBuild && targetLoaded && !canBuildHere && client.world.isAir(target)
@@ -994,7 +1004,8 @@ final class ProjectWorker {
         boolean atStand = nearStand && (!exactFooting || player.getBlockPos().equals(stand) || canCleanFromHere
                 || edge && centering && player.getBlockPos().equals(target.up()));
         boolean onFooting = stationJob ? SubsurfaceAccess.hasFooting(client) : player.isOnGround();
-        if (!onFooting || !atStand && !inspectNearby && !stationNearby && !canExcavateHere && !canBuildHere) {
+        if (!onFooting || needsStationApproach
+                || !atStand && !inspectNearby && !stationNearby && !canExcavateHere && !canBuildHere) {
             releaseCentering(client);
             stableSince = 0;
             approachAge++;
@@ -1059,6 +1070,7 @@ final class ProjectWorker {
             return;
         }
         if (approach != null || stationReturn.active() || stationReturn.openingReturnStep()) halt(client);
+        else if (stationJob) releaseCentering(client);
         if (!targetLoaded) {
             stableSince = 0;
             return;
@@ -1550,7 +1562,7 @@ final class ProjectWorker {
         jumpPressed = false;
     }
 
-    private static boolean usableInteractionStand(MinecraftClient client, BlockPos pos, BlockPos target) {
+    static boolean usableInteractionStand(MinecraftClient client, BlockPos pos, BlockPos target) {
         return !pos.equals(target) && !pos.up().equals(target) && !pos.down().equals(target)
                 && client.world.isInBuildLimit(pos.up()) && client.world.getWorldBorder().contains(pos)
                 && ProjectPlacement.flushFloor(client.world.getBlockState(pos.down()), client.world, pos.down())

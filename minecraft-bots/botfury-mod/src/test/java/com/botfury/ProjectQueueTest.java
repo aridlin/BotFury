@@ -15,6 +15,43 @@ class ProjectQueueTest {
     @TempDir Path directory;
     private static final String WORLD = "test|overworld";
 
+    @Test void unfinishedFurnaceDoesNotReserveTheWorkerNeededToBuildIt() throws Exception {
+        var file = directory.resolve("unavailable-furnace-worker.json");
+        String furnaceKey = "block:2,64,0";
+        var stone = job("stone", GATHER, List.of());
+        var craft = new ProjectQueue.Work("craft-furnace", CRAFT, "", List.of("stone"), Set.of("block:1,64,0"), "stone");
+        var furnace = new ProjectQueue.Work("setup-furnace", BUILD,
+                "{\"target\":{\"x\":2,\"y\":64,\"z\":0},\"block\":\"minecraft:furnace\"}",
+                List.of(craft.id()), Set.of(furnaceKey), craft.id());
+        var ore = job("ore", GATHER, List.of());
+        var smelt = new ProjectQueue.Work("smelt", SMELT,
+                "{\"input\":\"minecraft:raw_iron\",\"fuel\":\"minecraft:coal\",\"count\":3}",
+                List.of(ore.id()), Set.of(furnaceKey), ore.id());
+        var jobs = List.of(
+                new ProjectQueue.Job(stone, ProjectQueue.State.DONE, 1, "previous", null, 0, "Observed", null),
+                new ProjectQueue.Job(craft, ProjectQueue.State.FAILED, 3, null, null, 0, ProjectQueue.TARGET_TIMEOUT, null),
+                new ProjectQueue.Job(furnace, ProjectQueue.State.WAITING, 0, null, null, 0, null, null),
+                new ProjectQueue.Job(ore, ProjectQueue.State.DONE, 1, "helper", null, 0, "Observed", null),
+                new ProjectQueue.Job(smelt, ProjectQueue.State.WAITING, 0, "helper", null, 100,
+                        "Assigned smelting to a worker with observed supplies", null));
+        var project = new ProjectQueue.Project("stock", WORLD, jobs, null, "block:3,64,0", java.util.Map.of());
+        Files.writeString(file, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                "projects", java.util.Map.of("stock", project))));
+
+        var queue = new ProjectQueue(file);
+        assertNull(queue.claim(WORLD, "helper", Set.of(SMELT), 1));
+        assertTrue(queue.reassignTimedOutCraft(WORLD, queue.failedWorkstationCrafts(WORLD).get(0),
+                "helper", Set.of("minecraft:cobblestone"), 2));
+        assertTrue(queue.resumableSmelting(WORLD, 100).isEmpty());
+        var craftLease = queue.claim(WORLD, "helper", Set.of(CRAFT, SMELT), 3).job();
+        assertEquals(craft.id(), craftLease.work().id());
+        assertTrue(queue.finish("stock", craft.id(), craftLease.lease(), true, "Observed furnace item", 4));
+        var build = queue.claim(WORLD, "helper", Set.of(BUILD, SMELT), 5).job();
+        assertEquals(furnace.id(), build.work().id());
+        assertTrue(queue.finish("stock", furnace.id(), build.lease(), true, "Observed furnace block", 6));
+        assertEquals(smelt.id(), queue.claim(WORLD, "helper", Set.of(SMELT), 7).job().work().id());
+    }
+
     @Test void carriedFurnaceOutputReplacesEmptyPrivateWorkAndKeepsTheFollowingStageAssigned() throws Exception {
         var file = directory.resolve("carried-furnace-output.json");
         var queue = new ProjectQueue(file);

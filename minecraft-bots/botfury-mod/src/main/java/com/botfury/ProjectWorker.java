@@ -1108,13 +1108,23 @@ final class ProjectWorker {
         return excavationHit(client, target, client.player.getEyePos());
     }
 
+    static BlockHitResult excavationHit(MinecraftClient client, BlockPos target,
+                                        java.util.function.Predicate<BlockPos> accepted) {
+        return excavationHit(client, target, client.player.getEyePos(), accepted);
+    }
+
     private static BlockHitResult excavationHit(MinecraftClient client, BlockPos target, Vec3d eye) {
+        return excavationHit(client, target, eye, target::equals);
+    }
+
+    private static BlockHitResult excavationHit(MinecraftClient client, BlockPos target, Vec3d eye,
+                                                java.util.function.Predicate<BlockPos> accepted) {
         double reach = client.interactionManager.getReachDistance() - .1;
         if (eye.squaredDistanceTo(Vec3d.ofCenter(target)) > (reach + 1) * (reach + 1)) return null;
         var shape = client.world.getBlockState(target).getOutlineShape(client.world, target);
         for (var box : shape.getBoundingBoxes()) {
             var center = box.getCenter().add(target.getX(), target.getY(), target.getZ());
-            var hit = excavationRay(client, target, eye, center, reach);
+            var hit = excavationRay(client, eye, center, reach, accepted);
             if (hit != null) return hit;
             for (var face : Direction.values()) {
                 var normal = Vec3d.of(face.getVector());
@@ -1125,19 +1135,19 @@ final class ProjectWorker {
                 };
                 var point = center.add(normal.multiply(halfSize * .98));
                 if (eye.subtract(point).dotProduct(normal) <= 0) continue;
-                hit = excavationRay(client, target, eye, point, reach);
+                hit = excavationRay(client, eye, point, reach, accepted);
                 if (hit != null) return hit;
             }
         }
         return null;
     }
 
-    private static BlockHitResult excavationRay(MinecraftClient client, BlockPos target, Vec3d eye, Vec3d point,
-                                                double reach) {
+    private static BlockHitResult excavationRay(MinecraftClient client, Vec3d eye, Vec3d point, double reach,
+                                                java.util.function.Predicate<BlockPos> accepted) {
         if (eye.squaredDistanceTo(point) > reach * reach) return null;
         var hit = client.world.raycast(new RaycastContext(eye, point, RaycastContext.ShapeType.OUTLINE,
                 RaycastContext.FluidHandling.NONE, client.player));
-        return hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(target) ? hit : null;
+        return hit.getType() == HitResult.Type.BLOCK && accepted.test(hit.getBlockPos()) ? hit : null;
     }
 
     private static boolean centerOnStand(MinecraftClient client, Vec3d stand) {

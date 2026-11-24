@@ -20,7 +20,7 @@ import java.util.List;
 /** Makes short, reversible Baritone approaches when a cave does not reach the ore layer. */
 final class SubsurfaceAccess {
     // Increment when a new return method can recover a previously unreachable route.
-    static final int RETURN_ROUTE_REVISION = 2;
+    static final int RETURN_ROUTE_REVISION = 3;
     private record Passage(BlockPos from, BlockPos to) {
         boolean climbing() { return to.getY() > from.getY(); }
         int clearance() { return 2 + Math.max(0, from.getY() - to.getY()); }
@@ -234,7 +234,7 @@ final class SubsurfaceAccess {
                 if (attemptedPassages.contains(candidate) || attemptedPassages.contains(new Passage(cell, from))
                         || !safePassage(client, candidate, area)) continue;
                 boolean clear = passageOpen(client, candidate);
-                if (!clear && (passageHit(client, candidate) == null || !equipDiggingTool(client, candidate.climbing()))) continue;
+                if (!clear && (passageHit(client, candidate, area) == null || !equipDiggingTool(client, candidate.climbing()))) continue;
                 if (attemptedPassages.size() >= 24) attemptedPassages.remove(attemptedPassages.iterator().next());
                 attemptedPassages.add(candidate);
                 if (clear) {
@@ -256,14 +256,28 @@ final class SubsurfaceAccess {
         return passage.blocksToClear().stream().allMatch(pos -> passageClear(client, pos, client.world.getBlockState(pos)));
     }
 
-    private static net.minecraft.util.hit.BlockHitResult passageHit(MinecraftClient client, Passage passage) {
+    private static net.minecraft.util.hit.BlockHitResult passageHit(MinecraftClient client, Passage passage,
+                                                                     ProjectGather.Area area) {
         for (var pos : passage.blocksToClear()) {
             if (passageClear(client, pos, client.world.getBlockState(pos))) continue;
             var hit = ProjectWorker.excavationHit(client, pos);
+            if (hit != null || !passage.climbing()) return hit;
+            // Collisionless wall growth can still intercept the outline ray used to mine a block.
+            hit = ProjectWorker.excavationHit(client, pos, cover -> attachedCover(client, cover, pos, area));
             if (hit != null) return hit;
-            if (!passage.climbing()) return null;
         }
         return null;
+    }
+
+    private static boolean attachedCover(MinecraftClient client, BlockPos cover, BlockPos target,
+                                         ProjectGather.Area area) {
+        var state = client.world.getBlockState(cover);
+        if (!(state.getBlock() instanceof MultifaceGrowthBlock) || !passageClear(client, cover, state)
+                || !safeClearance(client, cover, area)) return false;
+        for (var side : Direction.values()) {
+            if (cover.offset(side).equals(target) && state.get(MultifaceGrowthBlock.getProperty(side))) return true;
+        }
+        return false;
     }
 
     boolean continuePassage(MinecraftClient client, int age, ProjectGather.Area area) {
@@ -279,7 +293,7 @@ final class SubsurfaceAccess {
             stopPassage();
             return start(client, position, List.of(opening.to()), area, age, opening.climbing());
         }
-        var ray = passageHit(client, opening);
+        var ray = passageHit(client, opening, area);
         if (ray == null || !equipDiggingTool(client, opening.climbing())) {
             stopPassage();
             return false;
@@ -303,20 +317,24 @@ final class SubsurfaceAccess {
                     entity -> entity instanceof LivingEntity && entity.isAlive()).isEmpty()) {
             return false;
         }
-        for (var block : passage.blocksToClear()) {
-            if (!world.isInBuildLimit(block) || world.getBlockState(block.up()).getBlock() instanceof FallingBlock
-                    || BuildProtection.blocked(block) || area != null && area.contains(block)
-                    || world.getPlayers().stream().anyMatch(player -> player.isAlive() && !player.isSpectator()
-                    && player.getBlockPos().down().equals(block))) return false;
-            var state = world.getBlockState(block);
-            if (!state.getFluidState().isEmpty()
-                    || !passageClear(client, block, state)
-                        && (state.hasBlockEntity() || !BaritoneSettings.recoverableTerrain(state.getBlock()))) return false;
-            for (var side : Direction.values()) {
-                var neighbor = block.offset(side);
-                if (!world.isChunkLoaded(neighbor.getX() >> 4, neighbor.getZ() >> 4)
-                        || !world.getFluidState(neighbor).isEmpty()) return false;
-            }
+        return passage.blocksToClear().stream().allMatch(block -> safeClearance(client, block, area));
+    }
+
+    private static boolean safeClearance(MinecraftClient client, BlockPos pos, ProjectGather.Area area) {
+        var world = client.world;
+        if (!world.isInBuildLimit(pos) || !world.getWorldBorder().contains(pos)
+                || world.getBlockState(pos.up()).getBlock() instanceof FallingBlock
+                || BuildProtection.blocked(pos) || area != null && area.contains(pos)
+                || world.getPlayers().stream().anyMatch(player -> player.isAlive() && !player.isSpectator()
+                && player.getBlockPos().down().equals(pos))) return false;
+        var state = world.getBlockState(pos);
+        if (!state.getFluidState().isEmpty()
+                || !passageClear(client, pos, state)
+                    && (state.hasBlockEntity() || !BaritoneSettings.recoverableTerrain(state.getBlock()))) return false;
+        for (var side : Direction.values()) {
+            var neighbor = pos.offset(side);
+            if (!world.isChunkLoaded(neighbor.getX() >> 4, neighbor.getZ() >> 4)
+                    || !world.getFluidState(neighbor).isEmpty()) return false;
         }
         return true;
     }

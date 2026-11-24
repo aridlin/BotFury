@@ -42,6 +42,10 @@ final class ProjectProduction {
 
     ProjectProduction(Spec spec) { this.spec = spec; }
 
+    ProjectProduction atStation(ProjectBlock station) {
+        return new ProjectProduction(new Spec(station, spec.kind, spec.recipe, spec.input, spec.fuel, spec.count));
+    }
+
     static Spec parse(String json, ProjectQueue.Kind kind) {
         var payload = new Gson().fromJson(json, Payload.class);
         boolean smelt = kind == ProjectQueue.Kind.SMELT;

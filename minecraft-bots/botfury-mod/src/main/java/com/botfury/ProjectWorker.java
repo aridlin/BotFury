@@ -41,6 +41,8 @@ final class ProjectWorker {
     private static ProjectWater.Fill fill;
     private static ProjectChest chest;
     private static ProjectProduction production;
+    private static FieldWorkbench fieldWorkbench;
+    private static long nextWorkbenchSearch;
     private static ProjectGather gather;
     private static ProjectQueue.ResourceSite gatherSite;
     private static long lastGatherProgress;
@@ -174,6 +176,8 @@ final class ProjectWorker {
         fill = null;
         chest = null;
         production = null;
+        fieldWorkbench = null;
+        nextWorkbenchSearch = 0;
         gather = null;
         gatherSite = null;
         lastGatherProgress = 0;
@@ -194,6 +198,7 @@ final class ProjectWorker {
         releaseCentering(client);
         if (chest != null) chest.close(client);
         if (production != null) production.close(client);
+        if (fieldWorkbench != null) fieldWorkbench.close(client);
         if (pickup != null) pickup.stop();
         if (gather != null && MiningTask.active()) MiningTask.stop();
         if (breaking && client.interactionManager != null) client.interactionManager.cancelBlockBreaking();
@@ -281,8 +286,39 @@ final class ProjectWorker {
         } else if (production != null) {
             var result = block == null ? production.tick(client, now) : production.finishedFromInventory(client);
             if (result != null) finish(client, result.success(), result.detail());
-            else if (block != null) execute(client, now);
+            else if (block != null && !prepareLocalWorkbench(client, now)) execute(client, now);
         } else execute(client, now);
+    }
+
+    private static boolean prepareLocalWorkbench(MinecraftClient client, long now) {
+        if (assignment.job().work().kind() != ProjectQueue.Kind.CRAFT) return false;
+        if (fieldWorkbench == null && now >= nextWorkbenchSearch
+                && !block.target().isWithinDistance(client.player.getBlockPos(), 16)) {
+            nextWorkbenchSearch = now + seconds(8);
+            var nearby = FieldWorkbench.find(client, now);
+            if (nearby != null) {
+                halt(client);
+                fieldWorkbench = nearby;
+            }
+        }
+        if (fieldWorkbench == null) return false;
+        var state = fieldWorkbench.tick(client, now);
+        if (state == FieldWorkbench.State.WORKING) {
+            status = assignment.project() + "/" + assignment.job().work().id() + ": Setting up a nearby workbench";
+            return true;
+        }
+        if (state == FieldWorkbench.State.READY) {
+            block = fieldWorkbench.station();
+            production = production.atStation(block);
+            interactionStand = null;
+            interactionGoals = List.of();
+            rejectedInteractionStands.clear();
+            BotEvents.add("info", "projects", "Using nearby workbench at " + block.target().toShortString());
+        }
+        fieldWorkbench.close(client);
+        fieldWorkbench = null;
+        nextWorkbenchSearch = now + seconds(15);
+        return false;
     }
 
     private static boolean gatherProgress(MinecraftClient client, int held, long now) {

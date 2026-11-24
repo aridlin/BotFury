@@ -65,7 +65,8 @@ final class MaterialRecipe {
                             "max", StructureSupply.position(protectedArea.max()))));
                 } else {
                     boolean smelting = step.kind == ProjectQueue.Kind.SMELT;
-                    station = smelting ? furnace : table;
+                    if (smelting) station = furnace;
+                    else if (!step.inventoryCraft) station = table;
                     if (station == null && !step.inventoryCraft) {
                         throw new IllegalArgumentException("Place a reachable " + (smelting ? "furnace" : "crafting table")
                                 + " near the chest for " + quantity.item);

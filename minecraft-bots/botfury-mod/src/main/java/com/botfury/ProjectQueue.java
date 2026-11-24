@@ -308,6 +308,41 @@ final class ProjectQueue {
         return new Job(work, job.state, job.attempts, job.worker, job.lease, job.expiresAt, job.evidence, job.chest, job.resourceSite);
     }
 
+    /** Older planners included the table coordinates even for inventory-grid recipes. */
+    synchronized void releasePortableCraftStations(String world, java.util.function.Predicate<String> fitsInventory)
+            throws IOException {
+        var next = new LinkedHashMap<>(projects);
+        boolean changed = false;
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || cancelled(project)) continue;
+            List<Job> updated = null;
+            for (int i = 0; i < project.jobs.size(); i++) {
+                var job = project.jobs.get(i);
+                var work = job.work;
+                if (job.state != State.WAITING || work.kind != Kind.CRAFT || work.locks.isEmpty()) continue;
+                var location = JSON.fromJson(work.payload, StationTarget.class);
+                if (location == null || !"minecraft:crafting_table".equals(location.block)
+                        || location.stand == null || location.target == null) continue;
+                var payload = JSON.fromJson(work.payload, com.google.gson.JsonObject.class);
+                if (!payload.has("recipe") || !fitsInventory.test(payload.get("recipe").getAsString())) continue;
+                var locks = new HashSet<>(work.locks);
+                locks.removeAll(ProjectBlock.stationCells(location.target.checked(), location.stand.checked()));
+                for (var key : List.of("target", "stand", "block", "properties", "face")) payload.remove(key);
+                payload.addProperty("inventory", true);
+                var portable = new Work(work.id, work.kind, JSON.toJson(payload), work.needs, locks, work.sameWorkerAs,
+                        work.cleanup, work.constructionMaterial);
+                if (updated == null) updated = new ArrayList<>(project.jobs);
+                updated.set(i, new Job(portable, job.state, job.attempts, job.worker, job.lease, job.expiresAt,
+                        job.evidence, job.chest, job.resourceSite, job.gatheringAfterPickup));
+            }
+            if (updated != null) {
+                next.put(project.id, project.withJobs(updated));
+                changed = true;
+            }
+        }
+        if (changed) persist(next);
+    }
+
     synchronized List<OwnedStation> ownedStations(String world) {
         var result = new ArrayList<OwnedStation>();
         for (var project : projects.values()) {

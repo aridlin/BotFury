@@ -97,11 +97,8 @@ record ProjectBlock(BlockPos target, BlockPos stand, Identifier block, Map<Strin
 
     ProjectQueue.Work reserve(ProjectQueue.Work work) {
         Set<String> locks = new HashSet<>(work.locks());
-        locks.add(key(target));
+        locks.addAll(stationCells(target, stand));
         if (work.kind() == ProjectQueue.Kind.BUILD) locks.add(key(support()));
-        locks.add(key(stand));
-        locks.add(key(stand.down()));
-        locks.add(key(stand.up()));
         if (work.kind() == ProjectQueue.Kind.BUILD && edgePlacement()) {
             locks.add(key(target.up()));
             locks.add(key(target.up(2)));
@@ -110,6 +107,10 @@ record ProjectBlock(BlockPos target, BlockPos stand, Identifier block, Map<Strin
             throw new IllegalArgumentException("Cleanup site must match its target");
         }
         return new ProjectQueue.Work(work.id(), work.kind(), work.payload(), work.needs(), locks, work.sameWorkerAs(), work.cleanup(), work.constructionMaterial());
+    }
+
+    static java.util.List<String> stationCells(BlockPos target, BlockPos stand) {
+        return java.util.List.of(key(target), key(stand), key(stand.down()), key(stand.up()));
     }
 
     static String key(BlockPos block) {

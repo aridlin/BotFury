@@ -15,6 +15,32 @@ class ProjectQueueTest {
     @TempDir Path directory;
     private static final String WORLD = "test|overworld";
 
+    @Test void inventoryCraftCanProceedWhileAnotherWorkerOwnsTheBench() throws Exception {
+        var path = directory.resolve("portable.json");
+        var queue = new ProjectQueue(path);
+        String station = """
+                {"target":{"x":5,"y":64,"z":2},"stand":{"x":5,"y":64,"z":3},"block":"minecraft:crafting_table",
+                 "recipe":"minecraft:%s","count":1}
+                """;
+        var cells = Set.of("block:5,64,2", "block:5,64,3", "block:5,63,3", "block:5,65,3");
+        var bench = new ProjectQueue.Work("tool", CRAFT, station.formatted("stone_pickaxe"), List.of(), cells);
+        var locks = new java.util.HashSet<>(cells);
+        locks.add("reserved-cargo");
+        var sticks = new ProjectQueue.Work("sticks", CRAFT, station.formatted("stick"), List.of(), locks);
+        queue.submit("crew", WORLD, List.of(bench, sticks));
+        var leased = queue.claim(WORLD, "Alpha", Set.of(CRAFT), 1).job();
+        assertEquals("tool", leased.work().id());
+        assertNull(queue.claim(WORLD, "Beta", Set.of(CRAFT), 2));
+        queue.releasePortableCraftStations(WORLD, "minecraft:stick"::equals);
+        queue = new ProjectQueue(path);
+        assertEquals(leased, queue.claim(WORLD, "Alpha", Set.of(CRAFT), 3).job());
+        var portable = queue.claim(WORLD, "Beta", Set.of(CRAFT), 4).job();
+        assertEquals("sticks", portable.work().id());
+        assertEquals(Set.of("reserved-cargo"), portable.work().locks());
+        assertTrue(portable.work().payload().contains("\"inventory\":true"));
+        assertFalse(portable.work().payload().contains("stand"));
+    }
+
     @Test void stockBatchSizeUsesAvailableWorkersAndPreservesSmallOrders() {
         assertEquals(13, OutputManifest.batchLimit(128, 10));
         assertEquals(64, OutputManifest.batchLimit(128, 1));

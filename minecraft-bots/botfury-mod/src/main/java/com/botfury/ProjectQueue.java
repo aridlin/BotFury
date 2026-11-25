@@ -1487,7 +1487,8 @@ final class ProjectQueue {
             }
             if (recoverStalledGathering(world, projectId, now, heldCount)
                     || recoverStalledStockGathering(world, projectId, now)
-                    || heldCount != null && recoverToolsAfterBanking(world, projectId)) {
+                    || heldCount != null && (recoverExpiredMiningTools(world, projectId, heldCount)
+                        || recoverToolsAfterBanking(world, projectId))) {
                 return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
                         returnRevision, supportsPickupReserve);
             }
@@ -3913,6 +3914,35 @@ final class ProjectQueue {
         return true;
     }
 
+    private boolean recoverExpiredMiningTools(String world, String projectId,
+                                               java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || project.supplyChest == null || project.repeat != null || cancelled(project)
+                    || projectId != null && !projectId.equals(project.id)) continue;
+            for (var gather : project.jobs) {
+                if (gather.state != State.FAILED || gather.work.kind != Kind.GATHER || gather.work.sameWorkerAs == null
+                        || !LEASE_EXPIRED.equals(gather.evidence) || project.supplyRecoveries.containsKey(expiredToolsKey(gather))) continue;
+                var deposit = contributionDeposit(project, gather);
+                var craft = find(project, gather.work.sameWorkerAs);
+                if (deposit == null || !deposit.work.locks.contains(project.supplyChest)
+                        || craft.state != State.DONE || craft.work.kind != Kind.CRAFT || craft.worker == null) continue;
+                var recipe = JSON.fromJson(craft.work.payload, ToolRecipe.class);
+                int tier = recipe == null || recipe.recipe == null ? -1 : PICKAXE_TIERS.indexOf(recipe.recipe);
+                if (tier < 0 || PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
+                        .anyMatch(tool -> heldCount.applyAsInt(craft.worker, tool) != 0)) continue;
+                var source = gatherSource(gather.work.payload);
+                if (source == null || heldCount.applyAsInt(craft.worker, source.item) != 0) continue;
+
+                var jobs = new HashMap<String, Job>();
+                project.jobs.forEach(job -> jobs.put(job.work.id, job));
+                if (rewindSupply(project, gather, craft, jobs, LEASE_EXPIRED, gather.chest)) return true;
+            }
+        }
+        return false;
+    }
+
+    private static String expiredToolsKey(Job gather) { return "expired-miner-tools:" + gather.work.id; }
+
     private boolean recoverToolsAfterBanking(String world, String projectId) throws IOException {
         for (var project : projects.values()) {
             if (!world.equals(project.world) || project.supplyChest == null || cancelled(project)
@@ -4024,9 +4054,11 @@ final class ProjectQueue {
                 && job.work.needs.stream().anyMatch(rewind::contains)))) return false;
         var recoveries = new HashMap<>(project.supplyRecoveries);
         boolean stalled = GATHER_STALLED.equals(evidence);
-        if (stalled && !privatePreparationReady(project, waiting, rewind)) return false;
+        boolean expiredTools = LEASE_EXPIRED.equals(evidence);
+        if ((stalled || expiredTools) && !privatePreparationReady(project, waiting, rewind)) return false;
         boolean stationLoss = OWNED_STATION_MISSING.equals(evidence);
         String recoveryKey = stationLoss ? stationRepairKey(waiting) : stalled ? stalledSupplyKey(waiting)
+                : expiredTools ? expiredToolsKey(waiting)
                 : missingProductionInput(waiting, evidence) ? "production-inputs:" + waiting.work.id : root;
         // This path runs only after observing that a completed station has disappeared, or when migrating an old failure.
         int attempts = stationLoss ? 0 : recoveries.getOrDefault(recoveryKey, 0);

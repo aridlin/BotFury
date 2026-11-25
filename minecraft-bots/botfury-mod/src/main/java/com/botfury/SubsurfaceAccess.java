@@ -21,7 +21,7 @@ import java.util.List;
 /** Makes short, reversible Baritone approaches when a cave does not reach the ore layer. */
 final class SubsurfaceAccess {
     // Increment when a new return method can recover a previously unreachable route.
-    static final int RETURN_ROUTE_REVISION = 8;
+    static final int RETURN_ROUTE_REVISION = 9;
     private record Passage(BlockPos from, BlockPos to) {
         boolean climbing() { return to.getY() > from.getY(); }
         int clearance() { return 2 + Math.max(0, from.getY() - to.getY()); }
@@ -39,6 +39,7 @@ final class SubsurfaceAccess {
     private static final int HARVEST_RESERVE = 20;
     private static final int ASCENT_CHECKPOINT = 12;
     private static final int DESCENT_RECOVERY_TICKS = 240;
+    private static final int RETURN_RECOVERY_TICKS = 400;
     private static final int[] ROUTE_DISTANCES = {5, 3, 7};
     private static final int[] ROUTE_OFFSETS = {0, -2, 2};
     private BlockPos origin;
@@ -55,13 +56,15 @@ final class SubsurfaceAccess {
     private int routeFailures;
     private int lowestProspectingY = Integer.MAX_VALUE;
     private int nextDescentRecovery;
-    private boolean localDescent;
+    private boolean localDescent, localAscent;
+    private int highestReturnY = Integer.MIN_VALUE, nextReturnRecovery;
     private final java.util.LinkedHashSet<Passage> attemptedPassages = new java.util.LinkedHashSet<>();
 
     boolean active() { return settings != null; }
     boolean openingReturnStep() { return passage != null && passage.climbing(); }
     boolean followingNaturalAscent() { return ascentGoal != Integer.MIN_VALUE; }
     boolean continuingLocalDescent() { return localDescent; }
+    boolean continuingLocalAscent() { return localAscent; }
 
     static boolean deepResource(String resource) {
         return Integer.valueOf(-54).equals(prospectingAltitude(resource));
@@ -176,6 +179,13 @@ final class SubsurfaceAccess {
         } else if (destinationHint == null && !descending) {
             lowestProspectingY = Integer.MAX_VALUE;
         }
+        boolean ascending = destinationHint != null && allowNaturalAscent && position.getY() < height;
+        if (ascending && position.getY() > highestReturnY && hasFooting(client)) {
+            highestReturnY = position.getY();
+            nextReturnRecovery = age + RETURN_RECOVERY_TICKS;
+        }
+        // Lateral motion through a cave does not make a return trip any closer to its surface elevation.
+        boolean stalledAscent = ascending && highestReturnY != Integer.MIN_VALUE && age >= nextReturnRecovery;
         if (active()) {
             var feet = client.player.getPos();
             if (feet.squaredDistanceTo(lastMovement) >= .36) {
@@ -184,7 +194,7 @@ final class SubsurfaceAccess {
             }
             boolean natural = followingNaturalAscent();
             boolean arrived = natural ? position.getY() >= ascentGoal : goals.contains(position);
-            if (!arrived && age - started < (natural ? 1000 : 600) && age - movedAt < 240
+            if (!arrived && !stalledAscent && age - started < (natural ? 1000 : 600) && age - movedAt < 240
                     && (age - started < 60 || BaritoneClient.pursuing(goals.get(0)))) return true;
             if (!arrived && !natural) {
                 heading++;
@@ -198,21 +208,33 @@ final class SubsurfaceAccess {
                 routeFailures = 0;
             }
             if (arrived && destinationHint != null) heading = 0;
-            if (!arrived) localDescent = false;
+            if (!arrived) localDescent = localAscent = false;
             stopRoute();
-            if (natural) return false;
+            if (natural && !stalledAscent) return false;
         }
         if (age < retryAt) return true;
         if (!hasFooting(client)) return false;
-        if (allowNaturalAscent && tryNaturalAscent(client, age, height)) return true;
+        if (allowNaturalAscent && !stalledAscent && tryNaturalAscent(client, age, height)) return true;
         if (area != null && (area.contains(position) || area.contains(position.down()))) return false;
 
         int segmentY = position.getY() + Math.max(-4, Math.min(4, height - position.getY()));
         if (destinationHint != null) {
+            int preferred = headingToward(position, destinationHint);
+            if (ascending && (localAscent || stalledAscent)) {
+                if (stalledAscent) nextReturnRecovery = age + RETURN_RECOVERY_TICKS;
+                if (openPassage(client, age, position, area, preferred, 1)) {
+                    localAscent = true;
+                    if (stalledAscent) BotEvents.add("debug", "movement", "Changing to local stairs after no return elevation gain");
+                    return true;
+                }
+                localAscent = false;
+            }
             var exits = returnExits(client, position, destinationHint, area, segmentY);
-            if (allowNaturalAscent && height > position.getY()
-                    && (exits.isEmpty() || routeFailures >= 2 && position.equals(stalledAt))
-                    && openPassage(client, age, position, area, headingToward(position, destinationHint), 1)) return true;
+            if (ascending && !stalledAscent && (exits.isEmpty() || routeFailures >= 2 && position.equals(stalledAt))
+                    && openPassage(client, age, position, area, preferred, 1)) {
+                localAscent = true;
+                return true;
+            }
             if (!exits.isEmpty() && start(client, position, exits, area, age, true)) return true;
             return false;
         }
@@ -292,6 +314,7 @@ final class SubsurfaceAccess {
             stop();
             return false;
         }
+        localAscent = false;
         BotEvents.add("info", "movement", "Following a natural ascent toward Y " + height);
         return true;
     }
@@ -367,19 +390,19 @@ final class SubsurfaceAccess {
         if (age >= passageDeadline || !hasFooting(client) || client.currentScreen != null
                 || !position.equals(opening.from()) || !safePassage(client, opening, area)) {
             stopPassage();
-            localDescent = false;
+            localDescent = localAscent = false;
             return false;
         }
         if (passageOpen(client, opening)) {
             stopPassage();
             if (start(client, position, List.of(opening.to()), area, age, opening.climbing())) return true;
-            localDescent = false;
+            localDescent = localAscent = false;
             return false;
         }
         var ray = passageHit(client, opening, area);
         if (ray == null || !preparePassageHit(client, ray, opening.climbing())) {
             stopPassage();
-            localDescent = false;
+            localDescent = localAscent = false;
             return false;
         }
         client.player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, ray.getPos());
@@ -587,7 +610,7 @@ final class SubsurfaceAccess {
 
     void stop() {
         stopPassage();
-        localDescent = false;
+        localDescent = localAscent = false;
         stopRoute();
     }
 
@@ -611,7 +634,8 @@ final class SubsurfaceAccess {
         stalledAt = null;
         routeFailures = 0;
         lowestProspectingY = Integer.MAX_VALUE;
-        nextDescentRecovery = 0;
+        highestReturnY = Integer.MIN_VALUE;
+        nextDescentRecovery = nextReturnRecovery = 0;
         attemptedPassages.clear();
     }
 }

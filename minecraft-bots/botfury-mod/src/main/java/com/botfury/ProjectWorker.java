@@ -1442,7 +1442,7 @@ final class ProjectWorker {
             status = assignment.project() + "/" + assignment.job().work().id() + ": Opening a protected return step";
             return true;
         }
-        if (!stationReturn.active()) {
+        if (!stationReturn.active() && !stationReturn.continuingLocalAscent()) {
             if (!placement && approach == null && stationReturn.tryNaturalAscent(client, approachAge, destination.getY())) {
                 status = assignment.project() + "/" + assignment.job().work().id() + ": Following a natural ascent to the station";
                 return true;

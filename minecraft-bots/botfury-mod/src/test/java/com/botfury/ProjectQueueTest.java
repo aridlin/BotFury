@@ -1460,6 +1460,32 @@ class ProjectQueueTest {
         assertEquals(4, com.google.gson.JsonParser.parseString(resumed.job().work().payload()).getAsJsonObject().get("count").getAsInt());
     }
 
+    @Test void aResumedCheckpointDistinguishesBankedCargoFromAnUnchangedAttempt() throws Exception {
+        for (boolean banked : new boolean[]{false, true}) {
+            var queue = new ProjectQueue(directory.resolve("checkpoint-reconnect-" + banked + ".json"));
+            String chest = "block:3,64,0";
+            var gather = new ProjectQueue.Work("cut", GATHER,
+                    "{\"resource\":\"any_logs\",\"variant\":\"both\",\"item\":\"any_logs\",\"count\":64}",
+                    List.of(), Set.of());
+            var deposit = new ProjectQueue.Work("bank", TRANSFER,
+                    "{\"direction\":\"DEPOSIT\",\"item\":\"any_logs\",\"stock\":64}",
+                    List.of(gather.id()), Set.of(chest), gather.id());
+            queue.submitSupplied("wood", WORLD, List.of(gather, deposit), chest);
+            var work = queue.claim(WORLD, "worker", Set.of(GATHER), 1);
+            assertEquals(0, work.previousCheckpointCargo());
+            var site = new ProjectQueue.ResourceSite(11, 123, 8);
+            assertTrue(queue.finish("wood", gather.id(), work.job().lease(), false, ProjectQueue.CARGO_CHECKPOINT, null, site, 2));
+            var carrier = queue.offerCheckpointDeposit(WORLD, "worker", null, 3, site, (name, item) -> 16).job();
+            var stock = banked ? java.util.Map.of("minecraft:oak_log", 16) : java.util.Map.<String,Integer>of();
+            assertTrue(queue.finish("wood", deposit.id(), carrier.lease(), false, "Partial delivery",
+                    new ProjectQueue.ChestReport(chest, stock), null, true, 4));
+
+            var resumed = queue.claim(WORLD, "worker", Set.of(GATHER), 35_000);
+            assertEquals(16, resumed.cargoCheckpoint());
+            assertEquals(banked ? 0 : 16, resumed.previousCheckpointCargo());
+        }
+    }
+
     @Test void deepMinersPreferUnoccupiedInterruptedSitesOverShallowCheckpoints() throws Exception {
         var journal = directory.resolve("interrupted-deep-site.json");
         var ore = """

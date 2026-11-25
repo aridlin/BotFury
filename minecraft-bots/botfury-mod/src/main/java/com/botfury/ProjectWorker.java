@@ -538,7 +538,7 @@ final class ProjectWorker {
             }
             int held = gather.inventoryCount(client);
             if (checkpointAt == 0 && assignment.cargoCheckpoint() > 0) {
-                checkpointAt = held >= assignment.cargoCheckpoint()
+                checkpointAt = held <= assignment.previousCheckpointCargo()
                         ? held + assignment.cargoCheckpoint() : assignment.cargoCheckpoint();
             }
             if (!checkedCarriedFuel && held < gather.count() && assignment.fuelFor() != null) {
@@ -551,7 +551,7 @@ final class ProjectWorker {
             }
             if (held >= gather.count()) {
                 finish(client, true, "Observed " + held + " " + gather.item() + " in worker inventory");
-            } else if (checkpointAt > 0 && held > 0
+            } else if (checkpointAt > 0 && held > assignment.previousCheckpointCargo()
                     && (client.player.getBlockY() <= 8 || ResourceCatalog.isWood(gather.resource()))
                     && (held >= checkpointAt || client.player.getHealth() <= client.player.getMaxHealth() / 2)) {
                 if (held < checkpointAt) BotEvents.add("info", "projects", "Banking gathered cargo early at low health");

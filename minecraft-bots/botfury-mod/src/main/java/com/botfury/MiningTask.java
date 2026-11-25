@@ -1,6 +1,7 @@
 package com.botfury;
 
 import com.google.gson.Gson;
+import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.FlowerBlock;
 import net.minecraft.block.TallFlowerBlock;
@@ -14,6 +15,7 @@ import net.minecraft.util.Hand;
 import net.minecraft.util.math.*;
 import net.minecraft.world.RaycastContext;
 import net.minecraft.world.Heightmap;
+import net.minecraft.world.chunk.ChunkStatus;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.screen.slot.SlotActionType;
@@ -35,7 +37,7 @@ final class MiningTask {
     private static final HttpClient HTTP=HttpClient.newBuilder().executor(IO).connectTimeout(Duration.ofMillis(300)).build();
     private static Job job;
     private static ProjectGather.Area excluded;
-    private static Set<String> blocks=Set.of();
+    private static Set<Block> blocks = Set.of();
     private static String owner,world,leaseToken;
     private static int claimSerial;
     private static int generation,age,nextSearch,nextPath,nextRenew,exploration;
@@ -51,7 +53,7 @@ final class MiningTask {
         paused = value;
         pendingCandidates.clear();
         if (value) {
-            MiningViewDistance.finish(MinecraftClient.getInstance());
+            finishWideSearch(MinecraftClient.getInstance());
             stopPath();
             clearReservation();
             minedDrops.reset();
@@ -72,7 +74,9 @@ final class MiningTask {
     private static BlockPos deepExplorationGoal;
     private static BlockPos surfaceSearchAnchor, lastExplorationExit;
     private static BlockPos surfaceRouteGoal, surfaceExplorationGoal;
-    private static final int WIDE_SEARCH_RADIUS = 48;
+    private static final int NEARBY_SITE_RADIUS = 48;
+    private static final int WIDE_CHUNKS_PER_TICK = 32;
+    private static Iterator<ChunkPos> wideChunks = Collections.emptyIterator();
     private static boolean surfaceResource;
     private static boolean checkedWiderBeforeRememberedSite;
     private static int nextSurfaceSurvey;
@@ -195,7 +199,9 @@ final class MiningTask {
         surfaceSearchAnchor = lastExplorationExit = null;
         surfaceSearchFailures = explorationExits = 0;
         excluded=exclude;
-        job=next;blocks=Set.copyOf(ids);generation++;owner=UUID.randomUUID()+"-"+client.player.getGameProfile().getName();
+        blocks = ids.stream().map(id -> Registries.BLOCK.get(new Identifier(id)))
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        job=next;generation++;owner=UUID.randomUUID()+"-"+client.player.getGameProfile().getName();
         var here=LocalFormation.here();world=here.server()+"|"+here.dimension();
         paused=false;
         nextDropScan = 0;
@@ -206,7 +212,7 @@ final class MiningTask {
     }
     private static void fail(String reason){status=reason;BotEvents.add("warn","mining",reason);}
     static void stop(){
-        MiningViewDistance.reset(MinecraftClient.getInstance());
+        finishWideSearch(MinecraftClient.getInstance());
         if(job!=null){stopPath();var client=MinecraftClient.getInstance();if(client.interactionManager!=null)client.interactionManager.cancelBlockBreaking();release(job,leaseToken);}
         minedDrops.reset();
         reservedDrop = null;
@@ -216,19 +222,21 @@ final class MiningTask {
         if(settings!=null){settings.close();settings=null;}
         if(!status.isEmpty())status="Mining stopped";
     }
-    static void onDeath(){if(job!=null&&!dead){dead=true;MiningViewDistance.finish(MinecraftClient.getInstance());stopPath();clearReservation();minedDrops.reset();pendingCandidates.clear();pickup=null;status="Mining waits for respawn";}}
+    static void onDeath(){if(job!=null&&!dead){dead=true;finishWideSearch(MinecraftClient.getInstance());stopPath();clearReservation();minedDrops.reset();pendingCandidates.clear();pickup=null;status="Mining waits for respawn";}}
     static void tick(MinecraftClient client){
         if(job==null||paused)return;
         var here=LocalFormation.here();
         if(client.player==null||client.world==null||here==null||!world.equals(here.server()+"|"+here.dimension())){stop();return;}
         age++;dead=false;
         MiningViewDistance.update(client, age, target);
+        if (!MiningViewDistance.active()) wideChunks = Collections.emptyIterator();
         if (reservedDrop != null) {
             collectReservedDrop(client);
             return;
         }
         if(target!=null){
-            if (protectedTarget(client, target)) {
+            if (!client.world.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
+                    || protectedTarget(client, target)) {
                 stopPath();
                 clearReservation();
                 client.interactionManager.cancelBlockBreaking();
@@ -372,7 +380,9 @@ final class MiningTask {
         if (requesting) return;
         if (pendingCandidates.isEmpty()) {
             if (age < nextSearch) return;
-            scan(client);
+            if (MiningViewDistance.active()) {
+                scanWider(client);
+            } else scan(client);
         }
         for (int checked = 0; checked < STANDS_PER_TICK && !pendingCandidates.isEmpty(); checked++) {
             var candidate = pendingCandidates.removeFirst();
@@ -396,14 +406,17 @@ final class MiningTask {
             status = "Checking approaches to " + job.resource;
             return;
         }
-        nextSearch = age + (MiningViewDistance.active() ? 40 : 20);
+        nextSearch = age + 20;
         if (scanNeedsTool) {
             toolShortfall = projectMining;
             status = "Need a suitable tool for " + job.resource;
             stopPath();
             return;
         }
-        explore(client);
+        if (MiningViewDistance.active()) {
+            nextSearch = wideChunks.hasNext() ? age + 1 : age + 10;
+            status = "Checking more loaded chunks for " + job.resource;
+        } else explore(client);
     }
 
     private static boolean requestLooseDrop(MinecraftClient client) {
@@ -450,23 +463,15 @@ final class MiningTask {
         rejected.values().removeIf(until -> until <= age);
         var position = client.player.getBlockPos();
         var world = client.world;
-        boolean preserveTerrain = projectMining && excluded != null;
-        var suitability = new HashMap<BlockState, Boolean>();
         var candidates = new ArrayList<BlockPos>();
         var nearbyHits = new ArrayList<BlockPos>();
         boolean safeFooting = canMineFromCurrentFooting(client, position);
+        var suitability = new HashMap<BlockState, Boolean>();
         scanNeedsTool = false;
-        int radius = MiningViewDistance.active() ? WIDE_SEARCH_RADIUS : surfaceResource ? 20 : 12;
+        int radius = surfaceResource ? 20 : 12;
         for (var pos : BlockPos.iterateOutwards(position, radius, 10, radius)) {
-            if (excluded != null && excluded.contains(pos) || rejected.containsKey(pos)
-                    || !world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)
-                    || !matches(client, pos) || protectedTarget(client, pos)) continue;
-            var state = world.getBlockState(pos);
-            if (preserveTerrain && state.isFullCube(world, pos) && completelyCovered(world, pos)) continue;
-            if (!suitability.computeIfAbsent(state, block -> hasTool(client, block))) {
-                scanNeedsTool = true;
-                continue;
-            }
+            if (!world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)
+                    || !eligibleCandidate(client, pos, world.getBlockState(pos), suitability)) continue;
             if (safeFooting && canReachFromHere(client, position, pos)) nearbyHits.add(pos.toImmutable());
             else candidates.add(pos.toImmutable());
         }
@@ -475,6 +480,64 @@ final class MiningTask {
         candidates.sort(byDistance);
         pendingCandidates.addAll(nearbyHits);
         pendingCandidates.addAll(candidates);
+    }
+
+    private static boolean eligibleCandidate(MinecraftClient client, BlockPos pos, BlockState state,
+                                             Map<BlockState, Boolean> suitability) {
+        if (!matches(state) || excluded != null && excluded.contains(pos)
+                || rejected.containsKey(pos) || protectedTarget(client, pos)) return false;
+        if (projectMining && excluded != null && state.isFullCube(client.world, pos)
+                && completelyCovered(client.world, pos)) return false;
+        if (suitability.computeIfAbsent(state, block -> hasTool(client, block))) return true;
+        scanNeedsTool = true;
+        return false;
+    }
+
+    private static void scanWider(MinecraftClient client) {
+        rejectedStands.values().removeIf(until -> until <= age);
+        rejected.values().removeIf(until -> until <= age);
+        scanNeedsTool = false;
+        var feet = client.player.getBlockPos();
+        var view = client.world;
+        var suitability = new HashMap<BlockState, Boolean>();
+        if (!wideChunks.hasNext()) {
+            // Visit nearby rings first and revisit them as the server delivers more chunks.
+            var center = new ChunkPos(feet);
+            int radius = MiningViewDistance.loadedRadius(client);
+            wideChunks = ChunkPos.stream(center, radius)
+                    .sorted(Comparator.comparingInt(center::getChebyshevDistance)).iterator();
+        }
+        for (int i = 0; i < WIDE_CHUNKS_PER_TICK && wideChunks.hasNext(); i++) {
+            var coordinates = wideChunks.next();
+            var chunk = view.getChunkManager().getChunk(coordinates.x, coordinates.z, ChunkStatus.FULL, false);
+            if (chunk == null) continue;
+            var candidates = new ArrayList<BlockPos>();
+            var pos = new BlockPos.Mutable();
+            var sections = chunk.getSectionArray();
+            for (int section = 0; section < sections.length; section++) {
+                int sectionY = view.sectionIndexToCoord(section) << 4;
+                if (!surfaceResource && (sectionY > feet.getY() + 10 || sectionY + 15 < feet.getY() - 10)) continue;
+                var data = sections[section];
+                if (data.isEmpty() || !data.hasAny(state -> blocks.contains(state.getBlock()))) continue;
+                for (int x = 0; x < 16; x++) {
+                    for (int z = 0; z < 16; z++) {
+                        int top = surfaceResource ? chunk.sampleHeightmap(Heightmap.Type.WORLD_SURFACE, x, z) : feet.getY() + 10;
+                        int bottom = surfaceResource ? top - 24 : feet.getY() - 10;
+                        for (int y = Math.max(sectionY, bottom); y <= Math.min(sectionY + 15, top); y++) {
+                            pos.set(coordinates.getStartX() + x, y, coordinates.getStartZ() + z);
+                            if (eligibleCandidate(client, pos, data.getBlockState(x, y & 15, z), suitability)) {
+                                candidates.add(pos.toImmutable());
+                            }
+                        }
+                    }
+                }
+            }
+            if (!candidates.isEmpty()) {
+                candidates.sort(Comparator.comparingDouble(p -> p.getSquaredDistance(feet)));
+                pendingCandidates.addAll(candidates);
+                return;
+            }
+        }
     }
 
     private static boolean canMineFromCurrentFooting(MinecraftClient client, BlockPos feet) {
@@ -512,7 +575,7 @@ final class MiningTask {
         // A nearby cave exit is more useful than a distant surface waypoint while buried.
         if (surfaceResource && seekSurface(client)) return;
         if (surfaceResource && rememberedSite != null
-                && !rememberedSite.isWithinDistance(client.player.getBlockPos(), WIDE_SEARCH_RADIUS)) {
+                && !rememberedSite.isWithinDistance(client.player.getBlockPos(), NEARBY_SITE_RADIUS)) {
             if (MiningViewDistance.active()) {
                 status = "Checking more loaded chunks for " + job.resource;
                 return;
@@ -714,8 +777,14 @@ final class MiningTask {
     private static boolean widenSearch(MinecraftClient client) {
         if (!MiningViewDistance.begin(client, age)) return false;
         if (pathActive) stopPath();
+        nextSearch = age + 1;
         status = "Checking more loaded chunks for " + job.resource;
         return true;
+    }
+
+    private static void finishWideSearch(MinecraftClient client) {
+        MiningViewDistance.finish(client);
+        wideChunks = Collections.emptyIterator();
     }
 
     private static boolean returnToResourceSite(MinecraftClient client) {
@@ -786,10 +855,13 @@ final class MiningTask {
         path(p);
     }
     private static boolean matches(MinecraftClient c, BlockPos p) {
-        var state = c.world.getBlockState(p);
+        return matches(c.world.getBlockState(p));
+    }
+
+    private static boolean matches(BlockState state) {
         if (state.getBlock() instanceof net.minecraft.block.TallPlantBlock
                 && state.get(net.minecraft.block.TallPlantBlock.HALF) == net.minecraft.block.enums.DoubleBlockHalf.UPPER) return false;
-        return blocks.contains(Registries.BLOCK.getId(state.getBlock()).toString());
+        return blocks.contains(state.getBlock());
     }
 
     private static boolean protectedTarget(MinecraftClient client, BlockPos pos) {
@@ -956,6 +1028,11 @@ final class MiningTask {
                         BotEvents.add("info", "mining", "Reserved another stand at " + BlockPos.ofFloored(place).toShortString()
                                 + " for " + ore.toShortString());
                     } else {
+                        if (drop == null && MiningViewDistance.active()
+                                && !ore.isWithinDistance(client.player.getBlockPos(), NEARBY_SITE_RADIUS)) {
+                            BotEvents.add("info", "mining", "Wider search reserved " + job.resource + " at "
+                                    + ore.toShortString() + " from " + client.player.getBlockPos().toShortString());
+                        }
                         alternateStandAttempts = 0;
                         localApproachSteps = 0;
                     }

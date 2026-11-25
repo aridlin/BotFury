@@ -73,7 +73,9 @@ final class MiningTask {
     private static BlockPos rememberedSite;
     private static BlockPos deepExplorationGoal;
     private static BlockPos surfaceSearchAnchor, lastExplorationExit;
-    private static BlockPos surfaceRouteGoal, surfaceExplorationGoal;
+    private static BlockPos surfaceRouteGoal, surfaceExplorationGoal, surfaceTrailWaypoint;
+    private static final Deque<ProjectQueue.ResourceSite> surfaceTrail = new ArrayDeque<>();
+    private static boolean checkedSurfaceTrail;
     private static final int NEARBY_SITE_RADIUS = 48;
     private static final int WIDE_CHUNKS_PER_TICK = 32;
     private static Iterator<ChunkPos> wideChunks = Collections.emptyIterator();
@@ -105,6 +107,7 @@ final class MiningTask {
         return working() && projectMining && target == null && pickup == null
                 && client.player.getBlockY() <= 8 && SubsurfaceAccess.deepResource(job.resource);
     }
+    static boolean retracingSurfaceTrail() { return surfaceTrailWaypoint != null; }
     static String status(){return job==null?"":status;}
     static String lastStatus(){return status;}
     static boolean toolShortfall() { return toolShortfall; }
@@ -187,6 +190,7 @@ final class MiningTask {
         surfaceResource = surface;
         checkedWiderBeforeRememberedSite = false;
         surfaceRouteGoal = surfaceExplorationGoal = null;
+        resetSurfaceTrail();
         nextSurfaceSurvey = 0;
         toolShortfall = false;
         routeToolShortfall = false;
@@ -213,6 +217,7 @@ final class MiningTask {
     private static void fail(String reason){status=reason;BotEvents.add("warn","mining",reason);}
     static void stop(){
         finishWideSearch(MinecraftClient.getInstance());
+        resetSurfaceTrail();
         if(job!=null){stopPath();var client=MinecraftClient.getInstance();if(client.interactionManager!=null)client.interactionManager.cancelBlockBreaking();release(job,leaseToken);}
         minedDrops.reset();
         reservedDrop = null;
@@ -365,6 +370,7 @@ final class MiningTask {
             }else if(age%20==0)pickupPath();
             status="Gathering mined drops";return;
         }
+        if (retracingSurfaceTrail() && followSurfaceTrail(client, client.player.getBlockPos())) return;
         if (requestLooseDrop(client)) return;
         if (subsurface.continuePassage(client, age, excluded)) {
             status = "Opening a short prospecting passage";
@@ -685,10 +691,12 @@ final class MiningTask {
         if (surfaceRouteGoal == null) return false;
         if (feet.getY() >= surfaceRouteGoal.getY() - 2) {
             surfaceRouteGoal = null;
+            resetSurfaceTrail();
             subsurface.stop();
             if (pathActive) stopPath();
             return false;
         }
+        if (followSurfaceTrail(client, feet)) return true;
         if (!pathActive || !BaritoneClient.pursuing(surfaceRouteGoal)) {
             if (pathActive) stopPath();
             if (!subsurface.tryNaturalAscent(client, age, surfaceRouteGoal.getY(), 3)
@@ -699,6 +707,53 @@ final class MiningTask {
         }
         status = "Climbing toward the surface for " + job.resource;
         return true;
+    }
+
+    private static boolean followSurfaceTrail(MinecraftClient client, BlockPos feet) {
+        if (!checkedSurfaceTrail) {
+            checkedSurfaceTrail = true;
+            surfaceTrail.addAll(ProjectWorker.recordedSurfaceRoute(client, surfaceRouteGoal));
+            if (!surfaceTrail.isEmpty()) {
+                BotEvents.add("info", "movement", "Retracing " + surfaceTrail.size() + " recorded waypoints to the surface");
+            }
+        }
+        if (surfaceTrailWaypoint != null) {
+            if (feet.equals(surfaceTrailWaypoint)) {
+                stopPath();
+                surfaceTrailWaypoint = null;
+            } else if (age < nextPath && ProjectWorker.knownTrailFooting(client, surfaceTrailWaypoint) && pathActive) {
+                status = "Retracing the recorded route toward the surface for " + job.resource;
+                return true;
+            } else {
+                stopPath();
+                surfaceTrailWaypoint = null;
+                surfaceTrail.clear();
+                nextPath = age;
+            }
+        }
+        while (!surfaceTrail.isEmpty()) {
+            var point = surfaceTrail.removeFirst();
+            var stand = new BlockPos(point.x(), point.y(), point.z());
+            // Missing or changed waypoints may be skipped only while the next safe stand remains local.
+            if (!stand.isWithinDistance(feet, 12) || Math.abs(stand.getY() - feet.getY()) > 6) break;
+            if (stand.equals(feet) || !ProjectWorker.knownTrailFooting(client, stand)
+                    || client.world.getBlockState(stand.down()).isOf(net.minecraft.block.Blocks.MAGMA_BLOCK)) continue;
+            subsurface.stop();
+            if (pathActive) stopPath();
+            if (!path(stand)) break;
+            surfaceTrailWaypoint = stand;
+            nextPath = age + 180;
+            status = "Retracing the recorded route toward the surface for " + job.resource;
+            return true;
+        }
+        surfaceTrail.clear();
+        return false;
+    }
+
+    private static void resetSurfaceTrail() {
+        surfaceTrail.clear();
+        surfaceTrailWaypoint = null;
+        checkedSurfaceTrail = false;
     }
 
     private static BlockPos localSurfaceExit(MinecraftClient client, BlockPos feet) {

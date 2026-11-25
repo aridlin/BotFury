@@ -282,12 +282,14 @@ final class ProjectBroker {
                 continue;
             }
             if (gather.fromDrops()) continue;
-            var blocks = ResourceCatalog.blocks(gather.resource(), gather.variant()).stream()
+            var resource = request.pinnedWorker() == null ? gather.resource() : "any_logs";
+            var blocks = ResourceCatalog.blocks(resource, gather.variant()).stream()
                     .map(id -> Registries.BLOCK.get(new Identifier(id))).collect(java.util.stream.Collectors.toSet());
             if (blocks.isEmpty() || !blocks.stream().allMatch(MiningTask::isSurfaceResource)) continue;
             var workers = BotTracker.all().stream()
                     .filter(bot -> bot.fresh() && bot.connected() && bot.alive() && bot.sameWorld() && bot.baritone()
                             && bot.health() > bot.maxHealth() / 2 && "Waiting for project jobs".equals(bot.inventory()))
+                    .filter(bot -> request.pinnedWorker() == null || request.pinnedWorker().equalsIgnoreCase(bot.name()))
                     .map(bot -> new SurfaceWorker(bot.name(), BlockPos.ofFloored(bot.x(), bot.y(), bot.z())))
                     .filter(bot -> view.isChunkLoaded(bot.feet.getX() >> 4, bot.feet.getZ() >> 4) && view.isSkyVisible(bot.feet)
                             && view.getBlockState(bot.feet.down()).isSideSolidFullSquare(view, bot.feet.down(), Direction.UP))
@@ -358,7 +360,7 @@ final class ProjectBroker {
     private static boolean assignObservedSurface(ProjectQueue board, String world, ProjectQueue.SurfaceGatherRecovery request,
                                                  SurfaceWorker bot, BlockPos stand, long now) throws IOException {
         if (!board.recoverObservedGather(world, request, bot.name,
-                new ProjectQueue.ResourceSite(stand.getX(), stand.getY(), stand.getZ()), now)) return false;
+                new ProjectQueue.ResourceSite(stand.getX(), stand.getY(), stand.getZ()), now, ProjectBroker::heldCount)) return false;
         BotEvents.add("info", "projects", bot.name + " is retrying surface gathering near " + stand.toShortString());
         return true;
     }

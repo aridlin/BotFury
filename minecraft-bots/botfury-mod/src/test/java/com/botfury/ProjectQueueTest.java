@@ -1085,11 +1085,50 @@ class ProjectQueueTest {
         assertNull(queue.claim(WORLD, "replacement", Set.of(GATHER), next));
         var request = queue.exhaustedSurfaceGatherings(WORLD, next).get(0);
         var surface = new ProjectQueue.ResourceSite(19, 84, 7);
-        assertTrue(queue.recoverObservedGather(WORLD, request, "replacement", surface, next));
+        assertTrue(queue.recoverObservedGather(WORLD, request, "replacement", surface, next, (worker, item) -> 0));
         var resumed = queue.claim(WORLD, "replacement", Set.of(GATHER), next + 1).job();
         assertEquals(surface, resumed.resourceSite());
         assertNull(queue.claim(WORLD, "third", Set.of(GATHER), resumed.expiresAt() + 1));
         assertTrue(queue.exhaustedSurfaceGatherings(WORLD, resumed.expiresAt() + 1).isEmpty());
+    }
+
+    @Test void observedWoodReopensOnlyTheWorkerWithTheSmeltedIngredients() throws Exception {
+        var queue = new ProjectQueue(directory.resolve("observed-stick-preparation.json"));
+        String chest = "block:3,64,0";
+        var smelt = new ProjectQueue.Work("smelt", SMELT, "{\"count\":3}", List.of(), Set.of());
+        var gather = new ProjectQueue.Work("wood", GATHER,
+                "{\"resource\":\"block:minecraft:oak_log\",\"variant\":\"both\",\"item\":\"minecraft:oak_log\",\"count\":1}",
+                List.of("smelt"), Set.of(), "smelt");
+        var planks = new ProjectQueue.Work("planks", CRAFT,
+                "{\"recipe\":\"minecraft:oak_planks\",\"inventory\":true,\"count\":2}",
+                List.of("wood"), Set.of(), "wood");
+        var sticks = new ProjectQueue.Work("sticks", CRAFT,
+                "{\"recipe\":\"minecraft:stick\",\"inventory\":true,\"count\":2}",
+                List.of("planks"), Set.of(), "planks");
+        var tool = new ProjectQueue.Work("tool", CRAFT,
+                "{\"recipe\":\"minecraft:iron_pickaxe\",\"count\":1}", List.of("sticks"), Set.of(), "sticks");
+        queue.submitSupplied("tools", WORLD, List.of(smelt, gather, planks, sticks, tool), chest);
+        var original = queue.claim(WORLD, "miner", Set.of(SMELT), 1).job();
+        assertTrue(queue.finish("tools", "smelt", original.lease(), true, "Observed 3 minecraft:iron_ingot already carried by the worker", 2));
+        long now = 3;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            var lease = queue.claim(WORLD, "miner", Set.of(GATHER), now).job();
+            now = lease.expiresAt() + 2;
+        }
+        assertNull(queue.claim(WORLD, "miner", Set.of(GATHER), now));
+        assertNull(queue.claim(WORLD, "helper", Set.of(GATHER), now));
+        var observed = queue.exhaustedSurfaceGatherings(WORLD, now).get(0);
+        var surface = new ProjectQueue.ResourceSite(28, 75, 2);
+        assertEquals("miner", observed.pinnedWorker());
+        assertFalse(queue.recoverObservedGather(WORLD, observed, "helper", surface, now, (worker, item) -> 3));
+        assertFalse(queue.recoverObservedGather(WORLD, observed, "miner", surface, now, (worker, item) -> 2));
+        assertTrue(queue.recoverObservedGather(WORLD, observed, "miner", surface, now, (worker, item) -> 3));
+        var resumed = queue.claim(WORLD, "miner", Set.of(GATHER), now + 1);
+        assertEquals(2, resumed.flexibleStickCount());
+        assertEquals(surface, resumed.job().resourceSite());
+        assertTrue(queue.finish("tools", "wood", resumed.job().lease(), true, ProjectQueue.PREPARED_COMPATIBLE_STICKS, now + 2));
+        assertEquals("tool", queue.claim(WORLD, "miner", Set.of(CRAFT), now + 3).job().work().id());
+        assertTrue(queue.exhaustedSurfaceGatherings(WORLD, now + 3).isEmpty());
     }
 
     @Test void exhaustedMiningLeaseRebuildsPrivateToolsOnlyAfterObservedInventoryLoss() throws Exception {
@@ -1190,9 +1229,9 @@ class ProjectQueueTest {
         assertEquals(ProjectQueue.State.FAILED, exhausted.snapshot(125_000).get(0).jobs().get(0).state());
         var observation = exhausted.exhaustedSurfaceGatherings(WORLD, 125_000).get(0);
         var feet = new ProjectQueue.ResourceSite(3, 70, 0);
-        assertFalse(exhausted.recoverObservedGather(WORLD, observation, "unenrolled", feet, 125_000));
-        assertTrue(exhausted.recoverObservedGather(WORLD, observation, "third", feet, 125_001));
-        assertFalse(exhausted.recoverObservedGather(WORLD, observation, "third", feet, 125_002));
+        assertFalse(exhausted.recoverObservedGather(WORLD, observation, "unenrolled", feet, 125_000, (worker, item) -> 0));
+        assertTrue(exhausted.recoverObservedGather(WORLD, observation, "third", feet, 125_001, (worker, item) -> 0));
+        assertFalse(exhausted.recoverObservedGather(WORLD, observation, "third", feet, 125_002, (worker, item) -> 0));
         var observedRetry = exhausted.claim(WORLD, "third", Set.of(GATHER), 125_003).job();
         assertEquals(feet, observedRetry.resourceSite());
         assertTrue(exhausted.finish("stock", gather.id(), observedRetry.lease(), false, ProjectQueue.GATHER_STALLED,

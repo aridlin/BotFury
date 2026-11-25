@@ -106,7 +106,7 @@ final class ProjectWorker {
     private static final Map<String, Integer> recentInventory = new HashMap<>();
     private static boolean observedDeath;
     private static List<ProjectQueue.ResourceSite> returnWaypoints;
-    private static long nextTrailSave, idleSince, nextIdleAscent;
+    private static long nextTrailSave, idleSince, nextIdleAscent, nextIdleToolCheck;
     private static final SubsurfaceAccess stationReturn = new SubsurfaceAccess();
     private static BlockPos stationToolAttempt;
     private static boolean needsRouteTool;
@@ -258,7 +258,7 @@ final class ProjectWorker {
             cargoRecovery.remember(cargoPath(), enrollment, projectCargoItem, recentInventory, client.player.getBlockPos());
         }
         recentInventory.clear();
-        if (assignment == null && !pending && returnWaypoints == null) return;
+        if (assignment == null && !pending && returnWaypoints == null && miningRecipe == null && workbenchPickup == null) return;
         if (assignment != null && production != null && success == null && assignment.job().attempts() == 1
                 && carriedUnstartedSmeltingInput && !production.contactedStation()) {
             interruptedSmeltingLease = assignment.job().lease();
@@ -282,7 +282,7 @@ final class ProjectWorker {
         triedCanopyStands.clear();
         waypoint = 0;
         returnWaypoints = null;
-        idleSince = nextIdleAscent = 0;
+        idleSince = nextIdleAscent = nextIdleToolCheck = 0;
         attemptedJumpHeadroom = false;
         triedLowerPlacement = false;
         elevatedPlacementStand = null;
@@ -437,6 +437,7 @@ final class ProjectWorker {
                 }
             }
             if (busy) stopIdleAscent(client);
+            else if (prepareIdleRouteTool(client, now)) busy = true;
             else if ((!pending || returnWaypoints != null) && followIdleAscent(client, here, now)) busy = true;
             else if (!pending && idleRecovery.yieldWhileIdle(client)) {
                 status = "Yielding the work area";
@@ -457,7 +458,7 @@ final class ProjectWorker {
             if (!pending && now >= nextRequest) request(client, here, "claim", now);
             return;
         }
-        idleSince = nextIdleAscent = 0;
+        idleSince = nextIdleAscent = nextIdleToolCheck = 0;
         if (!assignment.world().equals(world(here)) || now >= deadline) {
             generation++;
             reset(client);
@@ -667,6 +668,32 @@ final class ProjectWorker {
                         && stack.getMaxDamage() - stack.getDamage() >= 21;
     }
 
+    private static boolean prepareIdleRouteTool(MinecraftClient client, long now) {
+        if (workbenchPickup != null) {
+            if (workbenchPickup.tick(client, now)) {
+                status = "Recovering the portable workbench";
+                return true;
+            }
+            workbenchPickup.close(client);
+            workbenchPickup = null;
+        }
+        if (miningRecipe != null) {
+            tickMiningCraft(client, now);
+            return true;
+        }
+        if (pending || returnWaypoints != null || MiningTask.active() || now - idleSince < seconds(6)
+                || now < nextIdleToolCheck || SubsurfaceAccess.canDigRoute(client)
+                || !client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)
+                || !SubsurfaceAccess.hasFooting(client)) return false;
+        nextIdleToolCheck = now + seconds(30);
+        var inventory = client.player.getInventory();
+        if (!inventory.contains(Items.CRAFTING_TABLE.getDefaultStack())) return false;
+        int stone = inventory.count(Items.COBBLESTONE) + inventory.count(Items.COBBLED_DEEPSLATE)
+                + inventory.count(Items.BLACKSTONE);
+        if (stone < 6 || MiningTask.localSurfaceExit(client, client.player.getBlockPos(), null) == null) return false;
+        return startMiningCraft(client, now, ROUTE_PICKAXE, null);
+    }
+
     private static boolean prepareMiningWeapon(MinecraftClient client, long now) {
         if (now < nextMiningWeaponCheck || !TaskDefense.enabled()) return false;
         nextMiningWeaponCheck = now + seconds(10);
@@ -718,7 +745,7 @@ final class ProjectWorker {
         var delivery = craftingRouteDelivery;
         var recipe = miningRecipe;
         boolean replacement = isPickaxeRecipe(recipe);
-        boolean excavation = assignment.job().work().kind() == ProjectQueue.Kind.EXCAVATE;
+        boolean excavation = assignment != null && assignment.job().work().kind() == ProjectQueue.Kind.EXCAVATE;
         if (preparingMiningSticks) {
             status = replacement ? "Crafting sticks for a replacement pickaxe" : "Crafting sticks for a stone sword";
             var sticks = miningCraft.tick(client, now);

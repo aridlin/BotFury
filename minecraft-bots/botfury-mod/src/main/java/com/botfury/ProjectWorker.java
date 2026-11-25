@@ -107,6 +107,9 @@ final class ProjectWorker {
     private static boolean observedDeath;
     private static List<ProjectQueue.ResourceSite> returnWaypoints;
     private static long nextTrailSave, idleSince, nextIdleAscent, nextIdleToolCheck;
+    private static BlockPos idleSurfaceGoal;
+    private static long idleAscentDeadline, idleAscentProgressAt;
+    private static int idleAscentHeight, nextIdleRouteProbe;
     private static final SubsurfaceAccess stationReturn = new SubsurfaceAccess();
     private static BlockPos stationToolAttempt;
     private static boolean needsRouteTool;
@@ -258,7 +261,7 @@ final class ProjectWorker {
             cargoRecovery.remember(cargoPath(), enrollment, projectCargoItem, recentInventory, client.player.getBlockPos());
         }
         recentInventory.clear();
-        if (assignment == null && !pending && returnWaypoints == null && miningRecipe == null && workbenchPickup == null) return;
+        if (assignment == null && !pending && idleSurfaceGoal == null && miningRecipe == null && workbenchPickup == null) return;
         if (assignment != null && production != null && success == null && assignment.job().attempts() == 1
                 && carriedUnstartedSmeltingInput && !production.contactedStation()) {
             interruptedSmeltingLease = assignment.job().lease();
@@ -282,6 +285,7 @@ final class ProjectWorker {
         triedCanopyStands.clear();
         waypoint = 0;
         returnWaypoints = null;
+        idleSurfaceGoal = null;
         idleSince = nextIdleAscent = nextIdleToolCheck = 0;
         attemptedJumpHeadroom = false;
         triedLowerPlacement = false;
@@ -409,7 +413,7 @@ final class ProjectWorker {
         long now = System.nanoTime();
         if (client.player.isAlive()) WorkerCargoRecovery.snapshotInventory(client, recentInventory);
         if (enrollment.matches(here.name(), world(here)) && client.player.isAlive() && client.player.isOnGround()
-                && !client.player.isTouchingWater() && !MiningTask.retracingSurfaceTrail()
+                && !client.player.isTouchingWater() && idleSurfaceGoal == null && !MiningTask.retracingSurfaceTrail()
                 && (returnWaypoints == null || waypoint >= returnWaypoints.size())) {
             var feet = client.player.getBlockPos();
             if (knownTrailFooting(client, feet)) returnTrail.record(routePoint(feet));
@@ -438,7 +442,7 @@ final class ProjectWorker {
             }
             if (busy) stopIdleAscent(client);
             else if (prepareIdleRouteTool(client, now)) busy = true;
-            else if ((!pending || returnWaypoints != null) && followIdleAscent(client, here, now)) busy = true;
+            else if ((!pending || idleSurfaceGoal != null) && followIdleAscent(client, here, now)) busy = true;
             else if (!pending && idleRecovery.yieldWhileIdle(client)) {
                 status = "Yielding the work area";
                 busy = true;
@@ -681,7 +685,7 @@ final class ProjectWorker {
             tickMiningCraft(client, now);
             return true;
         }
-        if (pending || returnWaypoints != null || MiningTask.active() || now - idleSince < seconds(6)
+        if (pending || idleSurfaceGoal != null || MiningTask.active() || now - idleSince < seconds(6)
                 || now < nextIdleToolCheck || SubsurfaceAccess.canDigRoute(client)
                 || !client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)
                 || !SubsurfaceAccess.hasFooting(client)) return false;
@@ -1407,28 +1411,59 @@ final class ProjectWorker {
     }
 
     private static boolean followIdleAscent(MinecraftClient client, LocalFormation.Peer here, long now) {
-        if (returnWaypoints == null) {
+        var feet = client.player.getBlockPos();
+        if (idleSurfaceGoal == null) {
             if (now - idleSince < seconds(6) || now < nextIdleAscent || !enrollment.matches(here.name(), world(here))
                     || !client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)
                     || MiningTask.active() || !SubsurfaceAccess.hasFooting(client)) return false;
             nextIdleAscent = now + seconds(30);
-            var surface = MiningTask.localSurfaceExit(client, client.player.getBlockPos(), null);
+            var surface = MiningTask.localSurfaceExit(client, feet, null);
             if (surface == null) return false;
             var route = recordedSurfaceRoute(client, surface);
-            if (route.isEmpty()) return false;
+            if (route.isEmpty() && !SubsurfaceAccess.canDigRoute(client)) return false;
+            idleSurfaceGoal = surface;
+            idleAscentDeadline = now + seconds(180);
+            idleAscentProgressAt = now;
+            idleAscentHeight = feet.getY();
+            nextIdleRouteProbe = approachAge = waypoint = 0;
             returnWaypoints = route;
-            waypoint = 0;
-            BotEvents.add("info", "movement", "Idle worker retracing " + route.size() + " waypoints toward the surface");
+            if (!route.isEmpty()) {
+                BotEvents.add("info", "movement", "Idle worker retracing " + route.size() + " waypoints toward the surface");
+            }
         }
-        if (followWaypoints(client, now, returnWaypoints, false)) return true;
-        stopIdleAscent(client);
-        nextIdleAscent = now + seconds(30);
-        return false;
+        if (feet.getY() > idleAscentHeight && SubsurfaceAccess.hasFooting(client)) {
+            idleAscentHeight = feet.getY();
+            idleAscentProgressAt = now;
+        }
+        if (feet.getY() >= idleSurfaceGoal.getY() || now >= idleAscentDeadline || now - idleAscentProgressAt >= seconds(35)) {
+            stopIdleAscent(client);
+            nextIdleAscent = now + seconds(90);
+            return false;
+        }
+        if (returnWaypoints != null) {
+            if (followWaypoints(client, now, returnWaypoints, false)) return true;
+            returnWaypoints = null;
+            if (!SubsurfaceAccess.canDigRoute(client)) {
+                stopIdleAscent(client);
+                nextIdleAscent = now + seconds(90);
+                return false;
+            }
+            BotEvents.add("info", "movement", "Idle worker switching to a protected cave ascent");
+        }
+        approachAge++;
+        if (approachAge >= nextIdleRouteProbe && !stationReturn.continuePassage(client, approachAge, null)
+                && !stationReturn.advanceToward(client, approachAge, idleSurfaceGoal, null, true)) {
+            nextIdleRouteProbe = approachAge + 10;
+        }
+        status = "Opening a protected route to the surface";
+        return true;
     }
 
     private static void stopIdleAscent(MinecraftClient client) {
-        if (returnWaypoints == null) return;
+        if (idleSurfaceGoal == null) return;
         halt(client);
+        stationReturn.reset();
+        idleSurfaceGoal = null;
         returnWaypoints = null;
         waypoint = 0;
     }

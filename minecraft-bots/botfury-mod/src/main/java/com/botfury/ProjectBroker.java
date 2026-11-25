@@ -36,7 +36,7 @@ final class ProjectBroker {
                            List<ProjectQueue.Work> work, String job, UUID token, Boolean success,
                            String evidence, ProjectQueue.ChestReport chest, ProjectQueue.ChestReport routeStock, ProjectQueue.ResourceSite resourceSite,
                            boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool, int routeCraftTarget, boolean needsRouteBench, boolean canSupplyBench, boolean receivedRouteBench,
-                           boolean supportsPickupReserve, boolean supportsStickResupply, boolean needsMeal, boolean carryingMeal, String spareMeal, List<ProjectQueue.ReachableOre> reachableOre) {}
+                           boolean supportsPickupReserve, boolean supportsStickResupply, boolean needsMeal, boolean carryingMeal, String spareMeal, List<ProjectQueue.ReachableOre> reachableOre, boolean groundedGatherRetry) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
         if (queue == null) {
@@ -732,6 +732,10 @@ final class ProjectBroker {
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.GATHER)) {
                         assignment = board.offerObservedOreRecovery(world, request.worker, request.project, position,
                                 request.toolUses, request.reachableOre, now);
+                        if (assignment == null && request.groundedGatherRetry) {
+                            assignment = board.offerRelocatedMiner(world, request.worker, request.project, position,
+                                    request.toolUses, now);
+                        }
                         if (assignment == null) {
                             assignment = board.offerEquippedMiner(world, request.worker, request.project, request.toolUses, now, position);
                         }

@@ -2082,6 +2082,48 @@ final class ProjectQueue {
         return null;
     }
 
+    synchronized Assignment offerRelocatedMiner(String world, String worker, String projectId,
+                                                ResourceSite position, Map<String, Integer> toolUses, long now) throws IOException {
+        if (position == null || toolUses == null || toolUses.isEmpty()) return null;
+        for (var project : projects.values()) {
+            if (project.supplyChest == null || !world.equals(project.world) || cancelled(project)
+                    || projectId != null && !projectId.equals(project.id) || !availableProjectWorker(project, worker, now)) continue;
+            for (var gather : project.jobs) {
+                if (!stalledPinnedGathering(gather) || now < gather.expiresAt || !worker.equalsIgnoreCase(gather.worker)
+                        || gather.resourceSite == null || !newMiningGround(gather.resourceSite, position)
+                        || gather.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) continue;
+                var source = gatherSource(gather.work.payload);
+                var preparation = find(project, gather.work.sameWorkerAs);
+                if (source == null || !ResourceCatalog.isOre(source.resource) || preparation.work.kind != Kind.CRAFT) continue;
+                var recipe = JSON.fromJson(preparation.work.payload, ToolRecipe.class);
+                int tier = recipe == null || recipe.recipe == null ? -1 : PICKAXE_TIERS.indexOf(recipe.recipe);
+                if (tier < 0 || PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
+                        .noneMatch(tool -> toolUses.getOrDefault(tool, 0) >= 32)) continue;
+
+                String key = "relocated-miner:" + gather.work.id;
+                int attempts = project.supplyRecoveries.getOrDefault(key, 0);
+                String region = key + ":" + Math.floorDiv(position.x, 48) + ","
+                        + Math.floorDiv(position.y, 24) + "," + Math.floorDiv(position.z, 48);
+                if (attempts >= 2 || project.supplyRecoveries.containsKey(region)) continue;
+
+                // Start from the worker's current footing instead of walking back to the failed route.
+                var lease = new Job(gather.work, State.LEASED, gather.attempts + 1, worker, UUID.randomUUID(),
+                        now + LEASE_MS, null, gather.chest, position);
+                var recoveries = new HashMap<>(project.supplyRecoveries);
+                recoveries.put(key, attempts + 1);
+                recoveries.put(region, 1);
+                commit(project.withRecovery(project.jobs.stream().map(job -> job == gather ? lease : job).toList(), recoveries));
+                return assignment(project, lease);
+            }
+        }
+        return null;
+    }
+
+    private static boolean newMiningGround(ResourceSite failed, ResourceSite position) {
+        return (long)position.y - failed.y >= 24
+                || Math.hypot((double)position.x - failed.x, (double)position.z - failed.z) >= 48;
+    }
+
     private static String equippedRescueKey(Job gather) {
         return "equipped-miner:" + gather.work.id;
     }

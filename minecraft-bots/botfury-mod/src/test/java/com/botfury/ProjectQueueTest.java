@@ -680,6 +680,42 @@ class ProjectQueueTest {
         assertNull(queue.offerObservedOreRecovery(WORLD, "original", "stock", worker, stone, List.of(ore), now));
     }
 
+    @Test void relocatedMinerRetriesFromNewGroundWithoutCyclingThroughOldAreas() throws Exception {
+        var journal = directory.resolve("relocated-miner.json");
+        var queue = prepareStalledSupply(journal, false);
+        var nearby = new ProjectQueue.ResourceSite(12, 22, 13);
+        var surface = new ProjectQueue.ResourceSite(8, 60, 9);
+        var stone = java.util.Map.of("minecraft:stone_pickaxe", 75);
+        long now = 40_000;
+        queue.claim(WORLD, "original", Set.of(VERIFY), now);
+        queue.claim(WORLD, "other", Set.of(VERIFY), now);
+        assertNull(queue.offerRelocatedMiner(WORLD, "original", "stock", nearby, stone, now));
+        assertNull(queue.offerRelocatedMiner(WORLD, "other", "stock", surface, stone, now));
+        assertNull(queue.offerRelocatedMiner(WORLD, "original", "stock", surface,
+                java.util.Map.of("minecraft:stone_pickaxe", 1), now));
+        assertNull(queue.offerRelocatedMiner(WORLD, "original", "stock", surface,
+                java.util.Map.of("minecraft:wooden_pickaxe", 59), now));
+
+        var first = queue.offerRelocatedMiner(WORLD, "original", "stock", surface, stone, now).job();
+        assertEquals("iron", first.work().id());
+        assertEquals(surface, first.resourceSite());
+        assertTrue(queue.finish("stock", "iron", first.lease(), false, ProjectQueue.GATHER_STALLED, null,
+                new ProjectQueue.ResourceSite(8, 20, 9), now + 1));
+
+        queue = new ProjectQueue(journal);
+        now += 40_000;
+        queue.claim(WORLD, "original", Set.of(VERIFY), now);
+        assertNull(queue.offerRelocatedMiner(WORLD, "original", "stock", surface, stone, now));
+        var across = new ProjectQueue.ResourceSite(56, 20, 9);
+        var second = queue.offerRelocatedMiner(WORLD, "original", "stock", across, stone, now).job();
+        assertEquals(across, second.resourceSite());
+        assertTrue(queue.finish("stock", "iron", second.lease(), false, ProjectQueue.GATHER_STALLED, now + 1));
+        now += 40_000;
+        queue.claim(WORLD, "original", Set.of(VERIFY), now);
+        assertNull(queue.offerRelocatedMiner(WORLD, "original", "stock",
+                new ProjectQueue.ResourceSite(110, 90, 9), stone, now));
+    }
+
     @Test void stalledSupplyRewindsOnlyWhenItsPreparationIsPrivate() throws Exception {
         for (boolean shared : List.of(false, true)) {
             var journal = directory.resolve("stalled-fallback-" + shared + ".json");

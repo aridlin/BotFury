@@ -1829,6 +1829,7 @@ final class ProjectWorker {
             }
             if (!tools.isEmpty()) args.put("toolUses", tools);
             if (tools.keySet().stream().anyMatch(item -> item.endsWith("_pickaxe"))) {
+                if (SubsurfaceAccess.hasFooting(client)) args.put("groundedGatherRetry", true);
                 var ore = MiningTask.reachableOre(client);
                 if (!ore.isEmpty()) args.put("reachableOre", ore);
             }
@@ -1852,7 +1853,10 @@ final class ProjectWorker {
             if (needsProductionBench || needsRouteTool && needsRouteBench && !SubsurfaceAccess.canDigRoute(client)) {
                 args.put("needsRouteBench", true);
             }
-            if (gatherSite != null && !gather.fromDrops()) args.put("resourceSite", gatherSite);
+            if (action.equals("finish") && Boolean.FALSE.equals(success) && ProjectQueue.GATHER_STALLED.equals(evidence)
+                    && gather != null && ResourceCatalog.isOre(gather.resource())) {
+                args.put("resourceSite", routePoint(client.player.getBlockPos()));
+            } else if (gatherSite != null && !gather.fromDrops()) args.put("resourceSite", gatherSite);
             boolean resupply = assignment.job().work().kind() == ProjectQueue.Kind.RESUPPLY;
             if (chestReport != null && resupply) args.put("routeStock", chestReport);
             if (success != null && action.equals("finish")) {

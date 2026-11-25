@@ -1369,11 +1369,17 @@ final class ProjectQueue {
                 if (world.equals(project.world) && (projectId == null || projectId.equals(project.id))
                         && worker.equalsIgnoreCase(handoffWorker(job))) return null;
                 if (worker.equalsIgnoreCase(job.worker) && !BATCH_RESERVED.equals(job.evidence)) {
-                    // A claim response can be lost. Repeating a claim returns the original assignment.
-                    return handoffWorker(job) == null && world.equals(project.world) && kinds.contains(job.work.kind) && !cancelled(project)
+                    // A claim response can be lost. Normally a repeated claim returns the same assignment.
+                    boolean canResume = handoffWorker(job) == null && world.equals(project.world)
+                            && kinds.contains(job.work.kind) && !cancelled(project)
                             && (supportsPickupReserve || !PREPARATION_STOCK_PICKUP.equals(job.evidence))
-                            && (projectId == null || projectId.equals(project.id))
-                            ? assignment(project, job) : null;
+                            && (projectId == null || projectId.equals(project.id));
+                    if (!canResume) return null;
+                    if (kinds.contains(Kind.GATHER) && useCarriedGatheringPickaxe(project, job, worker, toolUses)) {
+                        return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
+                                returnRevision, supportsPickupReserve);
+                    }
+                    return assignment(project, job);
                 }
                 if (world.equals(project.world)) reserved.addAll(job.work.locks);
             }
@@ -1442,6 +1448,10 @@ final class ProjectQueue {
                 if (CARRIED_SMELT_ASSIGNED.equals(job.evidence)) {
                     if (job.expiresAt <= now || !worker.equalsIgnoreCase(job.worker)) continue;
                 } else if (pinned && !worker.equalsIgnoreCase(byId.get(job.work.sameWorkerAs).worker)) continue;
+                if (kinds.contains(Kind.GATHER) && useCarriedGatheringPickaxe(project, job, worker, toolUses)) {
+                    return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
+                            returnRevision, supportsPickupReserve);
+                }
                 boolean usesStation = job.work.kind == Kind.TRANSFER || job.work.kind == Kind.CRAFT || job.work.kind == Kind.SMELT;
                 if (usesStation && !Collections.disjoint(unavailableStations, job.work.locks)) continue;
                 if (!Collections.disjoint(reserved, job.work.locks) || job.work.locks.stream().anyMatch(key ->
@@ -1483,6 +1493,28 @@ final class ProjectQueue {
         }
         return fallbackJob == null ? null
                 : assignWithPreparationStock(fallbackProject, fallbackJob, worker, now, position, kinds, supportsPickupReserve ? heldCount : null);
+    }
+
+    private boolean useCarriedGatheringPickaxe(Project project, Job craft, String worker,
+                                               Map<String, Integer> toolUses) throws IOException {
+        if (project.supplyChest == null || craft.work.kind != Kind.CRAFT
+                || craft.state != State.WAITING && craft.state != State.LEASED
+                || craft.work.sameWorkerAs == null || toolUses == null || toolUses.isEmpty()) return false;
+        var recipe = JSON.fromJson(craft.work.payload, InventoryRecipe.class);
+        if (recipe == null || recipe.recipe == null || recipe.count == null || recipe.count != 1) return false;
+        int tier = PICKAXE_TIERS.indexOf(recipe.recipe);
+        if (tier < 0) return false;
+        var consumers = project.jobs.stream().filter(job -> job.work.needs.contains(craft.work.id)).toList();
+        if (consumers.size() != 1) return false;
+        var gather = consumers.get(0);
+        if (gather.state != State.WAITING || gather.work.kind != Kind.GATHER || gather.work.needs.size() != 1
+                || !craft.work.id.equals(gather.work.sameWorkerAs)) return false;
+        var carried = PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
+                .filter(tool -> toolUses.getOrDefault(tool, 0) >= 32).findFirst().orElse(null);
+        if (carried == null) return false;
+        replace(project, new Job(craft.work, State.DONE, craft.attempts, worker, null, 0,
+                "Gathering tool already carried: " + carried, craft.chest));
+        return true;
     }
 
     private static String excavationToolMaterial(Job job) {

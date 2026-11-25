@@ -406,7 +406,8 @@ final class ProjectWorker {
         long now = System.nanoTime();
         if (client.player.isAlive()) WorkerCargoRecovery.snapshotInventory(client, recentInventory);
         if (enrollment.matches(here.name(), world(here)) && client.player.isAlive() && client.player.isOnGround()
-                && !client.player.isTouchingWater() && (returnWaypoints == null || waypoint >= returnWaypoints.size())) {
+                && !client.player.isTouchingWater() && !MiningTask.retracingSurfaceTrail()
+                && (returnWaypoints == null || waypoint >= returnWaypoints.size())) {
             var feet = client.player.getBlockPos();
             if (knownTrailFooting(client, feet)) returnTrail.record(routePoint(feet));
             if (now >= nextTrailSave) {
@@ -1351,7 +1352,13 @@ final class ProjectWorker {
         return true;
     }
 
-    private static boolean knownTrailFooting(MinecraftClient client, BlockPos pos) {
+    static List<ProjectQueue.ResourceSite> recordedSurfaceRoute(MinecraftClient client, BlockPos destination) {
+        var here = LocalFormation.here();
+        if (here == null || !enrollment.matches(here.name(), world(here))) return List.of();
+        return returnTrail.backtrack(routePoint(client.player.getBlockPos()), routePoint(destination));
+    }
+
+    static boolean knownTrailFooting(MinecraftClient client, BlockPos pos) {
         var world = client.world;
         return world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)
                 && world.isInBuildLimit(pos.up()) && world.getWorldBorder().contains(pos)

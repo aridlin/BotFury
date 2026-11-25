@@ -66,6 +66,20 @@ class WorkerReturnTrailTest {
         assertTrue(trail.backtrack(new ResourceSite(48, -32, 0), new ResourceSite(0, 64, 0)).isEmpty());
     }
 
+    @Test void surfaceAscentCanFollowAStaircaseAwayFromTheSurveyColumn() {
+        var trail = new WorkerReturnTrail();
+        for (int climb = 32; climb >= 0; climb -= 4) {
+            trail.record(new ResourceSite(climb, 32 + climb, 0));
+        }
+
+        var mine = new ResourceSite(0, 32, 0);
+        var survey = new ResourceSite(0, 64, 0);
+        var route = trail.backtrackToSurface(mine, survey);
+        assertEquals(8, route.size());
+        assertEquals(new ResourceSite(32, 64, 0), route.get(route.size() - 1));
+        assertTrue(trail.backtrack(mine, survey).size() < route.size());
+    }
+
     @Test void doesNotUndoAWorkersClimbToReachAnOlderTrail() {
         var trail = new WorkerReturnTrail();
         var current = new ResourceSite(36, -20, 0);

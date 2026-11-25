@@ -686,7 +686,7 @@ final class MiningTask {
         var feet = client.player.getBlockPos();
         if (surfaceRouteGoal == null && age >= nextSurfaceSurvey) {
             nextSurfaceSurvey = age + 80;
-            surfaceRouteGoal = localSurfaceExit(client, feet);
+            surfaceRouteGoal = localSurfaceExit(client, feet, excluded);
         }
         if (surfaceRouteGoal == null) return false;
         if (feet.getY() >= surfaceRouteGoal.getY() - 2) {
@@ -736,8 +736,7 @@ final class MiningTask {
             var stand = new BlockPos(point.x(), point.y(), point.z());
             // Missing or changed waypoints may be skipped only while the next safe stand remains local.
             if (!stand.isWithinDistance(feet, 12) || Math.abs(stand.getY() - feet.getY()) > 6) break;
-            if (stand.equals(feet) || !ProjectWorker.knownTrailFooting(client, stand)
-                    || client.world.getBlockState(stand.down()).isOf(net.minecraft.block.Blocks.MAGMA_BLOCK)) continue;
+            if (stand.equals(feet) || !ProjectWorker.knownTrailFooting(client, stand)) continue;
             subsurface.stop();
             if (pathActive) stopPath();
             if (!path(stand)) break;
@@ -756,7 +755,7 @@ final class MiningTask {
         checkedSurfaceTrail = false;
     }
 
-    private static BlockPos localSurfaceExit(MinecraftClient client, BlockPos feet) {
+    static BlockPos localSurfaceExit(MinecraftClient client, BlockPos feet, ProjectGather.Area excluded) {
         var world = client.world;
         var exits = new ArrayList<BlockPos>();
         for (int dx = -8; dx <= 8; dx += 4) {

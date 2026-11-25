@@ -9,6 +9,7 @@ import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
+import net.minecraft.world.Heightmap;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
@@ -114,7 +115,7 @@ final class ProjectBroker {
             if (board.refreshUnderfilledStockGather(world, ProjectBroker::heldCount)) {
                 BotEvents.add("info", "projects", "Refreshed a gathering quota using observed chest stock");
             }
-            recoverObservedSurfaceGathering(client.world, board, world);
+            recoverObservedSurfaceGathering(client.world, client.player.getBlockPos(), board, world);
             reuseCarriedStationWood(board, world);
             checkOwnedPlacements(client, board, world);
             confirmLocalScaffoldClearance(client, board, world);
@@ -267,7 +268,10 @@ final class ProjectBroker {
         }
     }
 
-    private static void recoverObservedSurfaceGathering(ClientWorld view, ProjectQueue board, String world) throws IOException {
+    private record SurfaceWorker(String name, BlockPos feet) {}
+
+    private static void recoverObservedSurfaceGathering(ClientWorld view, BlockPos observer, ProjectQueue board,
+                                                         String world) throws IOException {
         if (!view.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)) return;
         long now = System.currentTimeMillis();
         for (var request : board.exhaustedSurfaceGatherings(world, now)) {
@@ -281,26 +285,82 @@ final class ProjectBroker {
             var blocks = ResourceCatalog.blocks(gather.resource(), gather.variant()).stream()
                     .map(id -> Registries.BLOCK.get(new Identifier(id))).collect(java.util.stream.Collectors.toSet());
             if (blocks.isEmpty() || !blocks.stream().allMatch(MiningTask::isSurfaceResource)) continue;
-            for (var bot : BotTracker.all()) {
-                if (!bot.fresh() || !bot.connected() || !bot.alive() || !bot.sameWorld() || !bot.baritone()
-                        || bot.health() <= bot.maxHealth() / 2 || !"Waiting for project jobs".equals(bot.inventory())) continue;
-                var feet = BlockPos.ofFloored(bot.x(), bot.y(), bot.z());
-                if (!view.isChunkLoaded(feet.getX() >> 4, feet.getZ() >> 4) || !view.isSkyVisible(feet)
-                        || !view.getBlockState(feet.down()).isSideSolidFullSquare(view, feet.down(), Direction.UP)) continue;
-                for (var target : BlockPos.iterateOutwards(feet, 16, 6, 16)) {
+            var workers = BotTracker.all().stream()
+                    .filter(bot -> bot.fresh() && bot.connected() && bot.alive() && bot.sameWorld() && bot.baritone()
+                            && bot.health() > bot.maxHealth() / 2 && "Waiting for project jobs".equals(bot.inventory()))
+                    .map(bot -> new SurfaceWorker(bot.name(), BlockPos.ofFloored(bot.x(), bot.y(), bot.z())))
+                    .filter(bot -> view.isChunkLoaded(bot.feet.getX() >> 4, bot.feet.getZ() >> 4) && view.isSkyVisible(bot.feet)
+                            && view.getBlockState(bot.feet.down()).isSideSolidFullSquare(view, bot.feet.down(), Direction.UP))
+                    .toList();
+            for (var bot : workers) {
+                for (var target : BlockPos.iterateOutwards(bot.feet, 16, 6, 16)) {
                     if (!view.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
                             || !blocks.contains(view.getBlockState(target).getBlock())
-                            || gather.exclude() != null && gather.exclude().contains(target)
-                            || BuildProtection.blocked(world, target, null)) continue;
-                    if (board.recoverObservedGather(world, request, bot.name(),
-                            new ProjectQueue.ResourceSite(feet.getX(), feet.getY(), feet.getZ()), now)) {
-                        BotEvents.add("info", "projects", bot.name() + " is retrying " + gather.resource() + " near observed blocks");
-                        return;
-                    }
+                            || !permittedSurfaceCell(world, gather, target)) continue;
+                    if (assignObservedSurface(board, world, request, bot, bot.feet, now)) return;
                     break;
                 }
             }
+            if (!workers.isEmpty() && recoverLoadedSurfaceGather(view, observer, board, world, request,
+                    gather, blocks, workers, now)) return;
         }
+    }
+
+    private static boolean recoverLoadedSurfaceGather(ClientWorld view, BlockPos observer, ProjectQueue board,
+                                                       String world, ProjectQueue.SurfaceGatherRecovery request,
+                                                       ProjectGather gather, Set<net.minecraft.block.Block> blocks,
+                                                       List<SurfaceWorker> workers, long now) throws IOException {
+        // Survey each loaded column once. The heightmap keeps the fallback away from caves.
+        for (var column : BlockPos.iterateOutwards(observer, 48, 0, 48)) {
+            if (!view.isChunkLoaded(column.getX() >> 4, column.getZ() >> 4)) continue;
+            int top = view.getTopY(Heightmap.Type.WORLD_SURFACE, column.getX(), column.getZ());
+            for (int dy = -1; dy >= -12; dy--) {
+                var target = column.withY(top + dy);
+                if (!blocks.contains(view.getBlockState(target).getBlock())) continue;
+                // Follow a trunk to its base before looking for a safe approach.
+                for (int step = 0; step < 32 && blocks.contains(view.getBlockState(target.down()).getBlock()); step++) {
+                    target = target.down();
+                }
+                if (!permittedSurfaceCell(world, gather, target)) continue;
+                var stand = observedSurfaceStand(view, world, gather, target);
+                if (stand == null) continue;
+                for (var bot : workers.stream().filter(worker -> worker.feet.isWithinDistance(stand, 56)
+                                && Math.abs(worker.feet.getY() - stand.getY()) <= 24)
+                        .sorted(java.util.Comparator.comparingDouble(worker -> worker.feet.getSquaredDistance(stand))).toList()) {
+                    if (assignObservedSurface(board, world, request, bot, stand, now)) return true;
+                }
+                break;
+            }
+        }
+        return false;
+    }
+
+    private static BlockPos observedSurfaceStand(ClientWorld view, String world, ProjectGather gather, BlockPos target) {
+        for (var feet : BlockPos.iterateOutwards(target, 4, 2, 4)) {
+            if (feet.equals(target) || !view.isChunkLoaded(feet.getX() >> 4, feet.getZ() >> 4)) continue;
+            var floor = feet.down();
+            if (!view.getWorldBorder().contains(feet)
+                    || !permittedSurfaceCell(world, gather, feet) || !permittedSurfaceCell(world, gather, feet.up())
+                    || view.getBlockState(floor).isIn(net.minecraft.registry.tag.BlockTags.LOGS)
+                    || !ProjectPlacement.flushFloor(view.getBlockState(floor), view, floor)
+                    || !view.getFluidState(feet).isEmpty() || !view.getFluidState(floor).isEmpty()
+                    || !view.getBlockState(feet).getCollisionShape(view, feet).isEmpty()
+                    || !view.getBlockState(feet.up()).getCollisionShape(view, feet.up()).isEmpty()) continue;
+            return feet.toImmutable();
+        }
+        return null;
+    }
+
+    private static boolean permittedSurfaceCell(String world, ProjectGather gather, BlockPos pos) {
+        return (gather.exclude() == null || !gather.exclude().contains(pos)) && !BuildProtection.blocked(world, pos, null);
+    }
+
+    private static boolean assignObservedSurface(ProjectQueue board, String world, ProjectQueue.SurfaceGatherRecovery request,
+                                                 SurfaceWorker bot, BlockPos stand, long now) throws IOException {
+        if (!board.recoverObservedGather(world, request, bot.name,
+                new ProjectQueue.ResourceSite(stand.getX(), stand.getY(), stand.getZ()), now)) return false;
+        BotEvents.add("info", "projects", bot.name + " is retrying surface gathering near " + stand.toShortString());
+        return true;
     }
 
     private static void recoverScaffoldCleanups(net.minecraft.client.MinecraftClient client, ProjectQueue board,

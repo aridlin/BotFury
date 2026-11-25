@@ -1427,7 +1427,9 @@ final class ProjectWorker {
 
     private static boolean tryElevatedApproach(MinecraftClient client, BlockPos destination, long now, boolean placement) {
         var position = client.player.getBlockPos();
-        if (destination.getY() - position.getY() < (placement ? 3 : 5)) {
+        int heightRemaining = destination.getY() - position.getY();
+        boolean finishingStairs = !placement && heightRemaining > 0 && stationReturn.continuingLocalAscent();
+        if (!finishingStairs && heightRemaining < (placement ? 3 : 5)) {
             needsRouteTool = needsRouteBench = false;
             stationReturn.stop();
             return false;

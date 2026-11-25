@@ -2863,10 +2863,15 @@ final class ProjectQueue {
     }
 
     private static boolean differentContributionApproach(Job deposit, ResourceSite origin, ResourceSite position) {
-        if (origin == null || position == null || gatheringDistance(origin, position) < 12) return false;
+        if (origin == null || position == null) return false;
         var target = JSON.fromJson(deposit.work.payload, StationTarget.class).target;
-        return target != null && (position.y - origin.y >= 8 && position.y <= target.y()
-                || distance(origin, target) - distance(position, target) >= 16);
+        if (target == null) return false;
+        double previousDistance = distance(origin, target);
+        double currentDistance = distance(position, target);
+        // A carrier that reached the interaction area has a different approach even after a short trip.
+        if (previousDistance > 6 && currentDistance <= 4 && Math.abs(position.y - target.y()) <= 2) return true;
+        return gatheringDistance(origin, position) >= 12
+                && (position.y - origin.y >= 8 && position.y <= target.y() || previousDistance - currentDistance >= 16);
     }
 
     private static String contributionCargo(Job deposit, String worker) {

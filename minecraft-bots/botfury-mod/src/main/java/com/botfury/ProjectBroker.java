@@ -313,8 +313,8 @@ final class ProjectBroker {
         // Survey each loaded column once. The heightmap keeps the fallback away from caves.
         for (var column : BlockPos.iterateOutwards(observer, 48, 0, 48)) {
             if (!view.isChunkLoaded(column.getX() >> 4, column.getZ() >> 4)) continue;
-            int top = view.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, column.getX(), column.getZ());
-            for (int dy = 0; dy >= -2; dy--) {
+            int top = view.getTopY(Heightmap.Type.WORLD_SURFACE, column.getX(), column.getZ());
+            for (int dy = -1; dy >= -12; dy--) {
                 var target = column.withY(top + dy);
                 if (!blocks.contains(view.getBlockState(target).getBlock())) continue;
                 // Follow a trunk to its base before looking for a safe approach.
@@ -336,19 +336,17 @@ final class ProjectBroker {
     }
 
     private static BlockPos observedSurfaceStand(ClientWorld view, String world, ProjectGather gather, BlockPos target) {
-        for (var column : BlockPos.iterateOutwards(target, 4, 0, 4)) {
-            if (column.equals(target) || !view.isChunkLoaded(column.getX() >> 4, column.getZ() >> 4)) continue;
-            int y = view.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, column.getX(), column.getZ());
-            var feet = column.withY(y);
+        for (var feet : BlockPos.iterateOutwards(target, 4, 2, 4)) {
+            if (feet.equals(target) || !view.isChunkLoaded(feet.getX() >> 4, feet.getZ() >> 4)) continue;
             var floor = feet.down();
-            if (Math.abs(y - target.getY()) > 2 || !view.getWorldBorder().contains(feet)
+            if (!view.getWorldBorder().contains(feet)
                     || !permittedSurfaceCell(world, gather, feet) || !permittedSurfaceCell(world, gather, feet.up())
                     || view.getBlockState(floor).isIn(net.minecraft.registry.tag.BlockTags.LOGS)
                     || !ProjectPlacement.flushFloor(view.getBlockState(floor), view, floor)
                     || !view.getFluidState(feet).isEmpty() || !view.getFluidState(floor).isEmpty()
                     || !view.getBlockState(feet).getCollisionShape(view, feet).isEmpty()
                     || !view.getBlockState(feet.up()).getCollisionShape(view, feet.up()).isEmpty()) continue;
-            return feet;
+            return feet.toImmutable();
         }
         return null;
     }

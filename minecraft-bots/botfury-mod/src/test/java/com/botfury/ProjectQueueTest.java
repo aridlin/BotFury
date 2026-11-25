@@ -1437,6 +1437,29 @@ class ProjectQueueTest {
                 .getAsJsonObject().get("count").getAsInt());
     }
 
+    @Test void surfaceLogsBankMixedCargoAndResumeOnlyTheMissingCount() throws Exception {
+        var queue = new ProjectQueue(directory.resolve("wood-checkpoint.json"));
+        String chest = "block:3,64,0";
+        var gather = new ProjectQueue.Work("cut", GATHER,
+                "{\"resource\":\"any_logs\",\"variant\":\"both\",\"item\":\"any_logs\",\"count\":20}",
+                List.of(), Set.of());
+        var deposit = new ProjectQueue.Work("deposit", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"any_logs\",\"stock\":20}", List.of(gather.id()), Set.of(chest), gather.id());
+        queue.submitSupplied("stock", WORLD, List.of(gather, deposit), chest);
+        var assignment = queue.claim(WORLD, "worker", Set.of(GATHER), 1);
+        assertEquals(16, assignment.cargoCheckpoint());
+        var woods = new ProjectQueue.ResourceSite(11, 123, 8);
+        assertTrue(queue.finish("stock", gather.id(), assignment.job().lease(), false, ProjectQueue.CARGO_CHECKPOINT, null, woods, 2));
+        var carrier = queue.offerCheckpointDeposit(WORLD, "worker", null, 3, woods, (name, item) -> 16).job();
+        var receipt = new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:birch_log", 6, "minecraft:oak_log", 10));
+        assertTrue(queue.finish("stock", deposit.id(), carrier.lease(), false, "Partial delivery", receipt, null, true, 4));
+
+        var resumed = queue.claim(WORLD, "worker", Set.of(GATHER), 5);
+        assertEquals(woods, resumed.job().resourceSite());
+        assertEquals(0, resumed.cargoCheckpoint());
+        assertEquals(4, com.google.gson.JsonParser.parseString(resumed.job().work().payload()).getAsJsonObject().get("count").getAsInt());
+    }
+
     @Test void deepMinersPreferUnoccupiedInterruptedSitesOverShallowCheckpoints() throws Exception {
         var journal = directory.resolve("interrupted-deep-site.json");
         var ore = """

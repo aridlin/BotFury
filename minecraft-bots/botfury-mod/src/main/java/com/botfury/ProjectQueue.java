@@ -230,6 +230,7 @@ final class ProjectQueue {
     private static final String CONTRIBUTION_SETTLED = "Partial stock contribution settled";
     static final String CARGO_CHECKPOINT = "Banking a mining checkpoint";
     private static final int MINING_CARGO_LIMIT = 4;
+    private static final int WOOD_CARGO_LIMIT = 16;
     private static final String CONSTRUCTION_PICKUP = "Collecting replacement materials for a nearby builder";
     static final String ALTERNATIVE_FUEL = "Using carried smelting fuel ";
     static final String PREPARED_COMPATIBLE_STICKS = "Prepared sticks from compatible wood";
@@ -2712,13 +2713,16 @@ final class ProjectQueue {
         if (gather.work.kind != Kind.GATHER || project.repeat != null || project.supplyChest == null) return 0;
         var source = gatherSource(gather.work.payload);
         if (source == null) return 0;
+        boolean wood = ResourceCatalog.isWood(source.resource);
         Integer depth = SubsurfaceAccess.prospectingAltitude(source.resource);
-        if (depth == null || depth > 0) return 0;
+        if (!wood && (depth == null || depth > 0)) return 0;
         var deposit = contributionDeposit(project, gather);
         if (deposit == null || !deposit.work.locks.contains(project.supplyChest)
+                || wood && !depositPrerequisitesReady(project, gather, deposit)
                 || project.jobs.stream().anyMatch(job -> job != deposit && job.work.needs.contains(gather.work.id))) return 0;
         var count = JSON.fromJson(gather.work.payload, com.google.gson.JsonObject.class).get("count");
-        return count != null && count.getAsInt() > MINING_CARGO_LIMIT ? MINING_CARGO_LIMIT : 0;
+        int limit = wood ? WOOD_CARGO_LIMIT : MINING_CARGO_LIMIT;
+        return count != null && count.getAsInt() > limit ? limit : 0;
     }
 
     synchronized Assignment offerGatheringStock(String world, String worker, String projectId, long now,

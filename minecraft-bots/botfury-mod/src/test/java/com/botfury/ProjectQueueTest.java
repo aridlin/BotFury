@@ -989,6 +989,36 @@ class ProjectQueueTest {
         }
     }
 
+    @Test void aCarrierReachingChestRangeCanRetryAnUnchangedLoadOnce() throws Exception {
+        var journal = directory.resolve("close-range-deposit-retry.json");
+        String chest = "block:-8,124,10";
+        String diamond = "minecraft:diamond";
+        var gather = new ProjectQueue.Work("ore", GATHER,
+                "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":19}",
+                List.of(), Set.of());
+        var deposit = new ProjectQueue.Work("bank", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":35,\"target\":{\"x\":-8,\"y\":124,\"z\":10}}",
+                List.of(gather.id()), Set.of(chest), gather.id());
+        var origin = new ProjectQueue.ResourceSite(1, 121, 2);
+        var near = new ProjectQueue.ResourceSite(-5, 125, 9);
+        var receipt = new ProjectQueue.ChestObservation(new ProjectQueue.ChestReport(chest, java.util.Map.of(diamond, 16)), 1);
+        var jobs = List.of(
+                new ProjectQueue.Job(gather, ProjectQueue.State.FAILED, 3, null, null, 0, ProjectQueue.GATHER_STALLED, null, origin),
+                new ProjectQueue.Job(deposit, ProjectQueue.State.WAITING, 1, null, null, 0, "Partial stock contribution settled", receipt));
+        String key = "contribution:bank:carrier";
+        var project = new ProjectQueue.Project("mine", WORLD, jobs, null, chest,
+                java.util.Map.of(key, 2, key + ":stock", 16), java.util.Map.of(key, origin));
+        Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1, "projects", java.util.Map.of("mine", project))));
+
+        var queue = new ProjectQueue(journal);
+        assertNull(queue.offerInterruptedDeposit(WORLD, "carrier", "mine", 2, origin, (worker, item) -> 2));
+        var retry = queue.offerInterruptedDeposit(WORLD, "carrier", "mine", 3, near, (worker, item) -> 2).job();
+        assertEquals(deposit.id(), retry.work().id());
+        assertTrue(queue.finish("mine", deposit.id(), retry.lease(), false, ProjectQueue.TARGET_TIMEOUT, 4));
+        var restored = new ProjectQueue(journal);
+        assertNull(restored.offerInterruptedDeposit(WORLD, "carrier", "mine", 5, near, (worker, item) -> 2));
+    }
+
     @Test void aBystanderCanFinishTheChestOrderWhileTheOriginalMinerHasALease() throws Exception {
         var journal = directory.resolve("mining-drop-bystander.json");
         String world = WORLD;

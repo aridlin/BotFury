@@ -370,6 +370,7 @@ final class MiningTask {
             }else if(age%20==0)pickupPath();
             status="Gathering mined drops";return;
         }
+        if (retracingSurfaceTrail() && followSurfaceTrail(client, client.player.getBlockPos())) return;
         if (requestLooseDrop(client)) return;
         if (subsurface.continuePassage(client, age, excluded)) {
             status = "Opening a short prospecting passage";
@@ -381,7 +382,7 @@ final class MiningTask {
         }
         var routeGoal = surfaceRouteGoal != null ? surfaceRouteGoal
                 : rememberedSite != null ? rememberedSite : surfaceExplorationGoal;
-        if (pathActive && !retracingSurfaceTrail() && recoverRoute(client, routeGoal)) return;
+        if (pathActive && recoverRoute(client, routeGoal)) return;
         if (requesting) return;
         if (pendingCandidates.isEmpty()) {
             if (age < nextSearch) return;
@@ -400,10 +401,6 @@ final class MiningTask {
             var place = supportsAnotherPlayer(client, candidate) ? null : chooseStand(client, candidate);
             if (place != null) {
                 subsurface.stop();
-                if (retracingSurfaceTrail()) {
-                    resetSurfaceTrail();
-                    stopPath();
-                }
                 pendingCandidates.clear();
                 nextSearch = age + 20;
                 request(client, candidate, place, "claim");

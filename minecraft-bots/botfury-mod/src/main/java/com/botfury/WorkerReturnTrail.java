@@ -44,10 +44,18 @@ final class WorkerReturnTrail {
     }
 
     List<ResourceSite> backtrack(ResourceSite current, ResourceSite station) {
+        return backtrack(current, station, false);
+    }
+
+    List<ResourceSite> backtrackToSurface(ResourceSite current, ResourceSite surface) {
+        return backtrack(current, surface, true);
+    }
+
+    private List<ResourceSite> backtrack(ResourceSite current, ResourceSite destination, boolean surface) {
         var route = new ArrayList<ResourceSite>();
         boolean joined = false;
         int usefulPrefix = 0;
-        double distanceToStation = distanceSquared(current, station);
+        double best = surface ? -current.y() : distanceSquared(current, destination);
         for (int i = points.size() - 1; i >= 0; i--) {
             var step = points.get(i);
             if (!joined) {
@@ -57,13 +65,15 @@ final class WorkerReturnTrail {
             // After a partial climb on a different path, do not lead the worker back into the mine.
             if (step.y() < current.y() - CLIMB_PROGRESS) break;
             if (!step.equals(current)) route.add(step);
-            if (Math.abs(station.y() - step.y()) <= 5 && horizontalSquared(station, step) <= 16 * 16) {
+            boolean arrived = surface ? step.y() >= destination.y() - 2
+                    : Math.abs(destination.y() - step.y()) <= 5 && horizontalSquared(destination, step) <= 16 * 16;
+            if (arrived) {
                 return List.copyOf(route);
             }
-            double remaining = distanceSquared(step, station);
+            double remaining = surface ? -step.y() : distanceSquared(step, destination);
             // A continuous climb can get the worker out of the mine even when the older trail is gone.
-            if (step.y() >= current.y() + CLIMB_PROGRESS && remaining < distanceToStation) {
-                distanceToStation = remaining;
+            if (step.y() >= current.y() + CLIMB_PROGRESS && remaining < best) {
+                best = remaining;
                 usefulPrefix = route.size();
             }
         }

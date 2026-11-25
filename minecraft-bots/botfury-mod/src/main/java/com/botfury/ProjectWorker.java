@@ -105,7 +105,7 @@ final class ProjectWorker {
     private static final Map<String, Integer> recentInventory = new HashMap<>();
     private static boolean observedDeath;
     private static List<ProjectQueue.ResourceSite> returnWaypoints;
-    private static long nextTrailSave;
+    private static long nextTrailSave, idleSince, nextIdleAscent;
     private static final SubsurfaceAccess stationReturn = new SubsurfaceAccess();
     private static BlockPos stationToolAttempt;
     private static boolean needsRouteTool;
@@ -257,7 +257,7 @@ final class ProjectWorker {
             cargoRecovery.remember(cargoPath(), enrollment, projectCargoItem, recentInventory, client.player.getBlockPos());
         }
         recentInventory.clear();
-        if (assignment == null && !pending) return;
+        if (assignment == null && !pending && returnWaypoints == null) return;
         if (assignment != null && production != null && success == null && assignment.job().attempts() == 1
                 && carriedUnstartedSmeltingInput && !production.contactedStation()) {
             interruptedSmeltingLease = assignment.job().lease();
@@ -281,6 +281,7 @@ final class ProjectWorker {
         triedCanopyStands.clear();
         waypoint = 0;
         returnWaypoints = null;
+        idleSince = nextIdleAscent = 0;
         attemptedJumpHeadroom = false;
         triedLowerPlacement = false;
         elevatedPlacementStand = null;
@@ -416,6 +417,7 @@ final class ProjectWorker {
             }
         }
         if (assignment == null) {
+            if (idleSince == 0) idleSince = now;
             boolean busy = true;
             if (recoverBreathing(client)) status = "Swimming toward air";
             else if (TaskDefense.evade(client, true)) {
@@ -424,11 +426,20 @@ final class ProjectWorker {
             } else if (TaskDefense.defendProject(client)) {
                 idleRecovery.reset();
                 status = "Defending or recovering";
-            } else if (cargoRecovery.tick(client, cargoPath())) {
-                idleRecovery.reset();
-                status = "Recovering dropped project cargo";
-            } else if (!pending && idleRecovery.yieldWhileIdle(client)) status = "Yielding the work area";
-            else busy = false;
+            } else {
+                if (cargoRecovery.pending()) stopIdleAscent(client);
+                busy = cargoRecovery.tick(client, cargoPath());
+                if (busy) {
+                    idleRecovery.reset();
+                    status = "Recovering dropped project cargo";
+                }
+            }
+            if (busy) stopIdleAscent(client);
+            else if ((!pending || returnWaypoints != null) && followIdleAscent(client, here, now)) busy = true;
+            else if (!pending && idleRecovery.yieldWhileIdle(client)) {
+                status = "Yielding the work area";
+                busy = true;
+            }
             if (busy) {
                 waitingForSafety = true;
                 if (!pending && now >= nextSafetyReport) {
@@ -444,6 +455,7 @@ final class ProjectWorker {
             if (!pending && now >= nextRequest) request(client, here, "claim", now);
             return;
         }
+        idleSince = nextIdleAscent = 0;
         if (!assignment.world().equals(world(here)) || now >= deadline) {
             generation++;
             reset(client);
@@ -1347,21 +1359,51 @@ final class ProjectWorker {
             BaritoneClient.goTo(next);
             retryApproach = now + seconds(3);
         }
-        status = assignment.project() + "/" + assignment.job().work().id() + (scaffold ? ": Scaffold step " : ": Retracing return route ")
-                + (waypoint + 1) + "/" + route.size();
+        String stepLabel = assignment == null ? "Returning to the surface "
+                : assignment.project() + "/" + assignment.job().work().id()
+                    + (scaffold ? ": Scaffold step " : ": Retracing return route ");
+        status = stepLabel + (waypoint + 1) + "/" + route.size();
         return true;
+    }
+
+    private static boolean followIdleAscent(MinecraftClient client, LocalFormation.Peer here, long now) {
+        if (returnWaypoints == null) {
+            if (now - idleSince < seconds(6) || now < nextIdleAscent || !enrollment.matches(here.name(), world(here))
+                    || !client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)
+                    || MiningTask.active() || !SubsurfaceAccess.hasFooting(client)) return false;
+            nextIdleAscent = now + seconds(30);
+            var surface = MiningTask.localSurfaceExit(client, client.player.getBlockPos(), null);
+            if (surface == null) return false;
+            var route = recordedSurfaceRoute(client, surface);
+            if (route.isEmpty()) return false;
+            returnWaypoints = route;
+            waypoint = 0;
+            BotEvents.add("info", "movement", "Idle worker retracing " + route.size() + " waypoints toward the surface");
+        }
+        if (followWaypoints(client, now, returnWaypoints, false)) return true;
+        stopIdleAscent(client);
+        nextIdleAscent = now + seconds(30);
+        return false;
+    }
+
+    private static void stopIdleAscent(MinecraftClient client) {
+        if (returnWaypoints == null) return;
+        halt(client);
+        returnWaypoints = null;
+        waypoint = 0;
     }
 
     static List<ProjectQueue.ResourceSite> recordedSurfaceRoute(MinecraftClient client, BlockPos destination) {
         var here = LocalFormation.here();
         if (here == null || !enrollment.matches(here.name(), world(here))) return List.of();
-        return returnTrail.backtrack(routePoint(client.player.getBlockPos()), routePoint(destination));
+        return returnTrail.backtrackToSurface(routePoint(client.player.getBlockPos()), routePoint(destination));
     }
 
     static boolean knownTrailFooting(MinecraftClient client, BlockPos pos) {
         var world = client.world;
         return world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)
                 && world.isInBuildLimit(pos.up()) && world.getWorldBorder().contains(pos)
+                && !world.getBlockState(pos.down()).isOf(Blocks.MAGMA_BLOCK)
                 && ProjectPlacement.flushFloor(world.getBlockState(pos.down()), world, pos.down())
                 && world.getFluidState(pos).isEmpty() && world.getFluidState(pos.up()).isEmpty()
                 && world.getBlockState(pos).getCollisionShape(world, pos).isEmpty()

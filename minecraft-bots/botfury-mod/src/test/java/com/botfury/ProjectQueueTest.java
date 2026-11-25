@@ -332,6 +332,32 @@ class ProjectQueueTest {
         assertEquals(List.of("second", "deliver-first"), jobs.get(3).work().needs());
     }
 
+    @Test void aUsableCarriedPickaxeSatisfiesOnlyPrivateGatherPreparation() throws Exception {
+        for (boolean stockOutput : new boolean[]{false, true}) {
+            var queue = new ProjectQueue(directory.resolve("existing-pickaxe-" + stockOutput + ".json"));
+            String chest = "block:3,64,0";
+            var wood = job("wood", GATHER, List.of());
+            var craft = new ProjectQueue.Work("pick", CRAFT,
+                    "{\"recipe\":\"minecraft:stone_pickaxe\",\"count\":1}", List.of(wood.id()), Set.of("block:4,64,0"), wood.id());
+            var next = stockOutput ? new ProjectQueue.Work("next", TRANSFER,
+                    "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:stone_pickaxe\",\"stock\":1}",
+                    List.of(craft.id()), Set.of(chest), craft.id()) : new ProjectQueue.Work("next", GATHER,
+                    "{\"resource\":\"iron\",\"variant\":\"both\",\"item\":\"minecraft:raw_iron\",\"count\":3}",
+                    List.of(craft.id()), Set.of(), craft.id());
+            queue.submitSupplied("tools", WORLD, List.of(wood, craft, next), chest);
+            var prep = queue.claim(WORLD, "miner", Set.of(GATHER), 1).job();
+            assertTrue(queue.finish("tools", wood.id(), prep.lease(), true, "Collected", 2));
+            var first = queue.claim(WORLD, "miner", Set.of(CRAFT, GATHER, TRANSFER), null, 3, null,
+                    item -> false, null, java.util.Map.of("minecraft:stone_pickaxe", 31)).job();
+            assertEquals(craft.id(), first.work().id());
+            var work = queue.claim(WORLD, "miner", Set.of(CRAFT, GATHER, TRANSFER), null, 4, null,
+                    item -> false, null, java.util.Map.of("minecraft:stone_pickaxe", 32)).job();
+            assertEquals(stockOutput ? craft.id() : next.id(), work.work().id());
+            if (!stockOutput) assertEquals("Gathering tool already carried: minecraft:stone_pickaxe",
+                    queue.snapshot(4).get(0).jobs().get(1).evidence());
+        }
+    }
+
     @Test void equippedMinerCanResumeAStalledPrivateToolChainAndStillRestock() throws Exception {
         var journal = directory.resolve("equipped-miner.json");
         var queue = new ProjectQueue(journal);

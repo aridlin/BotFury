@@ -3887,9 +3887,10 @@ final class ProjectQueue {
 
     private static boolean canRecoverObservedGather(Project project, Job gather, long now) {
         if (gather == null || gather.work.kind != Kind.GATHER || gather.state != State.FAILED || gather.work.sameWorkerAs != null
-                || !GATHER_STALLED.equals(gather.evidence) || now < gather.expiresAt
-                || !project.supplyRecoveries.containsKey("stalled-stock-gather:" + gather.work.id)
-                || project.supplyRecoveries.containsKey(observedGatherKey(gather))) return false;
+                || now < gather.expiresAt || project.supplyRecoveries.containsKey(observedGatherKey(gather))) return false;
+        boolean exhaustedRoute = GATHER_STALLED.equals(gather.evidence)
+                && project.supplyRecoveries.containsKey("stalled-stock-gather:" + gather.work.id);
+        if (!exhaustedRoute && !LEASE_EXPIRED.equals(gather.evidence)) return false;
         var deposit = contributionDeposit(project, gather);
         return deposit != null && deposit.work.locks.contains(project.supplyChest)
                 && depositPrerequisitesReady(project, gather, deposit)

@@ -210,7 +210,10 @@ final class SubsurfaceAccess {
             if (arrived && destinationHint != null) heading = 0;
             if (!arrived) localDescent = localAscent = false;
             stopRoute();
-            if (natural && !stalledAscent) return false;
+            if (natural) {
+                if (arrived || !ascending) return false;
+                localAscent = true;
+            }
         }
         if (age < retryAt) return true;
         if (!hasFooting(client)) return false;

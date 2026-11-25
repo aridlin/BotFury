@@ -109,12 +109,16 @@ final class SubsurfaceAccess {
     }
 
     boolean advance(MinecraftClient client, int age, int depth, ProjectGather.Area area) {
-        return advance(client, age, depth, area, null, false);
+        return advance(client, age, depth, area, null, false, true);
     }
 
     boolean advanceToward(MinecraftClient client, int age, BlockPos destination, ProjectGather.Area area,
                           boolean allowNaturalAscent) {
-        return advance(client, age, destination.getY(), area, destination, allowNaturalAscent);
+        return advance(client, age, destination.getY(), area, destination, allowNaturalAscent, true);
+    }
+
+    boolean walkTowardSurface(MinecraftClient client, int age, BlockPos destination) {
+        return advance(client, age, destination.getY(), null, destination, true, false);
     }
 
     static boolean localApproachInRange(BlockPos feet, BlockPos destination, boolean prospecting) {
@@ -173,7 +177,7 @@ final class SubsurfaceAccess {
     }
 
     private boolean advance(MinecraftClient client, int age, int height, ProjectGather.Area area,
-                            BlockPos destinationHint, boolean allowNaturalAscent) {
+                            BlockPos destinationHint, boolean allowNaturalAscent, boolean allowPassage) {
         var position = client.player.getBlockPos();
         boolean descending = destinationHint == null && position.getY() > height;
         if (descending && position.getY() < lowestProspectingY && hasFooting(client)) {
@@ -214,13 +218,15 @@ final class SubsurfaceAccess {
             if (!arrived) localDescent = localAscent = false;
             stopRoute();
             if (natural) {
-                if (arrived || !ascending) return false;
-                localAscent = true;
+                if (!ascending || arrived && allowPassage) return false;
+                localAscent = !arrived && allowPassage;
             }
         }
         if (age < retryAt) return true;
         if (!hasFooting(client)) return false;
-        if (allowNaturalAscent && !stalledAscent && tryNaturalAscent(client, age, height)) return true;
+        if (allowNaturalAscent && !stalledAscent
+                && tryNaturalAscent(client, age, height, allowPassage ? ASCENT_CHECKPOINT : 1)) return true;
+        if (!allowPassage) return false;
         if (area != null && (area.contains(position) || area.contains(position.down()))) return false;
 
         int segmentY = position.getY() + Math.max(-4, Math.min(4, height - position.getY()));

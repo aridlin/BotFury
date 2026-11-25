@@ -1420,7 +1420,6 @@ final class ProjectWorker {
             var surface = MiningTask.localSurfaceExit(client, feet, null);
             if (surface == null) return false;
             var route = recordedSurfaceRoute(client, surface);
-            if (route.isEmpty() && !SubsurfaceAccess.canDigRoute(client)) return false;
             idleSurfaceGoal = surface;
             idleAscentDeadline = now + seconds(180);
             idleAscentProgressAt = now;
@@ -1443,14 +1442,22 @@ final class ProjectWorker {
         if (returnWaypoints != null) {
             if (followWaypoints(client, now, returnWaypoints, false)) return true;
             returnWaypoints = null;
-            if (!SubsurfaceAccess.canDigRoute(client)) {
-                stopIdleAscent(client);
-                nextIdleAscent = now + seconds(90);
-                return false;
+            if (SubsurfaceAccess.canDigRoute(client)) {
+                BotEvents.add("info", "movement", "Idle worker switching to a protected cave ascent");
             }
-            BotEvents.add("info", "movement", "Idle worker switching to a protected cave ascent");
         }
         approachAge++;
+        if (!SubsurfaceAccess.canDigRoute(client)) {
+            if (stationReturn.walkTowardSurface(client, approachAge, idleSurfaceGoal)) {
+                status = "Following a natural cave exit";
+                return true;
+            }
+            // A checkpoint can finish as the player lands. Give the next step a tick to start.
+            if (stationReturn.followingNaturalAscent() || !SubsurfaceAccess.hasFooting(client)) return true;
+            stopIdleAscent(client);
+            nextIdleAscent = now + seconds(90);
+            return false;
+        }
         if (approachAge >= nextIdleRouteProbe && !stationReturn.continuePassage(client, approachAge, null)
                 && !stationReturn.advanceToward(client, approachAge, idleSurfaceGoal, null, true)) {
             nextIdleRouteProbe = approachAge + 10;

@@ -21,7 +21,7 @@ import java.util.List;
 /** Makes short, reversible Baritone approaches when a cave does not reach the ore layer. */
 final class SubsurfaceAccess {
     // Increment when a new return method can recover a previously unreachable route.
-    static final int RETURN_ROUTE_REVISION = 9;
+    static final int RETURN_ROUTE_REVISION = 10;
     private record Passage(BlockPos from, BlockPos to) {
         boolean climbing() { return to.getY() > from.getY(); }
         int clearance() { return 2 + Math.max(0, from.getY() - to.getY()); }
@@ -36,7 +36,7 @@ final class SubsurfaceAccess {
 
     private static final Direction[] HEADINGS = {Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST};
     private static final int REACH = 12;
-    private static final int HARVEST_RESERVE = 20;
+    private static final int HARVEST_RESERVE = 32;
     private static final int ASCENT_CHECKPOINT = 12;
     private static final int DESCENT_RECOVERY_TICKS = 240;
     private static final int RETURN_RECOVERY_TICKS = 400;
@@ -556,7 +556,10 @@ final class SubsurfaceAccess {
 
     boolean blocksBreaking(MinecraftClient client, BlockPos pos) {
         if (!active()) return false;
-        if (followingNaturalAscent()) return true;
+        if (followingNaturalAscent() || client.player == null) return true;
+        var held = client.player.getMainHandStack();
+        if (held.getItem() instanceof PickaxeItem pickaxe && pickaxe.getMaterial().getMiningLevel() >= 2
+                && held.getMaxDamage() - held.getDamage() <= HARVEST_RESERVE) return true;
         if (client.world == null || !pos.isWithinDistance(origin, escapingExploration ? 6 : REACH)
                 || excluded != null && excluded.contains(pos)
                 || !BaritoneSettings.recoverableTerrain(client.world.getBlockState(pos).getBlock())) return true;
@@ -584,7 +587,7 @@ final class SubsurfaceAccess {
             var stack = inventory.getStack(index);
             if (!(stack.getItem() instanceof PickaxeItem pickaxe)) continue;
             int level = pickaxe.getMaterial().getMiningLevel();
-            int reserve = !returning && level >= 2 ? HARVEST_RESERVE : 0;
+            int reserve = level >= 2 ? HARVEST_RESERVE : 0;
             if (stack.getMaxDamage() - stack.getDamage() <= reserve) continue;
             int priority = returning ? level : level == 1 ? -1 : level;
             if (priority < bestPriority) {

@@ -59,7 +59,7 @@ final class ProjectWorker {
     private static final Identifier WOODEN_PICKAXE = Identifier.of("minecraft", "wooden_pickaxe");
     private static Identifier miningRecipe;
     private static ProjectProduction miningCraft;
-    private static boolean preparingMiningSticks;
+    private static boolean preparingMiningIngredients;
     private static ProjectGather.Area miningCraftArea;
     private static ProjectBlock portableWorkbench, productionWorkbench;
     private static ProjectProduction.Result pendingProductionResult;
@@ -304,7 +304,7 @@ final class ProjectWorker {
         nextFieldStoneSearch = 0;
         miningRecipe = null;
         miningCraft = null;
-        preparingMiningSticks = false;
+        preparingMiningIngredients = false;
         miningCraftArea = null;
         portableWorkbench = productionWorkbench = null;
         pendingProductionResult = null;
@@ -726,15 +726,17 @@ final class ProjectWorker {
             fieldWorkstation = FieldWorkstation.findForMiningTool(client, now, excluded);
             if (fieldWorkstation == null) return false;
         } else {
-            if (!ProjectProduction.canCraft(client, ROUTE_STICKS)
-                    || !ProjectProduction.canCraft(client, recipe, new net.minecraft.item.ItemStack(net.minecraft.item.Items.STICK, 4))) {
-                return false;
+            if (!ProjectProduction.canCraft(client, recipe, new net.minecraft.item.ItemStack(Items.STICK, 4))) return false;
+            ProjectProduction.Spec ingredients;
+            if (ProjectProduction.canCraft(client, ROUTE_STICKS)) {
+                int sticks = client.player.getInventory().count(Items.STICK);
+                ingredients = new ProjectProduction.Spec(null, ProjectQueue.Kind.CRAFT, ROUTE_STICKS, null, null, sticks + 1);
+            } else {
+                ingredients = FieldWorkstation.plankRecipe(client, 2);
+                if (ingredients == null) return false;
             }
-            var inventory = client.player.getInventory();
-            int sticks = inventory.count(net.minecraft.item.Items.STICK);
-            miningCraft = new ProjectProduction(new ProjectProduction.Spec(null, ProjectQueue.Kind.CRAFT,
-                    ROUTE_STICKS, null, null, sticks + 1));
-            preparingMiningSticks = true;
+            miningCraft = new ProjectProduction(ingredients);
+            preparingMiningIngredients = true;
             miningCraftArea = excluded;
         }
         miningRecipe = recipe;
@@ -746,22 +748,22 @@ final class ProjectWorker {
         var recipe = miningRecipe;
         boolean replacement = isPickaxeRecipe(recipe);
         boolean excavation = assignment != null && assignment.job().work().kind() == ProjectQueue.Kind.EXCAVATE;
-        if (preparingMiningSticks) {
-            status = replacement ? "Crafting sticks for a replacement pickaxe" : "Crafting sticks for a stone sword";
-            var sticks = miningCraft.tick(client, now);
-            if (sticks == null) return;
+        if (preparingMiningIngredients) {
+            status = replacement ? "Preparing materials for a replacement pickaxe" : "Preparing materials for a stone sword";
+            var ingredients = miningCraft.tick(client, now);
+            if (ingredients == null) return;
             miningCraft.close(client);
             miningCraft = null;
-            preparingMiningSticks = false;
+            preparingMiningIngredients = false;
             var area = miningCraftArea;
             miningCraftArea = null;
             miningRecipe = null;
-            if (sticks.success() && startMiningCraft(client, now, recipe, area)) return;
+            if (ingredients.success() && startMiningCraft(client, now, recipe, area)) return;
             if (delivery != null) finish(client, false, ProjectQueue.ROUTE_PREPARATION_FAILED + "could not prepare pickaxe ingredients");
             else if (replacement && gather != null && !SubsurfaceAccess.canDigRoute(client)) {
                 finish(client, false, ProjectQueue.GATHER_TOOLS_NEEDED);
             }
-            else if (replacement && sticks.success()) stationToolAttempt = null;
+            else if (replacement && ingredients.success()) stationToolAttempt = null;
             return;
         }
         if (miningCraft == null) {
@@ -1486,15 +1488,16 @@ final class ProjectWorker {
         // Placement cargo can include the very planks needed for a new workbench.
         boolean hasRouteTool = SubsurfaceAccess.canDigRoute(client);
         if (hasRouteTool) needsRouteTool = needsRouteBench = false;
-        if (!placement && !hasRouteTool
+        boolean canSwitchTools = !stationReturn.followingNaturalAscent() && !stationReturn.walkingLocalAscent(client);
+        if (!placement && (!hasRouteTool || canSwitchTools && !SubsurfaceAccess.hasBasicRoutePickaxe(client))
                 && (stationToolAttempt == null || !position.isWithinDistance(stationToolAttempt, 4))
                 && SubsurfaceAccess.hasFooting(client)) {
             stationToolAttempt = position;
             if (startMiningCraft(client, now, ROUTE_PICKAXE, excluded)) {
-                stationReturn.stop();
+                stationReturn.pauseReturnForToolPreparation();
                 return true;
             }
-            needsRouteTool = chest != null && chest.depositing();
+            needsRouteTool = !hasRouteTool && chest != null && chest.depositing();
             if (needsRouteTool && !allowedResupplyWait) {
                 allowedResupplyWait = true;
                 taskEnd = Math.max(taskEnd, Math.min(stationReturnDeadline, now + seconds(390)));

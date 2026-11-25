@@ -1029,9 +1029,16 @@ final class MiningTask {
     }
 
     private static boolean nearOreDropHeight(MinecraftClient client, BlockPos ore, BlockPos stand) {
-        var underside = ore.down();
-        return ore.getY() - stand.getY() <= 1
-                || client.world.getBlockState(underside).getCollisionShape(client.world, underside).isEmpty();
+        var world = client.world;
+        for (var below = ore.down(); below.getY() >= stand.getY(); below = below.down()) {
+            if (world.getBlockState(below).getCollisionShape(world, below).isEmpty()) continue;
+            // An unsupported block may drop one or more levels before the item settles.
+            // A shelf one block up is usable only when the worker has room to jump.
+            var headroom = stand.up(2);
+            return below.getY() == stand.getY()
+                    && world.getBlockState(headroom).getCollisionShape(world, headroom).isEmpty();
+        }
+        return true;
     }
 
     private static Vec3d standing(MinecraftClient client, BlockPos target) {

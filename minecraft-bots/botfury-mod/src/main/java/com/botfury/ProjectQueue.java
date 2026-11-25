@@ -155,12 +155,12 @@ final class ProjectQueue {
         }
     }
     record Assignment(String project, String world, Job job, FuelUse fuelFor, List<ResourceSite> accessRoute,
-                      int cargoCheckpoint, List<ResourceSite> peerStands, int flexibleStickCount) {
+                      int cargoCheckpoint, int previousCheckpointCargo, List<ResourceSite> peerStands, int flexibleStickCount) {
         Assignment {
             peerStands = peerStands == null ? List.of() : List.copyOf(peerStands);
             accessRoute = accessRoute == null ? List.of() : List.copyOf(accessRoute);
         }
-        Assignment(String project, String world, Job job) { this(project, world, job, null, List.of(), 0, List.of(), 0); }
+        Assignment(String project, String world, Job job) { this(project, world, job, null, List.of(), 0, 0, List.of(), 0); }
     }
     record RouteBenchStock(String payload, String location, int reserve, Set<String> locks) {}
     record RouteToolDelivery(String recipient, ResourceSite position, String item, int previousCount, int craftTarget,
@@ -3021,9 +3021,20 @@ final class ProjectQueue {
 
     private Assignment assignment(Project project, Job job) {
         var sticks = stickPreparation(project, job);
+        int checkpoint = cargoCheckpoint(project, job);
         return new Assignment(project.id, project.world, stockGatheringAssignment(project, job), fuelUse(project, job),
-                accessRoute(project, job), cargoCheckpoint(project, job), batchPeerStands(project, job),
-                sticks == null ? 0 : sticks.count);
+                accessRoute(project, job), checkpoint, checkpoint == 0 ? 0 : previousCheckpointCargo(project, job),
+                batchPeerStands(project, job), sticks == null ? 0 : sticks.count);
+    }
+
+    private static int previousCheckpointCargo(Project project, Job gather) {
+        var deposit = contributionDeposit(project, gather);
+        String key = contributionCargo(deposit, gather.worker);
+        Integer earlierStock = project.supplyRecoveries.get(key + ":stock");
+        var target = transferTarget(deposit);
+        if (earlierStock != null && deposit.chest != null && target != null
+                && stockCount(deposit.chest.report, target.item) > earlierStock) return 0;
+        return project.supplyRecoveries.getOrDefault(key, 0);
     }
 
     private static Job stockGatheringAssignment(Project project, Job gather) {

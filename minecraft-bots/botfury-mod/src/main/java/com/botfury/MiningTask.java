@@ -176,7 +176,7 @@ final class MiningTask {
             String id = Registries.BLOCK.getId(state.getBlock()).toString();
             if (!id.endsWith("_ore") && !id.equals("minecraft:ancient_debris")) continue;
             if (observations.containsKey(id) || BuildProtection.blocked(pos) || supportsAnotherPlayer(client, pos)
-                    || !hasTool(client, state) || !canReachFromHere(client, feet, pos)) continue;
+                    || !hasTool(client, state) || !nearOreDropHeight(client, pos, feet) || !canReachFromHere(client, feet, pos)) continue;
             observations.put(id, new ProjectQueue.ReachableOre(id,
                     new ProjectQueue.ResourceSite(pos.getX(), pos.getY(), pos.getZ())));
             if (observations.size() >= 8) break;
@@ -290,7 +290,8 @@ final class MiningTask {
             boolean atPlannedStand = client.player.squaredDistanceTo(stand) <= 1.44;
             // The stand is a route, not a requirement when a project worker already has a safe hit.
             if (ray != null && (atPlannedStand || canMineFromCurrentFooting(client, feet))
-                    && !feet.down().equals(target)) {
+                    && !feet.down().equals(target)
+                    && (!projectMining || !ResourceCatalog.isOre(job.resource) || nearOreDropHeight(client, target, feet))) {
                 approachProgress = age;
                 stopPath();
                 if (!equip(client, target)) {
@@ -325,14 +326,15 @@ final class MiningTask {
                     }
                     localApproachFrom = null;
                 }
+                boolean prospecting = prospectingAltitude(client) != null;
                 if (projectMining && !localApproachTried && localApproachSteps < MAX_PROTECTED_APPROACH_STEPS
                         && age - approachProgress >= 80
                         && SubsurfaceAccess.canDigRoute(client)
-                        && SubsurfaceAccess.localApproachInRange(feet, p, prospectingAltitude(client) != null)
-                        && (!BaritoneClient.pursuing(p) || BaritoneClient.route().isEmpty())) {
+                        && SubsurfaceAccess.localApproachInRange(feet, p, prospecting)
+                        && shouldOpenLocalApproach(feet, p, prospecting)) {
                     stopPath();
                     localApproachTried = true;
-                    if (subsurface.openLocalApproach(client, age, p, excluded, prospectingAltitude(client) != null)) {
+                    if (subsurface.openLocalApproach(client, age, p, excluded, prospecting)) {
                         localApproachFrom = feet;
                         localApproachSteps++;
                         status = "Opening a protected approach to reserved " + job.resource;
@@ -580,6 +582,7 @@ final class MiningTask {
     private static Vec3d chooseStand(MinecraftClient client, BlockPos target) {
         var feet = client.player.getBlockPos();
         if (!rejectedStands.containsKey(feet) && canMineFromCurrentFooting(client, feet)
+                && (!ResourceCatalog.isOre(job.resource) || nearOreDropHeight(client, target, feet))
                 && canReachFromHere(client, feet, target)) return Vec3d.ofBottomCenter(feet);
         return standing(client, target);
     }
@@ -1025,6 +1028,19 @@ final class MiningTask {
         return true;
     }
 
+    private static boolean nearOreDropHeight(MinecraftClient client, BlockPos ore, BlockPos stand) {
+        var world = client.world;
+        for (var below = ore.down(); below.getY() >= stand.getY(); below = below.down()) {
+            if (world.getBlockState(below).getCollisionShape(world, below).isEmpty()) continue;
+            // An unsupported block may drop one or more levels before the item settles.
+            // A shelf one block up is usable only when the worker has room to jump.
+            var headroom = stand.up(2);
+            return below.getY() == stand.getY()
+                    && world.getBlockState(headroom).getCollisionShape(world, headroom).isEmpty();
+        }
+        return true;
+    }
+
     private static Vec3d standing(MinecraftClient client, BlockPos target) {
         var player = client.player;
         var world = client.world;
@@ -1035,11 +1051,13 @@ final class MiningTask {
         double reach = Math.min(4.3, client.interactionManager.getReachDistance() - .1);
         Vec3d best = null;
         double bestScore = Double.POSITIVE_INFINITY;
-        // Reach comes from the eyes, so useful poses can be several blocks below the target.
+        boolean ore = projectMining && ResourceCatalog.isOre(job.resource);
+        // The eyes can reach upward farther than the player can collect drops from a ledge.
         for (var offset : BlockPos.iterateOutwards(target, 2, 5, 2)) {
             if (offset.getY() > target.getY() + 2 || offset.equals(target) || offset.up().equals(target)
                     || offset.down().equals(target)
                     || rejectedStands.containsKey(offset)
+                    || ore && !nearOreDropHeight(client, target, offset)
                     || !world.isChunkLoaded(offset.getX() >> 4, offset.getZ() >> 4)) continue;
             var below = offset.down();
             if (world.getBlockState(below).getCollisionShape(world, below).isEmpty()
@@ -1061,6 +1079,12 @@ final class MiningTask {
             }
         }
         return best;
+    }
+
+    private static boolean shouldOpenLocalApproach(BlockPos feet, BlockPos stand, boolean prospecting) {
+        if (!BaritoneClient.pursuing(stand)) return true;
+        var route = BaritoneClient.route();
+        return route.isEmpty() || prospecting && route.size() > feet.getManhattanDistance(stand) * 3 + 8;
     }
 
     private static boolean tryAlternateStand(MinecraftClient client, BlockPos previous) {

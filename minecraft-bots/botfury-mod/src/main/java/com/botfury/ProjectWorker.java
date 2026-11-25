@@ -75,7 +75,8 @@ final class ProjectWorker {
     private static long lastGatherProgress;
     private static int gatheredHighWater;
     private static Vec3d gatherProgressPosition;
-    private static int checkpointAt;
+    private static int checkpointAt, cargoHighWater;
+    private static long lastCargoIncrease;
     private static DroppedItemSearch pickup;
     private static ProjectQueue.ChestReport chestReport;
     private static boolean pickupShortfall;
@@ -318,7 +319,8 @@ final class ProjectWorker {
         lastGatherProgress = 0;
         gatheredHighWater = 0;
         gatherProgressPosition = null;
-        checkpointAt = 0;
+        checkpointAt = cargoHighWater = 0;
+        lastCargoIncrease = 0;
         pickup = null;
         chestReport = null;
         pickupShortfall = false;
@@ -554,6 +556,10 @@ final class ProjectWorker {
                 checkpointAt = held <= assignment.previousCheckpointCargo()
                         ? held + assignment.cargoCheckpoint() : assignment.cargoCheckpoint();
             }
+            if (checkpointAt > 0 && held > cargoHighWater) {
+                cargoHighWater = held;
+                lastCargoIncrease = now;
+            }
             if (!checkedCarriedFuel && held < gather.count() && assignment.fuelFor() != null) {
                 checkedCarriedFuel = true;
                 var fuel = ProjectProduction.alternativeFuel(client, assignment.fuelFor());
@@ -562,12 +568,17 @@ final class ProjectWorker {
                     return;
                 }
             }
+            boolean lowHealth = client.player.getHealth() <= client.player.getMaxHealth() / 2;
+            boolean deep = client.player.getBlockY() <= 8;
+            boolean wood = checkpointAt > 0 && ResourceCatalog.isWood(gather.resource());
+            boolean drySpell = deep && !wood && lastCargoIncrease != 0 && now - lastCargoIncrease >= seconds(60);
             if (held >= gather.count()) {
                 finish(client, true, "Observed " + held + " " + gather.item() + " in worker inventory");
-            } else if (checkpointAt > 0 && held > assignment.previousCheckpointCargo()
-                    && (client.player.getBlockY() <= 8 || ResourceCatalog.isWood(gather.resource()))
-                    && (held >= checkpointAt || client.player.getHealth() <= client.player.getMaxHealth() / 2)) {
-                if (held < checkpointAt) BotEvents.add("info", "projects", "Banking gathered cargo early at low health");
+            } else if (checkpointAt > 0 && held > assignment.previousCheckpointCargo() && (deep || wood)
+                    && (held >= checkpointAt || lowHealth || drySpell)) {
+                if (held < checkpointAt) BotEvents.add("info", "projects", lowHealth
+                        ? "Banking gathered cargo early at low health"
+                        : "Banking mining cargo after 60 seconds without a new drop");
                 finish(client, false, ProjectQueue.CARGO_CHECKPOINT);
             } else if (miningRecipe != null) {
                 tickMiningCraft(client, now);

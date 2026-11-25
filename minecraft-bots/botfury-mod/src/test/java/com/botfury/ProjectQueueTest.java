@@ -1036,6 +1036,43 @@ class ProjectQueueTest {
         assertEquals(4, queue.chestStock(world).get(chest).report().items().get(diamond));
     }
 
+    @Test void exhaustedMiningLeaseRebuildsPrivateToolsOnlyAfterObservedInventoryLoss() throws Exception {
+        var journal = directory.resolve("expired-private-mining-tools.json");
+        String chest = "block:3,64,0";
+        var supplies = job("supplies", GATHER, List.of());
+        var tool = new ProjectQueue.Work("tool", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\",\"count\":1}",
+                List.of(supplies.id()), Set.of(), supplies.id());
+        var mining = new ProjectQueue.Work("mining", GATHER,
+                "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":8}",
+                List.of(tool.id()), Set.of(), tool.id());
+        var deposit = new ProjectQueue.Work("deposit", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":8}",
+                List.of(mining.id()), Set.of(chest), mining.id());
+        var site = new ProjectQueue.ResourceSite(17, -54, 2);
+        var jobs = List.of(
+                new ProjectQueue.Job(supplies, ProjectQueue.State.DONE, 1, "original", null, 0, "Observed supplies", null),
+                new ProjectQueue.Job(tool, ProjectQueue.State.DONE, 1, "original", null, 0, "Observed pickaxe", null),
+                new ProjectQueue.Job(mining, ProjectQueue.State.FAILED, 3, null, null, 0, "Worker lease expired", null, site),
+                new ProjectQueue.Job(deposit, ProjectQueue.State.WAITING, 0, null, null, 0, null, null));
+        var project = new ProjectQueue.Project("stock", WORLD, jobs, null, chest, java.util.Map.of());
+        Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1, "projects", java.util.Map.of("stock", project))));
+        var queue = new ProjectQueue(journal);
+        assertNull(queue.claim(WORLD, "replacement", Set.of(GATHER), "stock", 1, site, item -> false,
+                (worker, item) -> -1, null));
+        assertNull(queue.claim(WORLD, "replacement", Set.of(GATHER), "stock", 2, site, item -> false,
+                (worker, item) -> item.equals("minecraft:diamond_pickaxe") ? 1 : 0, null));
+        assertNull(queue.claim(WORLD, "replacement", Set.of(GATHER), "stock", 3, site, item -> false,
+                (worker, item) -> item.equals("minecraft:diamond") ? 1 : 0, null));
+        var prep = queue.claim(WORLD, "replacement", Set.of(GATHER), "stock", 4, site, item -> false,
+                (worker, item) -> 0, null).job();
+        assertEquals(supplies.id(), prep.work().id());
+
+        var recovered = new ProjectQueue(journal).snapshot(5).get(0);
+        assertEquals(1, recovered.supplyRecoveries().get("expired-miner-tools:mining"));
+        assertEquals(ProjectQueue.State.WAITING, recovered.jobs().get(2).state());
+        assertEquals(site, recovered.jobs().get(2).resourceSite());
+    }
+
     @Test void expiredGatheringWithASavedSiteAllowsTheOriginalWorkerToReconnect() throws Exception {
         for (boolean coordinatorRestart : new boolean[]{false, true}) {
             var journal = directory.resolve("gather-reconnect-" + coordinatorRestart + ".json");

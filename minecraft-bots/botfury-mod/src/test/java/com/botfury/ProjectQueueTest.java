@@ -1036,6 +1036,32 @@ class ProjectQueueTest {
         assertEquals(4, queue.chestStock(world).get(chest).report().items().get(diamond));
     }
 
+    @Test void exhaustedSurfaceLeaseCanRecoverOnceFromAConfirmedNewArea() throws Exception {
+        var queue = new ProjectQueue(directory.resolve("expired-surface-gather.json"));
+        String chest = "block:3,64,0";
+        var gather = new ProjectQueue.Work("cut", GATHER,
+                "{\"resource\":\"any_logs\",\"variant\":\"both\",\"item\":\"any_logs\",\"count\":9}",
+                List.of(), Set.of());
+        var deposit = new ProjectQueue.Work("bank", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"any_logs\",\"stock\":9}",
+                List.of(gather.id()), Set.of(chest), gather.id());
+        queue.submitSupplied("logs", WORLD, List.of(gather, deposit), chest);
+        long next = 1;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            var lease = queue.claim(WORLD, "first", Set.of(GATHER), next).job();
+            assertEquals(attempt, lease.attempts());
+            next = lease.expiresAt() + 1;
+        }
+        assertNull(queue.claim(WORLD, "replacement", Set.of(GATHER), next));
+        var request = queue.exhaustedSurfaceGatherings(WORLD, next).get(0);
+        var surface = new ProjectQueue.ResourceSite(19, 84, 7);
+        assertTrue(queue.recoverObservedGather(WORLD, request, "replacement", surface, next));
+        var resumed = queue.claim(WORLD, "replacement", Set.of(GATHER), next + 1).job();
+        assertEquals(surface, resumed.resourceSite());
+        assertNull(queue.claim(WORLD, "third", Set.of(GATHER), resumed.expiresAt() + 1));
+        assertTrue(queue.exhaustedSurfaceGatherings(WORLD, resumed.expiresAt() + 1).isEmpty());
+    }
+
     @Test void exhaustedMiningLeaseRebuildsPrivateToolsOnlyAfterObservedInventoryLoss() throws Exception {
         var journal = directory.resolve("expired-private-mining-tools.json");
         String chest = "block:3,64,0";

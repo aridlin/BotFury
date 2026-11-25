@@ -620,6 +620,12 @@ final class SubsurfaceAccess {
         stopRoute();
     }
 
+    void pauseReturnForToolPreparation() {
+        boolean continuing = localAscent;
+        stop();
+        localAscent = continuing;
+    }
+
     private void stopRoute() {
         if (settings == null) return;
         BaritoneClient.execute("stop");

@@ -1493,7 +1493,7 @@ final class ProjectWorker {
                 && SubsurfaceAccess.hasFooting(client)) {
             stationToolAttempt = position;
             if (startMiningCraft(client, now, ROUTE_PICKAXE, excluded)) {
-                stationReturn.stop();
+                stationReturn.pauseReturnForToolPreparation();
                 return true;
             }
             needsRouteTool = !hasRouteTool && chest != null && chest.depositing();

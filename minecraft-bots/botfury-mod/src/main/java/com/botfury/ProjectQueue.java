@@ -182,7 +182,7 @@ final class ProjectQueue {
     private static final String OWNED_STATION_MISSING = "Owned station is missing";
     record OwnedPlacement(String project, String job, String payload) {}
     record CarriedSmelt(String project, Work work) {}
-    record SurfaceGatherRecovery(String project, Work work) {}
+    record SurfaceGatherRecovery(String project, Work work, String pinnedWorker) {}
     record CarriedCraft(String project, Work work, String worker, UUID gatheringLease) {}
     record FailedWorkstationCraft(String project, Work work, String previousWorker) {}
     record BlockedAccess(String project, Work job, String builder, boolean replacementScaffold) {
@@ -197,7 +197,7 @@ final class ProjectQueue {
     static final int MAX_BATCH_STEPS = 8;
     private static final java.util.regex.Pattern SCHEMATIC_PLACEMENT = java.util.regex.Pattern.compile("place-[0-9]+");
     private static final java.util.regex.Pattern PRODUCED_INVENTORY = java.util.regex.Pattern.compile(
-            "Observed [0-9]+ ([a-z0-9_.-]+:[a-z0-9_./-]+) in worker inventory");
+            "Observed [0-9]+ ([a-z0-9_.-]+:[a-z0-9_./-]+) (?:in worker inventory|already carried by the worker)");
     private record StationTarget(ProjectBlock.Position target, ProjectBlock.Position stand, String block) {}
     private record Board(int schema, Map<String, Project> projects) {}
     private record PickupTarget(String direction, String item, int stock) {}
@@ -3825,19 +3825,9 @@ final class ProjectQueue {
                                                  java.util.function.ToIntBiFunction<String, String> heldCount,
                                                  long now) throws IOException {
         String key = "stalled-retained-production:" + gather.work.id;
-        if (heldCount == null || project.supplyRecoveries.containsKey(key) || supplier.state != State.DONE
-                || !productionWork(supplier.work) || supplier.evidence == null || supplier.worker == null
-                || !supplier.worker.equalsIgnoreCase(gather.worker) || !availableProjectWorker(project, supplier.worker, now)) {
-            return false;
-        }
-        var output = PRODUCED_INVENTORY.matcher(supplier.evidence);
-        var required = JSON.fromJson(supplier.work.payload, GatherQuantity.class);
-        if (!output.matches() || required == null || required.count == null || required.count < 1) return false;
-        try {
-            if (heldCount.applyAsInt(supplier.worker, output.group(1)) < required.count) return false;
-        } catch (IllegalArgumentException invalidItem) {
-            return false;
-        }
+        if (heldCount == null || project.supplyRecoveries.containsKey(key) || supplier.worker == null
+                || !supplier.worker.equalsIgnoreCase(gather.worker) || !availableProjectWorker(project, supplier.worker, now)
+                || !holdsProductionOutput(supplier, heldCount)) return false;
         var retry = new Job(gather.work, State.WAITING, MAX_ATTEMPTS - 1, supplier.worker, null, 0,
                 GATHER_STALLED, gather.chest, gather.resourceSite);
         var jobs = project.jobs.stream().map(job -> job == gather ? retry : job).toList();
@@ -3845,6 +3835,19 @@ final class ProjectQueue {
         recoveries.put(key, 1);
         commit(project.withRecovery(jobs, recoveries));
         return true;
+    }
+
+    private static boolean holdsProductionOutput(Job supplier, java.util.function.ToIntBiFunction<String, String> heldCount) {
+        if (supplier == null || supplier.state != State.DONE || !productionWork(supplier.work)
+                || supplier.evidence == null || supplier.worker == null) return false;
+        var output = PRODUCED_INVENTORY.matcher(supplier.evidence);
+        var required = JSON.fromJson(supplier.work.payload, GatherQuantity.class);
+        if (!output.matches() || required == null || required.count == null || required.count < 1) return false;
+        try {
+            return heldCount.applyAsInt(supplier.worker, output.group(1)) >= required.count;
+        } catch (IllegalArgumentException invalidItem) {
+            return false;
+        }
     }
 
     private static String stalledSupplyKey(Job job) {
@@ -3883,7 +3886,12 @@ final class ProjectQueue {
             if (!world.equals(project.world) || project.supplyChest == null || project.repeat != null || cancelled(project)) continue;
             for (var gather : project.jobs) {
                 if (canRecoverObservedGather(project, gather, now)) {
-                    candidates.add(new SurfaceGatherRecovery(project.id, gather.work));
+                    candidates.add(new SurfaceGatherRecovery(project.id, gather.work, null));
+                    continue;
+                }
+                var supplier = stalledSurfacePreparationSupplier(project, gather, now);
+                if (supplier != null) {
+                    candidates.add(new SurfaceGatherRecovery(project.id, gather.work, supplier.worker));
                 }
             }
         }
@@ -3902,15 +3910,33 @@ final class ProjectQueue {
                 && gather.work.needs.stream().allMatch(id -> find(project, id).state == State.DONE);
     }
 
+    private static Job stalledSurfacePreparationSupplier(Project project, Job gather, long now) {
+        if (gather == null || gather.state != State.FAILED || gather.work.kind != Kind.GATHER
+                || gather.work.sameWorkerAs == null || !GATHER_STALLED.equals(gather.evidence) && !LEASE_EXPIRED.equals(gather.evidence)
+                || now < gather.expiresAt || project.supplyRecoveries.containsKey(observedGatherKey(gather))
+                || stickPreparation(project, gather) == null
+                || gather.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) return null;
+        var supplier = find(project, gather.work.sameWorkerAs);
+        return supplier.state == State.DONE && productionWork(supplier.work) && supplier.worker != null ? supplier : null;
+    }
+
     private static String observedGatherKey(Job gather) { return "observed-stock-gather:" + gather.work.id; }
 
     synchronized boolean recoverObservedGather(String world, SurfaceGatherRecovery request, String worker,
-                                               ResourceSite position, long now) throws IOException {
+                                               ResourceSite position, long now,
+                                               java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
         var project = projects.get(request.project);
         var gather = find(project, request.work.id);
         if (project == null || !world.equals(project.world) || project.supplyChest == null || project.repeat != null || cancelled(project)
-                || !canRecoverObservedGather(project, gather, now) || !gather.work.equals(request.work)
+                || gather == null || !gather.work.equals(request.work)
                 || !availableProjectWorker(project, worker, now)) return false;
+        if (request.pinnedWorker == null) {
+            if (!canRecoverObservedGather(project, gather, now)) return false;
+        } else {
+            var supplier = stalledSurfacePreparationSupplier(project, gather, now);
+            if (supplier == null || !worker.equalsIgnoreCase(request.pinnedWorker)
+                    || !worker.equalsIgnoreCase(supplier.worker) || !holdsProductionOutput(supplier, heldCount)) return false;
+        }
         var lease = new Job(gather.work, State.LEASED, MAX_ATTEMPTS, worker, UUID.randomUUID(), now + LEASE_MS,
                 null, gather.chest, position);
         var recoveries = new HashMap<>(project.supplyRecoveries);

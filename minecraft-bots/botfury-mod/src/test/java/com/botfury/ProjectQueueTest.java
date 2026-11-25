@@ -643,6 +643,21 @@ class ProjectQueueTest {
         assertEquals("original", jobs.get(2).worker());
     }
 
+    @Test void stalledOreCanUseDistinctEquippedWorkersButCannotCycleThroughThem() throws Exception {
+        var journal = directory.resolve("distinct-equipped-workers.json");
+        var queue = prepareStalledSupply(journal, false);
+        var stone = java.util.Map.of("minecraft:stone_pickaxe", 75);
+        long now = 20;
+        for (String worker : List.of("first", "second", "third")) {
+            var retry = queue.offerEquippedMiner(WORLD, worker, null, stone, now++).job();
+            assertEquals("iron", retry.work().id());
+            assertTrue(queue.finish("stock", "iron", retry.lease(), false, ProjectQueue.GATHER_STALLED, now++));
+            queue = new ProjectQueue(journal);
+            assertNull(queue.offerEquippedMiner(WORLD, "first", null, stone, now++));
+        }
+        assertNull(queue.offerEquippedMiner(WORLD, "fourth", null, stone, now));
+    }
+
     @Test void stalledSupplyRewindsOnlyWhenItsPreparationIsPrivate() throws Exception {
         for (boolean shared : List.of(false, true)) {
             var journal = directory.resolve("stalled-fallback-" + shared + ".json");

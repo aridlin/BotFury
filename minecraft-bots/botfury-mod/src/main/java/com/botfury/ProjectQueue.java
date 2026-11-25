@@ -2006,7 +2006,10 @@ final class ProjectQueue {
                         .findFirst().orElse(null);
                 if (carriedTool == null) continue;
                 var key = stalled ? "stalled-equipped-miner:" + gather.work.id : equippedRescueKey(gather);
-                if (reopening && (craft.state != State.DONE || project.supplyRecoveries.containsKey(key))) continue;
+                String workerRetry = key + ":" + worker.toLowerCase(java.util.Locale.ROOT);
+                int recoveriesUsed = project.supplyRecoveries.getOrDefault(key, 0);
+                if (reopening && (craft.state != State.DONE || recoveriesUsed >= (stalled ? 3 : 1)
+                        || stalled && project.supplyRecoveries.containsKey(workerRetry))) continue;
                 if (!reopening && craft.state == State.DONE) continue;
                 if (stalled && (worker.equalsIgnoreCase(craft.worker) || worker.equalsIgnoreCase(gather.worker))) continue;
                 if (reopening && gather.work.needs.stream().anyMatch(need -> find(project, need).state != State.DONE)) continue;
@@ -2022,7 +2025,8 @@ final class ProjectQueue {
                 }).toList();
                 if (reopening) {
                     var recoveries = new HashMap<>(project.supplyRecoveries);
-                    recoveries.put(key, 1);
+                    recoveries.put(key, recoveriesUsed + 1);
+                    if (stalled) recoveries.put(workerRetry, 1);
                     commit(project.withRecovery(jobs, recoveries));
                 } else commit(project.withJobs(jobs));
                 return assignment(project, lease);

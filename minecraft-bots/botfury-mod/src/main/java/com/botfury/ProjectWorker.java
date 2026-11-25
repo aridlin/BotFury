@@ -1828,6 +1828,10 @@ final class ProjectWorker {
                 }
             }
             if (!tools.isEmpty()) args.put("toolUses", tools);
+            if (tools.keySet().stream().anyMatch(item -> item.endsWith("_pickaxe"))) {
+                var ore = MiningTask.reachableOre(client);
+                if (!ore.isEmpty()) args.put("reachableOre", ore);
+            }
             if (PortableWoodPreparation.canSupply(client)) args.put("canSupplyBench", true);
             if (ProjectProduction.canCraft(client, ROUTE_PICKAXE)
                     && FieldWorkstation.findForMiningTool(client, now, null) != null) {

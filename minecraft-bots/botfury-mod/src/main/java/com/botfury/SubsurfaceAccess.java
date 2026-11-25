@@ -132,11 +132,7 @@ final class SubsurfaceAccess {
         var feet = client.player.getBlockPos();
         if (!hasFooting(client) || !validDestination(client, destination, area)
                 || (area != null && (area.contains(feet) || area.contains(feet.down())))) return false;
-        if (prospecting && feet.getY() - destination.getY() > 1) {
-            // Baritone can walk an existing cave route freely. When that fails, let it
-            // open one stair step at a time while keeping the original stand reserved.
-            if (openPassage(client, age, feet, area, headingToward(feet, destination), -1, 0)) return true;
-        }
+        if (prospecting && openTowardMiningStand(client, age, feet, destination, area)) return true;
         return destination.isWithinDistance(feet, 9) && start(client, feet, List.of(destination), area, age, false);
     }
 
@@ -331,40 +327,63 @@ final class SubsurfaceAccess {
         return true;
     }
 
+    private boolean openTowardMiningStand(MinecraftClient client, int age, BlockPos from, BlockPos stand,
+                                          ProjectGather.Area area) {
+        var candidates = new ArrayList<Passage>();
+        double distance = stand.getSquaredDistance(from);
+        int rise = Integer.signum(stand.getY() - from.getY());
+        for (var heading : HEADINGS) {
+            var step = from.offset(heading);
+            if (step.getSquaredDistance(stand) < distance) candidates.add(new Passage(from, step));
+            if (rise != 0 && step.up(rise).getSquaredDistance(stand) < distance) {
+                candidates.add(new Passage(from, step.up(rise)));
+            }
+        }
+        candidates.sort(java.util.Comparator.comparingDouble(step -> step.to().getSquaredDistance(stand)));
+        for (var step : candidates) {
+            if (!beginPassage(client, age, step, area)) continue;
+            BotEvents.add("debug", "mining", "Protected step toward mining stand " + stand.toShortString()
+                    + " via " + step.to().toShortString());
+            return true;
+        }
+        return false;
+    }
+
     private boolean openPassage(MinecraftClient client, int age, BlockPos from, ProjectGather.Area area,
                                 int heading, int... heights) {
-        if (client.currentScreen != null) return false;
         for (int delta : heights) {
             for (int turn = 0; turn < HEADINGS.length; turn++) {
                 var cell = from.offset(HEADINGS[Math.floorMod(heading + turn, HEADINGS.length)]).up(delta);
-                var candidate = new Passage(from, cell);
-                if (attemptedPassages.contains(candidate) || attemptedPassages.contains(new Passage(cell, from))
-                        || !safePassage(client, candidate, area)) continue;
-                boolean clear = passageOpen(client, candidate);
-                if (!clear) {
-                    if (candidate.climbing() && diggingToolSlot(client, true) < 0
-                            && candidate.blocksToClear().stream().anyMatch(pos -> {
-                                var state = client.world.getBlockState(pos);
-                                return !passageClear(client, pos, state) && !handClearance(state);
-                            })) continue;
-                    var hit = passageHit(client, candidate, area);
-                    if (hit == null || !preparePassageHit(client, hit, candidate.climbing())) continue;
-                }
-                if (attemptedPassages.size() >= 24) attemptedPassages.remove(attemptedPassages.iterator().next());
-                attemptedPassages.add(candidate);
-                if (clear) {
-                    if (start(client, from, List.of(cell), area, age, candidate.climbing())) return true;
-                    continue;
-                }
-                passage = candidate;
-                passageDeadline = age + 220;
-                String detail = candidate.climbing() ? "Opening a protected return step at "
-                        : delta == 0 ? "Opening a short prospecting passage at " : "Opening a safe prospecting step at ";
-                BotEvents.add("info", "mining", detail + cell.toShortString());
-                return true;
+                if (beginPassage(client, age, new Passage(from, cell), area)) return true;
             }
         }
         return false;
+    }
+
+    private boolean beginPassage(MinecraftClient client, int age, Passage candidate, ProjectGather.Area area) {
+        if (client.currentScreen != null || attemptedPassages.contains(candidate)
+                || attemptedPassages.contains(new Passage(candidate.to(), candidate.from()))
+                || !safePassage(client, candidate, area)) return false;
+        boolean clear = passageOpen(client, candidate);
+        if (!clear) {
+            if (candidate.climbing() && diggingToolSlot(client, true) < 0
+                    && candidate.blocksToClear().stream().anyMatch(pos -> {
+                        var state = client.world.getBlockState(pos);
+                        return !passageClear(client, pos, state) && !handClearance(state);
+                    })) return false;
+            var hit = passageHit(client, candidate, area);
+            if (hit == null || !preparePassageHit(client, hit, candidate.climbing())) return false;
+        }
+        if (attemptedPassages.size() >= 24) attemptedPassages.remove(attemptedPassages.iterator().next());
+        attemptedPassages.add(candidate);
+        if (clear) return start(client, candidate.from(), List.of(candidate.to()), area, age, candidate.climbing());
+        passage = candidate;
+        passageDeadline = age + 220;
+        String detail = candidate.climbing() ? "Opening a protected return step at "
+                : candidate.to().getY() == candidate.from().getY() ? "Opening a short prospecting passage at "
+                : "Opening a safe prospecting step at ";
+        BotEvents.add("info", "mining", detail + candidate.to().toShortString());
+        return true;
     }
 
     private static boolean passageOpen(MinecraftClient client, Passage passage) {

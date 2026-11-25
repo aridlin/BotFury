@@ -165,6 +165,25 @@ final class MiningTask {
         return false;
     }
 
+    static List<ProjectQueue.ReachableOre> reachableOre(MinecraftClient client) {
+        if (!SubsurfaceAccess.hasFooting(client) || client.interactionManager == null) return List.of();
+        var feet = client.player.getBlockPos();
+        var observations = new LinkedHashMap<String, ProjectQueue.ReachableOre>();
+        for (var pos : BlockPos.iterateOutwards(feet, 4, 5, 4)) {
+            if (!client.world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)) continue;
+            var state = client.world.getBlockState(pos);
+            if (state.isAir() || !state.isToolRequired()) continue;
+            String id = Registries.BLOCK.getId(state.getBlock()).toString();
+            if (!id.endsWith("_ore") && !id.equals("minecraft:ancient_debris")) continue;
+            if (observations.containsKey(id) || BuildProtection.blocked(pos) || supportsAnotherPlayer(client, pos)
+                    || !hasTool(client, state) || !canReachFromHere(client, feet, pos)) continue;
+            observations.put(id, new ProjectQueue.ReachableOre(id,
+                    new ProjectQueue.ResourceSite(pos.getX(), pos.getY(), pos.getZ())));
+            if (observations.size() >= 8) break;
+        }
+        return List.copyOf(observations.values());
+    }
+
     static boolean isSurfaceResource(net.minecraft.block.Block block) {
         return block.getDefaultState().isIn(BlockTags.LOGS)
                 || block instanceof FlowerBlock || block instanceof TallFlowerBlock;

@@ -88,7 +88,7 @@ final class ProjectQueue {
         }
     }
     private record GatherSource(String resource, String variant, String item) {}
-    private record GatherQuantity(Integer count) {}
+    private record GatherQuantity(Integer count, ProjectGather.Bounds exclude) {}
     record ChestReport(String location, Map<String, Integer> items, Integer free) {
         ChestReport(String location, Map<String, Integer> items) { this(location, items, null); }
 
@@ -182,6 +182,7 @@ final class ProjectQueue {
     private static final String OWNED_STATION_MISSING = "Owned station is missing";
     record OwnedPlacement(String project, String job, String payload) {}
     record CarriedSmelt(String project, Work work) {}
+    record ReachableOre(String block, ResourceSite site) {}
     record SurfaceGatherRecovery(String project, Work work, String pinnedWorker) {}
     record CarriedCraft(String project, Work work, String worker, UUID gatheringLease) {}
     record FailedWorkstationCraft(String project, Work work, String previousWorker) {}
@@ -2030,6 +2031,52 @@ final class ProjectQueue {
                     commit(project.withRecovery(jobs, recoveries));
                 } else commit(project.withJobs(jobs));
                 return assignment(project, lease);
+            }
+        }
+        return null;
+    }
+
+    synchronized Assignment offerObservedOreRecovery(String world, String worker, String projectId,
+                                                     ResourceSite position, Map<String, Integer> toolUses,
+                                                     List<ReachableOre> observations, long now) throws IOException {
+        if (position == null || toolUses == null || observations == null || observations.isEmpty() || observations.size() > 8) return null;
+        for (var project : projects.values()) {
+            if (project.supplyChest == null || !world.equals(project.world) || cancelled(project)
+                    || projectId != null && !projectId.equals(project.id) || !availableProjectWorker(project, worker, now)) continue;
+            for (var gather : project.jobs) {
+                if (!stalledPinnedGathering(gather) || now < gather.expiresAt
+                        || gather.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) continue;
+                var preparation = find(project, gather.work.sameWorkerAs);
+                if (preparation.work.kind != Kind.CRAFT) continue;
+                var recipe = JSON.fromJson(preparation.work.payload, ToolRecipe.class);
+                int tier = recipe == null || recipe.recipe == null ? -1 : PICKAXE_TIERS.indexOf(recipe.recipe);
+                if (tier < 0) continue;
+                var source = gatherSource(gather.work.payload);
+                if (source == null || !ResourceCatalog.isOre(source.resource)) continue;
+                var plan = JSON.fromJson(gather.work.payload, GatherQuantity.class);
+                if (plan == null || plan.count == null || plan.count < 1) continue;
+                int minimumUses = Math.max(3, Math.min(16, plan.count));
+                if (PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
+                        .noneMatch(tool -> toolUses.getOrDefault(tool, 0) >= minimumUses)) continue;
+                String key = "observed-ore:" + gather.work.id;
+                int attempts = project.supplyRecoveries.getOrDefault(key, 0);
+                if (attempts >= 3) continue;
+                var blocks = ResourceCatalog.blocks(source.resource, source.variant);
+                for (var observation : observations) {
+                    if (observation == null || observation.site == null || observation.block == null || !blocks.contains(observation.block)
+                            || gatheringDistance(position, observation.site) > 6) continue;
+                    var cell = observation.site;
+                    String siteKey = key + ":" + cell.x + "," + cell.y + "," + cell.z;
+                    if (project.supplyRecoveries.containsKey(siteKey)) continue;
+                    if (plan.exclude != null && plan.exclude.checked().contains(new net.minecraft.util.math.BlockPos(cell.x, cell.y, cell.z))) continue;
+                    var lease = new Job(gather.work, State.LEASED, gather.attempts + 1, worker, UUID.randomUUID(),
+                            now + LEASE_MS, null, gather.chest, position);
+                    var recoveries = new HashMap<>(project.supplyRecoveries);
+                    recoveries.put(key, attempts + 1);
+                    recoveries.put(siteKey, 1);
+                    commit(project.withRecovery(project.jobs.stream().map(job -> job == gather ? lease : job).toList(), recoveries));
+                    return assignment(project, lease);
+                }
             }
         }
         return null;

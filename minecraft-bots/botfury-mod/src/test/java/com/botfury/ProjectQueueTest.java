@@ -658,6 +658,28 @@ class ProjectQueueTest {
         assertNull(queue.offerEquippedMiner(WORLD, "fourth", null, stone, now));
     }
 
+    @Test void aFreshReachableVeinLetsTheSameEquippedWorkerResumeOnlyOnce() throws Exception {
+        var journal = directory.resolve("observed-ore.json");
+        var queue = prepareStalledSupply(journal, false);
+        long now = 40_000;
+        var worker = new ProjectQueue.ResourceSite(4, 20, 4);
+        var ore = new ProjectQueue.ReachableOre("minecraft:iron_ore", new ProjectQueue.ResourceSite(7, 20, 4));
+        var distant = new ProjectQueue.ReachableOre("minecraft:iron_ore", new ProjectQueue.ResourceSite(34, 20, 4));
+        var stone = java.util.Map.of("minecraft:stone_pickaxe", 8);
+        queue.claim(WORLD, "original", Set.of(VERIFY), now);
+        assertNull(queue.offerObservedOreRecovery(WORLD, "original", "stock", worker, stone, List.of(distant), now));
+        assertNull(queue.offerObservedOreRecovery(WORLD, "original", "stock", worker,
+                java.util.Map.of("minecraft:wooden_pickaxe", 60), List.of(ore), now));
+        var result = queue.offerObservedOreRecovery(WORLD, "original", "stock", worker, stone, List.of(ore), now);
+        assertEquals("iron", result.job().work().id());
+        assertEquals(worker, result.job().resourceSite());
+        assertTrue(queue.finish("stock", "iron", result.job().lease(), false, ProjectQueue.GATHER_STALLED, now + 1));
+        queue = new ProjectQueue(journal);
+        now += 40_000;
+        queue.claim(WORLD, "original", Set.of(VERIFY), now);
+        assertNull(queue.offerObservedOreRecovery(WORLD, "original", "stock", worker, stone, List.of(ore), now));
+    }
+
     @Test void stalledSupplyRewindsOnlyWhenItsPreparationIsPrivate() throws Exception {
         for (boolean shared : List.of(false, true)) {
             var journal = directory.resolve("stalled-fallback-" + shared + ".json");

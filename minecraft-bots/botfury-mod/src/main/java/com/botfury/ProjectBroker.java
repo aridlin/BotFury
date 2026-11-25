@@ -36,7 +36,7 @@ final class ProjectBroker {
                            List<ProjectQueue.Work> work, String job, UUID token, Boolean success,
                            String evidence, ProjectQueue.ChestReport chest, ProjectQueue.ChestReport routeStock, ProjectQueue.ResourceSite resourceSite,
                            boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool, int routeCraftTarget, boolean needsRouteBench, boolean canSupplyBench, boolean receivedRouteBench,
-                           boolean supportsPickupReserve, boolean supportsStickResupply, boolean needsMeal, boolean carryingMeal, String spareMeal) {}
+                           boolean supportsPickupReserve, boolean supportsStickResupply, boolean needsMeal, boolean carryingMeal, String spareMeal, List<ProjectQueue.ReachableOre> reachableOre) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
         if (queue == null) {
@@ -730,7 +730,11 @@ final class ProjectBroker {
                                 ProjectBroker::heldCount);
                     }
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.GATHER)) {
-                        assignment = board.offerEquippedMiner(world, request.worker, request.project, request.toolUses, now, position);
+                        assignment = board.offerObservedOreRecovery(world, request.worker, request.project, position,
+                                request.toolUses, request.reachableOre, now);
+                        if (assignment == null) {
+                            assignment = board.offerEquippedMiner(world, request.worker, request.project, request.toolUses, now, position);
+                        }
                         if (assignment == null) {
                             assignment = board.offerSmeltingRefill(world, request.worker, request.project, request.toolUses, now);
                         }

@@ -1488,7 +1488,8 @@ final class ProjectWorker {
         // Placement cargo can include the very planks needed for a new workbench.
         boolean hasRouteTool = SubsurfaceAccess.canDigRoute(client);
         if (hasRouteTool) needsRouteTool = needsRouteBench = false;
-        if (!placement && (!hasRouteTool || !stationReturn.followingNaturalAscent() && !SubsurfaceAccess.hasBasicRoutePickaxe(client))
+        boolean canSwitchTools = !stationReturn.followingNaturalAscent() && !stationReturn.walkingLocalAscent(client);
+        if (!placement && (!hasRouteTool || canSwitchTools && !SubsurfaceAccess.hasBasicRoutePickaxe(client))
                 && (stationToolAttempt == null || !position.isWithinDistance(stationToolAttempt, 4))
                 && SubsurfaceAccess.hasFooting(client)) {
             stationToolAttempt = position;

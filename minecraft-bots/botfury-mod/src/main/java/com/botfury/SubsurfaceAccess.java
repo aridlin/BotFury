@@ -65,6 +65,9 @@ final class SubsurfaceAccess {
     boolean followingNaturalAscent() { return ascentGoal != Integer.MIN_VALUE; }
     boolean continuingLocalDescent() { return localDescent; }
     boolean continuingLocalAscent() { return localAscent; }
+    boolean walkingLocalAscent(MinecraftClient client) {
+        return localAscent && active() && !goals.contains(client.player.getBlockPos());
+    }
 
     static boolean deepResource(String resource) {
         return Integer.valueOf(-54).equals(prospectingAltitude(resource));
@@ -622,6 +625,10 @@ final class SubsurfaceAccess {
 
     void pauseReturnForToolPreparation() {
         boolean continuing = localAscent;
+        if (continuing && origin != null && goals.size() == 1) {
+            // The next step may already be clear. Let the worker reuse it after changing tools.
+            attemptedPassages.remove(new Passage(origin, goals.get(0)));
+        }
         stop();
         localAscent = continuing;
     }

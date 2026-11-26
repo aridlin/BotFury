@@ -61,8 +61,10 @@ final class FieldWorkstation {
         return station.block().equals(TABLE) && placedByWorker(client) ? station : null;
     }
 
-    static FieldWorkstation find(MinecraftClient client, long now, ProjectQueue.Kind kind, Set<BlockPos> rejected) {
-        var local = find(client, now, kind == ProjectQueue.Kind.SMELT ? FURNACE : TABLE, null, PLANK_BUDGET, null);
+    static FieldWorkstation find(MinecraftClient client, long now, ProjectQueue.Kind kind, boolean reservesWood,
+                                 Set<BlockPos> rejected) {
+        int plankBudget = reservesWood ? PLANK_BUDGET : WORKBENCH_COST;
+        var local = find(client, now, kind == ProjectQueue.Kind.SMELT ? FURNACE : TABLE, null, plankBudget, null);
         if (local != null || kind != ProjectQueue.Kind.CRAFT || !SubsurfaceAccess.hasFooting(client)
                 || client.player.isTouchingWater() || client.player.currentScreenHandler != client.player.playerScreenHandler) return local;
         return findWalkableWorkbench(client, now, rejected);

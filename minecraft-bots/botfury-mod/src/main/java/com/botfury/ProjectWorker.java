@@ -883,7 +883,7 @@ final class ProjectWorker {
         if (fieldWorkstation == null && now >= nextWorkstationSearch
                 && !block.target().isWithinDistance(client.player.getBlockPos(), 16)) {
             nextWorkstationSearch = now + seconds(8);
-            var nearby = FieldWorkstation.find(client, now, kind, rejectedFieldWorkbenches);
+            var nearby = FieldWorkstation.find(client, now, kind, production.reservesWorkbenchWood(client), rejectedFieldWorkbenches);
             needsProductionBench = nearby == null && production.canUsePortableWorkbench(client);
             if (nearby != null) {
                 halt(client);

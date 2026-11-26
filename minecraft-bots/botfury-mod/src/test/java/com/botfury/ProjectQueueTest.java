@@ -37,6 +37,43 @@ class ProjectQueueTest {
         assertEquals("salvage", queue.claim(WORLD, "miner", Set.of(SMELT), "salvage", 3).job().work().id());
     }
 
+    @Test void emptyWorkerIsNotSentToAnOrdinaryFurnaceWithAnOldLoadedFuelLink() throws Exception {
+        var file = directory.resolve("orphaned-furnace-fuel.json");
+        var raw = new ProjectQueue.Work("raw", GATHER, """
+                {"resource":"iron","variant":"both","item":"minecraft:raw_iron","count":3}
+                """, List.of(), Set.of());
+        var fuel = new ProjectQueue.Work("fuel", GATHER, """
+                {"resource":"coal","variant":"both","item":"minecraft:coal","count":1,"fuelForLoadedFurnace":true}
+                """, List.of(raw.id()), Set.of());
+        var smelt = new ProjectQueue.Work("smelt", SMELT, """
+                {"input":"minecraft:raw_iron","fuel":"minecraft:coal","count":3}
+                """, List.of(fuel.id()), Set.of("block:0,64,0"), fuel.id());
+        var project = new ProjectQueue.Project("stock", WORLD, List.of(
+                new ProjectQueue.Job(raw, ProjectQueue.State.DONE, 1, "old-miner", null, 0,
+                        "Observed 3 minecraft:raw_iron in worker inventory", null),
+                new ProjectQueue.Job(fuel, ProjectQueue.State.DONE, 1, "courier", null, 0, "Observed coal", null),
+                new ProjectQueue.Job(smelt, ProjectQueue.State.WAITING, 0, null, null, 0, null, null)),
+                null, "block:2,64,0", java.util.Map.of());
+        Files.writeString(file, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                "projects", java.util.Map.of("stock", project))));
+
+        var queue = new ProjectQueue(file);
+        assertNull(queue.claim(WORLD, "courier", Set.of(SMELT), "stock", 1, null, ignored -> true,
+                (worker, item) -> 0, java.util.Map.of(), 13, true));
+        var repaired = new ProjectQueue(file);
+        var jobs = repaired.snapshot(2).get(0).jobs();
+        assertTrue(jobs.stream().allMatch(j -> j.state() == ProjectQueue.State.WAITING));
+        assertEquals(raw.id(), jobs.get(1).work().sameWorkerAs());
+        assertFalse(jobs.get(1).work().payload().contains("fuelForLoadedFurnace"));
+
+        var mining = repaired.claim(WORLD, "new-miner", Set.of(GATHER), "stock", 3).job();
+        assertEquals(raw.id(), mining.work().id());
+        assertTrue(repaired.finish("stock", mining.work().id(), mining.lease(), true,
+                "Observed 3 minecraft:raw_iron in worker inventory", 4));
+        assertNull(repaired.claim(WORLD, "courier", Set.of(GATHER, SMELT), "stock", 5));
+        assertEquals(fuel.id(), repaired.claim(WORLD, "new-miner", Set.of(GATHER), "stock", 6).job().work().id());
+    }
+
     @Test void idleCourierCanShareItsLastStickForAStationRouteTool() throws Exception {
         var queue = new ProjectQueue(directory.resolve("station-route-sticks.json"));
         queue.submit("batch", WORLD, List.of(job("smelt", SMELT, List.of())));

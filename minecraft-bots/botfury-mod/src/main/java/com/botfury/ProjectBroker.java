@@ -763,7 +763,12 @@ final class ProjectBroker {
                         }
                         if (assignment == null) {
                             assignment = board.offerStarterMiner(world, request.worker, request.project, position,
-                                    request.localStarterLogs, now);
+                                    request.localStarterLogs, work -> {
+                                        if (position == null || !request.kinds.contains(ProjectQueue.Kind.CRAFT)) return false;
+                                        var station = ProjectProduction.parse(work.payload(), ProjectQueue.Kind.CRAFT).station();
+                                        return station != null && craftingStationIsLocal(
+                                                new BlockPos(position.x(), position.y(), position.z()), station.target(), false);
+                                    }, now);
                         }
                     }
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.BUILD)

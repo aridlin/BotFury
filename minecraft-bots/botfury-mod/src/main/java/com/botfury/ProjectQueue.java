@@ -4176,7 +4176,8 @@ final class ProjectQueue {
     private record StarterMiner(String worker, ResourceSite position, List<String> logs, long now) {}
 
     synchronized Assignment offerStarterMiner(String world, String worker, String projectId, ResourceSite position,
-                                               List<String> logs, long now) throws IOException {
+                                               List<String> logs, java.util.function.Predicate<Work> nearbyWorkstation,
+                                               long now) throws IOException {
         if (position == null || logs == null || logs.isEmpty() || logs.size() > 8) return null;
         for (var project : projects.values()) {
             if (!world.equals(project.world) || project.supplyChest == null || cancelled(project)
@@ -4187,14 +4188,10 @@ final class ProjectQueue {
                     && project.supplyRecoveries.containsKey("starter-miner:" + job.work.id))) continue;
             var jobs = new HashMap<String, Job>();
             project.jobs.forEach(job -> jobs.put(job.work.id, job));
-            for (var gather : project.jobs) {
-                if (!stalledPinnedGathering(gather) || now < gather.expiresAt) continue;
-                var source = gatherSource(gather.work.payload);
-                if (source == null || !ResourceCatalog.isOre(source.resource)) continue;
-                var supplier = jobs.get(gather.work.sameWorkerAs);
-                var recipe = supplier.work.kind == Kind.CRAFT ? JSON.fromJson(supplier.work.payload, ToolRecipe.class) : null;
-                if (recipe == null || !"minecraft:stone_pickaxe".equals(recipe.recipe)) continue;
-                if (rewindSupply(project, gather, supplier, jobs, GATHER_STALLED, gather.chest, null,
+            for (var blockedJob : project.jobs) {
+                var supplier = starterSupplier(project, blockedJob, jobs, worker, nearbyWorkstation, now);
+                if (supplier == null) continue;
+                if (rewindSupply(project, blockedJob, supplier, jobs, blockedJob.evidence, blockedJob.chest, null,
                         0, new StarterMiner(worker, position, logs, now))) {
                     var updated = projects.get(project.id);
                     var leased = updated.jobs.stream().filter(job -> job.state == State.LEASED && worker.equals(job.worker))
@@ -4204,6 +4201,22 @@ final class ProjectQueue {
             }
         }
         return null;
+    }
+
+    private static Job starterSupplier(Project project, Job job, Map<String, Job> jobs, String worker,
+                                       java.util.function.Predicate<Work> nearbyWorkstation, long now) {
+        if (project.supplyRecoveries.containsKey("carried-craft:" + job.work.id)) {
+            var supplier = timedOutCraftSupplier(project, job);
+            if (supplier != null && !worker.equalsIgnoreCase(supplier.worker) && nearbyWorkstation.test(job.work)) {
+                return supplier;
+            }
+        }
+        if (!stalledPinnedGathering(job) || now < job.expiresAt) return null;
+        var source = gatherSource(job.work.payload);
+        if (source == null || !ResourceCatalog.isOre(source.resource)) return null;
+        var supplier = jobs.get(job.work.sameWorkerAs);
+        var recipe = supplier.work.kind == Kind.CRAFT ? JSON.fromJson(supplier.work.payload, ToolRecipe.class) : null;
+        return recipe != null && "minecraft:stone_pickaxe".equals(recipe.recipe) ? supplier : null;
     }
 
     private boolean rewindSupply(Project project, Job waiting, Job supplier, Map<String, Job> jobs,
@@ -4248,7 +4261,7 @@ final class ProjectQueue {
         var recoveries = new HashMap<>(project.supplyRecoveries);
         boolean stalled = GATHER_STALLED.equals(evidence);
         boolean expiredTools = LEASE_EXPIRED.equals(evidence);
-        if ((stalled || expiredTools) && !privatePreparationReady(project, waiting, rewind)) return false;
+        if ((stalled || expiredTools || starter != null) && !privatePreparationReady(project, waiting, rewind)) return false;
         boolean stationLoss = OWNED_STATION_MISSING.equals(evidence);
         String recoveryKey = starter != null ? "starter-miner:" + waiting.work.id
                 : stationLoss ? stationRepairKey(waiting) : stalled ? stalledSupplyKey(waiting)

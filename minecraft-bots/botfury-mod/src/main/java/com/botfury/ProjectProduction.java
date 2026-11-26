@@ -156,11 +156,12 @@ final class ProjectProduction {
         int output = smelting.getOutput(client.world.getRegistryManager()).getCount();
         if (output < 1) return null;
         long cookTicks = (long) smelting.getCookTime() * ((plan.count() + output - 1) / output);
-        return alternativeFuel(client, Identifier.tryParse(plan.input()), Identifier.tryParse(plan.expectedFuel()), cookTicks);
+        return alternativeFuel(carriedFuel(client), Identifier.tryParse(plan.input()),
+                Identifier.tryParse(plan.expectedFuel()), cookTicks, false);
     }
 
-    private static Identifier alternativeFuel(MinecraftClient client, Identifier input, Identifier preferred, long cookTicks) {
-        var carried = new java.util.LinkedHashMap<Identifier, Integer>();
+    private static Map<Identifier, Integer> carriedFuel(MinecraftClient client) {
+        var carried = new LinkedHashMap<Identifier, Integer>();
         var inventory = client.player.getInventory();
         for (int slot = 0; slot < 36; slot++) {
             var stack = inventory.getStack(slot);
@@ -168,7 +169,7 @@ final class ProjectProduction {
                 carried.merge(Registries.ITEM.getId(stack.getItem()), stack.getCount(), Integer::sum);
             }
         }
-        return alternativeFuel(carried, input, preferred, cookTicks, true);
+        return carried;
     }
 
     static Identifier smeltingOutput(MinecraftClient client, String work) {
@@ -213,7 +214,7 @@ final class ProjectProduction {
         for (var entry : carried.entrySet()) {
             var id = entry.getKey();
             int ticks = burnTimes.getOrDefault(Registries.ITEM.get(id), 0);
-            if (ticks <= 0 || id.equals(input)) continue;
+            if (ticks <= 0 || id.equals(input) || !id.equals(preferred) && !automaticFuel(id)) continue;
             long burn = (long) ticks * entry.getValue();
             availableBurn += burn;
             if (id.equals(preferred)) continue;
@@ -230,6 +231,14 @@ final class ProjectProduction {
         }
         if (best != null) return best;
         return mixFuels && availableBurn >= cookTicks ? longest : null;
+    }
+
+    private static boolean automaticFuel(Identifier id) {
+        var stack = Registries.ITEM.get(id).getDefaultStack();
+        return stack.isIn(net.minecraft.registry.tag.ItemTags.LOGS) || stack.isIn(net.minecraft.registry.tag.ItemTags.PLANKS)
+                || stack.isOf(net.minecraft.item.Items.COAL) || stack.isOf(net.minecraft.item.Items.CHARCOAL)
+                || stack.isOf(net.minecraft.item.Items.COAL_BLOCK) || stack.isOf(net.minecraft.item.Items.STICK)
+                || stack.isOf(net.minecraft.item.Items.BAMBOO) || stack.isOf(net.minecraft.item.Items.DRIED_KELP_BLOCK);
     }
 
     private static Identifier item(String name) {
@@ -449,28 +458,40 @@ final class ProjectProduction {
         int outstanding = Math.max(0, remaining - result.getCount());
         int inputs = (outstanding + output.getCount() - 1) / output.getCount();
         int queued = existingInput.getCount();
-        int load = Math.min(inputs, furnace.getSlot(0).getMaxItemCount(raw)) - queued;
-        // Keep the next input ready so a live furnace does not burn fuel between items.
-        if (load > 0 && feed(client, 0, raw, load)) return null;
         if (!result.isEmpty()) {
             click(client, 2, 0, SlotActionType.QUICK_MOVE);
             return null;
         }
-        if (queued == 0) return failure("Missing furnace input " + spec.input);
         var progress = ((com.botfury.mixin.FurnaceProgressAccess) furnace).botfury$properties();
-        long fuelNeeded = (long) recipe.getCookTime() * inputs
-                - progress.get(FURNACE_COOK_TIME) - progress.get(FURNACE_BURN_TIME);
+        var carried = carriedFuel(client);
+        var burnTimes = net.minecraft.block.entity.AbstractFurnaceBlockEntity.createFuelTimeMap();
+        long credited = (long) progress.get(FURNACE_COOK_TIME) + progress.get(FURNACE_BURN_TIME);
+        long availableBurn = credited + (long) burnTimes.getOrDefault(existingFuel.getItem(), 0) * existingFuel.getCount();
+        for (var entry : carried.entrySet()) {
+            var id = entry.getKey();
+            if (!id.equals(spec.input) && (id.equals(spec.fuel) || automaticFuel(id))) {
+                availableBurn += (long) burnTimes.getOrDefault(Registries.ITEM.get(id), 0) * entry.getValue();
+            }
+        }
+        // Leave any input that cannot be cooked in the worker's inventory for recovery.
+        int covered = (int) Math.min(inputs, availableBurn / Math.max(1, recipe.getCookTime()));
+        int load = Math.min(covered, furnace.getSlot(0).getMaxItemCount(raw)) - queued;
+        if (load > 0 && feed(client, 0, raw, load)) return null;
+        if (queued == 0) return failure(carried.getOrDefault(spec.input, 0) > 0
+                ? "Missing furnace fuel " + spec.fuel : "Missing furnace input " + spec.input);
+        long fuelNeeded = (long) recipe.getCookTime() * queued - credited;
         if (existingFuel.isEmpty() && fuelNeeded > 0
-                && !addFuel(client, furnace, fuel, fuelNeeded) && !furnace.isBurning()) {
+                && !addFuel(client, furnace, fuel, fuelNeeded, carried) && !furnace.isBurning()) {
             return failure("Missing furnace fuel " + spec.fuel);
         }
         return null;
     }
 
-    private boolean addFuel(MinecraftClient client, FurnaceScreenHandler furnace, ItemStack preferred, long cookTicks) {
+    private boolean addFuel(MinecraftClient client, FurnaceScreenHandler furnace, ItemStack preferred, long cookTicks,
+                            Map<Identifier, Integer> carried) {
         if (feed(client, 1, preferred, 1)) return true;
         if (!substitutedFuel.isEmpty() && feed(client, 1, substitutedFuel, 1)) return true;
-        var alternative = alternativeFuel(client, spec.input, spec.fuel, cookTicks);
+        var alternative = alternativeFuel(carried, spec.input, spec.fuel, cookTicks, true);
         if (alternative == null) return false;
         var fuel = Registries.ITEM.get(alternative).getDefaultStack();
         if (!furnace.getSlot(1).canInsert(fuel) || !feed(client, 1, fuel, 1)) return false;

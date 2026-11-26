@@ -35,11 +35,11 @@ final class BotHud {
         int x = 8, y = 8, w = Math.min(202, (int)(window.getScaledWidth() / scale) - 16);
         int h = 62 + (tracked.isEmpty() ? 0 : 12 + ((tracked.size() + 2) / 3) * 22);
         var font = client.textRenderer;
-        draw.fillGradient(x + 3, y, x + w - 3, y + h, 0xEA351C25, 0xEA24161C);
-        draw.fill(x, y + 3, x + 3, y + h - 3, 0xEA2A1820);
-        draw.fill(x + w - 3, y + 3, x + w, y + h - 3, 0xEA2A1820);
-        BotGeometry.circle(draw, x + 15, y + 13, 5.5f, lightning ? 0xFFF8D788 : 0xFFE66C77);
-        BotGeometry.circle(draw, x + 15, y + 13, 2f, 0xF445202C);
+        draw.fillGradient(x + 3, y, x + w - 3, y + h, BotUiTheme.PANEL_BOTTOM, BotUiTheme.PANEL_TOP);
+        draw.fill(x, y + 3, x + 3, y + h - 3, BotUiTheme.PANEL_BOTTOM);
+        draw.fill(x + w - 3, y + 3, x + w, y + h - 3, BotUiTheme.PANEL_BOTTOM);
+        BotGeometry.circle(draw, x + 15, y + 13, 5.5f, lightning ? accent : BotUiTheme.SIGNAL);
+        BotGeometry.circle(draw, x + 15, y + 13, 2f, BotUiTheme.PANEL_TOP);
         draw.drawText(font, mode, x + 25, y + 9, accent, false);
         String scope = target == null ? "Fleet" : target.name();
         draw.drawText(font, scope, x + w - 9 - font.getWidth(scope), y + 9, BotUiTheme.TEXT, false);
@@ -61,12 +61,14 @@ final class BotHud {
         String availability = alive + "/" + fleet.size() + " ready here";
         if (nearby.size() > alive) availability += "  ·  " + (nearby.size() - alive) + " down";
         if (hurt > 0) availability += "  ·  " + hurt + " low HP";
-        draw.drawText(font, font.trimToWidth(availability, w - 18), x + 9, y + 36,
+        String availabilityText = font.trimToWidth(availability, w - 18);
+        draw.drawText(font, availabilityText, x + 9, y + 36,
                 hurt > 0 ? BotUiTheme.ACCENT : BotUiTheme.MUTED, false);
-        int shown = Math.min(6, fleet.size());
+        int pipSpace = Math.max(0, w - 18 - font.getWidth(availabilityText) - 4);
+        int shown = Math.min(Math.min(6, fleet.size()), pipSpace / 6);
         for (int i = 0; i < shown; i++) {
             BotGeometry.circle(draw, x + w - 12 - (shown - 1 - i) * 6, y + 39, 1.6f,
-                    i < Math.ceil(alive * shown / (double) fleet.size()) ? 0xFFE67983 : 0xFF663747);
+                    i < Math.ceil(alive * shown / (double) fleet.size()) ? BotUiTheme.SIGNAL : BotUiTheme.EDGE);
         }
 
         if (!tracked.isEmpty()) {

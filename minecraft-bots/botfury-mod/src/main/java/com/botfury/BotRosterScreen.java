@@ -369,8 +369,7 @@ final class BotRosterScreen extends FleetPanel {
             var row = rows.get(offset + i);
             int y = ROW_TOP + i * ROW_HEIGHT;
             boolean pointed = mouseX >= MARGIN && mouseX < MARGIN + listWidth() && mouseY >= y && mouseY < y + ROW_HEIGHT - 2;
-            int fill = row.equals(selected) ? BotUiTheme.SELECTED : pointed ? BotUiTheme.CARD_HOVER : BotUiTheme.CARD;
-            draw.fill(MARGIN, y, MARGIN + listWidth(), y + ROW_HEIGHT - 2, fill);
+            drawListRow(draw, MARGIN, y, MARGIN + listWidth(), y + ROW_HEIGHT - 2, row.equals(selected), pointed);
             line(draw, row.title, MARGIN + 7, y + 5, listWidth() - 14, row.color);
             line(draw, row.subtitle, MARGIN + 7, y + 17, listWidth() - 14, MUTED);
             if (row.meter != null) meter(draw, row.meter, MARGIN + 3, y + ROW_HEIGHT - 4, listWidth() - 6);
@@ -487,7 +486,12 @@ final class BotRosterScreen extends FleetPanel {
                 default -> {}
             }
         }
-        line(draw, heading, x, y, w, ACCENT);
+        if (selected != null) {
+            draw.fill(x, y + 2, x + 5, y + 4, BotUiTheme.SIGNAL);
+            draw.fill(x + 3, y + 4, x + 5, y + 7, BotUiTheme.SIGNAL);
+        }
+        int titleInset = selected == null ? 0 : 9;
+        line(draw, heading, x + titleInset, y, w - titleInset, ACCENT);
         y += 17;
         var wrapped = new ArrayList<net.minecraft.text.OrderedText>();
         for (String detail : lines) {

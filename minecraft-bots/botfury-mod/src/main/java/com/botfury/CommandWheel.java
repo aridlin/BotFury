@@ -138,7 +138,9 @@ final class CommandWheel extends FleetPanel {
             float highlight = Math.max(0, Math.min(1, hover));
             double direction = -Math.PI / 2 + index * Math.PI / 4;
             var mesh = bodies[index];
-            int body = enabled ? mix(0xE5412630, 0xF473303D, highlight) : 0x70321C24;
+            int body = enabled
+                    ? mix(BotUiTheme.WHEEL_TILE, BotUiTheme.WHEEL_HOVER, highlight)
+                    : BotUiTheme.WHEEL_DISABLED;
             wedge(draw, cx, cy, baseRadius, index, body, mesh, false);
             if (highlight > .03f) {
                 int stroke = (Math.round(highlight * 255) << 24) | BotUiTheme.ACCENT_RGB;
@@ -153,7 +155,7 @@ final class CommandWheel extends FleetPanel {
             int iy = cy + (int)Math.round(Math.sin(angle) * labelRadius);
             draw.drawItem(ICONS[page][index].getDefaultStack(), ix - 8, iy - 12);
             String label = page == 1 && index == 4 && !quantityChosen ? "Drop all" : LABELS[page][index];
-            draw.drawCenteredTextWithShadow(textRenderer, label, ix, iy + 8, mix(BotUiTheme.MUTED, 0xFFFFFFFF, highlight));
+            draw.drawCenteredTextWithShadow(textRenderer, label, ix, iy + 8, mix(BotUiTheme.MUTED, BotUiTheme.TEXT, highlight));
         }
 
         String center = switch (page) {
@@ -176,7 +178,7 @@ final class CommandWheel extends FleetPanel {
         int panelWidth = textRenderer.getWidth(hint);
         for (var line : lines) panelWidth = Math.max(panelWidth, textRenderer.getWidth(line));
         int y = height - 17 - lines.size() * 10;
-        draw.fill(cx - panelWidth / 2 - 6, y - 4, cx + (panelWidth + 1) / 2 + 6, height - 3, 0xF224151D);
+        draw.fill(cx - panelWidth / 2 - 6, y - 4, cx + (panelWidth + 1) / 2 + 6, height - 3, BotUiTheme.PANEL_BOTTOM);
         for (var line : lines) {
             draw.drawCenteredTextWithShadow(textRenderer, line, cx, y, BotUiTheme.TEXT);
             y += 10;

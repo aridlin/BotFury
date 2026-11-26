@@ -26,7 +26,9 @@ class ProjectQueueTest {
                 "{\"input\":\"minecraft:raw_iron\",\"fuel\":\"minecraft:crafting_table\",\"plannedFuel\":\"minecraft:coal\",\"count\":3}",
                 List.of(coal.id()), Set.of("block:0,64,0"), coal.id());
         var queue = new ProjectQueue(file);
-        queue.submitSupplied("stock", WORLD, List.of(raw, coal, smelt), "block:1,64,0");
+        var pickaxe = new ProjectQueue.Work("pickaxe", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\"}",
+                List.of(smelt.id()), Set.of(), smelt.id());
+        queue.submitSupplied("stock", WORLD, List.of(raw, coal, smelt, pickaxe), "block:1,64,0");
         for (var work : List.of(raw, coal)) {
             var lease = queue.claim(WORLD, "miner", Set.of(GATHER), 1).job();
             assertEquals(work.id(), lease.work().id());
@@ -38,6 +40,7 @@ class ProjectQueueTest {
         assertTrue(queue.finish("stock", smelt.id(), first.lease(), false, "Missing furnace fuel minecraft:crafting_table",
                 null, null, false, List.of(), field, 4));
         queue = new ProjectQueue(file);
+        assertTrue(queue.reusableSmeltingOutputs(WORLD).isEmpty());
         queue.submit("other", WORLD, List.of(new ProjectQueue.Work("take", CRAFT, "{}",
                 List.of(), Set.of("block:20,32,10"))));
         assertNull(queue.claim(WORLD, "other", Set.of(CRAFT), "other", 5));

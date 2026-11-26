@@ -2122,7 +2122,10 @@ final class ProjectQueue {
                 int attempts = project.supplyRecoveries.getOrDefault(key, 0);
                 String region = key + ":" + Math.floorDiv(position.x, 48) + ","
                         + Math.floorDiv(position.y, 24) + "," + Math.floorDiv(position.z, 48);
-                if (attempts >= (missingSite ? 1 : 2) || project.supplyRecoveries.containsKey(region)) continue;
+                String workerKey = key + ":worker:" + worker.toLowerCase(java.util.Locale.ROOT);
+                int workerAttempts = project.supplyRecoveries.getOrDefault(workerKey, 0);
+                if (attempts >= (missingSite ? 1 : 4) || workerAttempts >= 2
+                        || project.supplyRecoveries.containsKey(region)) continue;
 
                 // Start from the worker's current footing instead of walking back to the failed route.
                 var lease = new Job(gather.work, State.LEASED, gather.attempts + 1, worker, UUID.randomUUID(),
@@ -2130,6 +2133,7 @@ final class ProjectQueue {
                 var recoveries = new HashMap<>(project.supplyRecoveries);
                 recoveries.put(key, attempts + 1);
                 recoveries.put(region, 1);
+                recoveries.put(workerKey, workerAttempts + 1);
                 commit(project.withRecovery(project.jobs.stream().map(job -> job == gather ? lease : job).toList(), recoveries));
                 return assignment(project, lease);
             }
@@ -2138,7 +2142,7 @@ final class ProjectQueue {
     }
 
     private static boolean newMiningGround(ResourceSite failed, ResourceSite position) {
-        return (long)position.y - failed.y >= 24
+        return (long)position.y - failed.y >= 12
                 || Math.hypot((double)position.x - failed.x, (double)position.z - failed.z) >= 48;
     }
 

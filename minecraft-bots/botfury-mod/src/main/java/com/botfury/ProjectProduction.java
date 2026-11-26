@@ -13,6 +13,7 @@ import net.minecraft.screen.AbstractRecipeScreenHandler;
 import net.minecraft.screen.CraftingScreenHandler;
 import net.minecraft.screen.FurnaceScreenHandler;
 import net.minecraft.screen.ScreenHandler;
+import net.minecraft.screen.slot.Slot;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
@@ -49,6 +50,7 @@ final class ProjectProduction {
         return flag != null && flag.isJsonPrimitive() && flag.getAsBoolean();
     }
     private record Payload(String recipe, String input, String fuel, Integer count, boolean inventory, Set<String> fuelChoices) {}
+    private record PendingInput(Slot source, ItemStack item) {}
     private static final int FURNACE_BURN_TIME = 0;
     private static final int FURNACE_COOK_TIME = 2;
     private static final long SETTLE = Duration.ofMillis(750).toNanos();
@@ -59,6 +61,8 @@ final class ProjectProduction {
     private long nextAction;
     private long nextCraftInputCheck;
     private Map<Integer, ItemStack> craftingInputs;
+    private PendingInput pendingInput;
+    private int inputRecoveryAttempts;
     private ItemStack substitutedFuel = ItemStack.EMPTY;
 
     ProjectProduction(Spec spec) { this.spec = spec; }
@@ -316,6 +320,7 @@ final class ProjectProduction {
         screen = null;
         opening = false;
         craftingInputs = null;
+        pendingInput = null;
     }
 
     private boolean matching(ScreenHandler handler) {
@@ -413,6 +418,14 @@ final class ProjectProduction {
         var available = observedOutput(output, held);
         if (available != null) return available;
         var player = client.player;
+        if (target != null && screen != null && player.currentScreenHandler == player.playerScreenHandler) {
+            // The server has closed our workstation. Its next screen will have a new slot layout and revision.
+            screen = null;
+            opening = false;
+            craftingInputs = null;
+            pendingInput = null;
+            BotEvents.add("debug", "projects", "Reopening the interrupted workstation");
+        }
         if (target == null) {
             screen = player.playerScreenHandler;
         } else if (screen == null && opening && matching(player.currentScreenHandler)) {
@@ -429,10 +442,12 @@ final class ProjectProduction {
             nextAction = now + SETTLE;
             return null;
         }
-        if (player.currentScreenHandler != screen || !screen.getCursorStack().isEmpty()) {
-            return failure("Workstation screen changed or inventory cursor is occupied");
-        }
+        if (player.currentScreenHandler != screen) return failure("Workstation screen changed");
         nextAction = now + SETTLE;
+        if (!screen.getCursorStack().isEmpty()) {
+            return returnPendingInput(client) ? null : failure("Inventory cursor is occupied");
+        }
+        pendingInput = null;
         if (recipe instanceof CraftingRecipe craft) {
             return spec.station == null ? craft(client, player.playerScreenHandler, craft, output)
                     : craft(client, (CraftingScreenHandler) screen, craft, output);
@@ -575,6 +590,8 @@ final class ProjectProduction {
             ItemStack source = sourceSlot.getStack();
             if (!ItemStack.canCombine(source, wanted)) continue;
             int available = source.getCount();
+            pendingInput = new PendingInput(sourceSlot, source.copyWithCount(1));
+            inputRecoveryAttempts = 0;
             click(client, i, 0, SlotActionType.PICKUP);
             if (available <= count) {
                 click(client, destination, 0, SlotActionType.PICKUP);
@@ -587,6 +604,29 @@ final class ProjectProduction {
             return true;
         }
         return false;
+    }
+
+    private boolean returnPendingInput(MinecraftClient client) {
+        var cursor = screen.getCursorStack();
+        if (pendingInput == null || !ItemStack.canCombine(cursor, pendingInput.item)
+                || inputRecoveryAttempts >= 2) return false;
+        var source = pendingInput.source;
+        if (!canStoreInput(source, cursor)) {
+            source = screen.slots.stream()
+                    .filter(slot -> slot.inventory == client.player.getInventory() && slot.getIndex() < 36)
+                    .filter(slot -> canStoreInput(slot, cursor)).findFirst().orElse(null);
+        }
+        if (source == null) return false;
+        inputRecoveryAttempts++;
+        click(client, source.id, 0, SlotActionType.PICKUP);
+        BotEvents.add("info", "projects", "Returned interrupted crafting or smelting input to inventory");
+        return true;
+    }
+
+    private static boolean canStoreInput(Slot slot, ItemStack cursor) {
+        var stored = slot.getStack();
+        return slot.canInsert(cursor) && (stored.isEmpty() || ItemStack.canCombine(stored, cursor))
+                && stored.getCount() + cursor.getCount() <= slot.getMaxItemCount(cursor);
     }
 
     private void click(MinecraftClient client, int slot, int button, SlotActionType action) {

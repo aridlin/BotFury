@@ -36,7 +36,7 @@ final class ProjectBroker {
                            List<ProjectQueue.Work> work, String job, UUID token, Boolean success,
                            String evidence, ProjectQueue.ChestReport chest, ProjectQueue.ChestReport routeStock, ProjectQueue.ResourceSite resourceSite,
                            boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool, int routeCraftTarget, boolean needsRouteBench, boolean canSupplyBench, boolean receivedRouteBench,
-                           boolean supportsPickupReserve, boolean supportsStickResupply, boolean needsMeal, boolean carryingMeal, String spareMeal, List<ProjectQueue.ReachableOre> reachableOre, boolean groundedGatherRetry) {}
+                           boolean supportsPickupReserve, boolean supportsStickResupply, boolean needsMeal, boolean carryingMeal, String spareMeal, List<ProjectQueue.ReachableOre> reachableOre, boolean groundedGatherRetry, List<String> localStarterLogs) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
         if (queue == null) {
@@ -744,6 +744,10 @@ final class ProjectBroker {
                         }
                         if (assignment == null) {
                             assignment = board.offerGatheringHandoff(world, request.worker, request.project, now, ProjectBroker::heldCount);
+                        }
+                        if (assignment == null) {
+                            assignment = board.offerStarterMiner(world, request.worker, request.project, position,
+                                    request.localStarterLogs, now);
                         }
                     }
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.BUILD)

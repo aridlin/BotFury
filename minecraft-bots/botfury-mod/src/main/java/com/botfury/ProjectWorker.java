@@ -106,7 +106,7 @@ final class ProjectWorker {
     private static final Map<String, Integer> recentInventory = new HashMap<>();
     private static boolean observedDeath;
     private static List<ProjectQueue.ResourceSite> returnWaypoints;
-    private static long nextTrailSave, idleSince, nextIdleAscent, nextIdleToolCheck;
+    private static long nextTrailSave, idleSince, nextIdleAscent, nextIdleToolCheck, nextStarterSurvey;
     private static BlockPos idleSurfaceGoal;
     private static long idleAscentDeadline, idleAscentProgressAt;
     private static int idleAscentHeight, nextIdleRouteProbe;
@@ -1835,6 +1835,11 @@ final class ProjectWorker {
                 if (SubsurfaceAccess.hasFooting(client)) args.put("groundedGatherRetry", true);
                 var ore = MiningTask.reachableOre(client);
                 if (!ore.isEmpty()) args.put("reachableOre", ore);
+            }
+            if (!SubsurfaceAccess.canDigRoute(client) && now >= nextStarterSurvey) {
+                nextStarterSurvey = now + seconds(6);
+                var logs = MiningTask.localStarterLogs(client);
+                if (!logs.isEmpty()) args.put("localStarterLogs", logs);
             }
             if (PortableWoodPreparation.canSupply(client)) args.put("canSupplyBench", true);
             if (ProjectProduction.canCraft(client, ROUTE_PICKAXE)

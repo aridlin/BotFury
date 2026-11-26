@@ -791,6 +791,39 @@ class ProjectQueueTest {
         assertEquals(2, saved.get("relocated-miner:iron:worker:previous").getAsInt());
     }
 
+    @Test void aSurfaceWorkerRestartsOnlyAnUnsharedChainWithCompatibleTimber() throws Exception {
+        for (boolean shared : List.of(false, true)) {
+            var journal = directory.resolve("surface-starter-" + shared + ".json");
+            prepareStalledSupply(journal, shared);
+            var doc = com.google.gson.JsonParser.parseString(java.nio.file.Files.readString(journal)).getAsJsonObject();
+            var jobs = doc.getAsJsonObject("projects").getAsJsonObject("stock").getAsJsonArray("jobs");
+            for (var row : jobs) {
+                var work = row.getAsJsonObject().getAsJsonObject("work");
+                if (!work.get("id").getAsString().equals("logs")) continue;
+                work.addProperty("payload", "{\"resource\":\"block:minecraft:oak_log\",\"variant\":\"both\","
+                        + "\"item\":\"minecraft:oak_log\",\"count\":2}");
+            }
+            java.nio.file.Files.writeString(journal, doc.toString());
+            var queue = new ProjectQueue(journal);
+            var position = new ProjectQueue.ResourceSite(8, 65, 9);
+            long now = 40_000;
+            queue.claim(WORLD, "volunteer", Set.of(VERIFY), now);
+            assertNull(queue.offerStarterMiner(WORLD, "volunteer", "stock", position,
+                    List.of("minecraft:birch_log"), now));
+            var result = queue.offerStarterMiner(WORLD, "volunteer", "stock", position,
+                    List.of("minecraft:oak_log"), now);
+            if (shared) assertNull(result);
+            else {
+                assertNotNull(result);
+                assertEquals("logs", result.job().work().id());
+                assertEquals("volunteer", result.job().worker());
+                assertEquals(position, result.job().resourceSite());
+                assertNull(queue.offerStarterMiner(WORLD, "volunteer", "stock", position,
+                        List.of("minecraft:oak_log"), now));
+            }
+        }
+    }
+
     @Test void stalledSupplyRewindsOnlyWhenItsPreparationIsPrivate() throws Exception {
         for (boolean shared : List.of(false, true)) {
             var journal = directory.resolve("stalled-fallback-" + shared + ".json");

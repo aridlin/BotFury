@@ -38,6 +38,8 @@ final class MiningTask {
     private static final int EXPOSED_ORE_PICKUP_STEPS = 4;
     private static final int COVERED_ORE_WALK_RADIUS = 8;
     private static final int SURFACE_ROUTE_DEPTH = 12;
+    private static final int SURFACE_EXIT_STALL_TICKS = 280;
+    private static final int SURFACE_EXIT_BACKOFF_TICKS = 1200;
     private static final Gson JSON=new Gson();
     private static final ExecutorService IO=Executors.newFixedThreadPool(2,r->{var t=new Thread(r,"BotFury-mining");t.setDaemon(true);return t;});
     private static final HttpClient HTTP=HttpClient.newBuilder().executor(IO).connectTimeout(Duration.ofMillis(300)).build();
@@ -88,6 +90,9 @@ final class MiningTask {
     private static int surfaceLedgeEnds;
     private static final int SURFACE_LEDGE_TICKS = 180;
     private static BlockPos surfaceRouteGoal, surfaceExplorationGoal, surfaceTrailWaypoint;
+    private static final Map<BlockPos, Integer> rejectedSurfaceExits = new HashMap<>();
+    private static int surfaceProgressAt, surfaceProgressY;
+    private static double surfaceProgressDistance;
     private static final Deque<ProjectQueue.ResourceSite> surfaceTrail = new ArrayDeque<>();
     private static boolean checkedSurfaceTrail;
     private static final int NEARBY_SITE_RADIUS = 48;
@@ -281,6 +286,7 @@ final class MiningTask {
         checkedWiderBeforeRememberedSite = false;
         nextLocalWideScan = 0;
         surfaceRouteGoal = surfaceExplorationGoal = null;
+        rejectedSurfaceExits.clear();
         resetSurfaceTrail();
         nextSurfaceSurvey = 0;
         toolShortfall = false;
@@ -929,18 +935,37 @@ final class MiningTask {
     private static boolean seekSurface(MinecraftClient client) {
         if (!client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)) return false;
         var feet = client.player.getBlockPos();
-        if (surfaceRouteGoal == null && age >= nextSurfaceSurvey) {
-            nextSurfaceSurvey = age + 80;
-            surfaceRouteGoal = localSurfaceExit(client, feet, excluded);
-        }
-        if (surfaceRouteGoal == null) return false;
-        if (feet.getY() >= surfaceRouteGoal.getY() - 2) {
+        if (surfaceRouteGoal != null && feet.getY() >= surfaceRouteGoal.getY() - 2) {
             surfaceRouteGoal = null;
             resetSurfaceTrail();
             subsurface.stop();
             if (pathActive) stopPath();
             return false;
         }
+        if (surfaceRouteGoal != null) {
+            double distance = Math.sqrt(surfaceRouteGoal.getSquaredDistance(feet));
+            if (feet.getY() >= surfaceProgressY + 2 || distance <= surfaceProgressDistance - 3) {
+                surfaceProgressAt = age;
+                surfaceProgressY = Math.max(surfaceProgressY, feet.getY());
+                surfaceProgressDistance = Math.min(surfaceProgressDistance, distance);
+            } else if (age - surfaceProgressAt >= SURFACE_EXIT_STALL_TICKS) {
+                BotEvents.add("info", "movement", "Trying another surface exit after a stalled climb toward "
+                        + surfaceRouteGoal.toShortString());
+                rejectedSurfaceExits.put(surfaceRouteGoal, age + SURFACE_EXIT_BACKOFF_TICKS);
+                surfaceRouteGoal = null;
+                resetSurfaceTrail();
+                subsurface.stop();
+                if (pathActive) stopPath();
+                nextPath = nextSurfaceSurvey = age;
+            }
+        }
+        if (surfaceRouteGoal == null && age >= nextSurfaceSurvey) {
+            nextSurfaceSurvey = age + 80;
+            rejectedSurfaceExits.values().removeIf(retry -> retry <= age);
+            surfaceRouteGoal = localSurfaceExit(client, feet, excluded, exit -> !rejectedSurfaceExits.containsKey(exit));
+            if (surfaceRouteGoal != null) observeSurfaceProgress(feet);
+        }
+        if (surfaceRouteGoal == null) return false;
         if (followSurfaceTrail(client, feet)) return true;
         if (!pathActive || !BaritoneClient.pursuing(surfaceRouteGoal)) {
             if (pathActive) stopPath();
@@ -952,6 +977,12 @@ final class MiningTask {
         }
         status = "Climbing toward the surface for " + job.resource;
         return true;
+    }
+
+    private static void observeSurfaceProgress(BlockPos feet) {
+        surfaceProgressAt = age;
+        surfaceProgressY = feet.getY();
+        surfaceProgressDistance = Math.sqrt(surfaceRouteGoal.getSquaredDistance(feet));
     }
 
     private static boolean followSurfaceTrail(MinecraftClient client, BlockPos feet) {
@@ -1001,6 +1032,11 @@ final class MiningTask {
     }
 
     static BlockPos localSurfaceExit(MinecraftClient client, BlockPos feet, ProjectGather.Area excluded) {
+        return localSurfaceExit(client, feet, excluded, exit -> true);
+    }
+
+    private static BlockPos localSurfaceExit(MinecraftClient client, BlockPos feet, ProjectGather.Area excluded,
+                                             java.util.function.Predicate<BlockPos> candidate) {
         var world = client.world;
         var exits = new ArrayList<BlockPos>();
         for (int dx = -8; dx <= 8; dx += 4) {
@@ -1020,7 +1056,7 @@ final class MiningTask {
         // The surrounding terrain can be far above the floor of a skylit ravine.
         int typicalHeight = exits.get(exits.size() / 2).getY();
         if (typicalHeight - feet.getY() < SURFACE_ROUTE_DEPTH) return null;
-        return exits.stream().filter(exit -> exit.getY() >= typicalHeight - 4)
+        return exits.stream().filter(exit -> exit.getY() >= typicalHeight - 4 && candidate.test(exit))
                 .min(Comparator.comparingDouble(exit -> exit.getSquaredDistance(feet))).orElse(null);
     }
 

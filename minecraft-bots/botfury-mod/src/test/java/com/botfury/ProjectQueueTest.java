@@ -2655,6 +2655,43 @@ class ProjectQueueTest {
         assertEquals(gathered.lease(), recovered.snapshot(18).get(0).jobs().get(1).lease());
     }
 
+    @Test void laterCargoFillsStalledManifestBatchAndReopensItsOwnGather() throws Exception {
+        var journal = directory.resolve("bank-ready-cargo.json");
+        String projectId = "manifest-stock";
+        String chest = "block:3,64,0";
+        String item = "minecraft:dirt";
+        String gather = "{\"resource\":\"dirt\",\"variant\":\"both\",\"item\":\"minecraft:dirt\",\"count\":13}";
+        String deposit = "{\"target\":{\"x\":3,\"y\":64,\"z\":0},\"direction\":\"DEPOSIT\",\"item\":\"minecraft:dirt\",\"stock\":%d}";
+        var firstGather = new ProjectQueue.Work("first-gather", GATHER, gather, List.of(), Set.of());
+        var firstBank = new ProjectQueue.Work("first-bank", TRANSFER, deposit.formatted(13),
+                List.of(firstGather.id()), Set.of(chest), firstGather.id());
+        var laterGather = new ProjectQueue.Work("later-gather", GATHER, gather, List.of(), Set.of());
+        var laterBank = new ProjectQueue.Work("later-bank", TRANSFER, deposit.formatted(26),
+                List.of(laterGather.id(), firstBank.id()), Set.of(chest), laterGather.id());
+        var project = new ProjectQueue.Project(projectId, WORLD, List.of(
+                new ProjectQueue.Job(firstGather, ProjectQueue.State.FAILED, 3, "stalled", null, 0, ProjectQueue.GATHER_STALLED, null),
+                new ProjectQueue.Job(firstBank, ProjectQueue.State.WAITING, 0, null, null, 0, null, null),
+                new ProjectQueue.Job(laterGather, ProjectQueue.State.DONE, 1, "carrier", null, 0, "Gathered", null),
+                new ProjectQueue.Job(laterBank, ProjectQueue.State.WAITING, 0, null, null, 0, null, null)), null, chest, java.util.Map.of());
+        Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1, "projects", java.util.Map.of(projectId, project))));
+
+        var queue = new ProjectQueue(journal);
+        assertNull(queue.claim(WORLD, "carrier", Set.of(TRANSFER), projectId, 1, null,
+                block -> true, (worker, key) -> 12, java.util.Map.of()));
+        var rescued = queue.claim(WORLD, "carrier", Set.of(TRANSFER), projectId, 2, null,
+                block -> true, (worker, key) -> 13, java.util.Map.of()).job();
+        assertEquals(firstBank, rescued.work());
+        queue = new ProjectQueue(journal);
+        assertEquals(rescued.lease(), queue.claim(WORLD, "carrier", Set.of(TRANSFER), 3).job().lease());
+        assertTrue(queue.finish(projectId, firstBank.id(), rescued.lease(), true, "Verified",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(item, 13)), 4));
+        assertNull(queue.claim(WORLD, "carrier", Set.of(TRANSFER), 5));
+        var recollect = queue.claim(WORLD, "helper", Set.of(GATHER), 6).job();
+        assertEquals(laterGather, recollect.work());
+        assertTrue(queue.finish(projectId, laterGather.id(), recollect.lease(), true, "Gathered", 7));
+        assertEquals(laterBank, queue.claim(WORLD, "helper", Set.of(TRANSFER), 8).job().work());
+    }
+
     @Test void shortDepositReservesAStockedCarrierBeforeRewinding() throws Exception {
         var journal = directory.resolve("short-deposit-carrier.json");
         var queue = new ProjectQueue(journal);

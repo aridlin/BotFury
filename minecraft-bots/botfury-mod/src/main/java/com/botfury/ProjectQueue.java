@@ -1523,6 +1523,10 @@ final class ProjectQueue {
                 if (world.equals(project.world)) reserved.addAll(job.work.locks);
             }
         }
+        if (kinds.contains(Kind.TRANSFER) && heldCount != null) {
+            var readyCargo = offerBlockedManifestDeposit(world, worker, projectId, now, heldCount);
+            if (readyCargo != null) return readyCargo;
+        }
         // TAKE measures an inventory minimum. The same blocks cannot satisfy two unfinished batches.
         var carried = pendingBuildMaterials(world, worker);
         Project ownedOrder = null;
@@ -1792,10 +1796,7 @@ final class ProjectQueue {
                         || chest.y() - carrier.position.y > CONSTRUCTION_PICKUP_RETRY_CLIMB) continue;
                 var gather = privateDepositCargo(project, deposit, target.item);
                 if (gather == null || ownChestContributionBlocked(project, gather, deposit)) continue;
-                var items = new HashSet<>(target.item.equals("any_logs")
-                        ? ResourceCatalog.blocks(target.item, "both") : List.of(target.item));
-                items.add(target.item);
-                if (items.stream().anyMatch(item -> item.endsWith("_log"))) items.add("any_logs");
+                var items = stockReservationKeys(target.item);
                 if (!Collections.disjoint(pendingBuildMaterials(world, carrier.worker), items)
                         || items.stream().anyMatch(item -> hasPendingDepositOf(world, carrier.worker, item))) continue;
                 String rescue = "failed-deposit-carrier:" + deposit.work.id + ":" + carrier.worker.toLowerCase(Locale.ROOT);
@@ -1864,6 +1865,58 @@ final class ProjectQueue {
         return false;
     }
 
+    private Assignment offerBlockedManifestDeposit(String world, String worker, String projectId, long now,
+                                                    java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
+        for (var project : projects.values()) {
+            if (!project.id.startsWith("manifest-") || !project.world.equals(world) || project.repeat != null
+                    || project.supplyChest == null || cancelled(project) || projectId != null && !project.id.equals(projectId)
+                    || !availableProjectWorker(project, worker, now)) continue;
+            for (var later : project.jobs) {
+                if (later.state != State.WAITING || later.attempts != 0 || !later.work.locks.contains(project.supplyChest)) continue;
+                var target = transferTarget(later);
+                if (target == null || !"DEPOSIT".equals(target.direction) || target.item == null) continue;
+                var cargo = privateDepositCargo(project, later, target.item);
+                if (cargo == null || cargo.work.sameWorkerAs != null
+                        || !worker.equalsIgnoreCase(cargo.worker)) continue;
+                var first = firstUnbankedDeposit(project, later, target.item);
+                if (first == null || first == later || first.state != State.WAITING || first.attempts != 0) continue;
+                var stalled = find(project, first.work.sameWorkerAs);
+                if (stalled == null || stalled.state != State.FAILED || stalled.work.kind != Kind.GATHER
+                        || stalled.work.sameWorkerAs != null || !GATHER_STALLED.equals(stalled.evidence)
+                        || now < stalled.expiresAt || !privatePreparationReady(project, first, Set.of(stalled.work.id))) continue;
+                var source = gatherSource(stalled.work.payload);
+                if (source == null || !target.item.equals(source.item)) continue;
+                var keys = stockReservationKeys(target.item);
+                if (!Collections.disjoint(pendingBuildMaterials(world, worker), keys)
+                        || keys.stream().anyMatch(item -> hasPendingDepositOf(world, worker, item, later))) continue;
+                var quantity = JSON.fromJson(stalled.work.payload, GatherQuantity.class);
+                if (quantity.count == null || quantity.count <= 0
+                        || heldCount.applyAsInt(worker, target.item) < quantity.count || ownChestContributionBlocked(project, stalled, first)) continue;
+
+                // Move the completed cargo to the oldest unfilled batch. Reopen its original quota
+                // in the same commit so this inventory can only satisfy one gather.
+                var jobs = new ArrayList<>(project.jobs);
+                jobs.set(jobs.indexOf(stalled), new Job(stalled.work, State.DONE, stalled.attempts, worker, null, 0,
+                        "Observed " + quantity.count + " " + target.item + " from " + cargo.work.id, null, cargo.resourceSite));
+                jobs.set(jobs.indexOf(cargo), new Job(cargo.work, State.WAITING, 0, null, null, 0, null, null));
+                var assigned = new Job(first.work, State.LEASED, 1, worker, UUID.randomUUID(),
+                        now + LEASE_MS, "Delivering cargo from a later stock batch", first.chest);
+                jobs.set(jobs.indexOf(first), assigned);
+                var updated = project.withJobs(jobs);
+                commit(updated);
+                return assignment(updated, assigned);
+            }
+        }
+        return null;
+    }
+
+    private static Set<String> stockReservationKeys(String item) {
+        var keys = new HashSet<>(item.equals("any_logs") ? ResourceCatalog.blocks(item, "both") : List.of(item));
+        keys.add(item);
+        if (keys.stream().anyMatch(key -> key.endsWith("_log"))) keys.add("any_logs");
+        return keys;
+    }
+
     private static Job privateDepositCargo(Project project, Job deposit, String item) {
         var cargo = find(project, deposit.work.sameWorkerAs);
         if (cargo == null || cargo.state != State.DONE || cargo.worker == null || cargo.work.kind != Kind.GATHER
@@ -1880,7 +1933,7 @@ final class ProjectQueue {
             Job previous = null;
             for (String id : deposit.work.needs) {
                 var need = find(project, id);
-                if (need.state == State.DONE) continue;
+                if (need.state == State.DONE || id.equals(deposit.work.sameWorkerAs) && need.work.kind == Kind.GATHER) continue;
                 var target = transferTarget(need);
                 if (previous != null || target == null || !"DEPOSIT".equals(target.direction)
                         || !item.equals(target.item) || !need.work.locks.contains(project.supplyChest)) return null;

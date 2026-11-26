@@ -357,7 +357,8 @@ final class ProjectBroker {
             var block = ProjectBlock.parse(check.job().payload());
             var target = block.target();
             if (!client.world.getChunkManager().isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
-                    || !block.desired().isAir() || !client.world.isAir(target)) continue;
+                    || !client.world.isInBuildLimit(target) || !client.world.getWorldBorder().contains(target)
+                    || !client.world.isAir(target)) continue;
             board.confirmScaffoldClearance(world, check, "Observed clear scaffold cell at " + target.toShortString());
         }
     }

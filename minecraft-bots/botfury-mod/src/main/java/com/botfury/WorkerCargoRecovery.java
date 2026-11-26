@@ -26,7 +26,7 @@ final class WorkerCargoRecovery {
                          Map<String, Integer> contents, long retryAt) {}
     private record Saved(WorkerEnrollment worker, Cargo cargo) {}
 
-    private final DroppedItemSearch pickup = new DroppedItemSearch(20);
+    private final DroppedItemSearch pickup = new DroppedItemSearch(20, true);
     private final Map<String, Integer> held = new HashMap<>();
     private Cargo cargo;
     private ProjectItem item;

@@ -19,17 +19,27 @@ final class DroppedItemSearch {
     enum State { SEARCHING, APPROACHING, UNAVAILABLE }
 
     private static final int ROUTE_RETRY_TICKS = 30;
+    private static final int NORMAL_FALL = 3;
+    private static final int CARGO_FALL_LIMIT = 5;
+    private static final float CARGO_FALL_MIN_HEALTH = 16;
     private final int radius;
+    private final boolean recoveryDescent;
     private final Map<UUID, Integer> retry = new HashMap<>();
     private ItemEntity target;
     private BlockPos goal;
     private Vec3d progress;
     private int age, started, lastProgress, nextScan, nextPath;
     private BaritoneSettings settings;
+    private boolean controlledDrop;
 
     DroppedItemSearch() { this(32); }
 
-    DroppedItemSearch(int radius) { this.radius = radius; }
+    DroppedItemSearch(int radius) { this(radius, false); }
+
+    DroppedItemSearch(int radius, boolean recoveryDescent) {
+        this.radius = radius;
+        this.recoveryDescent = recoveryDescent;
+    }
 
     State tick(MinecraftClient client, Item item) {
         return tick(client, stack -> stack.isOf(item), null);
@@ -81,7 +91,8 @@ final class DroppedItemSearch {
             }
             if (target != null) {
                 try {
-                    settings = new BaritoneSettings(false);
+                    settings = recoveryDescent ? BaritoneSettings.surfaceGathering() : new BaritoneSettings(false);
+                    if (recoveryDescent) settings.setWalkingFallLimit(NORMAL_FALL);
                 } catch (ReflectiveOperationException | LinkageError error) {
                     stop();
                     return State.UNAVAILABLE;
@@ -93,6 +104,18 @@ final class DroppedItemSearch {
         if (target == null) return State.SEARCHING;
         if (minedAt != null && !target.isOnGround() && age - started < 20) return State.APPROACHING;
         var next = target.getBlockPos();
+        if (controlledDrop && (player.getHealth() < CARGO_FALL_MIN_HEALTH || !next.equals(goal))) {
+            settings.setWalkingFallLimit(NORMAL_FALL);
+            controlledDrop = false;
+            BaritoneClient.execute("stop");
+            goal = null;
+        }
+        if (recoveryDescent && !controlledDrop && age - lastProgress >= 40 && !BaritoneClient.pursuing(next)
+                && canDescendToCargo(client, target, next) && settings.setWalkingFallLimit(CARGO_FALL_LIMIT)) {
+            controlledDrop = true;
+            goal = null;
+            BotEvents.add("info", "projects", "Taking a short ledge drop to recover supplies");
+        }
         if (next.equals(goal)) {
             if (age < nextPath || next.equals(player.getBlockPos()) || BaritoneClient.pursuing(next)) {
                 return State.APPROACHING;
@@ -107,6 +130,16 @@ final class DroppedItemSearch {
         return State.UNAVAILABLE;
     }
 
+    private static boolean canDescendToCargo(MinecraftClient client, ItemEntity item, BlockPos landing) {
+        var player = client.player;
+        var feet = player.getBlockPos();
+        int drop = feet.getY() - landing.getY();
+        return drop > NORMAL_FALL && drop <= CARGO_FALL_LIMIT && landing.withY(feet.getY()).isWithinDistance(feet, 5)
+                && player.getHealth() >= CARGO_FALL_MIN_HEALTH && SubsurfaceAccess.hasFooting(client)
+                && !player.isTouchingWater() && item.isOnGround()
+                && ProjectWorker.knownTrailFooting(client, landing);
+    }
+
     void repath() {
         goal = null;
         lastProgress = age;
@@ -118,6 +151,7 @@ final class DroppedItemSearch {
             settings.close();
         }
         settings = null;
+        controlledDrop = false;
         target = null;
         goal = null;
     }

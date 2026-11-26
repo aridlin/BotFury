@@ -1034,6 +1034,14 @@ final class ProjectWorker {
             approachAge++;
             return;
         }
+        int riseToStation = stand.getY() - currentCell.getY();
+        boolean shortStationClimb = needsStationApproach && riseToStation > 0 && riseToStation < 5
+                && (stationReturn.active() || stationReturn.continuingLocalAscent() || stationReturn.openingReturnStep()
+                    || routeFailed && SubsurfaceAccess.hasFooting(client) && !client.world.isSkyVisible(currentCell.up()));
+        if (shortStationClimb && tryElevatedApproach(client, stand, now, false, true)) {
+            approachAge++;
+            return;
+        }
         if (ordinaryBuild && targetLoaded && !canBuildHere && client.world.isAir(target)
                 && (openingJumpHeadroom != null || !attemptedJumpHeadroom && (routeFailed || reachedAlternative))
                 && openJumpHeadroom(client, currentCell)) return;
@@ -1062,7 +1070,7 @@ final class ProjectWorker {
         }
         if ((canopyApproachEnds != 0 || belowPlacement)
                 && tryCanopyApproach(client, stand, now, searchingForStand)) return;
-        if (belowPlacement && tryElevatedApproach(client, stand, now, true)) {
+        if (belowPlacement && tryElevatedApproach(client, stand, now, true, false)) {
             approachAge++;
             return;
         }
@@ -1115,7 +1123,7 @@ final class ProjectWorker {
                 }
                 return;
             }
-            if (stationJob && tryElevatedApproach(client, stand, now, false)) return;
+            if (stationJob && tryElevatedApproach(client, stand, now, false, false)) return;
             var recovery = approachRecovery.tick(client, stand,
                     pos -> !pos.equals(target) && !pos.up().equals(target));
             if (recovery == StallRecovery.State.DETOUR) {
@@ -1597,11 +1605,12 @@ final class ProjectWorker {
         return true;
     }
 
-    private static boolean tryElevatedApproach(MinecraftClient client, BlockPos destination, long now, boolean placement) {
+    private static boolean tryElevatedApproach(MinecraftClient client, BlockPos destination, long now,
+                                               boolean placement, boolean shortStationClimb) {
         var position = client.player.getBlockPos();
         int heightRemaining = destination.getY() - position.getY();
         boolean finishingStairs = !placement && heightRemaining > 0 && stationReturn.continuingLocalAscent();
-        if (!finishingStairs && heightRemaining < (placement ? 3 : 5)) {
+        if (!finishingStairs && !shortStationClimb && heightRemaining < (placement ? 3 : 5)) {
             needsRouteTool = needsRouteBench = false;
             stationReturn.stop();
             return false;
@@ -1655,7 +1664,9 @@ final class ProjectWorker {
         String detail = placement ? "Opening a short climb to the placement stand"
                 : stationReturn.followingNaturalAscent() ? "Following a natural ascent to the station"
                 : stationReturn.openingReturnStep() ? "Opening a protected return step" : "Opening a return route to the station";
-        if (placement && !alreadyClimbing) BotEvents.add("info", "movement", detail);
+        if (!alreadyClimbing && (placement || shortStationClimb)) {
+            BotEvents.add("info", "movement", shortStationClimb ? "Recovering a short climb to the station" : detail);
+        }
         status = assignment.project() + "/" + assignment.job().work().id() + ": " + detail;
         return true;
     }

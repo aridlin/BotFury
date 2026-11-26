@@ -765,6 +765,32 @@ class ProjectQueueTest {
                 new ProjectQueue.ResourceSite(110, 90, 9), stone, now));
     }
 
+    @Test void aReplacementWorkerCanRecoverAfterThePreviousWorkerUsedBothRelocationAttempts() throws Exception {
+        var journal = directory.resolve("replacement-relocated-miner.json");
+        prepareStalledSupply(journal, false);
+        var document = com.google.gson.JsonParser.parseString(java.nio.file.Files.readString(journal)).getAsJsonObject();
+        var project = document.getAsJsonObject("projects").getAsJsonObject("stock");
+        var budget = project.getAsJsonObject("supplyRecoveries");
+        budget.addProperty("relocated-miner:iron", 2);
+        budget.addProperty("relocated-miner:iron:worker:previous", 2);
+        java.nio.file.Files.writeString(journal, document.toString());
+
+        var queue = new ProjectQueue(journal);
+        long now = 40_000;
+        var stone = java.util.Map.of("minecraft:stone_pickaxe", 75);
+        queue.claim(WORLD, "original", Set.of(VERIFY), now);
+        assertNull(queue.offerRelocatedMiner(WORLD, "original", "stock",
+                new ProjectQueue.ResourceSite(8, 32, 9), stone, now));
+        var newLayer = new ProjectQueue.ResourceSite(8, 33, 9);
+        var retry = queue.offerRelocatedMiner(WORLD, "original", "stock", newLayer, stone, now);
+        assertEquals(newLayer, retry.job().resourceSite());
+        var saved = com.google.gson.JsonParser.parseString(java.nio.file.Files.readString(journal)).getAsJsonObject()
+                .getAsJsonObject("projects").getAsJsonObject("stock").getAsJsonObject("supplyRecoveries");
+        assertEquals(3, saved.get("relocated-miner:iron").getAsInt());
+        assertEquals(1, saved.get("relocated-miner:iron:worker:original").getAsInt());
+        assertEquals(2, saved.get("relocated-miner:iron:worker:previous").getAsInt());
+    }
+
     @Test void stalledSupplyRewindsOnlyWhenItsPreparationIsPrivate() throws Exception {
         for (boolean shared : List.of(false, true)) {
             var journal = directory.resolve("stalled-fallback-" + shared + ".json");

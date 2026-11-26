@@ -1488,6 +1488,41 @@ class ProjectQueueTest {
         }
     }
 
+    @Test void observedTimberRestartsAnExhaustedCraftingChainWithANewWorker() throws Exception {
+        var journal = directory.resolve("observed-crafting-input.json");
+        var timber = new ProjectQueue.Work("timber", GATHER,
+                """
+                {"resource":"block:minecraft:oak_log","variant":"both","item":"minecraft:oak_log","count":2}
+                """, List.of(), Set.of());
+        var planks = new ProjectQueue.Work("planks", CRAFT,
+                """
+                {"recipe":"minecraft:oak_planks","count":8,"inventory":true}
+                """, List.of(timber.id()), Set.of(), timber.id());
+        var queue = new ProjectQueue(journal);
+        queue.submitSupplied("stock", WORLD, List.of(timber, planks), "block:3,64,0");
+        for (int attempt = 0; attempt < 3; attempt++) {
+            long now = 1 + attempt * 31_000L;
+            var lease = queue.claim(WORLD, "original", Set.of(GATHER), now).job();
+            assertTrue(queue.finish("stock", timber.id(), lease.lease(), false, ProjectQueue.GATHER_STALLED,
+                    null, new ProjectQueue.ResourceSite(12, 64, 0), now + 1));
+        }
+
+        var restored = new ProjectQueue(journal);
+        assertTrue(restored.exhaustedSurfaceGatherings(WORLD, 92_001).isEmpty());
+        assertNull(restored.claim(WORLD, "nearby", Set.of(GATHER, CRAFT), 93_000));
+        var observation = restored.exhaustedSurfaceGatherings(WORLD, 93_000).get(0);
+        var treeStand = new ProjectQueue.ResourceSite(5, 70, 0);
+        assertTrue(restored.recoverObservedGather(WORLD, observation, "nearby", treeStand, 93_001, (worker, item) -> 0));
+        assertFalse(restored.recoverObservedGather(WORLD, observation, "nearby", treeStand, 93_002, (worker, item) -> 0));
+        var retry = restored.claim(WORLD, "nearby", Set.of(GATHER), 93_003).job();
+        assertEquals(treeStand, retry.resourceSite());
+        assertTrue(restored.finish("stock", timber.id(), retry.lease(), true, "Observed 2 minecraft:oak_log in worker inventory",
+                null, treeStand, 93_004));
+        assertNull(restored.claim(WORLD, "original", Set.of(CRAFT), 93_005));
+        assertEquals(planks.id(), restored.claim(WORLD, "nearby", Set.of(CRAFT), 93_006).job().work().id());
+        assertTrue(new ProjectQueue(journal).exhaustedSurfaceGatherings(WORLD, 125_000).isEmpty());
+    }
+
     @Test void stalledIndependentStockGatherGetsOneFreshAttemptAcrossRestarts() throws Exception {
         var journal = directory.resolve("stalled-independent-stock.json");
         String chest = "block:3,64,0";

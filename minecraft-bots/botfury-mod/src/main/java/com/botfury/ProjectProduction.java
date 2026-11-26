@@ -31,7 +31,16 @@ final class ProjectProduction {
     private static final double[] OUTLINE_SAMPLES = {.2, .8};
     record Spec(ProjectBlock station, ProjectQueue.Kind kind, Identifier recipe, Identifier input,
                 Identifier fuel, int count) {}
-    record Result(boolean success, String detail) {}
+    record Result(boolean success, String detail, boolean loadedFurnace) {
+        Result(boolean success, String detail) { this(success, detail, false); }
+    }
+
+    static boolean resumesLoadedFurnace(String payload) {
+        var data = new Gson().fromJson(payload, com.google.gson.JsonObject.class);
+        if (data == null) return false;
+        var flag = data.get("resumeLoadedFurnace");
+        return flag != null && flag.isJsonPrimitive() && flag.getAsBoolean();
+    }
     private record Payload(String recipe, String input, String fuel, Integer count, boolean inventory) {}
     private static final int FURNACE_BURN_TIME = 0;
     private static final int FURNACE_COOK_TIME = 2;
@@ -482,7 +491,7 @@ final class ProjectProduction {
         long fuelNeeded = (long) recipe.getCookTime() * queued - credited;
         if (existingFuel.isEmpty() && fuelNeeded > 0
                 && !addFuel(client, furnace, fuel, fuelNeeded, carried) && !furnace.isBurning()) {
-            return failure("Missing furnace fuel " + spec.fuel);
+            return new Result(false, "Missing furnace fuel " + spec.fuel, true);
         }
         return null;
     }

@@ -61,6 +61,10 @@ final class FieldWorkstation {
         return station.block().equals(TABLE) && placedByWorker(client) ? station : null;
     }
 
+    static boolean shouldUseFieldStation(BlockPos target, BlockPos feet) {
+        return !target.isWithinDistance(feet, 16);
+    }
+
     static FieldWorkstation find(MinecraftClient client, long now, ProjectQueue.Kind kind, boolean reservesWood,
                                  Set<BlockPos> rejected) {
         int plankBudget = reservesWood ? PLANK_BUDGET : WORKBENCH_COST;

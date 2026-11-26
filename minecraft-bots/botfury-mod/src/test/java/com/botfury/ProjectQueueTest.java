@@ -159,10 +159,19 @@ class ProjectQueueTest {
         Files.writeString(file, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
                 "projects", java.util.Map.of("stock", project))));
 
+        var ownerRetry = new ProjectQueue(Files.copy(file, directory.resolve("workbench-owner-retry.json")));
+        assertNull(ownerRetry.claim(WORLD, "previous", Set.of(CRAFT), 1));
+        var request = ownerRetry.failedWorkstationCrafts(WORLD).get(0);
+        var inputs = Set.of("minecraft:cobblestone");
+        assertFalse(ownerRetry.reassignTimedOutCraft(WORLD, request, "previous", inputs, false, 2));
+        assertTrue(ownerRetry.reassignTimedOutCraft(WORLD, request, "previous", inputs, true, 2));
+        assertFalse(ownerRetry.reassignTimedOutCraft(WORLD, request, "previous", inputs, true, 3));
+        assertEquals(craft.id(), ownerRetry.claim(WORLD, "previous", Set.of(CRAFT), 3).job().work().id());
+
         var queue = new ProjectQueue(file);
         assertNull(queue.claim(WORLD, "helper", Set.of(SMELT), 1));
         assertTrue(queue.reassignTimedOutCraft(WORLD, queue.failedWorkstationCrafts(WORLD).get(0),
-                "helper", Set.of("minecraft:cobblestone"), 2));
+                "helper", Set.of("minecraft:cobblestone"), false, 2));
         assertTrue(queue.resumableSmelting(WORLD, 100).isEmpty());
         var craftLease = queue.claim(WORLD, "helper", Set.of(CRAFT, SMELT), 3).job();
         assertEquals(craft.id(), craftLease.work().id());

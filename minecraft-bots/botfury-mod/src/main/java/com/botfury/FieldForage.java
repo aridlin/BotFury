@@ -1,10 +1,13 @@
 package com.botfury;
 
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.List;
 import java.util.UUID;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.passive.AnimalEntity;
+import net.minecraft.util.hit.HitResult;
 import net.minecraft.item.Item;
 import net.minecraft.item.Items;
 import net.minecraft.registry.Registries;
@@ -12,6 +15,7 @@ import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.RaycastContext;
 
 final class FieldForage {
     static final int SEARCH_RADIUS = 32;
@@ -22,7 +26,7 @@ final class FieldForage {
     private final Item item;
     private final BlockPos origin;
     private final DroppedItemSearch pickup = new DroppedItemSearch(12);
-    private BlockPos goal;
+    private List<BlockPos> goals = List.of();
     private Vec3d lastSeen;
     private BaritoneSettings settings;
     private int age, lastSeenAt;
@@ -81,6 +85,11 @@ final class FieldForage {
                 LocalFormation.punch(client, animal);
             }
         } else if (age % 10 == 1) {
+            var stands = attackStands(client, animal, pos);
+            if (stands.isEmpty()) {
+                stopApproach();
+                return Result.WORKING;
+            }
             if (settings == null) {
                 try {
                     settings = new BaritoneSettings(false);
@@ -88,12 +97,35 @@ final class FieldForage {
                     return Result.FAILED;
                 }
             }
-            if (!pos.equals(goal) || !BaritoneClient.pursuing(pos)) {
-                goal = pos;
-                if (!BaritoneClient.goTo(pos)) return Result.FAILED;
+            if (!stands.equals(goals) || goals.stream().noneMatch(BaritoneClient::pursuing)) {
+                if (!BaritoneClient.goToAny(stands)) return Result.FAILED;
+                if (goals.isEmpty()) BotEvents.add("info", "projects", "Approaching reserved forage from dry footing");
+                goals = stands;
             }
         }
         return Result.WORKING;
+    }
+
+    private static List<BlockPos> attackStands(MinecraftClient client, AnimalEntity animal, BlockPos origin) {
+        var player = client.player;
+        var world = client.world;
+        var stands = new ArrayList<BlockPos>();
+        for (var stand : BlockPos.iterateOutwards(origin, 3, 2, 3)) {
+            if (stand.equals(origin) || !world.isChunkLoaded(stand.getX() >> 4, stand.getZ() >> 4)
+                    || !world.isInBuildLimit(stand.up()) || !world.getWorldBorder().contains(stand)) continue;
+            var position = Vec3d.ofBottomCenter(stand);
+            var floor = stand.down();
+            if (position.squaredDistanceTo(animal.getPos()) > 7.5 || !world.getFluidState(stand).isEmpty()
+                    || !world.getFluidState(stand.up()).isEmpty() || !world.getFluidState(floor).isEmpty()
+                    || !ProjectPlacement.flushFloor(world.getBlockState(floor), world, floor)
+                    || !world.isSpaceEmpty(player, player.getBoundingBox().offset(position.subtract(player.getPos())))) continue;
+            var eye = position.add(0, player.getEyeY() - player.getY(), 0);
+            var ray = new RaycastContext(eye, animal.getEyePos(), RaycastContext.ShapeType.COLLIDER,
+                    RaycastContext.FluidHandling.NONE, player);
+            if (world.raycast(ray).getType() == HitResult.Type.MISS) stands.add(stand.toImmutable());
+        }
+        return stands.stream().sorted(Comparator.comparingDouble(stand -> stand.getSquaredDistance(player.getPos())))
+                .limit(8).toList();
     }
 
     private void stopApproach() {
@@ -101,7 +133,7 @@ final class FieldForage {
         BaritoneClient.execute("stop");
         settings.close();
         settings = null;
-        goal = null;
+        goals = List.of();
     }
 
     void close() {

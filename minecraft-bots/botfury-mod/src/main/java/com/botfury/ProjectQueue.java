@@ -1836,11 +1836,25 @@ final class ProjectQueue {
     synchronized Assignment offerStickResupply(String world, String worker, String projectId, long now,
                                                 java.util.function.Function<String, ResourceSite> position,
                                                 java.util.function.ToIntBiFunction<String, String> held) throws IOException {
+        return offerStickResupply(world, worker, projectId, now, position, held, Set.of());
+    }
+
+    synchronized Assignment offerStickResupply(String world, String worker, String projectId, long now,
+                                                java.util.function.Function<String, ResourceSite> position,
+                                                java.util.function.ToIntBiFunction<String, String> held,
+                                                Set<String> stickCraftInputs) throws IOException {
         String item = "minecraft:stick";
         int carried = held.applyAsInt(worker, item);
         var origin = position.apply(worker);
-        if (carried < 1 || origin == null || pendingBuildMaterials(world, worker).contains(item)
+        var reserved = pendingBuildMaterials(world, worker);
+        if (carried < 0 || origin == null || reserved.contains(item)
                 || hasPendingDepositOf(world, worker, item)) return null;
+        boolean canCraft = stickCraftInputs != null && !stickCraftInputs.isEmpty() && stickCraftInputs.size() <= 16
+                && Collections.disjoint(reserved, stickCraftInputs)
+                && stickCraftInputs.stream().allMatch(input -> input != null && input.matches("minecraft:[a-z_]+_planks")
+                        && !hasPendingDepositOf(world, worker, input))
+                && stickCraftInputs.stream().mapToInt(input -> Math.max(0, held.applyAsInt(worker, input))).sum() >= 2;
+        if (carried == 0 && !canCraft) return null;
         for (var project : projects.values()) {
             if (!world.equals(project.world) || cancelled(project) || project.jobs.size() >= MAX_JOBS
                     || projectId != null && !projectId.equals(project.id)
@@ -1858,8 +1872,11 @@ final class ProjectQueue {
                         || gatheringDistance(origin, destination) > (routeTool ? 48 : 32)) continue;
                 int existing = held.applyAsInt(gather.worker, item);
                 int missing = (routeTool ? 2 : preparation.count) - existing;
-                if (existing < 0 || missing < 1 || missing > carried - (routeTool ? 0 : 2)) continue;
-                var payload = new RouteToolDelivery(gather.worker, destination, item, existing, 0, null, missing);
+                if (existing < 0 || missing < 1) continue;
+                int required = missing + (routeTool ? 0 : 2);
+                int craftTarget = required > carried ? required : 0;
+                if (craftTarget > 0 && (!canCraft || craftTarget > carried + 4)) continue;
+                var payload = new RouteToolDelivery(gather.worker, destination, item, existing, craftTarget, null, missing);
                 return assignMealOrSticks(project, id, worker, now, payload);
             }
         }

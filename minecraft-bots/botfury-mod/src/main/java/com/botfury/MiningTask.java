@@ -415,6 +415,10 @@ final class MiningTask {
                         return;
                     }
                 }
+                if (age - approachProgress >= 80 && !BaritoneClient.pursuing(p) && trySurfaceLedge(client, p)) {
+                    approachProgress = age;
+                    return;
+                }
                 if (projectMining && age - approachProgress >= 110
                         && (age - approachProgress >= 250 || !BaritoneClient.pursuing(p))
                         && tryAlternateStand(client, p)) return;
@@ -1019,6 +1023,7 @@ final class MiningTask {
         var point = Vec3d.ofBottomCenter(rememberedSite);
         if (age < rememberedUntil && client.player.squaredDistanceTo(point) > 25) {
             if (age >= nextPath && (!pathActive || !BaritoneClient.pursuing(rememberedSite))) {
+                if (pathActive && trySurfaceLedge(client, rememberedSite)) return true;
                 if (path(rememberedSite)) {
                     nextPath = age + 100;
                     BotEvents.add("debug", "mining", "Sent route to recorded gathering site " + rememberedSite.toShortString());

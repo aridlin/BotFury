@@ -15,6 +15,28 @@ class ProjectQueueTest {
     @TempDir Path directory;
     private static final String WORLD = "test|overworld";
 
+    @Test void reopeningPreparationReleasesAnAlreadyCompletedFurnacesReservation() throws Exception {
+        var file = directory.resolve("rebuilt-furnace.json");
+        String key = "block:0,64,0";
+        String spec = "{\"target\":{\"x\":0,\"y\":64,\"z\":0},\"stand\":{\"x\":1,\"y\":64,\"z\":0},"
+                + "\"block\":\"minecraft:furnace\",\"resumeLoadedFurnace\":true}";
+        var rebuilt = new ProjectQueue.Job(new ProjectQueue.Work("rebuilt", SMELT, spec, List.of(), Set.of(key)),
+                ProjectQueue.State.WAITING, 0, null, null, 0, ProjectQueue.GATHER_STALLED + "; reacquiring materials", null);
+        var salvage = new ProjectQueue.Job(new ProjectQueue.Work("salvage", SMELT, spec, List.of(), Set.of(key)),
+                ProjectQueue.State.WAITING, 1, null, null, 0, ProjectQueue.TARGET_TIMEOUT, null);
+        var old = new ProjectQueue.Project("rebuilt", WORLD, List.of(rebuilt), null, null, java.util.Map.of());
+        var current = new ProjectQueue.Project("salvage", WORLD, List.of(salvage), null, null, java.util.Map.of());
+        var projects = new java.util.LinkedHashMap<String, ProjectQueue.Project>();
+        projects.put(old.id(), old);
+        projects.put(current.id(), current);
+        Files.writeString(file, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1, "projects", projects)));
+
+        var queue = new ProjectQueue(file);
+        assertFalse(queue.snapshot(1).get(0).jobs().get(0).work().payload().contains("resumeLoadedFurnace"));
+        assertNull(queue.claim(WORLD, "miner", Set.of(SMELT), "rebuilt", 2));
+        assertEquals("salvage", queue.claim(WORLD, "miner", Set.of(SMELT), "salvage", 3).job().work().id());
+    }
+
     @Test void idleCourierCanShareItsLastStickForAStationRouteTool() throws Exception {
         var queue = new ProjectQueue(directory.resolve("station-route-sticks.json"));
         queue.submit("batch", WORLD, List.of(job("smelt", SMELT, List.of())));

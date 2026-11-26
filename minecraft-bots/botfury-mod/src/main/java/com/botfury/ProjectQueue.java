@@ -279,7 +279,7 @@ final class ProjectQueue {
             boolean changed = false;
             for (var entry : projects.entrySet()) {
                 var current = entry.getValue();
-                var revised = parallelizeSavedManifest(current);
+                var revised = parallelizeSavedManifest(releaseRebuiltFurnaces(current));
                 if (revised != current) {
                     upgraded.put(entry.getKey(), revised);
                     changed = true;
@@ -299,6 +299,26 @@ final class ProjectQueue {
     synchronized List<Project> snapshot(long now) throws IOException {
         expire(now);
         return List.copyOf(projects.values());
+    }
+
+    private static Project releaseRebuiltFurnaces(Project project) {
+        var jobs = new ArrayList<>(project.jobs);
+        boolean changed = false;
+        for (int i = 0; i < jobs.size(); i++) {
+            var job = jobs.get(i);
+            if (job.state != State.WAITING || job.evidence == null || !job.evidence.endsWith("; reacquiring materials")
+                    || !resumesLoadedFurnace(job.work)) continue;
+            jobs.set(i, new Job(rebuildSmeltingWork(job.work), job.state, job.attempts, job.worker, job.lease,
+                    job.expiresAt, job.evidence, job.chest, job.resourceSite, job.gatheringAfterPickup));
+            changed = true;
+        }
+        return changed ? project.withJobs(jobs) : project;
+    }
+
+    private static Work rebuildSmeltingWork(Work work) {
+        var payload = JSON.fromJson(work.payload, com.google.gson.JsonObject.class);
+        payload.remove("resumeLoadedFurnace");
+        return work.withPayload(JSON.toJson(payload));
     }
 
     private static Project parallelizeSavedManifest(Project project) {
@@ -4421,7 +4441,8 @@ final class ProjectQueue {
                         starter.now + LEASE_MS, null, job.chest, starter.position);
             }
             boolean preferred = preferOriginalAt > 0 && job.work.id.equals(root);
-            return new Job(job.work, State.WAITING, 0, preferred ? waiting.worker : null, null,
+            var work = job.state == State.DONE && resumesLoadedFurnace(job.work) ? rebuildSmeltingWork(job.work) : job.work;
+            return new Job(work, State.WAITING, 0, preferred ? waiting.worker : null, null,
                     preferred ? preferOriginalAt + STALLED_WORKER_COOLDOWN_MS : 0,
                     stalled && job == waiting ? evidence : evidence + "; reacquiring materials",
                     job == waiting ? observation : job.chest,

@@ -315,3 +315,22 @@ index 3ee3e7b..40cd3b7 100644
 +        AWAITING_CONFIRMATION
      }
  }
+diff --git a/src/main/java/baritone/pathing/movement/movements/MovementDescend.java b/src/main/java/baritone/pathing/movement/movements/MovementDescend.java
+index ec069ae..13652ee 100644
+--- a/src/main/java/baritone/pathing/movement/movements/MovementDescend.java
++++ b/src/main/java/baritone/pathing/movement/movements/MovementDescend.java
+@@ -146,11 +146,11 @@ public class MovementDescend extends Movement {
+         }
+         double costSoFar = 0;
+         int effectiveStartHeight = y;
++        int minY = context.world.dimensionType().minY();
+         for (int fallHeight = 3; true; fallHeight++) {
+             int newY = y - fallHeight;
+-            if (newY < 0) {
+-                // when pathing in the end, where you could plausibly fall into the void
+-                // this check prevents it from getting the block at y=-1 and crashing
++            if (newY < minY) {
++                // Stop before searching below this dimension's floor.
+                 return false;
+             }
+             BlockState ontoBlock = context.get(destX, newY, destZ);

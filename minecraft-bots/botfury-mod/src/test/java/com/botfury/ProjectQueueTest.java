@@ -3201,6 +3201,44 @@ class ProjectQueueTest {
         assertEquals("craft", board.claim(WORLD, "worker", Set.of(CRAFT), 6).job().work().id());
     }
 
+    @Test void stalledFuelGatheringCanResumeWithMixedSuppliesAndKeepTheOreReceipt() throws Exception {
+        var journal = directory.resolve("mixed-smelting-recovery.json");
+        var ore = job("ore", GATHER, List.of());
+        var fuel = new ProjectQueue.Work("fuel", GATHER,
+                "{\"resource\":\"coal\",\"variant\":\"both\",\"item\":\"minecraft:coal\",\"count\":1}",
+                List.of("ore"), Set.of(), "ore");
+        var smelt = new ProjectQueue.Work("smelt", SMELT,
+                "{\"input\":\"minecraft:raw_iron\",\"fuel\":\"minecraft:coal\",\"count\":3}",
+                List.of("fuel"), Set.of(), "fuel");
+        var receipt = new ProjectQueue.Job(ore, ProjectQueue.State.DONE, 1, "original", null, 0, "Observed raw iron", null);
+        var project = new ProjectQueue.Project("tools", WORLD, List.of(receipt,
+                new ProjectQueue.Job(fuel, ProjectQueue.State.WAITING, 0, null, null, 10,
+                        ProjectQueue.GATHER_STALLED, null),
+                new ProjectQueue.Job(smelt, ProjectQueue.State.WAITING, 0, null, null, 0,
+                        ProjectQueue.GATHER_STALLED + "; reacquiring materials", null)),
+                null, "block:3,64,0", java.util.Map.of());
+        Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                "projects", java.util.Map.of(project.id(), project))));
+        var board = new ProjectQueue(journal);
+        assertTrue(board.resumableSmelting(WORLD, 9).isEmpty());
+        board.claim(WORLD, "helper", Set.of(SMELT), 11);
+        var candidate = board.resumableSmelting(WORLD, 11).get(0);
+        assertFalse(board.resumeCarriedSmelting(WORLD, candidate, "helper", "minecraft:oak_planks",
+                Set.of("minecraft:stick"), 11));
+        assertTrue(board.resumeCarriedSmelting(WORLD, candidate, "helper", "minecraft:oak_planks",
+                Set.of("minecraft:oak_planks", "minecraft:stick"), 11));
+        board = new ProjectQueue(journal);
+        var changed = board.snapshot(12).get(0).jobs();
+        assertEquals(receipt, changed.get(0));
+        assertEquals("helper", changed.get(1).worker());
+        assertTrue(board.resumableSmelting(WORLD, 12).isEmpty());
+        var lease = board.claim(WORLD, "helper", Set.of(SMELT), 12).job();
+        var payload = com.google.gson.JsonParser.parseString(lease.work().payload()).getAsJsonObject();
+        assertEquals("minecraft:oak_planks", payload.get("fuel").getAsString());
+        assertEquals("minecraft:coal", payload.get("plannedFuel").getAsString());
+        assertEquals("[\"minecraft:oak_planks\",\"minecraft:stick\"]", payload.getAsJsonArray("fuelChoices").toString());
+    }
+
     @Test void lostSmeltingInputsReopenOnlyTheirSupplyChain() throws Exception {
         var journal = directory.resolve("lost-smelting-inputs.json");
         var board = new ProjectQueue(journal);

@@ -334,6 +334,15 @@ final class ProjectQueue {
         return work.withPayload(JSON.toJson(payload));
     }
 
+    private static Work resetCarriedFuel(Work work) {
+        if (work.kind != Kind.SMELT || !work.payload.contains("\"fuelChoices\"")) return work;
+        var payload = JSON.fromJson(work.payload, com.google.gson.JsonObject.class);
+        if (!payload.has("fuelChoices")) return work;
+        payload.remove("fuelChoices");
+        if (payload.has("plannedFuel")) payload.add("fuel", payload.remove("plannedFuel"));
+        return work.withPayload(JSON.toJson(payload));
+    }
+
     private static Project parallelizeSavedManifest(Project project) {
         if (!project.id.startsWith("manifest-") || project.supplyChest == null || project.repeat != null) return project;
         var jobs = new LinkedHashMap<String, Job>();
@@ -2403,7 +2412,10 @@ final class ProjectQueue {
                     var w = stage.work;
                     String id = key + "-" + helper.size();
                     var payload = JSON.fromJson(w.payload, com.google.gson.JsonObject.class);
-                    if (w.kind == Kind.SMELT && payload.has("plannedFuel")) payload.add("fuel", payload.remove("plannedFuel"));
+                    if (w.kind == Kind.SMELT && payload.has("plannedFuel")) {
+                        payload.add("fuel", payload.remove("plannedFuel"));
+                        payload.remove("fuelChoices");
+                    }
                     if (stage == gather) payload.addProperty("count", portion);
                     var deps = new ArrayList<>(w.needs.stream().filter(need -> !ids.contains(need)).toList());
                     if (previous != null) deps.add(previous);
@@ -2606,12 +2618,34 @@ final class ProjectQueue {
                         && missingProductionInput(job, job.evidence.substring(0, job.evidence.indexOf(';')))
                         && !project.supplyRecoveries.containsKey("carried-smelt:" + job.work.id)
                         && !stalledPrivatePreparation(project, job, find(project, job.work.sameWorkerAs)).isEmpty();
-                if (recoveredInputChain || canReassignSmelting(project, job, now)) {
+                if (recoveredInputChain || canReassignSmelting(project, job, now)
+                        || !stalledFuelPreparation(project, job, now).isEmpty()) {
                     result.add(new CarriedSmelt(project.id, job.work));
                 }
             }
         }
         return result;
+    }
+
+    private static Set<String> stalledFuelPreparation(Project project, Job smelt, long now) {
+        if (smelt.state != State.WAITING || smelt.work.needs.size() != 1
+                || resumesLoadedFurnace(smelt.work)
+                || project.supplyRecoveries.containsKey("carried-smelt:" + smelt.work.id)) return Set.of();
+        var fuel = find(project, smelt.work.sameWorkerAs);
+        if (fuel == null || fuel.work.kind != Kind.GATHER || fuel.state != State.WAITING && fuel.state != State.FAILED
+                || fuel.state == State.WAITING && now < fuel.expiresAt
+                || !GATHER_STALLED.equals(fuel.evidence)) return Set.of();
+        var spec = JSON.fromJson(smelt.work.payload, SmeltFuel.class);
+        var source = gatherSource(fuel.work.payload);
+        if (spec == null || source == null || !source.item.equals(spec.plannedFuel == null ? spec.fuel : spec.plannedFuel)) {
+            return Set.of();
+        }
+        var stages = new HashSet<String>();
+        for (var stage = fuel; stage != null && stage.state != State.DONE; stage = find(project, stage.work.sameWorkerAs)) {
+            if (stage.state == State.LEASED || stage.work.kind != Kind.GATHER && !productionWork(stage.work)) return Set.of();
+            stages.add(stage.work.id);
+        }
+        return privatePreparationReady(project, smelt, stages) ? stages : Set.of();
     }
 
     synchronized boolean reuseRetainedToolMaterials(String world, String worker, ResourceSite position,
@@ -2776,18 +2810,36 @@ final class ProjectQueue {
 
     synchronized boolean resumeCarriedSmelting(String world, CarriedSmelt request, String worker, String fuel,
                                                 long now) throws IOException {
+        return resumeCarriedSmelting(world, request, worker, fuel, Set.of(), now);
+    }
+
+    synchronized Set<String> reservedSmeltingInputs(String world, String worker, Set<String> candidates) {
+        var reserved = new HashSet<>(pendingBuildMaterials(world, worker));
+        candidates.stream().filter(item -> hasPendingDepositOf(world, worker, item)).forEach(reserved::add);
+        return reserved;
+    }
+
+    synchronized boolean resumeCarriedSmelting(String world, CarriedSmelt request, String worker, String fuel,
+                                                Set<String> choices, long now) throws IOException {
         if (!resumableSmelting(world, now).contains(request) || fuel == null || !fuel.matches("[a-z0-9_.-]+:[a-z0-9_./-]+")) return false;
+        if (!choices.isEmpty() && (!choices.contains(fuel) || choices.size() > 36
+                || choices.stream().anyMatch(item -> !item.matches("[a-z0-9_.-]+:[a-z0-9_./-]+")))) return false;
         var project = projects.get(request.project);
         if (!availableProjectWorker(project, worker, now)) return false;
         var smelt = find(project, request.work.id);
         var spec = JSON.fromJson(smelt.work.payload, SmeltFuel.class);
-        var reserved = pendingBuildMaterials(world, worker);
-        if (reserved.contains(spec.input) || reserved.contains(fuel) || hasPendingDepositOf(world, worker, spec.input)
-                || hasPendingDepositOf(world, worker, fuel)) return false;
+        var inputs = new HashSet<>(choices);
+        inputs.add(fuel);
+        inputs.add(spec.input);
+        if (!Collections.disjoint(reservedSmeltingInputs(world, worker, inputs), inputs)) return false;
         var stages = stalledPrivatePreparation(project, smelt, find(project, smelt.work.sameWorkerAs));
+        if (stages.isEmpty()) stages = stalledFuelPreparation(project, smelt, now);
+        var preparedStages = stages;
         var payload = JSON.fromJson(smelt.work.payload, com.google.gson.JsonObject.class);
         if (!payload.has("plannedFuel")) payload.addProperty("plannedFuel", spec.fuel);
         payload.addProperty("fuel", fuel);
+        if (!choices.isEmpty()) payload.add("fuelChoices", JSON.toJsonTree(new TreeSet<>(choices)));
+        else payload.remove("fuelChoices");
         var work = new Work(smelt.work.id, smelt.work.kind, JSON.toJson(payload), smelt.work.needs,
                 smelt.work.locks, smelt.work.sameWorkerAs);
         if (canReassignSmelting(project, smelt, now)) {
@@ -2803,7 +2855,7 @@ final class ProjectQueue {
         var jobs = project.jobs.stream().map(job -> {
             if (job == smelt) return new Job(work, State.WAITING, job.attempts, null, null, 0,
                     "Resuming smelting with observed carried supplies", job.chest, job.resourceSite);
-            if (!stages.contains(job.work.id)) return job;
+            if (!preparedStages.contains(job.work.id)) return job;
             return new Job(job.work, State.DONE, job.attempts, worker, null, 0,
                     "Preparation satisfied by observed carried smelting supplies", job.chest, job.resourceSite);
         }).toList();
@@ -4511,6 +4563,7 @@ final class ProjectQueue {
         payload.add("stand", JSON.toJsonTree(site.stand));
         payload.addProperty("fuel", planned);
         payload.remove("plannedFuel");
+        payload.remove("fuelChoices");
         payload.remove("properties");
         payload.remove("face");
         payload.addProperty("resumeLoadedFurnace", true);
@@ -4707,7 +4760,7 @@ final class ProjectQueue {
             boolean preferred = preferOriginalAt > 0 && job.work.id.equals(root);
             var work = job.state == State.DONE && resumesLoadedFurnace(job.work)
                     ? rebuildSmeltingWork(job.work) : restoredFuel.getOrDefault(job.work.id, job.work);
-            return new Job(work, State.WAITING, 0, preferred ? waiting.worker : null, null,
+            return new Job(resetCarriedFuel(work), State.WAITING, 0, preferred ? waiting.worker : null, null,
                     preferred ? preferOriginalAt + STALLED_WORKER_COOLDOWN_MS : 0,
                     stalled && job == waiting ? evidence : evidence + "; reacquiring materials",
                     job == waiting ? observation : job.chest,

@@ -44,6 +44,16 @@ abstract class FleetPanel extends Screen {
         super.render(draw, mouseX, mouseY, delta);
     }
 
+    protected static void drawListRow(DrawContext draw, int x, int y, int right, int bottom,
+                                      boolean selected, boolean hovered) {
+        int fill = selected ? BotUiTheme.SELECTED : hovered ? BotUiTheme.CARD_HOVER : BotUiTheme.CARD;
+        draw.fill(x, y, right, bottom, fill);
+        if (selected) {
+            draw.fill(x, y + 2, x + 2, bottom - 2, BotUiTheme.SIGNAL);
+            draw.fill(x + 2, y + 2, x + 5, y + 4, BotUiTheme.ACCENT);
+        }
+    }
+
     protected void clipPanel(DrawContext draw, int x, int y, int right, int bottom) {
         draw.enableScissor((int) (left + x * scale), (int) (top + y * scale),
                 (int) Math.ceil(left + right * scale), (int) Math.ceil(top + bottom * scale));

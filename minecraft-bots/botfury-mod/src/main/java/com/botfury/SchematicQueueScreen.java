@@ -119,8 +119,8 @@ final class SchematicQueueScreen extends FleetPanel {
             String file = files.get(i + offset);
             int y = 67 + i * 18;
             boolean hovered = mouseX >= left && mouseX < left + panelWidth && mouseY >= y && mouseY < y + 17;
-            draw.fill(left, y, left + panelWidth, y + 17, file.equals(selected) ? BotUiTheme.SELECTED : hovered ? BotUiTheme.CARD_HOVER : BotUiTheme.CARD);
-            draw.drawText(textRenderer, textRenderer.trimToWidth(file, panelWidth - 12), left + 6, y + 4, BotUiTheme.TEXT, false);
+            drawListRow(draw, left, y, left + panelWidth, y + 17, file.equals(selected), hovered);
+            draw.drawText(textRenderer, textRenderer.trimToWidth(file, panelWidth - 15), left + 8, y + 4, BotUiTheme.TEXT, false);
         }
         if (files.isEmpty()) draw.drawText(textRenderer, this.files.isEmpty()
                 ? "Add a .schem, .nbt, or .schematic file to config/botfury-structures." : "No matching schematics", left, 70, BotUiTheme.MUTED, false);

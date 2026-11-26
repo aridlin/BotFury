@@ -142,8 +142,7 @@ final class ItemPickerScreen extends FleetPanel {
             if (index >= filtered.size()) break;
             var entry = filtered.get(index);
             int x = left + col * cellWidth(), y = listTop + row * ROW_HEIGHT;
-            draw.fill(x, y, x + cellWidth() - 4, y + 25, hover == index ? BotUiTheme.SELECTED : 0xDA37212A);
-            if (cursor == index) draw.fill(x, y, x + 2, y + 25, BotUiTheme.ACCENT);
+            drawListRow(draw, x, y, x + cellWidth() - 4, y + 25, cursor == index, hover == index);
             draw.drawItem(entry.item.getDefaultStack(), x + 7, y + 4);
             draw.drawText(textRenderer, textRenderer.trimToWidth(entry.name, cellWidth() - 34),
                     x + 29, y + 4, BotUiTheme.TEXT, false);

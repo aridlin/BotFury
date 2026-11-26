@@ -173,16 +173,14 @@ final class ProjectBroker {
 
     private static boolean canUseCraftingStation(net.minecraft.client.MinecraftClient client,
                                                   ProjectProduction.Spec spec, BotTracker.Bot bot) {
-        if (spec.station() == null || client.world.getRecipeManager().get(spec.recipe())
-                .filter(net.minecraft.recipe.CraftingRecipe.class::isInstance)
-                .map(recipe -> recipe.fits(2, 2)).orElse(false)) return true;
+        if (spec.station() == null || ProjectProduction.fitsInventory(client, spec.recipe())) return true;
         var station = spec.station().target();
         var worker = BlockPos.ofFloored(bot.x(), bot.y(), bot.z());
         boolean portable = bot.items().getOrDefault(spec.station().block().toString(), 0) > 0;
-        return craftingStationWithinReach(worker, station, portable);
+        return craftingStationIsLocal(worker, station, portable);
     }
 
-    static boolean craftingStationWithinReach(BlockPos worker, BlockPos station, boolean portable) {
+    static boolean craftingStationIsLocal(BlockPos worker, BlockPos station, boolean portable) {
         return portable || (Math.abs(worker.getY() - station.getY()) <= 6
                 && worker.getSquaredDistance(station) <= 24 * 24);
     }

@@ -10,7 +10,6 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.GenericContainerScreenHandler;
 import net.minecraft.screen.slot.SlotActionType;
-import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.hit.BlockHitResult;
@@ -189,7 +188,7 @@ final class ProjectChest {
             if (hit == null) return failure("Chest obstructed or out of reach");
             opening = true;
             player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, hit.getPos());
-            client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
+            client.interactionManager.interactBlock(player, ProjectInventory.workstationHand(client), hit);
             nextAction = now + SETTLE;
             return null;
         }
@@ -240,8 +239,9 @@ final class ProjectChest {
                 int capacity = destination.getMaxItemCount(stack) - present.getCount();
                 int move = Math.min(remaining, Math.min(capacity, stack.getCount()));
                 if (move <= 0) continue;
+                boolean wholeStack = move == stack.getCount();
                 click(client, from, 0);
-                if (move == stack.getCount()) click(client, to, 0);
+                if (wholeStack) click(client, to, 0);
                 else {
                     for (int i = 0; i < Math.min(move, 8); i++) click(client, to, 1);
                     click(client, from, 0);

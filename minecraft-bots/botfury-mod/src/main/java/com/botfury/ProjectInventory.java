@@ -8,6 +8,7 @@ import net.minecraft.registry.Registries;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.slot.Slot;
 import net.minecraft.screen.slot.SlotActionType;
+import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
 
 final class ProjectInventory {
@@ -17,6 +18,20 @@ final class ProjectInventory {
             Identifier.of("minecraft", "diorite"), Identifier.of("minecraft", "granite"), Identifier.of("minecraft", "tuff"));
 
     private ProjectInventory() {}
+
+    static Hand workstationHand(MinecraftClient client) {
+        var player = client.player;
+        if (player.getMainHandStack().isEmpty()) return Hand.MAIN_HAND;
+        if (player.getOffHandStack().isEmpty()) return Hand.OFF_HAND;
+        var inventory = player.getInventory();
+        for (int slot = 0; slot < 9; slot++) {
+            if (inventory.getStack(slot).isEmpty()) {
+                inventory.selectedSlot = slot;
+                break;
+            }
+        }
+        return Hand.MAIN_HAND;
+    }
 
     static boolean canFit(MinecraftClient client, ItemStack wanted, int count) {
         var inventory = client.player.getInventory();

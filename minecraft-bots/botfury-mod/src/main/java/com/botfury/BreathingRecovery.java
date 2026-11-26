@@ -120,7 +120,7 @@ final class BreathingRecovery {
         }
 
         var direction = center(waypoint).subtract(player.getPos());
-        var alignment = reachingShore ? alignWithBank(player.getPos(), shoreStep) : null;
+        var alignment = reachingShore ? alignWithShoreStep(player.getPos(), shoreStep) : null;
         if (alignment != null) direction = alignment;
         boolean moving = direction.horizontalLengthSquared() > (alignment == null ? .09 : .01);
         if (moving) {
@@ -131,11 +131,11 @@ final class BreathingRecovery {
         return true;
     }
 
-    private static Vec3d alignWithBank(Vec3d position, ShoreStep step) {
-        if (step == null || step.to.getY() != step.from.getY() + 1) return null;
+    private static Vec3d alignWithShoreStep(Vec3d position, ShoreStep step) {
+        if (step == null) return null;
         var from = center(step.from);
         double rise = from.y - position.y;
-        // Enter a one-block opening along its centerline before jumping into it.
+        // Square up to the passage before crossing a narrow water cell or climbing its bank.
         if (step.from.getX() != step.to.getX() && Math.abs(from.z - position.z) > .16) {
             return new Vec3d(0, rise, from.z - position.z);
         }

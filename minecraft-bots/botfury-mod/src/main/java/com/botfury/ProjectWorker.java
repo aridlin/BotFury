@@ -1904,6 +1904,19 @@ final class ProjectWorker {
         status = observation;
     }
 
+    private static Map<String, Integer> carriedToolUses(MinecraftClient client) {
+        var tools = new HashMap<String, Integer>();
+        var inventory = client.player.getInventory();
+        for (int slot = 0; slot < 36; slot++) {
+            var stack = inventory.getStack(slot);
+            if (stack.isDamageable()) {
+                tools.merge(Registries.ITEM.getId(stack.getItem()).toString(),
+                        stack.getMaxDamage() - stack.getDamage(), Integer::sum);
+            }
+        }
+        return tools;
+    }
+
     private static void request(MinecraftClient client, LocalFormation.Peer here, String action, long now) {
         int epoch = generation;
         var args = new HashMap<String, Object>();
@@ -1925,15 +1938,7 @@ final class ProjectWorker {
                 if (source != null) args.put("forageSource", source);
             }
             args.put("supportsPickupReserve", true);
-            var tools = new HashMap<String, Integer>();
-            var inventory = client.player.getInventory();
-            for (int slot = 0; slot < 36; slot++) {
-                var stack = inventory.getStack(slot);
-                if (stack.isDamageable()) {
-                    tools.merge(Registries.ITEM.getId(stack.getItem()).toString(),
-                            stack.getMaxDamage() - stack.getDamage(), Integer::sum);
-                }
-            }
+            var tools = carriedToolUses(client);
             if (!tools.isEmpty()) args.put("toolUses", tools);
             if (tools.keySet().stream().anyMatch(item -> item.endsWith("_pickaxe"))) {
                 if (SubsurfaceAccess.hasFooting(client)) args.put("groundedGatherRetry", true);
@@ -1955,6 +1960,10 @@ final class ProjectWorker {
             args.put("job", assignment.job().work().id());
             args.put("token", assignment.job().lease());
             if (action.equals("renew")) {
+                if (assignment.job().work().kind() == ProjectQueue.Kind.GATHER) {
+                    var tools = carriedToolUses(client);
+                    if (!tools.isEmpty()) args.put("toolUses", tools);
+                }
                 if (TaskDefense.requestsMeal(client)) {
                     args.put("needsMeal", true);
                     args.put("mealTrail", returnTrail.supplyTrail(routePoint(client.player.getBlockPos())));

@@ -804,6 +804,11 @@ final class ProjectBroker {
                     reply(exchange, 200, assignment);
                 }
                 case "renew" -> {
+                    if (board.reuseToolDuringGathering(request.project, request.job, request.token, request.toolUses, now)) {
+                        BotEvents.add("info", "projects", "Skipped private tool preparation for an equipped worker");
+                        reply(exchange, 409, "Gathering tool already carried");
+                        break;
+                    }
                     board.recordRouteStock(request.project, request.job, request.token, now, request.routeStock);
                     board.recordMealNeed(request.project, request.job, request.token, request.needsMeal, request.carryingMeal, request.mealTrail, now);
                     board.recordRouteStickNeed(request.project, request.job, request.token, request.needsRouteSticks, now);

@@ -536,6 +536,31 @@ class ProjectQueueTest {
         }
     }
 
+    @Test void aCarriedPickaxeReplacesOnlyPrivateActivePreparation() throws Exception {
+        for (boolean shared : List.of(false, true)) {
+            var queue = new ProjectQueue(directory.resolve("active-tool-" + shared + ".json"));
+            var jobs = new java.util.ArrayList<>(List.of(
+                    job("wood", GATHER, List.of()),
+                    new ProjectQueue.Work("smelt", SMELT, "{\"recipe\":\"minecraft:iron_ingot_from_smelting_raw_iron\"}",
+                            List.of("wood"), Set.of(), "wood"),
+                    new ProjectQueue.Work("pickaxe", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\",\"count\":1}",
+                            List.of("smelt"), Set.of(), "smelt"),
+                    new ProjectQueue.Work("diamonds", GATHER,
+                            "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":1}",
+                            List.of("pickaxe"), Set.of(), "pickaxe")));
+            if (shared) jobs.add(job("public-stock", GATHER, List.of("smelt")));
+            queue.submitSupplied("stock", WORLD, jobs, "block:3,64,0");
+            var wood = queue.claim(WORLD, "miner", Set.of(GATHER), 1).job();
+            assertFalse(queue.reuseToolDuringGathering("stock", "wood", wood.lease(),
+                    java.util.Map.of("minecraft:stone_pickaxe", 100), 2));
+            assertFalse(queue.reuseToolDuringGathering("stock", "wood", wood.lease(),
+                    java.util.Map.of("minecraft:iron_pickaxe", 31), 2));
+            assertEquals(!shared, queue.reuseToolDuringGathering("stock", "wood", wood.lease(),
+                    java.util.Map.of("minecraft:iron_pickaxe", 64), 3));
+            assertEquals(shared ? "wood" : "diamonds", queue.claim(WORLD, "miner", Set.of(GATHER), 4).job().work().id());
+        }
+    }
+
     @Test void equippedMinerCanResumeAStalledPrivateToolChainAndStillRestock() throws Exception {
         var journal = directory.resolve("equipped-miner.json");
         var queue = new ProjectQueue(journal);

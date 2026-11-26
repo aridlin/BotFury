@@ -1567,6 +1567,48 @@ final class ProjectQueue {
         return true;
     }
 
+    synchronized boolean reuseToolDuringGathering(String projectId, String jobId, UUID token,
+                                                  Map<String, Integer> toolUses, long now) throws IOException {
+        if (toolUses == null || toolUses.isEmpty()) return false;
+        var project = projects.get(projectId);
+        var active = find(project, jobId);
+        if (!owns(active, token, now) || active.work.kind != Kind.GATHER || project.supplyChest == null
+                || cancelled(project) || active.gatheringAfterPickup != null || handoffWorker(active) != null
+                || GATHER_STOCK_CONFIRMED.equals(active.evidence)) return false;
+        for (var target : project.jobs) {
+            if (target.state != State.WAITING || target.work.kind != Kind.GATHER || target.work.sameWorkerAs == null
+                    || !target.work.needs.equals(List.of(target.work.sameWorkerAs))) continue;
+            var craft = find(project, target.work.sameWorkerAs);
+            if (craft.state != State.WAITING || craft.work.kind != Kind.CRAFT) continue;
+            var recipe = JSON.fromJson(craft.work.payload, InventoryRecipe.class);
+            if (recipe == null || recipe.recipe == null || recipe.count == null || recipe.count != 1) continue;
+            int tier = PICKAXE_TIERS.indexOf(recipe.recipe);
+            if (tier < 0) continue;
+            var tool = PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
+                    .filter(id -> toolUses.getOrDefault(id, 0) >= 32).findFirst().orElse(null);
+            if (tool == null) continue;
+            var stages = new HashSet<String>();
+            var step = craft;
+            for (; step != null && step.state == State.WAITING && (step.work.kind == Kind.GATHER || productionWork(step.work));
+                 step = step.work.sameWorkerAs == null ? null : find(project, step.work.sameWorkerAs)) {
+                stages.add(step.work.id);
+            }
+            if (step != active) continue;
+            stages.add(jobId);
+            if (!privatePreparationReady(project, target, stages)) continue;
+            commit(project.withJobs(project.jobs.stream().map(job -> stages.contains(job.work.id)
+                    ? new Job(job.work, State.DONE, job.attempts, active.worker, null, 0,
+                            "Tool preparation satisfied by carried " + tool, job.chest, job.resourceSite)
+                    : job).toList()));
+            restoredLeases.remove(token);
+            routeToolRequests.remove(token);
+            mealRequests.remove(token);
+            routeStickRequests.remove(token);
+            return true;
+        }
+        return false;
+    }
+
     private static String excavationToolMaterial(Job job) {
         if (job.work.kind != Kind.EXCAVATE || job.evidence == null || !job.evidence.startsWith(EXCAVATION_TOOL_NEEDED)) {
             return null;

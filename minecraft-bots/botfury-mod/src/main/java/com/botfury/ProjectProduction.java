@@ -13,6 +13,7 @@ import net.minecraft.screen.AbstractRecipeScreenHandler;
 import net.minecraft.screen.CraftingScreenHandler;
 import net.minecraft.screen.FurnaceScreenHandler;
 import net.minecraft.screen.ScreenHandler;
+import net.minecraft.screen.slot.Slot;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
@@ -25,10 +26,15 @@ import net.minecraft.world.RaycastContext;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 /** A workstation job with a bounded inventory target. Uses the server's own recipe and slot rules. */
 final class ProjectProduction {
     private static final double[] OUTLINE_SAMPLES = {.2, .8};
+    private static final int TERRAIN_STACKS_TO_KEEP = 2;
+    private static final Set<Identifier> EXCESS_TERRAIN = Set.of(Identifier.of("minecraft", "cobblestone"),
+            Identifier.of("minecraft", "cobbled_deepslate"), Identifier.of("minecraft", "andesite"),
+            Identifier.of("minecraft", "diorite"), Identifier.of("minecraft", "granite"), Identifier.of("minecraft", "tuff"));
     record Spec(ProjectBlock station, ProjectQueue.Kind kind, Identifier recipe, Identifier input,
                 Identifier fuel, int count) {}
     record Result(boolean success, String detail, boolean loadedFurnace) {
@@ -395,8 +401,7 @@ final class ProjectProduction {
         var result = table.getSlot(0).getStack();
         if (!result.isEmpty()) {
             if (!ItemStack.canCombine(result, output) || !table.matches(recipe)) return failure("Unexpected crafting output");
-            click(client, 0, 0, SlotActionType.QUICK_MOVE);
-            return null;
+            return takeOutput(client, 0);
         }
         if (!client.player.getRecipeBook().contains(recipe)) {
             return fillCraftingGrid(client, table, recipe, output);
@@ -443,6 +448,36 @@ final class ProjectProduction {
         if (!ItemStack.canCombine(table.getSlot(resultSlot).getStack(), output) || !table.matches(recipe)) {
             return failure("Server did not produce " + spec.recipe + " from the crafting grid");
         }
+        return takeOutput(client, resultSlot);
+    }
+
+    private Result takeOutput(MinecraftClient client, int resultSlot) {
+        var result = screen.getSlot(resultSlot).getStack();
+        var inventory = client.player.getInventory();
+        if (inventory.getEmptySlot() < 0) {
+            int remaining = result.getCount();
+            for (int i = 0; i < 36 && remaining > 0; i++) {
+                var stack = inventory.getStack(i);
+                if (ItemStack.canCombine(stack, result)) remaining -= stack.getMaxCount() - stack.getCount();
+            }
+            if (remaining > 0) {
+                Slot surplus = null;
+                for (var slot : screen.slots) {
+                    if (slot.inventory != inventory || slot.getIndex() >= 36 || !slot.canTakeItems(client.player)) continue;
+                    var stack = slot.getStack();
+                    if (!EXCESS_TERRAIN.contains(Registries.ITEM.getId(stack.getItem())) || stack.hasNbt()
+                            || ItemStack.canCombine(stack, result)
+                            || inventory.count(stack.getItem()) - stack.getCount() < TERRAIN_STACKS_TO_KEEP * stack.getMaxCount()) continue;
+                    if (surplus == null || stack.getCount() < surplus.getStack().getCount()) surplus = slot;
+                }
+                if (surplus == null) return failure("Inventory is full for " + Registries.ITEM.getId(result.getItem()));
+                var stack = surplus.getStack();
+                BotEvents.add("info", "projects", "Making room for production by dropping " + stack.getCount()
+                        + " " + Registries.ITEM.getId(stack.getItem()));
+                click(client, surplus.id, 1, SlotActionType.THROW);
+                return null;
+            }
+        }
         click(client, resultSlot, 0, SlotActionType.QUICK_MOVE);
         craftingInputs = null;
         return null;
@@ -467,10 +502,7 @@ final class ProjectProduction {
         int outstanding = Math.max(0, remaining - result.getCount());
         int inputs = (outstanding + output.getCount() - 1) / output.getCount();
         int queued = existingInput.getCount();
-        if (!result.isEmpty()) {
-            click(client, 2, 0, SlotActionType.QUICK_MOVE);
-            return null;
-        }
+        if (!result.isEmpty()) return takeOutput(client, 2);
         var progress = ((com.botfury.mixin.FurnaceProgressAccess) furnace).botfury$properties();
         var carried = carriedFuel(client);
         var burnTimes = net.minecraft.block.entity.AbstractFurnaceBlockEntity.createFuelTimeMap();

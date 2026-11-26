@@ -80,6 +80,9 @@ final class MiningTask {
     private static BlockPos rememberedSite;
     private static BlockPos deepExplorationGoal;
     private static BlockPos surfaceSearchAnchor, lastExplorationExit;
+    private static BlockPos surfaceLedgeOrigin;
+    private static int surfaceLedgeEnds;
+    private static final int SURFACE_LEDGE_TICKS = 180;
     private static BlockPos surfaceRouteGoal, surfaceExplorationGoal, surfaceTrailWaypoint;
     private static final Deque<ProjectQueue.ResourceSite> surfaceTrail = new ArrayDeque<>();
     private static boolean checkedSurfaceTrail;
@@ -279,6 +282,8 @@ final class MiningTask {
         rememberedSite = null;
         observedSite = null;
         surfaceSearchAnchor = lastExplorationExit = null;
+        surfaceLedgeOrigin = null;
+        surfaceLedgeEnds = 0;
         surfaceSearchFailures = explorationExits = 0;
         excluded=exclude;
         blocks = ids.stream().map(id -> Registries.BLOCK.get(new Identifier(id)))
@@ -312,6 +317,12 @@ final class MiningTask {
         var here=LocalFormation.here();
         if(client.player==null||client.world==null||here==null||!world.equals(here.server()+"|"+here.dimension())){stop();return;}
         age++;dead=false;
+        if (surfaceLedgeEnds != 0 && client.player.isOnGround()
+                && (age >= surfaceLedgeEnds || client.player.getBlockY() < surfaceLedgeOrigin.getY()
+                    || client.player.getHealth() < 16)) {
+            stopPath();
+            nextPath = age;
+        }
         MiningViewDistance.update(client, age, target);
         if (!MiningViewDistance.active()) wideChunks = Collections.emptyIterator();
         if (reservedDrop != null) {
@@ -403,6 +414,10 @@ final class MiningTask {
                         BotEvents.add("info", "mining", status);
                         return;
                     }
+                }
+                if (age - approachProgress >= 80 && !BaritoneClient.pursuing(p) && trySurfaceLedge(client, p)) {
+                    approachProgress = age;
+                    return;
                 }
                 if (projectMining && age - approachProgress >= 110
                         && (age - approachProgress >= 250 || !BaritoneClient.pursuing(p))
@@ -1008,6 +1023,7 @@ final class MiningTask {
         var point = Vec3d.ofBottomCenter(rememberedSite);
         if (age < rememberedUntil && client.player.squaredDistanceTo(point) > 25) {
             if (age >= nextPath && (!pathActive || !BaritoneClient.pursuing(rememberedSite))) {
+                if (pathActive && trySurfaceLedge(client, rememberedSite)) return true;
                 if (path(rememberedSite)) {
                     nextPath = age + 100;
                     BotEvents.add("debug", "mining", "Sent route to recorded gathering site " + rememberedSite.toShortString());
@@ -1035,6 +1051,7 @@ final class MiningTask {
             return true;
         }
         if (recovery == StallRecovery.State.REPLAN) {
+            if (trySurfaceLedge(client, goal)) return true;
             nextPath = age;
             if (rememberedSite != null && rememberedSite.equals(goal)) {
                 BaritoneClient.execute("stop");
@@ -1042,6 +1059,26 @@ final class MiningTask {
             }
         }
         return false;
+    }
+
+    private static boolean trySurfaceLedge(MinecraftClient client, BlockPos goal) {
+        var feet = client.player.getBlockPos();
+        if (!surfaceResource || localOnly || goal == null || goal.getY() >= feet.getY()
+                || surfaceLedgeEnds != 0 || surfaceLedgeOrigin != null && surfaceLedgeOrigin.isWithinDistance(feet, 3)
+                || !client.player.isOnGround() || client.player.getHealth() < 16 || !client.world.isSkyVisible(feet)) return false;
+        stopPath();
+        if (!settings.surfaceLedgeDrop(true)) return false;
+        surfaceLedgeOrigin = feet;
+        surfaceLedgeEnds = age + SURFACE_LEDGE_TICKS;
+        if (!path(goal)) {
+            stopPath();
+            return false;
+        }
+        // Baritone still checks the landing and keeps breaking and placing disabled.
+        nextPath = age + SURFACE_LEDGE_TICKS;
+        status = "Trying a short descent toward " + job.resource;
+        BotEvents.add("info", "movement", status + " from " + feet.toShortString());
+        return true;
     }
 
     private static void stopPath() {
@@ -1056,6 +1093,10 @@ final class MiningTask {
         if (caveSettings != null) {
             caveSettings.close();
             caveSettings = null;
+        }
+        if (surfaceLedgeEnds != 0) {
+            if (settings != null) settings.surfaceLedgeDrop(false);
+            surfaceLedgeEnds = 0;
         }
     }
     private static boolean path(BlockPos target) {

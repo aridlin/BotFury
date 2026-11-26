@@ -30,6 +30,7 @@ final class MiningTask {
     record Job(String resource,String variant,int broker) {}
     private static final int STANDS_PER_TICK = 8;
     private static final int MAX_ALTERNATE_STANDS = 3;
+    private static final int DISTANT_ORE_STAND = 32;
     private static final int MAX_PROTECTED_APPROACH_STEPS = 16;
     private static final int MAX_EXPLORATION_EXITS = 3;
     private static final int MAX_CANOPY_LEAVES = 6;
@@ -409,6 +410,11 @@ final class MiningTask {
                     localApproachFrom = null;
                 }
                 boolean prospecting = prospectingAltitude(client) != null;
+                if (projectMining && ResourceCatalog.isOre(job.resource) && !p.isWithinDistance(feet, DISTANT_ORE_STAND)
+                        && age - approachProgress >= 80 && !BaritoneClient.pursuing(p)) {
+                    abandonApproach(client, feet, p, prospecting, true);
+                    return;
+                }
                 if (projectMining && !localApproachTried && localApproachSteps < MAX_PROTECTED_APPROACH_STEPS
                         && age - approachProgress >= 80
                         && SubsurfaceAccess.canDigRoute(client)
@@ -432,24 +438,7 @@ final class MiningTask {
                         && (age - approachProgress >= 250 || !BaritoneClient.pursuing(p))
                         && tryAlternateStand(client, p)) return;
                 if (age - approachProgress >= 250) {
-                    rejectedStands.put(p, age + 600);
-                    boolean prospectAgain = prospectingAltitude(client) != null;
-                    if (projectMining && ResourceCatalog.isOre(job.resource)) {
-                        oreRoutes.defer(world, job.resource, target, feet, System.nanoTime());
-                        BotEvents.add("info", "mining", "Trying a different vein after blocked approaches near " + target.toShortString());
-                    } else rejected.put(target, age + 1200);
-                    stopPath();
-                    clearReservation();
-                    client.interactionManager.cancelBlockBreaking();
-                    status = "Trying another approach to " + job.resource;
-                    nextSearch = age + 1;
-                    if (prospectAgain) {
-                        // Clear the remembered route so prospecting can move to another vein.
-                        rememberedSite = null;
-                        pendingCandidates.clear();
-                        nextSearch = age + 20;
-                        explore(client);
-                    }
+                    abandonApproach(client, feet, p, prospecting, false);
                     return;
                 }
                 if (recoverRoute(client, p)) return;
@@ -548,6 +537,27 @@ final class MiningTask {
             nextSearch = wideChunks.hasNext() ? age + 1 : age + 10;
             status = "Checking more loaded chunks for " + job.resource;
         } else explore(client);
+    }
+
+    private static void abandonApproach(MinecraftClient client, BlockPos feet, BlockPos failedStand,
+                                        boolean prospecting, boolean distant) {
+        rejectedStands.put(failedStand, age + 600);
+        if (projectMining && ResourceCatalog.isOre(job.resource)) {
+            oreRoutes.defer(world, job.resource, target, feet, System.nanoTime());
+            BotEvents.add("info", "mining", (distant ? "Could not reach a distant vein near "
+                    : "Trying a different vein after blocked approaches near ") + target.toShortString());
+        } else rejected.put(target, age + 1200);
+        stopPath();
+        clearReservation();
+        client.interactionManager.cancelBlockBreaking();
+        status = "Trying another approach to " + job.resource;
+        nextSearch = age + 1;
+        if (prospecting) {
+            rememberedSite = null;
+            pendingCandidates.clear();
+            nextSearch = age + 20;
+            explore(client);
+        }
     }
 
     private static boolean openExposedOrePickup(MinecraftClient client) {

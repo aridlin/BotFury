@@ -175,6 +175,7 @@ final class ProjectQueue {
     }
     private final Map<UUID, Boolean> routeToolRequests = new HashMap<>();
     private final Set<UUID> mealRequests = new HashSet<>();
+    private final Set<UUID> routeStickRequests = new HashSet<>();
 
     record FuelUse(String job, String recipe, String input, String expectedFuel, int count) {}
     private record SmeltFuel(String recipe, String input, String fuel, String plannedFuel, int count) {}
@@ -1759,32 +1760,40 @@ final class ProjectQueue {
                                                 java.util.function.Function<String, ResourceSite> position,
                                                 java.util.function.ToIntBiFunction<String, String> held) throws IOException {
         String item = "minecraft:stick";
-        int spare = held.applyAsInt(worker, item) - 2;
+        int carried = held.applyAsInt(worker, item);
         var origin = position.apply(worker);
-        if (spare < 1 || origin == null || pendingBuildMaterials(world, worker).contains(item)
+        if (carried < 1 || origin == null || pendingBuildMaterials(world, worker).contains(item)
                 || hasPendingDepositOf(world, worker, item)) return null;
         for (var project : projects.values()) {
             if (!world.equals(project.world) || cancelled(project) || project.jobs.size() >= MAX_JOBS
                     || projectId != null && !projectId.equals(project.id)
                     || !availableProjectWorker(project, worker, now)) continue;
             for (var gather : project.jobs) {
-                if (gather.state != State.LEASED || gather.expiresAt <= now || gather.work.kind != Kind.GATHER
+                boolean routeTool = routeStickRequests.contains(gather.lease);
+                if (gather.state != State.LEASED || gather.expiresAt <= now || !routeTool && gather.work.kind != Kind.GATHER
                         || worker.equalsIgnoreCase(gather.worker) || handoffWorker(gather) != null) continue;
                 String id = "stick-resupply-" + gather.lease;
                 if (find(project, id) != null) continue;
-                var preparation = stickPreparation(project, gather);
-                if (preparation == null) continue;
+                var preparation = routeTool ? null : stickPreparation(project, gather);
+                if (!routeTool && preparation == null) continue;
                 var destination = position.apply(gather.worker);
-                if (destination == null || Math.abs(destination.y - origin.y) > 12
-                        || gatheringDistance(origin, destination) > 32) continue;
+                if (destination == null || Math.abs(destination.y - origin.y) > (routeTool ? 24 : 12)
+                        || gatheringDistance(origin, destination) > (routeTool ? 48 : 32)) continue;
                 int existing = held.applyAsInt(gather.worker, item);
-                int missing = preparation.count - existing;
-                if (existing < 0 || missing < 1 || missing > spare) continue;
+                int missing = (routeTool ? 2 : preparation.count) - existing;
+                if (existing < 0 || missing < 1 || missing > carried - (routeTool ? 0 : 2)) continue;
                 var payload = new RouteToolDelivery(gather.worker, destination, item, existing, 0, null, missing);
                 return assignMealOrSticks(project, id, worker, now, payload);
             }
         }
         return null;
+    }
+
+    synchronized void recordRouteStickNeed(String projectId, String jobId, UUID token, boolean needsSticks, long now) {
+        var job = find(projects.get(projectId), jobId);
+        if (!owns(job, token, now)) return;
+        if (needsSticks && (productionWork(job.work) || job.work.kind == Kind.TRANSFER)) routeStickRequests.add(token);
+        else routeStickRequests.remove(token);
     }
 
     synchronized void recordMealNeed(String projectId, String jobId, UUID token, boolean needsMeal,
@@ -3523,6 +3532,7 @@ final class ProjectQueue {
         if (BATCH_ACTIVE.equals(job.evidence)) return finishBatchStep(project, job, success, evidence, now);
         routeToolRequests.remove(token);
         mealRequests.remove(token);
+        routeStickRequests.remove(token);
         if (success && PREPARED_COMPATIBLE_STICKS.equals(evidence)) {
             var plan = stickPreparation(project, job);
             if (plan == null || chest != null) return false;
@@ -4432,6 +4442,7 @@ final class ProjectQueue {
                     if (restored) interrupted.add(job.lease);
                     routeToolRequests.remove(job.lease);
                     mealRequests.remove(job.lease);
+                    routeStickRequests.remove(job.lease);
                     if (job.work.kind == Kind.RESUPPLY) {
                         jobs.set(i, retry(job, LEASE_EXPIRED, job.chest, null));
                         continue;

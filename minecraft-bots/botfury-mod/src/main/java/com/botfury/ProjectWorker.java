@@ -116,6 +116,7 @@ final class ProjectWorker {
     private static int stationDescentSteps;
     private static BlockPos stationToolAttempt;
     private static boolean needsRouteTool;
+    private static boolean needsRouteSticks;
     private static boolean allowedResupplyWait;
     private static boolean needsRouteBench, needsProductionBench;
     private static boolean receivedRouteBench;
@@ -297,6 +298,7 @@ final class ProjectWorker {
         stationDescentSteps = 0;
         stationToolAttempt = null;
         needsRouteTool = needsRouteBench = needsProductionBench = receivedRouteBench = allowedResupplyWait = false;
+        needsRouteSticks = false;
         craftingRouteDelivery = null;
         inspection = null;
         fill = null;
@@ -633,7 +635,8 @@ final class ProjectWorker {
             receivedRouteBench = true;
             stationToolAttempt = null;
         }
-        boolean needsSticks = stickPreparation != null && stickPreparation.needsSticks(client);
+        boolean needsSticks = needsRouteSticks && client.player.getInventory().count(Items.STICK) < 2
+                || stickPreparation != null && stickPreparation.needsSticks(client);
         boolean needsMeal = TaskDefense.requestsMeal(client);
         if (!needsSticks && !needsMeal && !needsProductionBench && (!needsRouteTool || SubsurfaceAccess.canDigRoute(client))) {
             if (pickingUpRouteTool) {
@@ -991,7 +994,7 @@ final class ProjectWorker {
             }
         }
         boolean routeFailed = approach != null && now >= retryApproach && !BaritoneClient.pursuing(stand);
-        if (needsStationApproach && tryLowerStationApproach(client, stand, routeFailed)) {
+        if (needsStationApproach && tryLowerStationApproach(client, stand, routeFailed, now)) {
             approachAge++;
             return;
         }
@@ -1126,6 +1129,7 @@ final class ProjectWorker {
         if (approach != null || stationReturn.active() || stationReturn.openingReturnStep() || stationDescentSteps > 0) halt(client);
         else if (stationJob) releaseCentering(client);
         stationDescentSteps = 0;
+        needsRouteSticks = false;
         if (!targetLoaded) {
             stableSince = 0;
             return;
@@ -1506,13 +1510,25 @@ final class ProjectWorker {
         return true;
     }
 
-    private static boolean tryLowerStationApproach(MinecraftClient client, BlockPos destination, boolean routeFailed) {
+    private static boolean tryLowerStationApproach(MinecraftClient client, BlockPos destination, boolean routeFailed, long now) {
         var target = block.target();
         var protectedStation = StructureSupply.union(new ProjectGather.Area(target, target), block);
+        if (needsRouteSticks) {
+            if (client.player.getInventory().count(Items.STICK) < 2 && !SubsurfaceAccess.canDigRoute(client)) {
+                status = assignment.project() + "/" + assignment.job().work().id() + ": Waiting for a stick delivery";
+                return true;
+            }
+            needsRouteSticks = false;
+            if (!SubsurfaceAccess.canDigRoute(client) && startMiningCraft(client, now, ROUTE_PICKAXE, protectedStation)) return true;
+        }
         if (stationDescent.continuePassage(client, approachAge, protectedStation)
                 || stationDescent.continueLocalApproach(client, approachAge)) return true;
         var current = client.player.getBlockPos();
         int drop = current.getY() - destination.getY();
+        if (routeFailed && drop >= 2 && drop <= 16 && current.isWithinDistance(destination, 32)
+                && !SubsurfaceAccess.canDigRoute(client) && prepareLowerRouteTool(client, current, protectedStation, now)) {
+            return true;
+        }
         if (stationDescentSteps >= 12 || !current.isWithinDistance(destination, 12)
                 || drop < 0 || drop > 8 || stationDescentSteps == 0 && (!routeFailed || drop < 2)) return false;
         if (approach != null && !routeFailed) return false;
@@ -1521,6 +1537,23 @@ final class ProjectWorker {
         stationDescentSteps++;
         status = assignment.project() + "/" + assignment.job().work().id() + ": Opening a protected route to the lower station";
         BotEvents.add("debug", "movement", "Opening a protected route to the lower station at " + destination.toShortString());
+        return true;
+    }
+
+    private static boolean prepareLowerRouteTool(MinecraftClient client, BlockPos current,
+                                                 ProjectGather.Area protectedStation, long now) {
+        if (!SubsurfaceAccess.hasFooting(client) || current.equals(stationToolAttempt)) return false;
+        stationToolAttempt = current;
+        halt(client);
+        if (startMiningCraft(client, now, ROUTE_PICKAXE, protectedStation)) return true;
+        if (client.player.getInventory().count(Items.STICK) >= 2
+                || !ProjectProduction.canCraft(client, ROUTE_PICKAXE, new net.minecraft.item.ItemStack(Items.STICK, 4))
+                || FieldWorkstation.findForMiningTool(client, now, protectedStation) == null) return false;
+        needsRouteSticks = true;
+        nextRequest = 0;
+        taskEnd = Math.max(taskEnd, Math.min(stationReturnDeadline, now + seconds(150)));
+        status = assignment.project() + "/" + assignment.job().work().id() + ": Requesting sticks for a route pickaxe";
+        BotEvents.add("info", "projects", "Requesting sticks for a route pickaxe");
         return true;
     }
 
@@ -1888,6 +1921,7 @@ final class ProjectWorker {
             if (action.equals("renew")) {
                 if (TaskDefense.requestsMeal(client)) args.put("needsMeal", true);
                 if (TaskDefense.hasMeal(client)) args.put("carryingMeal", true);
+                if (needsRouteSticks) args.put("needsRouteSticks", true);
             }
             if (receivedRouteBench) args.put("receivedRouteBench", true);
             if (needsRouteTool && !SubsurfaceAccess.canDigRoute(client)) {

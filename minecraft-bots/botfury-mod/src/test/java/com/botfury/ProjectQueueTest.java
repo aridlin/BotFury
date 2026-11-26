@@ -652,7 +652,8 @@ class ProjectQueueTest {
         String chest = "block:3,64,0";
         var raw = job("raw", GATHER, List.of());
         var smelt = new ProjectQueue.Work("smelt", SMELT, "{\"count\":3}", List.of("raw"), Set.of(), "raw");
-        var wood = new ProjectQueue.Work("wood", GATHER, "{\"resource\":\"any_logs\",\"count\":1}",
+        var wood = new ProjectQueue.Work("wood", GATHER,
+                "{\"resource\":\"any_logs\",\"item\":\"any_logs\",\"variant\":\"both\",\"count\":1}",
                 List.of("smelt"), Set.of(), "smelt");
         var sticks = new ProjectQueue.Work("sticks", CRAFT, "{\"recipe\":\"minecraft:stick\",\"count\":2}",
                 List.of("wood"), Set.of(), "wood");
@@ -691,15 +692,33 @@ class ProjectQueueTest {
         assertEquals(here, gathering.job().resourceSite());
         assertFalse(queue.reuseToolDuringGathering("stock", "wood", gathering.job().lease(),
                 java.util.Map.of("minecraft:iron_pickaxe", 25), 13));
-        assertTrue(queue.finish("stock", "wood", gathering.job().lease(), true, "Collected a log", 14));
-        var crafting = queue.claim(WORLD, "helper", Set.of(CRAFT), "stock", 15);
+        var highFooting = new ProjectQueue.ResourceSite(8, 74, 9);
+        for (int retry = 0; retry < 3; retry++) {
+            assertTrue(queue.finish("stock", "wood", gathering.job().lease(), false, ProjectQueue.GATHER_STALLED,
+                    null, highFooting, 14 + retry * 2));
+            if (retry < 2) gathering = queue.claim(WORLD, "helper", Set.of(GATHER), "stock", 15 + retry * 2);
+        }
+        // Old journals used a different receipt, but the worker still has the confirmed material.
+        var persisted = com.google.gson.JsonParser.parseString(Files.readString(journal)).getAsJsonObject();
+        persisted.getAsJsonObject("projects").getAsJsonObject("stock").getAsJsonArray("jobs").get(1).getAsJsonObject()
+                .addProperty("evidence", "Observed 3 minecraft:iron_ingot carried for replacement tools");
+        Files.writeString(journal, persisted.toString());
+        queue = new ProjectQueue(journal);
+        long resumedAt = 30_019;
+        var restarted = queue.claim(WORLD, "helper", Set.of(GATHER), "stock", resumedAt, here,
+                ignored -> true, (worker, item) -> worker.equals("helper") && item.equals(material) ? 3 : 0, null);
+        assertEquals(wood, restarted.job().work());
+        assertEquals(highFooting, restarted.job().resourceSite());
+        assertEquals(ProjectQueue.State.DONE, queue.snapshot(resumedAt).get(0).jobs().get(1).state());
+        assertTrue(queue.finish("stock", "wood", restarted.job().lease(), true, "Collected a log", resumedAt + 1));
+        var crafting = queue.claim(WORLD, "helper", Set.of(CRAFT), "stock", resumedAt + 2);
         assertEquals(sticks, crafting.job().work());
-        assertTrue(queue.finish("stock", "sticks", crafting.job().lease(), true, "Crafted sticks", 16));
-        var replacement = queue.claim(WORLD, "helper", Set.of(CRAFT, GATHER), "stock", 17, here, ignored -> true,
+        assertTrue(queue.finish("stock", "sticks", crafting.job().lease(), true, "Crafted sticks", resumedAt + 3));
+        var replacement = queue.claim(WORLD, "helper", Set.of(CRAFT, GATHER), "stock", resumedAt + 4, here, ignored -> true,
                 (worker, item) -> 0, java.util.Map.of("minecraft:iron_pickaxe", 25));
         assertEquals(pickaxe, replacement.job().work());
-        assertTrue(queue.finish("stock", "pickaxe", replacement.job().lease(), true, "Crafted a fresh pickaxe", 18));
-        assertEquals(ore, queue.claim(WORLD, "helper", Set.of(GATHER), "stock", 19).job().work());
+        assertTrue(queue.finish("stock", "pickaxe", replacement.job().lease(), true, "Crafted a fresh pickaxe", resumedAt + 5));
+        assertEquals(ore, queue.claim(WORLD, "helper", Set.of(GATHER), "stock", resumedAt + 6).job().work());
     }
 
     private ProjectQueue exhaustedDiamondQueue(java.nio.file.Path journal) throws Exception {

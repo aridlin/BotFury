@@ -962,6 +962,12 @@ final class MiningTask {
         }
         if (surfaceRouteGoal != null) {
             double distance = Math.sqrt(surfaceRouteGoal.getSquaredDistance(feet));
+            if (feet.getY() >= surfaceProgressY && (observedSite == null || feet.getY() > observedSite.y())
+                    && SubsurfaceAccess.hasFooting(client) && !BuildProtection.blocked(feet.down())
+                    && !BuildProtection.blocked(feet)
+                    && (excluded == null || !excluded.contains(feet) && !excluded.contains(feet.down()))) {
+                observedSite = new ProjectQueue.ResourceSite(feet.getX(), feet.getY(), feet.getZ());
+            }
             if (feet.getY() > surfaceProgressY || distance <= surfaceProgressDistance - 3) {
                 surfaceProgressAt = age;
                 surfaceProgressY = Math.max(surfaceProgressY, feet.getY());

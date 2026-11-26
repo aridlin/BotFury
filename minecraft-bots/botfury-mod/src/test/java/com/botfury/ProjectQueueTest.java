@@ -561,6 +561,29 @@ class ProjectQueueTest {
         }
     }
 
+    @Test void aWornPickaxeCanReachAnExistingMiningCheckpoint() throws Exception {
+        var queue = new ProjectQueue(directory.resolve("mining-checkpoint-tool.json"));
+        String chest = "block:3,64,0";
+        queue.submitSupplied("stock", WORLD, List.of(
+                job("wood", GATHER, List.of()),
+                new ProjectQueue.Work("pickaxe", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\",\"count\":1}",
+                        List.of("wood"), Set.of(), "wood"),
+                new ProjectQueue.Work("diamonds", GATHER,
+                        "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":8}",
+                        List.of("pickaxe"), Set.of(), "pickaxe"),
+                new ProjectQueue.Work("bank", TRANSFER,
+                        "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":8}",
+                        List.of("diamonds"), Set.of(chest), "diamonds")), chest);
+        var wood = queue.claim(WORLD, "miner", Set.of(GATHER), 1).job();
+        assertFalse(queue.reuseToolDuringGathering("stock", "wood", wood.lease(),
+                java.util.Map.of("minecraft:iron_pickaxe", 24), 2));
+        assertTrue(queue.reuseToolDuringGathering("stock", "wood", wood.lease(),
+                java.util.Map.of("minecraft:iron_pickaxe", 25), 3));
+        var mining = queue.claim(WORLD, "miner", Set.of(GATHER), 4);
+        assertEquals("diamonds", mining.job().work().id());
+        assertEquals(4, mining.cargoCheckpoint());
+    }
+
     @Test void equippedMinerCanResumeAStalledPrivateToolChainAndStillRestock() throws Exception {
         var journal = directory.resolve("equipped-miner.json");
         var queue = new ProjectQueue(journal);

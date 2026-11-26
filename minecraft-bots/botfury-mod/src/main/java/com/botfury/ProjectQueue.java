@@ -246,6 +246,7 @@ final class ProjectQueue {
     private static final String CONTRIBUTION_SETTLED = "Partial stock contribution settled";
     static final String CARGO_CHECKPOINT = "Banking a mining checkpoint";
     private static final int MINING_CARGO_LIMIT = 4;
+    private static final int MIN_FULL_GATHER_TOOL_USES = 32;
     private static final int WOOD_CARGO_LIMIT = 16;
     private static final String CONSTRUCTION_PICKUP = "Collecting replacement materials for a nearby builder";
     static final String ALTERNATIVE_FUEL = "Using carried smelting fuel ";
@@ -1559,8 +1560,7 @@ final class ProjectQueue {
         var gather = consumers.get(0);
         if (gather.state != State.WAITING || gather.work.kind != Kind.GATHER || gather.work.needs.size() != 1
                 || !craft.work.id.equals(gather.work.sameWorkerAs)) return false;
-        var carried = PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
-                .filter(tool -> toolUses.getOrDefault(tool, 0) >= 32).findFirst().orElse(null);
+        var carried = carriedMiningPickaxe(project, gather, tier, toolUses);
         if (carried == null) return false;
         replace(project, new Job(craft.work, State.DONE, craft.attempts, worker, null, 0,
                 "Gathering tool already carried: " + carried, craft.chest));
@@ -1584,8 +1584,7 @@ final class ProjectQueue {
             if (recipe == null || recipe.recipe == null || recipe.count == null || recipe.count != 1) continue;
             int tier = PICKAXE_TIERS.indexOf(recipe.recipe);
             if (tier < 0) continue;
-            var tool = PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
-                    .filter(id -> toolUses.getOrDefault(id, 0) >= 32).findFirst().orElse(null);
+            var tool = carriedMiningPickaxe(project, target, tier, toolUses);
             if (tool == null) continue;
             var stages = new HashSet<String>();
             var step = craft;
@@ -2150,9 +2149,7 @@ final class ProjectQueue {
                 var recipe = JSON.fromJson(craft.work.payload, ToolRecipe.class);
                 int tier = recipe == null || recipe.recipe == null || recipe.recipe == null ? -1 : PICKAXE_TIERS.indexOf(recipe.recipe);
                 if (tier < 0) continue;
-                String carriedTool = PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
-                        .filter(tool -> toolUses.get(tool) != null && toolUses.get(tool) >= 32)
-                        .findFirst().orElse(null);
+                String carriedTool = carriedMiningPickaxe(project, gather, tier, toolUses);
                 if (carriedTool == null) continue;
                 var key = stalled ? "stalled-equipped-miner:" + gather.work.id : equippedRescueKey(gather);
                 String workerRetry = key + ":" + worker.toLowerCase(java.util.Locale.ROOT);
@@ -2260,8 +2257,7 @@ final class ProjectQueue {
                 } else if (!newMiningGround(gather.resourceSite, position)) continue;
                 var recipe = JSON.fromJson(preparation.work.payload, ToolRecipe.class);
                 int tier = recipe == null || recipe.recipe == null ? -1 : PICKAXE_TIERS.indexOf(recipe.recipe);
-                if (tier < 0 || PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
-                        .noneMatch(tool -> toolUses.getOrDefault(tool, 0) >= 32)) continue;
+                if (tier < 0 || carriedMiningPickaxe(project, gather, tier, toolUses) == null) continue;
 
                 // Old journals may lack the failed location. Retry once near the ore layer to establish a checkpoint.
                 String key = (missingSite ? "legacy-miner:" : "relocated-miner:") + gather.work.id;
@@ -2737,8 +2733,7 @@ final class ProjectQueue {
                     if (prerequisite == null || prerequisite.state != State.DONE || prerequisite.work.kind != Kind.CRAFT) break;
                     var recipe = JSON.fromJson(prerequisite.work.payload, ToolRecipe.class);
                     int tier = recipe == null || recipe.recipe == null ? -1 : PICKAXE_TIERS.indexOf(recipe.recipe);
-                    if (tier < 0 || PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
-                            .noneMatch(tool -> toolUses.getOrDefault(tool, 0) >= 32)
+                    if (tier < 0 || carriedMiningPickaxe(project, stage, tier, toolUses) == null
                             || !privatePreparationReady(project, smelt, path)) break;
                     var lease = new Job(stage.work, State.LEASED, 1, worker, UUID.randomUUID(),
                             now + LEASE_MS, null, stage.chest, gatheringSite(project, stage));
@@ -2970,6 +2965,14 @@ final class ProjectQueue {
     private static boolean checkpointDepositActive(Project project, Job gather) {
         return project.jobs.stream().anyMatch(job -> job.state == State.LEASED && CONTRIBUTION_ACTIVE.equals(job.evidence)
                 && gather.work.id.equals(job.work.sameWorkerAs));
+    }
+
+    private static String carriedMiningPickaxe(Project project, Job gather, int tier, Map<String, Integer> toolUses) {
+        int checkpoint = cargoCheckpoint(project, gather);
+        int minimumUses = checkpoint == 0 ? MIN_FULL_GATHER_TOOL_USES
+                : Math.min(MIN_FULL_GATHER_TOOL_USES, checkpoint + SubsurfaceAccess.MIN_ROUTE_TOOL_USES);
+        return PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
+                .filter(tool -> toolUses.getOrDefault(tool, 0) >= minimumUses).findFirst().orElse(null);
     }
 
     private static int cargoCheckpoint(Project project, Job gather) {

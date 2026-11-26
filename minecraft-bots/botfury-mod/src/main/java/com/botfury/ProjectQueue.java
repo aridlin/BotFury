@@ -1852,12 +1852,14 @@ final class ProjectQueue {
         var project = projects.get(projectId);
         var job = find(project, jobId);
         if (!owns(job, token, now) || job.work.kind == Kind.RESUPPLY) return;
-        if (needsMeal) {
+        if (needsMeal && !carryingMeal) {
             mealRequests.put(token, WorkerReturnTrail.validSupplyTrail(trail) ? List.copyOf(trail) : List.of());
         } else mealRequests.remove(token);
         if (!carryingMeal) return;
-        var delivery = find(project, "food-resupply-" + token);
-        if (delivery == null || delivery.state != State.LEASED) return;
+        String base = "food-resupply-" + token;
+        var delivery = project.jobs.stream().filter(candidate -> candidate.state == State.LEASED && candidate.work.kind == Kind.RESUPPLY
+                && (candidate.work.id.equals(base) || candidate.work.id.startsWith(base + "-"))).findFirst().orElse(null);
+        if (delivery == null) return;
         replace(project, new Job(delivery.work, State.DONE, delivery.attempts, delivery.worker, delivery.lease, 0,
                 "Recipient confirmed receipt of food", null));
     }
@@ -1866,14 +1868,15 @@ final class ProjectQueue {
                                                java.util.function.Function<String, ResourceSite> position,
                                                java.util.function.ToIntBiFunction<String, String> held,
                                                boolean supportsMealTrail) throws IOException {
-        return offerMealResupply(world, worker, projectId, now, item, position, held, supportsMealTrail, null);
+        return offerMealResupply(world, worker, projectId, now, item, position, held, supportsMealTrail, 3, null);
     }
 
     synchronized Assignment offerMealResupply(String world, String worker, String projectId, long now, String item,
                                                java.util.function.Function<String, ResourceSite> position,
                                                java.util.function.ToIntBiFunction<String, String> held,
-                                               boolean supportsMealTrail, FieldForage.Source source) throws IOException {
-        if (mealRequests.isEmpty() || item == null || source == null && held.applyAsInt(worker, item) < 3
+                                               boolean supportsMealTrail, int minimumCarried,
+                                               FieldForage.Source source) throws IOException {
+        if (mealRequests.isEmpty() || item == null || source == null && held.applyAsInt(worker, item) < minimumCarried
                 || pendingBuildMaterials(world, worker).contains(item) || hasPendingDepositOf(world, worker, item)) return null;
         var origin = position.apply(worker);
         if (origin == null) return null;
@@ -1887,8 +1890,8 @@ final class ProjectQueue {
             for (var recipient : project.jobs) {
                 if (recipient.state != State.LEASED || recipient.expiresAt <= now || !mealRequests.containsKey(recipient.lease)
                         || worker.equalsIgnoreCase(recipient.worker)) continue;
-                String id = "food-resupply-" + recipient.lease;
-                if (find(project, id) != null) continue;
+                String id = nextMealDeliveryId(project, recipient.lease);
+                if (id == null) continue;
                 var destination = position.apply(recipient.worker);
                 if (destination == null) continue;
                 var waypoints = List.<ResourceSite>of();
@@ -1904,6 +1907,17 @@ final class ProjectQueue {
             }
         }
         return null;
+    }
+
+    private static String nextMealDeliveryId(Project project, UUID token) {
+        String base = "food-resupply-" + token;
+        String id = base;
+        Job previous;
+        for (int number = 2; (previous = find(project, id)) != null; number++) {
+            if (previous.state != State.DONE) return null;
+            id = base + "-" + number;
+        }
+        return id;
     }
 
     private boolean animalReserved(String world, UUID animal, long now) {

@@ -737,17 +737,19 @@ final class ProjectBroker {
                         assignment = board.offerRouteTool(world, request.worker, request.project, now, request.toolUses, request.routeCraftTarget, request.canSupplyBench,
                                 ProjectBroker::workerPosition, ProjectBroker::heldCount, returnRevision >= 8);
                         var meal = request.spareMeal == null ? null : Identifier.tryParse(request.spareMeal);
-                        if (assignment == null && meal != null && Registries.ITEM.getOrEmpty(meal)
-                                .filter(TaskDefense::nourishing).isPresent()) {
+                        var offeredFood = meal == null ? null : Registries.ITEM.getOrEmpty(meal)
+                                .filter(TaskDefense::emergencyFood).orElse(null);
+                        if (assignment == null && offeredFood != null) {
                             assignment = board.offerMealResupply(world, request.worker, request.project, now, meal.toString(),
-                                    ProjectBroker::workerPosition, ProjectBroker::heldCount, request.supportsMealTrail);
+                                    ProjectBroker::workerPosition, ProjectBroker::heldCount, request.supportsMealTrail,
+                                    TaskDefense.rawForageFood(offeredFood) ? 1 : 3, null);
                         }
                         if (assignment == null && request.forageSource != null && request.forageSource.item() != null) {
                             var meat = Identifier.tryParse(request.forageSource.item());
                             if (meat != null && Registries.ITEM.getOrEmpty(meat).filter(TaskDefense::rawForageFood).isPresent()) {
                                 assignment = board.offerMealResupply(world, request.worker, request.project, now,
                                         meat.toString(), ProjectBroker::workerPosition, ProjectBroker::heldCount,
-                                        request.supportsMealTrail, request.forageSource);
+                                        request.supportsMealTrail, 0, request.forageSource);
                             }
                         }
                         if (assignment == null && request.supportsStickResupply) {

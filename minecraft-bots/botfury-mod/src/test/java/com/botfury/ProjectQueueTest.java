@@ -216,7 +216,7 @@ class ProjectQueueTest {
         assertTrue(queue.reusableSmeltingOutputs(WORLD).isEmpty());
     }
 
-    @Test void anActiveWorkerCanRequestOneMealAndAcknowledgeReceipt() throws Exception {
+    @Test void aHungryWorkerCanReceiveAnotherMealWithoutChangingItsWorkLease() throws Exception {
         var journal = directory.resolve("food-resupply.json");
         var queue = new ProjectQueue(journal);
         queue.submit("mine", WORLD, List.of(new ProjectQueue.Work("ore", GATHER,
@@ -234,12 +234,24 @@ class ProjectQueueTest {
                 (name, item) -> name.equals("courier") ? 3 : 0, false).job();
         assertEquals(1, queue.routeToolDelivery("mine", delivery.work().id(), delivery.lease(), 7).quantity());
         queue = new ProjectQueue(journal);
-        queue.recordMealNeed("mine", "ore", miner.lease(), false, true, 8);
+        queue.recordMealNeed("mine", "ore", miner.lease(), true, true, 8);
         var jobs = queue.snapshot(9).get(0).jobs();
         assertEquals(miner.lease(), jobs.get(0).lease());
         assertEquals(ProjectQueue.State.LEASED, jobs.get(0).state());
         assertEquals(ProjectQueue.State.DONE, jobs.get(1).state());
         assertEquals("Recipient confirmed receipt of food", jobs.get(1).evidence());
+        var raw = "minecraft:beef";
+        java.util.function.ToIntBiFunction<String, String> held = (name, item) -> name.startsWith("courier") ? 1 : 0;
+        assertNull(queue.claim(WORLD, "courier-b", Set.of(RESUPPLY), "mine", 9, field));
+        assertNull(queue.offerMealResupply(WORLD, "courier-b", "mine", 9, raw, name -> field, held, false, 1, null));
+        queue.recordMealNeed("mine", "ore", miner.lease(), true, false, 10);
+        var second = queue.offerMealResupply(WORLD, "courier-b", "mine", 11, raw, name -> field, held, false, 1, null).job();
+        assertEquals(delivery.work().id() + "-2", second.work().id());
+        assertNull(queue.offerMealResupply(WORLD, "courier", "mine", 12, raw, name -> field, held, false, 1, null));
+        queue.recordMealNeed("mine", "ore", miner.lease(), false, true, 13);
+        jobs = queue.snapshot(14).get(0).jobs();
+        assertEquals(miner.lease(), jobs.get(0).lease());
+        assertEquals(ProjectQueue.State.DONE, jobs.get(2).state());
     }
 
     @Test void aDistantMealDeliveryUsesTheMinersTrailWithoutChangingTheMiningLease() throws Exception {
@@ -281,10 +293,10 @@ class ProjectQueueTest {
             assertNull(queue.claim(WORLD, "courier-" + suffix, Set.of(RESUPPLY), project, 2, field));
         }
         var delivery = queue.offerMealResupply(WORLD, "courier-a", "mine-a", 3, animal.item(),
-                name -> field, (name, item) -> 0, true, animal).job();
+                name -> field, (name, item) -> 0, true, 0, animal).job();
         assertEquals(animal, queue.routeToolDelivery("mine-a", delivery.work().id(), delivery.lease(), 4).forage());
         assertNull(queue.offerMealResupply(WORLD, "courier-b", "mine-b", 4, animal.item(),
-                name -> field, (name, item) -> 0, true, animal));
+                name -> field, (name, item) -> 0, true, 0, animal));
     }
 
     @Test void spareSticksCanBeDeliveredOnceWithoutMovingTheToolLease() throws Exception {

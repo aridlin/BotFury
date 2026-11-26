@@ -96,13 +96,16 @@ final class TaskDefense {
         var player = client.player;
         if (player.getHungerManager().getFoodLevel() < 15 || player.getHealth() <= player.getMaxHealth() / 2) return null;
         var inventory = player.getInventory();
+        net.minecraft.item.Item raw = null;
         for (int slot = 0; slot < 36; slot++) {
             var stack = inventory.getStack(slot);
-            if (!stack.isEmpty() && nourishing(stack.getItem()) && inventory.count(stack.getItem()) >= 3) {
-                return net.minecraft.registry.Registries.ITEM.getId(stack.getItem()).toString();
+            var item = stack.getItem();
+            if (!stack.isEmpty() && nourishing(item) && inventory.count(item) >= 3) {
+                return net.minecraft.registry.Registries.ITEM.getId(item).toString();
             }
+            if (!stack.isEmpty() && raw == null && rawForageFood(item)) raw = item;
         }
-        return null;
+        return raw == null ? null : net.minecraft.registry.Registries.ITEM.getId(raw).toString();
     }
     private static boolean eligible(MinecraftClient client,boolean working){
         var here=LocalFormation.here();

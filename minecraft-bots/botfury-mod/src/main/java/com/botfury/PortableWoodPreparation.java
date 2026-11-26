@@ -16,6 +16,7 @@ final class PortableWoodPreparation {
     private final int targetCount;
     private final ProjectGather.Area excluded;
     private final ProjectQueue.ResourceSite site;
+    private final boolean allowWoodPreparation;
     private ProjectProduction production;
     private boolean craftingProduct;
     private long belowSurfaceSince;
@@ -25,11 +26,17 @@ final class PortableWoodPreparation {
     PortableWoodPreparation() { this(Items.CRAFTING_TABLE, 1, null, null); }
 
     PortableWoodPreparation(Item product, int targetCount, ProjectGather.Area excluded, ProjectQueue.ResourceSite site) {
+        this(product, targetCount, excluded, site, true);
+    }
+
+    PortableWoodPreparation(Item product, int targetCount, ProjectGather.Area excluded, ProjectQueue.ResourceSite site,
+                            boolean allowWoodPreparation) {
         this.product = product;
         recipe = Registries.ITEM.getId(product);
         this.targetCount = targetCount;
         this.excluded = excluded;
         this.site = site;
+        this.allowWoodPreparation = allowWoodPreparation;
     }
 
     static boolean canSupply(MinecraftClient client) {
@@ -69,8 +76,9 @@ final class PortableWoodPreparation {
             var spec = craftingProduct
                     ? new ProjectProduction.Spec(null, ProjectQueue.Kind.CRAFT, recipe, null, null,
                             Math.min(targetCount, held + (sticks ? 4 : 1)))
-                    : FieldWorkstation.plankRecipe(client, sticks ? 2 : 4);
+                    : allowWoodPreparation ? FieldWorkstation.plankRecipe(client, sticks ? 2 : 4) : null;
             if (spec == null) {
+                if (!allowWoodPreparation) return new ProjectProduction.Result(false, "Spare planks are no longer available");
                 if (!sticks && !nearLoadedSurface(client)) {
                     if (belowSurfaceSince == 0) belowSurfaceSince = now;
                     if (now - belowSurfaceSince >= Duration.ofSeconds(6).toNanos()) {

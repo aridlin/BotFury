@@ -41,7 +41,7 @@ final class ProjectBroker {
                            boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool, int routeCraftTarget, boolean needsRouteBench, boolean canSupplyBench, boolean receivedRouteBench,
                            boolean supportsPickupReserve, boolean supportsStickResupply, boolean needsMeal, boolean carryingMeal, String spareMeal,
                            boolean supportsMealTrail, List<ProjectQueue.ResourceSite> mealTrail,
-                           FieldForage.Source forageSource, boolean checkpointApproach,
+                           FieldForage.Source forageSource, boolean checkpointApproach, Set<String> stickCraftInputs,
                            List<ProjectQueue.ReachableOre> reachableOre, boolean groundedGatherRetry, List<String> localStarterLogs) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
@@ -770,7 +770,7 @@ final class ProjectBroker {
                         }
                         if (assignment == null && request.supportsStickResupply) {
                             assignment = board.offerStickResupply(world, request.worker, request.project, now,
-                                    ProjectBroker::workerPosition, ProjectBroker::heldCount);
+                                    ProjectBroker::workerPosition, ProjectBroker::heldCount, request.stickCraftInputs);
                         }
                     }
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.TRANSFER)) {

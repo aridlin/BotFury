@@ -302,16 +302,7 @@ class ProjectQueueTest {
     @Test void spareSticksCanBeDeliveredOnceWithoutMovingTheToolLease() throws Exception {
         var journal = directory.resolve("stick-resupply.json");
         var queue = new ProjectQueue(journal);
-        queue.submit("tools", WORLD, List.of(
-                new ProjectQueue.Work("log", GATHER,
-                        "{\"resource\":\"block:minecraft:oak_log\",\"variant\":\"both\",\"item\":\"minecraft:oak_log\",\"count\":1}",
-                        List.of(), Set.of()),
-                new ProjectQueue.Work("planks", CRAFT, "{\"recipe\":\"minecraft:oak_planks\",\"inventory\":true,\"count\":2}",
-                        List.of("log"), Set.of(), "log"),
-                new ProjectQueue.Work("sticks", CRAFT, "{\"recipe\":\"minecraft:stick\",\"inventory\":true,\"count\":2}",
-                        List.of("planks"), Set.of(), "planks"),
-                new ProjectQueue.Work("pickaxe", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\",\"count\":1}",
-                        List.of("sticks"), Set.of(), "sticks")));
+        queue.submit("tools", WORLD, pickaxeStickPreparation());
         var miner = queue.claim(WORLD, "miner", Set.of(GATHER), 1).job();
         var field = new ProjectQueue.ResourceSite(8, 64, 0);
         assertNull(queue.claim(WORLD, "courier", Set.of(RESUPPLY), "tools", 2, field));
@@ -333,6 +324,37 @@ class ProjectQueueTest {
         assertTrue(queue.finish("tools", "log", miner.lease(), true, ProjectQueue.PREPARED_COMPATIBLE_STICKS, 10));
         assertNull(queue.routeToolDelivery("tools", loan.work().id(), loan.lease(), 10));
         assertEquals("pickaxe", queue.claim(WORLD, "miner", Set.of(CRAFT), 11).job().work().id());
+    }
+
+    @Test void aCourierCanCraftMissingSticksFromCarriedPlanksAndRetainItsOwnPair() throws Exception {
+        var queue = new ProjectQueue(directory.resolve("crafting-stick-courier.json"));
+        queue.submit("tools", WORLD, pickaxeStickPreparation());
+        var mining = queue.claim(WORLD, "miner", Set.of(GATHER), 1).job();
+        var local = new ProjectQueue.ResourceSite(8, 64, 0);
+        String planks = "minecraft:oak_planks";
+        assertNull(queue.claim(WORLD, "courier", Set.of(RESUPPLY), "tools", 2, local));
+        assertNull(queue.offerStickResupply(WORLD, "courier", "tools", 3, name -> local,
+                (name, item) -> name.equals("courier") && item.equals(planks) ? 1 : 0, Set.of(planks)));
+        var loan = queue.offerStickResupply(WORLD, "courier", "tools", 4, name -> local,
+                (name, item) -> name.equals("courier") && item.equals(planks) ? 2 : 0, Set.of(planks)).job();
+        var delivery = queue.routeToolDelivery("tools", loan.work().id(), loan.lease(), 5);
+        assertEquals(4, delivery.craftTarget());
+        assertEquals(2, delivery.quantity());
+        assertEquals("miner", delivery.recipient());
+        assertEquals(mining.lease(), queue.claim(WORLD, "miner", Set.of(GATHER), "tools", 6).job().lease());
+    }
+
+    private static List<ProjectQueue.Work> pickaxeStickPreparation() {
+        return List.of(
+                new ProjectQueue.Work("log", GATHER,
+                        "{\"resource\":\"block:minecraft:oak_log\",\"variant\":\"both\",\"item\":\"minecraft:oak_log\",\"count\":1}",
+                        List.of(), Set.of()),
+                new ProjectQueue.Work("planks", CRAFT, "{\"recipe\":\"minecraft:oak_planks\",\"inventory\":true,\"count\":2}",
+                        List.of("log"), Set.of(), "log"),
+                new ProjectQueue.Work("sticks", CRAFT, "{\"recipe\":\"minecraft:stick\",\"inventory\":true,\"count\":2}",
+                        List.of("planks"), Set.of(), "planks"),
+                new ProjectQueue.Work("pickaxe", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\",\"count\":1}",
+                        List.of("sticks"), Set.of(), "sticks"));
     }
 
     @Test void compatibleSticksCanSatisfyOnlyAStandaloneWoodPreparationChain() throws Exception {

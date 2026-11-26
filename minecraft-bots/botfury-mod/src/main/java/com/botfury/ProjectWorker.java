@@ -10,6 +10,7 @@ import net.minecraft.client.MinecraftClient;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.item.Items;
 import net.minecraft.registry.Registries;
+import net.minecraft.registry.tag.ItemTags;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.Hand;
@@ -1932,6 +1933,15 @@ final class ProjectWorker {
             args.put("kinds", KINDS);
             args.put("returnRouteRevision", SubsurfaceAccess.RETURN_ROUTE_REVISION);
             args.put("supportsStickResupply", true);
+            if (ProjectProduction.canCraft(client, ROUTE_STICKS)) {
+                var planks = new HashSet<String>();
+                var inventory = client.player.getInventory();
+                for (int slot = 0; slot < 36; slot++) {
+                    var stack = inventory.getStack(slot);
+                    if (stack.isIn(ItemTags.PLANKS)) planks.add(Registries.ITEM.getId(stack.getItem()).toString());
+                }
+                if (!planks.isEmpty()) args.put("stickCraftInputs", planks);
+            }
             args.put("supportsMealTrail", true);
             args.put("checkpointApproach", true);
             var meal = TaskDefense.spareMeal(client);
@@ -2051,6 +2061,14 @@ final class ProjectWorker {
                                 && !client.player.getInventory().contains(item.getDefaultStack())) {
                             craftingRouteDelivery = delivery;
                             routeWorkbench = new PortableWoodPreparation();
+                        } else if (item == Items.STICK) {
+                            if (client.player.getInventory().count(Items.STICK) >= delivery.craftTarget()) {
+                                startRouteDelivery(client, delivery);
+                            } else {
+                                craftingRouteDelivery = delivery;
+                                routeWorkbench = new PortableWoodPreparation(Items.STICK, delivery.craftTarget(), null, null, false);
+                                BotEvents.add("info", "projects", "Crafting sticks for " + delivery.recipient());
+                            }
                         } else if (freshToolCount(client, item) < delivery.craftTarget()) {
                             if (startMiningCraft(client, started, ROUTE_PICKAXE, null)) craftingRouteDelivery = delivery;
                             else finish(client, false, ProjectQueue.ROUTE_PREPARATION_FAILED + "ingredients or workbench became unavailable");

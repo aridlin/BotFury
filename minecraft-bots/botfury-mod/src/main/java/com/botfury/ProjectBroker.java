@@ -43,7 +43,8 @@ final class ProjectBroker {
                            boolean supportsPickupReserve, boolean supportsStickResupply, boolean needsMeal, boolean carryingMeal, String spareMeal,
                            boolean supportsMealTrail, List<ProjectQueue.ResourceSite> mealTrail,
                            FieldForage.Source forageSource, boolean checkpointApproach, Set<String> stickCraftInputs,
-                           List<ProjectQueue.ReachableOre> reachableOre, boolean groundedGatherRetry, List<String> localStarterLogs) {}
+                           List<ProjectQueue.ReachableOre> reachableOre, boolean groundedGatherRetry, List<String> localStarterLogs,
+                           Map<String, Integer> claimItems) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
         if (queue == null) {
@@ -789,6 +790,12 @@ final class ProjectBroker {
                 }
                 case "claim" -> {
                     var position = workerPosition(request.worker);
+                    var reported = request.claimItems;
+                    boolean hasClaimInventory = reported != null && reported.size() <= 36
+                            && reported.values().stream().allMatch(count -> count != null && count > 0 && count <= 36 * 64);
+                    java.util.function.ToIntBiFunction<String, String> claimStock = (worker, item) ->
+                            hasClaimInventory && request.worker.equalsIgnoreCase(worker)
+                                    ? ProjectItem.parse(item).count(reported) : heldCount(worker, item);
                     int returnRevision = Math.max(0, Math.min(request.returnRouteRevision, SubsurfaceAccess.RETURN_ROUTE_REVISION));
                     var assignment = request.kinds.contains(ProjectQueue.Kind.TRANSFER)
                             ? board.offerUrgentMiningDeposit(world, request.worker, request.project, now,
@@ -801,7 +808,7 @@ final class ProjectBroker {
                     }
                     if (assignment == null) assignment = board.claim(world, request.worker, request.kinds,
                             request.project, now, position, material -> hasExcavationTool(request.toolUses, material),
-                            ProjectBroker::heldCount, request.toolUses, returnRevision, request.supportsPickupReserve,
+                            claimStock, request.toolUses, returnRevision, request.supportsPickupReserve,
                             ProjectBroker::workerPosition);
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.TRANSFER)) {
                         assignment = board.offerInterruptedDeposit(world, request.worker, request.project, now,

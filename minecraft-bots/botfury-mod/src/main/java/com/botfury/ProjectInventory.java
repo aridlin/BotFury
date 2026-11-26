@@ -1,5 +1,7 @@
 package com.botfury;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
 import net.minecraft.client.MinecraftClient;
@@ -31,6 +33,16 @@ final class ProjectInventory {
             }
         }
         return Hand.MAIN_HAND;
+    }
+
+    static Map<String, Integer> transferableItems(MinecraftClient client) {
+        var counts = new HashMap<String, Integer>();
+        var inventory = client.player.getInventory();
+        for (int slot = 0; slot < 36; slot++) {
+            var stack = inventory.getStack(slot);
+            if (!stack.isEmpty()) counts.merge(Registries.ITEM.getId(stack.getItem()).toString(), stack.getCount(), Integer::sum);
+        }
+        return counts;
     }
 
     static boolean canFit(MinecraftClient client, ItemStack wanted, int count) {

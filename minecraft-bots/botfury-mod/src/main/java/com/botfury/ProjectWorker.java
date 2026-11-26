@@ -1950,6 +1950,7 @@ final class ProjectWorker {
             args.put("worker", here.name());
             if (enrollment.project() != null) args.put("project", enrollment.project());
             args.put("kinds", KINDS);
+            args.put("claimItems", ProjectInventory.transferableItems(client));
             args.put("returnRouteRevision", SubsurfaceAccess.RETURN_ROUTE_REVISION);
             args.put("supportsStickResupply", true);
             if (ProjectProduction.canCraft(client, ROUTE_STICKS)) {

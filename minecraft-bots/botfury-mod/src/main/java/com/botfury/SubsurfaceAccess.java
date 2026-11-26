@@ -466,9 +466,12 @@ final class SubsurfaceAccess {
                 || world.getPlayers().stream().anyMatch(player -> player.isAlive() && !player.isSpectator()
                 && player.getBlockPos().down().equals(pos))) return false;
         var state = world.getBlockState(pos);
+        if (state.isOf(Blocks.DRIPSTONE_BLOCK) && world.getBlockState(pos.down()).isOf(Blocks.POINTED_DRIPSTONE)) {
+            return false;
+        }
         if (!state.getFluidState().isEmpty()
                 || !passageClear(client, pos, state)
-                    && (state.hasBlockEntity() || !BaritoneSettings.recoverableTerrain(state.getBlock())
+                    && (state.hasBlockEntity() || !BaritoneSettings.prospectingTerrain(state.getBlock())
                         && !(returning && handClearance(state)))) return false;
         for (var side : Direction.values()) {
             var neighbor = pos.offset(side);
@@ -589,8 +592,11 @@ final class SubsurfaceAccess {
         if (held.getItem() instanceof PickaxeItem pickaxe && pickaxe.getMaterial().getMiningLevel() >= 2
                 && held.getMaxDamage() - held.getDamage() <= HARVEST_RESERVE) return true;
         if (client.world == null || !pos.isWithinDistance(origin, escapingExploration ? 6 : REACH)
-                || excluded != null && excluded.contains(pos)
-                || !BaritoneSettings.recoverableTerrain(client.world.getBlockState(pos).getBlock())) return true;
+                || excluded != null && excluded.contains(pos)) return true;
+        var terrain = client.world.getBlockState(pos);
+        if (terrain.isOf(Blocks.DRIPSTONE_BLOCK)) {
+            if (escapingExploration || !safeClearance(client, pos, excluded, false)) return true;
+        } else if (!BaritoneSettings.recoverableTerrain(terrain.getBlock())) return true;
         if (escapingExploration) {
             var world = client.world;
             var block = world.getBlockState(pos).getBlock();

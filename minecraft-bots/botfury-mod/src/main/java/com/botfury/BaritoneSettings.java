@@ -1,6 +1,7 @@
 package com.botfury;
 
 import net.minecraft.block.Block;
+import net.minecraft.block.Blocks;
 import net.minecraft.block.FenceGateBlock;
 import net.minecraft.block.LeavesBlock;
 import net.minecraft.registry.Registries;
@@ -36,7 +37,7 @@ final class BaritoneSettings implements AutoCloseable {
     }
 
     static BaritoneSettings prospecting(boolean allowBreak) throws ReflectiveOperationException {
-        return new BaritoneSettings(allowBreak, true, BaritoneSettings::recoverableTerrain, true);
+        return new BaritoneSettings(allowBreak, true, BaritoneSettings::prospectingTerrain, true);
     }
 
     static BaritoneSettings surfaceGathering() throws ReflectiveOperationException {
@@ -103,6 +104,10 @@ final class BaritoneSettings implements AutoCloseable {
             close();
             throw error;
         }
+    }
+
+    static boolean prospectingTerrain(Block block) {
+        return block == Blocks.DRIPSTONE_BLOCK || recoverableTerrain(block);
     }
 
     static boolean recoverableTerrain(Block block) {

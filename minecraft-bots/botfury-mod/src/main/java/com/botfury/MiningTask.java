@@ -34,6 +34,7 @@ final class MiningTask {
     private static final int MAX_EXPLORATION_EXITS = 3;
     private static final int MAX_CANOPY_LEAVES = 6;
     private static final int MAX_ORE_COVER = 2;
+    private static final int EXPOSED_ORE_PICKUP_STEPS = 4;
     private static final int COVERED_ORE_WALK_RADIUS = 8;
     private static final int SURFACE_ROUTE_DEPTH = 12;
     private static final Gson JSON=new Gson();
@@ -346,7 +347,7 @@ final class MiningTask {
             }
             if(!matches(client,target)){
                 pickup=Vec3d.ofBottomCenter(target);pickupUntil=age+(projectDrop==null?60:100);
-                exposedOrePickupSteps = !openedCover.isEmpty() && !surfaceResource ? 2 : 0;
+                exposedOrePickupSteps = !openedCover.isEmpty() && !surfaceResource ? EXPOSED_ORE_PICKUP_STEPS : 0;
                 protectedOrePickup = false;
                 clearReservation();nextSearch=age+12;
                 if (projectDrop == null) pickupPath();

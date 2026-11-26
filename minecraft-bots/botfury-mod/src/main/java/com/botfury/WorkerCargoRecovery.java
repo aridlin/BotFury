@@ -3,6 +3,8 @@ package com.botfury;
 import com.google.gson.Gson;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.item.ToolItem;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
@@ -17,10 +19,11 @@ import java.util.Map;
 /** Returns a respawned worker to the drops from its interrupted project work. */
 final class WorkerCargoRecovery {
     private static final Gson JSON = new Gson();
-    private static final long WINDOW_MS = 120_000;
+    private static final long WINDOW_MS = 240_000;
+    private static final long RETRY_DELAY_MS = 12_000;
     private static final int DROP_RADIUS = 7;
     private record Cargo(String item, int count, ProjectQueue.ResourceSite location, long expiresAt,
-                         Map<String, Integer> contents) {}
+                         Map<String, Integer> contents, long retryAt) {}
     private record Saved(WorkerEnrollment worker, Cargo cargo) {}
 
     private final DroppedItemSearch pickup = new DroppedItemSearch(20);
@@ -30,11 +33,36 @@ final class WorkerCargoRecovery {
     private BaritoneSettings travel;
     private long nextPath, emptySince;
 
-    void remember(Path path, WorkerEnrollment worker, ProjectItem lostItem, Map<String, Integer> contents, BlockPos position) {
+    void onDeath(Path path, WorkerEnrollment worker, ProjectItem lostItem, Map<String, Integer> contents, BlockPos position) {
+        long now = System.currentTimeMillis();
+        if (cargo != null && cargo.expiresAt() > now) {
+            if (cargo.retryAt() != 0) {
+                clear(path);
+                BotEvents.add("warn", "projects", "Stopped dropped cargo recovery after two interrupted attempts");
+                return;
+            }
+            stop();
+            // The second death can happen en route with an empty inventory. Keep the original drop location and deadline.
+            cargo = new Cargo(cargo.item(), cargo.count(), cargo.location(), cargo.expiresAt(), cargo.contents(),
+                    now + RETRY_DELAY_MS);
+            save(path, worker);
+            BotEvents.add("info", "projects", "Saved interrupted cargo recovery for one more attempt");
+            return;
+        }
+        if (contents.isEmpty()) {
+            if (cargo != null) clear(path);
+            return;
+        }
+        stop();
         cargo = new Cargo(lostItem == null ? null : lostItem.key(), lostItem == null ? 0 : lostItem.count(contents),
                 new ProjectQueue.ResourceSite(position.getX(), position.getY(), position.getZ()),
-                System.currentTimeMillis() + WINDOW_MS, Map.copyOf(contents));
+                now + WINDOW_MS, Map.copyOf(contents), 0);
         item = lostItem;
+        save(path, worker);
+        BotEvents.add("info", "projects", "Marked dropped project inventory for recovery");
+    }
+
+    private void save(Path path, WorkerEnrollment worker) {
         try {
             var parent = path.toAbsolutePath().getParent();
             Files.createDirectories(parent);
@@ -48,7 +76,6 @@ final class WorkerCargoRecovery {
         } catch (IOException error) {
             BotEvents.add("warn", "projects", "Could not save the dropped cargo location");
         }
-        BotEvents.add("info", "projects", "Marked dropped project inventory for recovery");
     }
 
     void load(Path path, WorkerEnrollment worker) {
@@ -82,9 +109,9 @@ final class WorkerCargoRecovery {
         snapshotInventory(client, held);
         boolean complete = cargo.contents() == null ? item.count(held) >= cargo.count()
                 : cargo.contents().entrySet().stream().allMatch(entry -> held.getOrDefault(entry.getKey(), 0) >= entry.getValue());
-        if (complete || System.currentTimeMillis() >= cargo.expiresAt()) {
-            return finish(path);
-        }
+        long nowMs = System.currentTimeMillis();
+        if (complete || nowMs >= cargo.expiresAt()) return finish(path);
+        if (nowMs < cargo.retryAt()) return true;
         var death = cargo.location();
         var position = new BlockPos(death.x(), death.y(), death.z());
         var center = Vec3d.ofCenter(position);
@@ -110,7 +137,7 @@ final class WorkerCargoRecovery {
             return true;
         }
         stopTravel();
-        if (pickup.tickNear(client, this::neededDrop, center, DROP_RADIUS) == DroppedItemSearch.State.APPROACHING) {
+        if (pickup.tickNear(client, this::neededDrop, center, DROP_RADIUS, this::dropPriority) == DroppedItemSearch.State.APPROACHING) {
             emptySince = 0;
             return true;
         }
@@ -136,6 +163,11 @@ final class WorkerCargoRecovery {
         if (cargo.contents() == null) return item.matches(stack) && item.count(held) < cargo.count();
         String key = itemKey(stack);
         return held.getOrDefault(key, 0) < cargo.contents().getOrDefault(key, 0);
+    }
+
+    private int dropPriority(ItemStack stack) {
+        if (item != null && item.matches(stack)) return 0;
+        return stack.getItem() instanceof ToolItem || stack.isOf(Items.CRAFTING_TABLE) ? 1 : 2;
     }
 
     private boolean finish(Path path) {

@@ -255,11 +255,7 @@ final class ProjectWorker {
     static void interrupt(MinecraftClient client) {
         if (observedDeath) return;
         observedDeath = true;
-        if (cargoRecovery.pending()) {
-            cargoRecovery.clear(cargoPath());
-        } else if (!recentInventory.isEmpty()) {
-            cargoRecovery.remember(cargoPath(), enrollment, projectCargoItem, recentInventory, client.player.getBlockPos());
-        }
+        cargoRecovery.onDeath(cargoPath(), enrollment, projectCargoItem, recentInventory, client.player.getBlockPos());
         recentInventory.clear();
         if (assignment == null && !pending && idleSurfaceGoal == null && miningRecipe == null && workbenchPickup == null) return;
         if (assignment != null && production != null && success == null && assignment.job().attempts() == 1

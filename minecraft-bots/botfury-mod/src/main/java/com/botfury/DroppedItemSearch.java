@@ -5,6 +5,7 @@ import net.minecraft.entity.ItemEntity;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import java.util.function.Predicate;
+import java.util.function.ToIntFunction;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 
@@ -35,19 +36,20 @@ final class DroppedItemSearch {
     }
 
     State tick(MinecraftClient client, Predicate<ItemStack> matches, Vec3d minedAt) {
-        return tick(client, matches, minedAt, null, entity -> true);
+        return tick(client, matches, minedAt, null, entity -> true, stack -> 0);
     }
 
     State approachReserved(MinecraftClient client, ItemEntity reserved) {
-        return tick(client, stack -> !stack.isEmpty(), null, reserved, entity -> true);
+        return tick(client, stack -> !stack.isEmpty(), null, reserved, entity -> true, stack -> 0);
     }
 
-    State tickNear(MinecraftClient client, Predicate<ItemStack> matches, Vec3d center, int distance) {
-        return tick(client, matches, null, null, entity -> entity.squaredDistanceTo(center) <= distance * distance);
+    State tickNear(MinecraftClient client, Predicate<ItemStack> matches, Vec3d center, int distance,
+                   ToIntFunction<ItemStack> priority) {
+        return tick(client, matches, null, null, entity -> entity.squaredDistanceTo(center) <= distance * distance, priority);
     }
 
     private State tick(MinecraftClient client, Predicate<ItemStack> matches, Vec3d minedAt, ItemEntity reserved,
-                       Predicate<ItemEntity> allowed) {
+                       Predicate<ItemEntity> allowed, ToIntFunction<ItemStack> priority) {
         age++;
         var player = client.player;
         if (target != null) {
@@ -71,7 +73,8 @@ final class DroppedItemSearch {
                             && !retry.containsKey(entity.getUuid())
                             && (minedAt == null || Math.abs(entity.getX() - minedAt.x) <= 5
                             && Math.abs(entity.getZ() - minedAt.z) <= 5)).stream()
-                    .min(Comparator.comparingDouble(player::squaredDistanceTo)).orElse(null);
+                    .min(Comparator.<ItemEntity>comparingInt(entity -> priority.applyAsInt(entity.getStack()))
+                            .thenComparingDouble(player::squaredDistanceTo)).orElse(null);
             if (target != null) {
                 try {
                     settings = new BaritoneSettings(false);

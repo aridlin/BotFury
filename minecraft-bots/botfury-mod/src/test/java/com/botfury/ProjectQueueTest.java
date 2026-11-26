@@ -680,6 +680,25 @@ class ProjectQueueTest {
         assertNull(queue.offerObservedOreRecovery(WORLD, "original", "stock", worker, stone, List.of(ore), now));
     }
 
+    @Test void aWalkableNearbyStandCanReopenAnOreJobBeyondImmediateReach() throws Exception {
+        var queue = prepareStalledSupply(directory.resolve("walkable-ore-stand.json"), false);
+        long now = 40_000;
+        var position = new ProjectQueue.ResourceSite(4, 20, 4);
+        var ore = new ProjectQueue.ResourceSite(12, 20, 4);
+        var stand = new ProjectQueue.ResourceSite(9, 20, 4);
+        var tools = java.util.Map.of("minecraft:stone_pickaxe", 8);
+        queue.claim(WORLD, "original", Set.of(VERIFY), now);
+        assertNull(queue.offerObservedOreRecovery(WORLD, "original", "stock", position, tools,
+                List.of(new ProjectQueue.ReachableOre("minecraft:iron_ore", ore)), now));
+        assertNull(queue.offerObservedOreRecovery(WORLD, "original", "stock", position, tools,
+                List.of(new ProjectQueue.ReachableOre("minecraft:iron_ore", ore,
+                        new ProjectQueue.ResourceSite(9, 24, 4))), now));
+        var retry = queue.offerObservedOreRecovery(WORLD, "original", "stock", position, tools,
+                List.of(new ProjectQueue.ReachableOre("minecraft:iron_ore", ore, stand)), now);
+        assertEquals("iron", retry.job().work().id());
+        assertEquals(stand, retry.job().resourceSite());
+    }
+
     @Test void relocatedMinerRetriesFromNewGroundWithoutCyclingThroughOldAreas() throws Exception {
         var journal = directory.resolve("relocated-miner.json");
         var queue = prepareStalledSupply(journal, false);

@@ -182,7 +182,9 @@ final class ProjectQueue {
     private static final String OWNED_STATION_MISSING = "Owned station is missing";
     record OwnedPlacement(String project, String job, String payload) {}
     record CarriedSmelt(String project, Work work) {}
-    record ReachableOre(String block, ResourceSite site) {}
+    record ReachableOre(String block, ResourceSite site, ResourceSite stand) {
+        ReachableOre(String block, ResourceSite site) { this(block, site, null); }
+    }
     record SurfaceGatherRecovery(String project, Work work, String pinnedWorker) {}
     record CarriedCraft(String project, Work work, String worker, UUID gatheringLease) {}
     record FailedWorkstationCraft(String project, Work work, String previousWorker) {}
@@ -2064,13 +2066,16 @@ final class ProjectQueue {
                 var blocks = ResourceCatalog.blocks(source.resource, source.variant);
                 for (var observation : observations) {
                     if (observation == null || observation.site == null || observation.block == null || !blocks.contains(observation.block)
-                            || gatheringDistance(position, observation.site) > 6) continue;
+                            || !nearObservedOre(position, observation)) continue;
                     var cell = observation.site;
                     String siteKey = key + ":" + cell.x + "," + cell.y + "," + cell.z;
                     if (project.supplyRecoveries.containsKey(siteKey)) continue;
                     if (plan.exclude != null && plan.exclude.checked().contains(new net.minecraft.util.math.BlockPos(cell.x, cell.y, cell.z))) continue;
+                    var approach = observation.stand == null ? position : observation.stand;
+                    if (plan.exclude != null && plan.exclude.checked().contains(new net.minecraft.util.math.BlockPos(
+                            approach.x, approach.y, approach.z))) continue;
                     var lease = new Job(gather.work, State.LEASED, gather.attempts + 1, worker, UUID.randomUUID(),
-                            now + LEASE_MS, null, gather.chest, position);
+                            now + LEASE_MS, null, gather.chest, approach);
                     var recoveries = new HashMap<>(project.supplyRecoveries);
                     recoveries.put(key, attempts + 1);
                     recoveries.put(siteKey, 1);
@@ -2080,6 +2085,14 @@ final class ProjectQueue {
             }
         }
         return null;
+    }
+
+    private static boolean nearObservedOre(ResourceSite position, ReachableOre observation) {
+        if (observation.stand == null) return gatheringDistance(position, observation.site) <= 6;
+        return Math.abs((long)position.y - observation.stand.y) <= 1
+                && gatheringDistance(position, observation.site) <= 10
+                && gatheringDistance(position, observation.stand) <= 8
+                && gatheringDistance(observation.stand, observation.site) <= 6;
     }
 
     synchronized Assignment offerRelocatedMiner(String world, String worker, String projectId,

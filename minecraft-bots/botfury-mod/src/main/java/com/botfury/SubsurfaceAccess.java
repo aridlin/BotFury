@@ -37,6 +37,7 @@ final class SubsurfaceAccess {
     private static final Direction[] HEADINGS = {Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST};
     private static final int REACH = 12;
     private static final int HARVEST_RESERVE = 32;
+    static final int MIN_ROUTE_TOOL_USES = 21;
     private static final int ASCENT_CHECKPOINT = 12;
     private static final int DESCENT_RECOVERY_TICKS = 240;
     private static final int RETURN_RECOVERY_TICKS = 400;

@@ -687,7 +687,7 @@ final class ProjectWorker {
                 || needsMeal && TaskDefense.emergencyFood(stack.getItem())
                 || (needsRouteBench || needsProductionBench) && stack.isOf(net.minecraft.item.Items.CRAFTING_TABLE)
                 || needsRouteTool && stack.getItem() instanceof net.minecraft.item.PickaxeItem
-                        && stack.getMaxDamage() - stack.getDamage() >= 21;
+                        && stack.getMaxDamage() - stack.getDamage() >= SubsurfaceAccess.MIN_ROUTE_TOOL_USES;
     }
 
     private static boolean prepareIdleRouteTool(MinecraftClient client, long now) {

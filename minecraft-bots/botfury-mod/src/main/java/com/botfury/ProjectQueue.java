@@ -2690,10 +2690,11 @@ final class ProjectQueue {
     }
 
     synchronized boolean reassignTimedOutCraft(String world, FailedWorkstationCraft request, String worker,
-                                                Set<String> inputs, long now) throws IOException {
+                                                Set<String> inputs, boolean portable, long now) throws IOException {
         var project = projects.get(request.project);
         if (project == null || !world.equals(project.world) || project.repeat != null || project.supplyChest == null
-                || cancelled(project) || inputs.isEmpty() || worker.equalsIgnoreCase(request.previousWorker)) return false;
+                || cancelled(project) || inputs.isEmpty()
+                || !portable && worker.equalsIgnoreCase(request.previousWorker)) return false;
         var craft = find(project, request.work.id);
         var supplier = timedOutCraftSupplier(project, craft);
         if (supplier == null || !craft.work.equals(request.work) || !supplier.worker.equals(request.previousWorker)

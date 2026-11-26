@@ -890,7 +890,7 @@ final class ProjectWorker {
             fieldStoneUntil = nextWorkstationSearch = 0;
         }
         if (fieldWorkstation == null && now >= nextWorkstationSearch
-                && !block.target().isWithinDistance(client.player.getBlockPos(), 16)) {
+                && FieldWorkstation.shouldUseFieldStation(block.target(), client.player.getBlockPos())) {
             nextWorkstationSearch = now + seconds(8);
             var nearby = FieldWorkstation.find(client, now, kind, production.reservesWorkbenchWood(client), rejectedFieldWorkbenches);
             needsProductionBench = nearby == null && production.canUsePortableWorkbench(client);

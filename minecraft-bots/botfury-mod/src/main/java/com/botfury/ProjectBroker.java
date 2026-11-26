@@ -138,7 +138,7 @@ final class ProjectBroker {
             reuseRetainedToolMaterials(client, board, world);
             reuseCarriedSmeltingOutputs(client, board, world);
             resumeCarriedSmelting(client, board, world);
-            retryNearbyWorkstationCrafts(client, board, world);
+            retryFailedWorkstationCrafts(client, board, world);
             useCarriedCraftingIngredients(client, board, world);
             if (now >= nextAccessCheck) {
                 nextAccessCheck = now + java.time.Duration.ofSeconds(20).toNanos();
@@ -201,32 +201,38 @@ final class ProjectBroker {
                 && worker.getSquaredDistance(station) <= 24 * 24);
     }
 
-    private static void retryNearbyWorkstationCrafts(net.minecraft.client.MinecraftClient client, ProjectQueue board,
+    private static void retryFailedWorkstationCrafts(net.minecraft.client.MinecraftClient client, ProjectQueue board,
                                                      String world) throws IOException {
         long now = System.currentTimeMillis();
         for (var request : board.failedWorkstationCrafts(world)) {
             var spec = ProjectProduction.parse(request.work().payload(), ProjectQueue.Kind.CRAFT);
             if (spec.station() == null) continue;
             var table = spec.station().target();
-            if (!client.world.isChunkLoaded(table.getX() >> 4, table.getZ() >> 4)
-                    || !spec.station().matches(client.world.getBlockState(table))) continue;
+            boolean fixedTable = client.world.isChunkLoaded(table.getX() >> 4, table.getZ() >> 4)
+                    && spec.station().matches(client.world.getBlockState(table));
             var previous = liveWorker(request.previousWorker());
             double previousDistance = previous == null || !previous.sameWorld() ? Double.POSITIVE_INFINITY
                     : table.getSquaredDistance(previous.x(), previous.y(), previous.z());
-            var nearby = BotTracker.all().stream()
+            var candidates = BotTracker.all().stream()
                     .filter(bot -> bot.fresh() && bot.connected() && bot.alive() && bot.sameWorld()
-                            && !bot.name().equalsIgnoreCase(request.previousWorker()) && !bot.items().isEmpty())
-                    .filter(bot -> {
-                        double distance = table.getSquaredDistance(bot.x(), bot.y(), bot.z());
-                        return distance <= 144 && distance < previousDistance;
-                    })
-                    .sorted(java.util.Comparator.comparingDouble(bot -> table.getSquaredDistance(bot.x(), bot.y(), bot.z())))
+                            && !bot.items().isEmpty())
+                    .sorted(java.util.Comparator.<BotTracker.Bot, Boolean>comparing(
+                            bot -> bot.name().equalsIgnoreCase(request.previousWorker()))
+                            .thenComparingDouble(bot -> table.getSquaredDistance(bot.x(), bot.y(), bot.z())))
                     .toList();
-            for (var bot : nearby) {
+            for (var bot : candidates) {
+                boolean previousWorker = bot.name().equalsIgnoreCase(request.previousWorker());
+                var feet = BlockPos.ofFloored(bot.x(), bot.y(), bot.z());
+                double distance = table.getSquaredDistance(bot.x(), bot.y(), bot.z());
+                boolean portable = bot.items().getOrDefault(spec.station().block().toString(), 0) > 0
+                        && FieldWorkstation.shouldUseFieldStation(table, feet);
+                if (!portable && !(fixedTable && !previousWorker && distance <= 144 && distance < previousDistance)) {
+                    continue;
+                }
                 var inputs = ProjectProduction.carriedCraftingIngredients(client, request.work().payload(), bot.items());
-                if (board.reassignTimedOutCraft(world, request, bot.name(), inputs, now)) {
+                if (board.reassignTimedOutCraft(world, request, bot.name(), inputs, portable, now)) {
                     BotEvents.add("info", "projects", bot.name() + " resumed " + request.work().id()
-                            + " with ingredients near the workbench");
+                            + (portable ? " with a portable workbench" : " with ingredients near the workbench"));
                     return;
                 }
             }

@@ -67,14 +67,18 @@ final class DroppedItemSearch {
         if (target == null && age >= nextScan) {
             retry.values().removeIf(retryAt -> retryAt <= age);
             nextScan = age + 5;
-            target = reserved != null ? reserved : client.world.getEntitiesByClass(ItemEntity.class, player.getBoundingBox().expand(radius),
-                    entity -> entity.isAlive() && allowed.test(entity) && matches.test(entity.getStack())
-                            && player.squaredDistanceTo(entity) <= radius * radius
-                            && !retry.containsKey(entity.getUuid())
-                            && (minedAt == null || Math.abs(entity.getX() - minedAt.x) <= 5
-                            && Math.abs(entity.getZ() - minedAt.z) <= 5)).stream()
-                    .min(Comparator.<ItemEntity>comparingInt(entity -> priority.applyAsInt(entity.getStack()))
-                            .thenComparingDouble(player::squaredDistanceTo)).orElse(null);
+            if (reserved != null) {
+                if (!retry.containsKey(reserved.getUuid())) target = reserved;
+            } else {
+                target = client.world.getEntitiesByClass(ItemEntity.class, player.getBoundingBox().expand(radius),
+                        entity -> entity.isAlive() && allowed.test(entity) && matches.test(entity.getStack())
+                                && player.squaredDistanceTo(entity) <= radius * radius
+                                && !retry.containsKey(entity.getUuid())
+                                && (minedAt == null || Math.abs(entity.getX() - minedAt.x) <= 5
+                                && Math.abs(entity.getZ() - minedAt.z) <= 5)).stream()
+                        .min(Comparator.<ItemEntity>comparingInt(entity -> priority.applyAsInt(entity.getStack()))
+                                .thenComparingDouble(player::squaredDistanceTo)).orElse(null);
+            }
             if (target != null) {
                 try {
                     settings = new BaritoneSettings(false);

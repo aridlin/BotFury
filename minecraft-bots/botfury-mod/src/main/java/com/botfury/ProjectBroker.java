@@ -766,8 +766,10 @@ final class ProjectBroker {
                                     request.localStarterLogs, work -> {
                                         if (position == null || !request.kinds.contains(ProjectQueue.Kind.CRAFT)) return false;
                                         var station = ProjectProduction.parse(work.payload(), ProjectQueue.Kind.CRAFT).station();
-                                        return station != null && craftingStationIsLocal(
-                                                new BlockPos(position.x(), position.y(), position.z()), station.target(), false);
+                                        if (station == null) return false;
+                                        boolean portable = heldCount(request.worker, station.block().toString()) > 0;
+                                        return craftingStationIsLocal(new BlockPos(position.x(), position.y(), position.z()),
+                                                station.target(), portable);
                                     }, now);
                         }
                     }

@@ -647,7 +647,7 @@ final class ProjectWorker {
         boolean wasSwimmingAshore = breathing.reachingShore();
         boolean stationApproach = success == null && block != null && (production != null || chest != null);
         if (!breathing.tick(client, stationApproach)) {
-            if (wasSwimmingAshore && !client.player.isTouchingWater()) {
+            if (wasSwimmingAshore && BreathingRecovery.onDryFooting(client)) {
                 halt(client);
                 nextWorkstationSearch = retryApproach = 0;
             }

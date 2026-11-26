@@ -9,6 +9,8 @@ import net.minecraft.util.math.Vec3d;
 
 import java.util.ArrayDeque;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /** Finds air for submerged workers and dry footing for stalled station approaches. */
 final class BreathingRecovery {
@@ -17,11 +19,15 @@ final class BreathingRecovery {
     private static final int SEARCH_CELLS = 2048;
     private static final int SHORE_STALL_TICKS = 36;
     private static final int SHORE_SWIM_TICKS = 120;
+    private static final int SHORE_STEP_STALL_TICKS = 24;
+    private static final long SHORE_RETRY_TICKS = 160;
+    private static final int MAX_REJECTED_SHORE_STEPS = 32;
     private static final Direction[] SWIM_DIRECTIONS = {
             Direction.UP, Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST, Direction.DOWN
     };
 
     private record Step(BlockPos feet, BlockPos first, int distance) {}
+    private record ShoreStep(BlockPos from, BlockPos to) {}
 
     private boolean recovering;
     private boolean paused;
@@ -31,6 +37,10 @@ final class BreathingRecovery {
     private Vec3d shoreProbe;
     private int stationaryTicks;
     private int shoreTicksLeft;
+    private final Map<ShoreStep, Long> rejectedShoreSteps = new LinkedHashMap<>();
+    private ShoreStep shoreStep;
+    private double closestToShoreStep;
+    private int shoreStepStall;
 
     boolean reachingShore() { return reachingShore; }
 
@@ -58,7 +68,7 @@ final class BreathingRecovery {
                 }
                 if (++stationaryTicks < SHORE_STALL_TICKS) return false;
                 stationaryTicks = 0;
-                waypoint = nextStep(client, true);
+                selectShoreStep(client);
                 if (waypoint == null) return false;
                 reachingShore = true;
                 shoreTicksLeft = SHORE_SWIM_TICKS;
@@ -88,8 +98,10 @@ final class BreathingRecovery {
             return true;
         }
 
-        if (--ticksToSearch <= 0 || waypoint != null && player.getPos().squaredDistanceTo(center(waypoint)) < .12) {
-            waypoint = nextStep(client, reachingShore);
+        if (reachingShore) {
+            advanceShoreStep(client);
+        } else if (--ticksToSearch <= 0 || waypoint != null && player.getPos().squaredDistanceTo(center(waypoint)) < .12) {
+            waypoint = nextStep(client, false, Map.of());
             ticksToSearch = 12;
         }
         if (waypoint == null) {
@@ -111,7 +123,38 @@ final class BreathingRecovery {
         return true;
     }
 
+    private void selectShoreStep(MinecraftClient client) {
+        long now = client.world.getTime();
+        rejectedShoreSteps.values().removeIf(expiry -> expiry <= now);
+        waypoint = nextStep(client, true, rejectedShoreSteps);
+        shoreStep = waypoint == null ? null : new ShoreStep(client.player.getBlockPos(), waypoint);
+        closestToShoreStep = Double.POSITIVE_INFINITY;
+        shoreStepStall = 0;
+    }
+
+    private void advanceShoreStep(MinecraftClient client) {
+        if (shoreStep != null) {
+            double distance = client.player.getPos().squaredDistanceTo(center(waypoint));
+            if (distance < .12) {
+                selectShoreStep(client);
+                return;
+            }
+            if (distance + .015 < closestToShoreStep) {
+                closestToShoreStep = distance;
+                shoreStepStall = 0;
+            } else if (++shoreStepStall >= SHORE_STEP_STALL_TICKS) {
+                if (rejectedShoreSteps.size() >= MAX_REJECTED_SHORE_STEPS) {
+                    rejectedShoreSteps.remove(rejectedShoreSteps.keySet().iterator().next());
+                }
+                rejectedShoreSteps.put(shoreStep, client.world.getTime() + SHORE_RETRY_TICKS);
+                BotEvents.add("debug", "projects", "Trying another swim route after stalling at " + waypoint.toShortString());
+                selectShoreStep(client);
+            }
+        }
+    }
+
     void stop(MinecraftClient client) {
+        if (client.player == null || !client.player.isTouchingWater()) rejectedShoreSteps.clear();
         shoreProbe = null;
         stationaryTicks = 0;
         if (!recovering) return;
@@ -120,6 +163,7 @@ final class BreathingRecovery {
         recovering = paused = false;
         reachingShore = false;
         waypoint = null;
+        shoreStep = null;
         ticksToSearch = 0;
     }
 
@@ -133,7 +177,7 @@ final class BreathingRecovery {
         return Vec3d.ofBottomCenter(pos).add(0, .2, 0);
     }
 
-    private static BlockPos nextStep(MinecraftClient client, boolean shore) {
+    private static BlockPos nextStep(MinecraftClient client, boolean shore, Map<ShoreStep, Long> rejected) {
         var start = client.player.getBlockPos();
         var open = new ArrayDeque<Step>();
         var seen = new HashSet<BlockPos>();
@@ -148,12 +192,15 @@ final class BreathingRecovery {
                 var next = step.feet.offset(direction);
                 if (shore && direction.getAxis().isHorizontal()) {
                     var bank = next.up();
-                    if (swimmable(client, step.feet.up()) && swimmable(client, bank) && dryStand(client, bank)) {
+                    if (!rejected.containsKey(new ShoreStep(step.feet, bank))
+                            && swimmable(client, step.feet.up()) && swimmable(client, bank) && dryStand(client, bank)) {
                         return step.first == null ? bank : step.first;
                     }
                 }
-                if (!seen.add(next) || !swimmable(client, next)) continue;
-                if (shore && client.world.getFluidState(next).isEmpty() && !dryStand(client, next)) continue;
+                if (seen.contains(next) || !swimmable(client, next)) continue;
+                if (shore && (rejected.containsKey(new ShoreStep(step.feet, next))
+                        || client.world.getFluidState(next).isEmpty() && !dryStand(client, next))) continue;
+                seen.add(next);
                 open.addLast(new Step(next, step.first == null ? next : step.first, step.distance + 1));
             }
         }

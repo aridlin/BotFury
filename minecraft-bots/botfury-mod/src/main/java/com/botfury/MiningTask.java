@@ -169,19 +169,47 @@ final class MiningTask {
         if (!SubsurfaceAccess.hasFooting(client) || client.interactionManager == null) return List.of();
         var feet = client.player.getBlockPos();
         var observations = new LinkedHashMap<String, ProjectQueue.ReachableOre>();
-        for (var pos : BlockPos.iterateOutwards(feet, 4, 5, 4)) {
+        for (var pos : BlockPos.iterateOutwards(feet, 8, 5, 8)) {
             if (!client.world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)) continue;
             var state = client.world.getBlockState(pos);
             if (state.isAir() || !state.isToolRequired()) continue;
             String id = Registries.BLOCK.getId(state.getBlock()).toString();
             if (!id.endsWith("_ore") && !id.equals("minecraft:ancient_debris")) continue;
             if (observations.containsKey(id) || BuildProtection.blocked(pos) || supportsAnotherPlayer(client, pos)
-                    || !hasTool(client, state) || !nearOreDropHeight(client, pos, feet) || !canReachFromHere(client, feet, pos)) continue;
+                    || !hasTool(client, state) || feet.getSquaredDistance(pos) > 100) continue;
+            var stand = nearOreDropHeight(client, pos, feet) && canReachFromHere(client, feet, pos)
+                    ? feet : walkableOreStand(client, feet, pos);
+            if (stand == null) continue;
             observations.put(id, new ProjectQueue.ReachableOre(id,
-                    new ProjectQueue.ResourceSite(pos.getX(), pos.getY(), pos.getZ())));
+                    new ProjectQueue.ResourceSite(pos.getX(), pos.getY(), pos.getZ()),
+                    new ProjectQueue.ResourceSite(stand.getX(), stand.getY(), stand.getZ())));
             if (observations.size() >= 8) break;
         }
         return List.copyOf(observations.values());
+    }
+
+    private static BlockPos walkableOreStand(MinecraftClient client, BlockPos feet, BlockPos ore) {
+        for (var stand : BlockPos.iterateOutwards(ore.withY(feet.getY()), 3, 0, 3)) {
+            if (stand.getSquaredDistance(feet) > 64 || stand.down().equals(ore)
+                    || !ProjectWorker.knownTrailFooting(client, stand)
+                    || !nearOreDropHeight(client, ore, stand)) continue;
+            var start = client.player.getPos();
+            var finish = Vec3d.ofBottomCenter(stand);
+            double reach = Math.min(4.3, client.interactionManager.getReachDistance() - .1);
+            if (miningHit(client, ore, finish.add(0, 1.62, 0), reach) == null) continue;
+            int steps = Math.max(1, (int) Math.ceil(finish.distanceTo(start) * 2));
+            boolean clear = true;
+            for (int i = 1; i <= steps; i++) {
+                var point = start.lerp(finish, i / (double) steps);
+                if (!ProjectWorker.knownTrailFooting(client, BlockPos.ofFloored(point))
+                        || !client.world.isSpaceEmpty(client.player, client.player.getBoundingBox().offset(point.subtract(start)))) {
+                    clear = false;
+                    break;
+                }
+            }
+            if (clear) return stand.toImmutable();
+        }
+        return null;
     }
 
     static boolean isSurfaceResource(net.minecraft.block.Block block) {

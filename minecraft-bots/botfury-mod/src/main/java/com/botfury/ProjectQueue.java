@@ -213,7 +213,8 @@ final class ProjectQueue {
     static final int MAX_BATCH_STEPS = 8;
     private static final java.util.regex.Pattern SCHEMATIC_PLACEMENT = java.util.regex.Pattern.compile("place-[0-9]+");
     private static final java.util.regex.Pattern PRODUCED_INVENTORY = java.util.regex.Pattern.compile(
-            "Observed [0-9]+ ([a-z0-9_.-]+:[a-z0-9_./-]+) (?:in worker inventory|already carried by the worker)");
+            "Observed [0-9]+ ([a-z0-9_.-]+:[a-z0-9_./-]+) "
+                    + "(?:in worker inventory|already carried by the worker|carried for replacement tools)");
     private record StationTarget(ProjectBlock.Position target, ProjectBlock.Position stand, String block) {}
     private record Board(int schema, Map<String, Project> projects) {}
     private record PickupTarget(String direction, String item, int stock) {}
@@ -2650,7 +2651,7 @@ final class ProjectQueue {
                 var jobs = project.jobs.stream().map(job -> {
                     if (job == furnace) {
                         return new Job(job.work, State.DONE, job.attempts, worker, null, 0,
-                                "Observed " + spec.count + " " + item + " carried for replacement tools", job.chest, job.resourceSite);
+                                "Observed " + spec.count + " " + item + " already carried by the worker", job.chest, job.resourceSite);
                     }
                     if (job == gather || suffix.contains(job.work.id)) {
                         var site = job == gather ? job.resourceSite
@@ -3563,7 +3564,14 @@ final class ProjectQueue {
 
     private static ResourceSite gatheringSite(Project project, Job job, ResourceSite position) {
         if (job.work.kind != Kind.GATHER) return job.resourceSite;
-        if (GATHER_STALLED.equals(job.evidence)) return nearestRetrySite(project, job, position);
+        if (GATHER_STALLED.equals(job.evidence)) {
+            var source = gatherSource(job.work.payload);
+            var site = job.resourceSite;
+            if (position != null && site != null && site.y > position.y && gatheringDistance(site, position) <= 16
+                    && source != null && ResourceCatalog.isWood(source.resource)
+                    && project.supplyRecoveries.containsKey("stalled-retained-production:" + job.work.id)) return site;
+            return nearestRetrySite(project, job, position);
+        }
         var known = gatheringSite(project, job);
         var deeper = interruptedDeepSite(project, job, position, known);
         return deeper == null ? known : deeper;

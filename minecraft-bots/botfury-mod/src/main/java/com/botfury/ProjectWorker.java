@@ -562,6 +562,8 @@ final class ProjectWorker {
                 }
                 var result = stickPreparation.tick(client, now, port);
                 status = assignment.project() + "/" + assignment.job().work().id() + ": " + stickPreparation.status();
+                var observation = MiningTask.observedSite();
+                if (observation != null) gatherSite = observation;
                 if (result == null) return;
                 stickPreparation.close(client);
                 stickPreparation = null;

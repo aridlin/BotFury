@@ -143,6 +143,12 @@ final class SubsurfaceAccess {
                 && openTowardMiningStand(client, age, feet, destination, area);
     }
 
+    boolean openLowerStationStep(MinecraftClient client, int age, BlockPos destination, ProjectGather.Area area) {
+        var feet = client.player.getBlockPos();
+        return hasFooting(client) && canDigRoute(client) && validDestination(client, destination, null)
+                && openTowardMiningStand(client, age, feet, destination, area);
+    }
+
     boolean continueLocalApproach(MinecraftClient client, int age) {
         if (!active()) return false;
         var goal = goals.get(0);

@@ -4173,6 +4173,39 @@ final class ProjectQueue {
         }
     }
 
+    private record StarterMiner(String worker, ResourceSite position, List<String> logs, long now) {}
+
+    synchronized Assignment offerStarterMiner(String world, String worker, String projectId, ResourceSite position,
+                                               List<String> logs, long now) throws IOException {
+        if (position == null || logs == null || logs.isEmpty() || logs.size() > 8) return null;
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || project.supplyChest == null || cancelled(project)
+                    || projectId != null && !projectId.equals(project.id) || !availableProjectWorker(project, worker, now)
+                    || project.jobs.stream().anyMatch(job -> job.state == State.LEASED)) continue;
+            var blocked = blockedJobs(project);
+            if (project.jobs.stream().anyMatch(job -> job.state == State.WAITING && !blocked.contains(job.work.id)
+                    && project.supplyRecoveries.containsKey("starter-miner:" + job.work.id))) continue;
+            var jobs = new HashMap<String, Job>();
+            project.jobs.forEach(job -> jobs.put(job.work.id, job));
+            for (var gather : project.jobs) {
+                if (!stalledPinnedGathering(gather) || now < gather.expiresAt) continue;
+                var source = gatherSource(gather.work.payload);
+                if (source == null || !ResourceCatalog.isOre(source.resource)) continue;
+                var supplier = jobs.get(gather.work.sameWorkerAs);
+                var recipe = supplier.work.kind == Kind.CRAFT ? JSON.fromJson(supplier.work.payload, ToolRecipe.class) : null;
+                if (recipe == null || !"minecraft:stone_pickaxe".equals(recipe.recipe)) continue;
+                if (rewindSupply(project, gather, supplier, jobs, GATHER_STALLED, gather.chest, null,
+                        0, new StarterMiner(worker, position, logs, now))) {
+                    var updated = projects.get(project.id);
+                    var leased = updated.jobs.stream().filter(job -> job.state == State.LEASED && worker.equals(job.worker))
+                            .findFirst().orElseThrow();
+                    return assignment(updated, leased);
+                }
+            }
+        }
+        return null;
+    }
+
     private boolean rewindSupply(Project project, Job waiting, Job supplier, Map<String, Job> jobs,
                                  String evidence, ChestObservation observation) throws IOException {
         return rewindSupply(project, waiting, supplier, jobs, evidence, observation, waiting.resourceSite, 0);
@@ -4181,6 +4214,12 @@ final class ProjectQueue {
     private boolean rewindSupply(Project project, Job waiting, Job supplier, Map<String, Job> jobs,
                                  String evidence, ChestObservation observation, ResourceSite site,
                                  long preferOriginalAt) throws IOException {
+        return rewindSupply(project, waiting, supplier, jobs, evidence, observation, site, preferOriginalAt, null);
+    }
+
+    private boolean rewindSupply(Project project, Job waiting, Job supplier, Map<String, Job> jobs,
+                                 String evidence, ChestObservation observation, ResourceSite site,
+                                 long preferOriginalAt, StarterMiner starter) throws IOException {
         Set<String> rewind = new HashSet<>();
         Job stage = supplier;
         // Earlier batches can gate gathering, but their completed work must survive recovery.
@@ -4195,6 +4234,13 @@ final class ProjectQueue {
         }
         String root = stage.work.id;
         rewind.add(root);
+        if (starter != null) {
+            var timber = gatherSource(stage.work.payload);
+            if (timber == null || !ResourceCatalog.isWood(timber.resource)
+                    || Collections.disjoint(ResourceCatalog.blocks(timber.resource, timber.variant), starter.logs)
+                    || !stage.work.locks.isEmpty()
+                    || stage.work.needs.stream().anyMatch(id -> jobs.get(id).state != State.DONE)) return false;
+        }
         // A second pickup may still be drawing from the same deposit.
         if (jobs.values().stream().anyMatch(job -> job != waiting && job.state == State.LEASED
                 && (rewind.contains(job.work.id) || job.work.kind == Kind.TRANSFER
@@ -4204,7 +4250,8 @@ final class ProjectQueue {
         boolean expiredTools = LEASE_EXPIRED.equals(evidence);
         if ((stalled || expiredTools) && !privatePreparationReady(project, waiting, rewind)) return false;
         boolean stationLoss = OWNED_STATION_MISSING.equals(evidence);
-        String recoveryKey = stationLoss ? stationRepairKey(waiting) : stalled ? stalledSupplyKey(waiting)
+        String recoveryKey = starter != null ? "starter-miner:" + waiting.work.id
+                : stationLoss ? stationRepairKey(waiting) : stalled ? stalledSupplyKey(waiting)
                 : expiredTools ? expiredToolsKey(waiting)
                 : missingProductionInput(waiting, evidence) ? "production-inputs:" + waiting.work.id : root;
         // This path runs only after observing that a completed station has disappeared, or when migrating an old failure.
@@ -4232,6 +4279,7 @@ final class ProjectQueue {
             }
             if (waiting.state == State.FAILED) attempts = 0;
         }
+        if (starter != null && attempts > 0) return false;
         if (attempts >= MAX_SUPPLY_RECOVERIES) {
             replace(project, new Job(waiting.work, State.FAILED, waiting.attempts, null, null, 0,
                     evidence + " after " + attempts + " supply recoveries", observation, site));
@@ -4241,6 +4289,10 @@ final class ProjectQueue {
         rewind.add(waiting.work.id);
         var updated = project.jobs.stream().map(job -> {
             if (!rewind.contains(job.work.id)) return job;
+            if (starter != null && job.work.id.equals(root)) {
+                return new Job(job.work, State.LEASED, 1, starter.worker, UUID.randomUUID(),
+                        starter.now + LEASE_MS, null, job.chest, starter.position);
+            }
             boolean preferred = preferOriginalAt > 0 && job.work.id.equals(root);
             return new Job(job.work, State.WAITING, 0, preferred ? waiting.worker : null, null,
                     preferred ? preferOriginalAt + STALLED_WORKER_COOLDOWN_MS : 0,

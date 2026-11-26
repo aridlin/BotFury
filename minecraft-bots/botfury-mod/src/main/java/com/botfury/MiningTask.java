@@ -165,6 +165,24 @@ final class MiningTask {
         return false;
     }
 
+    static List<String> localStarterLogs(MinecraftClient client) {
+        if (!SubsurfaceAccess.hasFooting(client)
+                || !client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)) return List.of();
+        var feet = client.player.getBlockPos();
+        var world = client.world;
+        int surface = world.getTopY(Heightmap.Type.MOTION_BLOCKING, feet.getX(), feet.getZ());
+        if (surface - feet.getY() > 12) return List.of();
+        var logs = new LinkedHashSet<String>();
+        for (var pos : BlockPos.iterateOutwards(feet, 12, 5, 12)) {
+            if (!world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4) || BuildProtection.blocked(pos)) continue;
+            var state = world.getBlockState(pos);
+            if (!state.isIn(BlockTags.LOGS) || completelyCovered(world, pos)) continue;
+            logs.add(Registries.BLOCK.getId(state.getBlock()).toString());
+            if (logs.size() >= 8) break;
+        }
+        return List.copyOf(logs);
+    }
+
     static List<ProjectQueue.ReachableOre> reachableOre(MinecraftClient client) {
         if (!SubsurfaceAccess.hasFooting(client) || client.interactionManager == null) return List.of();
         var feet = client.player.getBlockPos();

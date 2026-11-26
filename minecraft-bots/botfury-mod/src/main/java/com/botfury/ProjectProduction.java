@@ -65,7 +65,16 @@ final class ProjectProduction {
     private int inputRecoveryAttempts;
     private ItemStack substitutedFuel = ItemStack.EMPTY;
 
-    ProjectProduction(Spec spec) { this.spec = spec; }
+    private final Map<Integer, Integer> reservedInputs;
+
+    ProjectProduction(Spec spec) {
+        this(spec, Map.of());
+    }
+
+    ProjectProduction(Spec spec, Map<Integer, Integer> reservedInputs) {
+        this.spec = spec;
+        this.reservedInputs = reservedInputs;
+    }
 
     boolean canUsePortableWorkbench(MinecraftClient client) {
         var inventory = client.player.getInventory();
@@ -77,17 +86,47 @@ final class ProjectProduction {
                 && canCraft(client, Identifier.of("minecraft", "furnace"));
     }
 
-    boolean reservesWorkbenchWood(MinecraftClient client) {
-        if (spec.kind != ProjectQueue.Kind.CRAFT) return true;
+    Map<Integer, Integer> reserveCraftingInputs(MinecraftClient client) {
         var recipe = client.world.getRecipeManager().get(spec.recipe).orElse(null);
-        if (!(recipe instanceof CraftingRecipe crafting) || crafting.getIngredients().isEmpty()) return true;
-        for (var ingredient : crafting.getIngredients()) {
-            for (var choice : ingredient.getMatchingStacks()) {
-                if (choice.isIn(net.minecraft.registry.tag.ItemTags.PLANKS)
-                        || choice.isIn(net.minecraft.registry.tag.ItemTags.LOGS)) return true;
-            }
+        if (spec.kind != ProjectQueue.Kind.CRAFT || !(recipe instanceof CraftingRecipe crafting)) return Map.of();
+        var output = crafting.getOutput(client.world.getRegistryManager());
+        if (output.isEmpty()) return Map.of();
+        int outstanding = Math.max(0, spec.count - inventoryCount(client, output));
+        int yield = output.getCount();
+        int crafts = (outstanding + yield - 1) / yield;
+        var matcher = new RecipeMatcher();
+        client.player.getInventory().populateRecipeFinder(matcher);
+        var ingredients = new IntArrayList();
+        int available = matcher.countCrafts(crafting, crafts, ingredients);
+        var reserved = new LinkedHashMap<Integer, Integer>();
+        reserveIngredients(reserved, ingredients, available);
+        return reserved;
+    }
+
+    static void reserveIngredients(Map<Integer, Integer> reserved, IntArrayList ingredients, int crafts) {
+        if (crafts == 0) return;
+        for (int item : ingredients) {
+            if (item != 0) reserved.merge(item, crafts, Integer::sum);
         }
-        return false;
+    }
+
+    static RecipeMatcher surplusMatcher(MinecraftClient client, Map<Integer, Integer> reserved) {
+        var matcher = new RecipeMatcher();
+        var inventory = client.player.getInventory();
+        if (reserved.isEmpty()) {
+            inventory.populateRecipeFinder(matcher);
+            return matcher;
+        }
+        var remaining = new LinkedHashMap<>(reserved);
+        for (int slot = 0; slot < 36; slot++) {
+            var stack = inventory.getStack(slot);
+            if (stack.isEmpty() || stack.isDamaged() || stack.hasEnchantments() || stack.hasCustomName()) continue;
+            int item = RecipeMatcher.getItemId(stack);
+            int withheld = Math.min(remaining.getOrDefault(item, 0), stack.getCount());
+            if (withheld > 0) remaining.put(item, remaining.get(item) - withheld);
+            matcher.addInput(stack, stack.getCount() - withheld);
+        }
+        return matcher;
     }
 
     ProjectProduction atStation(ProjectBlock station) {
@@ -360,7 +399,7 @@ final class ProjectProduction {
                 + Registries.ITEM.getId(output.getItem()) + " in worker inventory") : null;
     }
 
-    private static int inventoryCount(MinecraftClient client, ItemStack output) {
+    static int inventoryCount(MinecraftClient client, ItemStack output) {
         var inventory = client.player.getInventory();
         int held = 0;
         for (int i = 0; i < 36; i++) {
@@ -464,7 +503,7 @@ final class ProjectProduction {
             if (!ItemStack.canCombine(result, output) || !table.matches(recipe)) return failure("Unexpected crafting output");
             return takeOutput(client, 0);
         }
-        if (!client.player.getRecipeBook().contains(recipe)) {
+        if (!reservedInputs.isEmpty() || !client.player.getRecipeBook().contains(recipe)) {
             return fillCraftingGrid(client, table, recipe, output);
         }
         var matcher = new RecipeMatcher();
@@ -486,8 +525,7 @@ final class ProjectProduction {
                     return failure("Clear the crafting grid before automatic crafting");
                 }
             }
-            var matcher = new RecipeMatcher();
-            client.player.getInventory().populateRecipeFinder(matcher);
+            var matcher = surplusMatcher(client, reservedInputs);
             var ingredients = new IntArrayList();
             if (!matcher.match(recipe, ingredients)) return failure("Missing ingredients for " + spec.recipe);
             craftingInputs = new LinkedHashMap<>();

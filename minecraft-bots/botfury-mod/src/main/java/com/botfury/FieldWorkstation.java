@@ -1,9 +1,10 @@
 package com.botfury;
 
+import it.unimi.dsi.fastutil.ints.IntArrayList;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.FallingBlock;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.item.ItemStack;
+import net.minecraft.recipe.CraftingRecipe;
 import net.minecraft.recipe.RecipeMatcher;
 import net.minecraft.recipe.RecipeType;
 import net.minecraft.registry.Registries;
@@ -16,7 +17,9 @@ import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /** Establishes a local production station outside protected project areas. */
@@ -31,6 +34,7 @@ final class FieldWorkstation {
     private final long expires;
     private final FieldWorkstation workbench;
     private final BlockState recess;
+    private final Map<Integer, Integer> reservedInputs;
     private ProjectProduction preparation;
     private ProjectProduction plankPreparation;
     private long nextPlacement;
@@ -40,13 +44,14 @@ final class FieldWorkstation {
     private int heldBeforePlacement;
 
     private FieldWorkstation(ProjectBlock station, long now, ProjectProduction.Spec plankRecipe,
-                             FieldWorkstation workbench, BlockState recess) {
+                             FieldWorkstation workbench, BlockState recess, Map<Integer, Integer> reservedInputs) {
         this.station = station;
         this.workbench = workbench;
         this.recess = recess;
         long preparationTime = workbench == null ? 20_000_000_000L : workbench.expires - now + 15_000_000_000L;
         expires = now + preparationTime + (recess == null ? 0 : 20_000_000_000L);
-        if (plankRecipe != null) plankPreparation = new ProjectProduction(plankRecipe);
+        this.reservedInputs = reservedInputs;
+        if (plankRecipe != null) plankPreparation = new ProjectProduction(plankRecipe, reservedInputs);
     }
 
     ProjectBlock station() { return station; }
@@ -65,10 +70,11 @@ final class FieldWorkstation {
         return !target.isWithinDistance(feet, 16);
     }
 
-    static FieldWorkstation find(MinecraftClient client, long now, ProjectQueue.Kind kind, boolean reservesWood,
+    static FieldWorkstation find(MinecraftClient client, long now, ProjectQueue.Kind kind, ProjectProduction production,
                                  Set<BlockPos> rejected) {
-        int plankBudget = reservesWood ? PLANK_BUDGET : WORKBENCH_COST;
-        var local = find(client, now, kind == ProjectQueue.Kind.SMELT ? FURNACE : TABLE, null, plankBudget, null);
+        var reserved = production.reserveCraftingInputs(client);
+        var local = find(client, now, kind == ProjectQueue.Kind.SMELT ? FURNACE : TABLE,
+                null, WORKBENCH_COST, null, reserved);
         if (local != null || kind != ProjectQueue.Kind.CRAFT || !SubsurfaceAccess.hasFooting(client)
                 || client.player.isTouchingWater() || client.player.currentScreenHandler != client.player.playerScreenHandler) return local;
         return findWalkableWorkbench(client, now, rejected);
@@ -98,7 +104,7 @@ final class FieldWorkstation {
                 }
             }
             if (stands.isEmpty()) continue;
-            var bench = new FieldWorkstation(new ProjectBlock(position.toImmutable(), stands.get(0), TABLE), now, null, null, null);
+            var bench = new FieldWorkstation(new ProjectBlock(position.toImmutable(), stands.get(0), TABLE), now, null, null, null, Map.of());
             bench.approach = List.copyOf(stands);
             return bench;
         }
@@ -106,11 +112,11 @@ final class FieldWorkstation {
     }
 
     static FieldWorkstation findForMiningTool(MinecraftClient client, long now, ProjectGather.Area excluded) {
-        return find(client, now, TABLE, null, WORKBENCH_COST, excluded);
+        return find(client, now, TABLE, null, WORKBENCH_COST, excluded, Map.of());
     }
 
-    private static FieldWorkstation find(MinecraftClient client, long now, Identifier wanted, BlockPos reserved,
-                                         int plankBudget, ProjectGather.Area excluded) {
+    private static FieldWorkstation find(MinecraftClient client, long now, Identifier wanted, BlockPos reservedSite,
+                                         int plankBudget, ProjectGather.Area excluded, Map<Integer, Integer> reserved) {
         if (!SubsurfaceAccess.hasFooting(client) || client.player.isTouchingWater()
                 || client.player.currentScreenHandler != client.player.playerScreenHandler) return null;
         var feet = client.player.getBlockPos();
@@ -119,16 +125,27 @@ final class FieldWorkstation {
         boolean held = hasStationItem(client, wanted);
         boolean table = wanted.equals(TABLE);
         int planks = table && !held ? plankCount(client) : 0;
-        var plankRecipe = table && !held && planks < plankBudget ? plankRecipe(client, plankBudget - planks) : null;
-        boolean canPrepare = held || (table ? planks >= plankBudget || plankRecipe != null
+        boolean canCraftTable = false;
+        ProjectProduction.Spec plankRecipe = null;
+        if (table && !held) {
+            if (reserved.isEmpty()) {
+                canCraftTable = planks >= plankBudget;
+                if (!canCraftTable) plankRecipe = plankRecipe(client, plankBudget - planks);
+            } else if (client.world.getRecipeManager().get(TABLE).orElse(null) instanceof CraftingRecipe recipe) {
+                var surplus = ProjectProduction.surplusMatcher(client, reserved);
+                canCraftTable = surplus.match(recipe, null);
+                if (!canCraftTable) plankRecipe = sparePlankRecipe(client, recipe, surplus, reserved);
+            }
+        }
+        boolean canPrepare = held || (table ? canCraftTable || plankRecipe != null
                 : ProjectProduction.canCraft(client, FURNACE));
         for (var position : BlockPos.iterateOutwards(feet, 3, 2, 3)) {
             if (position.equals(feet) || position.equals(feet.up()) || position.equals(feet.down())
-                    || position.equals(reserved)
+                    || position.equals(reservedSite)
                     || !client.world.isChunkLoaded(position.getX() >> 4, position.getZ() >> 4)) continue;
             if (client.world.getBlockState(position).isOf(Registries.BLOCK.get(wanted))
                     && ProjectProduction.workstationHit(client, position, client.player.getEyePos()) != null) {
-                return new FieldWorkstation(new ProjectBlock(position.toImmutable(), feet, wanted), now, null, null, null);
+                return new FieldWorkstation(new ProjectBlock(position.toImmutable(), feet, wanted), now, null, null, null, Map.of());
             }
             if (!canPrepare || site != null || excluded != null
                     && (excluded.contains(position) || excluded.contains(position.down()))) continue;
@@ -146,9 +163,9 @@ final class FieldWorkstation {
             recess = client.world.getBlockState(site.target());
         }
         if (site == null) return null;
-        var workbench = table || held ? null : find(client, now, TABLE, site.target(), PLANK_BUDGET, excluded);
+        var workbench = table || held ? null : find(client, now, TABLE, site.target(), PLANK_BUDGET, excluded, Map.of());
         if (!table && !held && workbench == null) return null;
-        return new FieldWorkstation(site, now, plankRecipe, workbench, recess);
+        return new FieldWorkstation(site, now, plankRecipe, workbench, recess, reserved);
     }
 
     State tick(MinecraftClient client, long now) {
@@ -190,7 +207,7 @@ final class FieldWorkstation {
                 }
                 var craftAt = workbench == null ? null : workbench.station();
                 preparation = new ProjectProduction(new ProjectProduction.Spec(craftAt, ProjectQueue.Kind.CRAFT,
-                        station.block(), null, null, 1));
+                        station.block(), null, null, 1), reservedInputs);
             }
             var result = preparation.tick(client, now);
             if (result != null && !result.success()) return State.UNAVAILABLE;
@@ -249,12 +266,32 @@ final class FieldWorkstation {
         for (var recipe : client.world.getRecipeManager().listAllOfType(RecipeType.CRAFTING)) {
             var output = recipe.getOutput(client.world.getRegistryManager());
             if (!output.isIn(ItemTags.PLANKS) || !recipe.fits(2, 2) || !matcher.match(recipe, null)) continue;
-            int held = 0;
-            for (int slot = 0; slot < 36; slot++) {
-                var stack = inventory.getStack(slot);
-                if (ItemStack.canCombine(stack, output)) held += stack.getCount();
-            }
+            int held = ProjectProduction.inventoryCount(client, output);
             return new ProjectProduction.Spec(null, ProjectQueue.Kind.CRAFT, recipe.getId(), null, null, held + needed);
+        }
+        return null;
+    }
+
+    private static ProjectProduction.Spec sparePlankRecipe(MinecraftClient client, CraftingRecipe table,
+                                                      RecipeMatcher surplus, Map<Integer, Integer> reserved) {
+        for (var recipe : client.world.getRecipeManager().listAllOfType(RecipeType.CRAFTING)) {
+            var output = recipe.getOutput(client.world.getRegistryManager());
+            if (!output.isIn(ItemTags.PLANKS) || !recipe.fits(2, 2)) continue;
+            int yield = output.getCount();
+            int held = ProjectProduction.inventoryCount(client, output);
+            var ingredients = new IntArrayList();
+            for (int crafts = 1; crafts <= (WORKBENCH_COST + yield - 1) / yield; crafts++) {
+                if (!surplus.match(recipe, ingredients, crafts)) break;
+                var consumed = new LinkedHashMap<>(reserved);
+                ProjectProduction.reserveIngredients(consumed, ingredients, crafts);
+                var after = ProjectProduction.surplusMatcher(client, consumed);
+                after.addInput(output.copyWithCount(crafts * yield));
+                if (after.match(table, null)) {
+                    return new ProjectProduction.Spec(null, ProjectQueue.Kind.CRAFT, recipe.getId(), null, null,
+                            held + crafts * yield);
+                }
+                ingredients.clear();
+            }
         }
         return null;
     }

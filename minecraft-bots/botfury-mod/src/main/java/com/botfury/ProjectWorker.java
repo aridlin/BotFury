@@ -1932,6 +1932,7 @@ final class ProjectWorker {
             args.put("returnRouteRevision", SubsurfaceAccess.RETURN_ROUTE_REVISION);
             args.put("supportsStickResupply", true);
             args.put("supportsMealTrail", true);
+            args.put("checkpointApproach", true);
             var meal = TaskDefense.spareMeal(client);
             if (meal != null) args.put("spareMeal", meal);
             else {

@@ -41,7 +41,7 @@ final class ProjectBroker {
                            boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool, int routeCraftTarget, boolean needsRouteBench, boolean canSupplyBench, boolean receivedRouteBench,
                            boolean supportsPickupReserve, boolean supportsStickResupply, boolean needsMeal, boolean carryingMeal, String spareMeal,
                            boolean supportsMealTrail, List<ProjectQueue.ResourceSite> mealTrail,
-                           FieldForage.Source forageSource,
+                           FieldForage.Source forageSource, boolean checkpointApproach,
                            List<ProjectQueue.ReachableOre> reachableOre, boolean groundedGatherRetry, List<String> localStarterLogs) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
@@ -769,7 +769,8 @@ final class ProjectBroker {
                                     request.toolUses, now);
                         }
                         if (assignment == null) {
-                            assignment = board.offerEquippedMiner(world, request.worker, request.project, request.toolUses, now, position);
+                            assignment = board.offerEquippedMiner(world, request.worker, request.project, request.toolUses, now,
+                                    position, request.checkpointApproach);
                         }
                         if (assignment == null) {
                             assignment = board.offerSmeltingRefill(world, request.worker, request.project, request.toolUses, now);

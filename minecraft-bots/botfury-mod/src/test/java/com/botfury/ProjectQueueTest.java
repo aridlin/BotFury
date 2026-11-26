@@ -15,6 +15,25 @@ class ProjectQueueTest {
     @TempDir Path directory;
     private static final String WORLD = "test|overworld";
 
+    @Test void idleCourierCanShareItsLastStickForAStationRouteTool() throws Exception {
+        var queue = new ProjectQueue(directory.resolve("station-route-sticks.json"));
+        queue.submit("batch", WORLD, List.of(job("smelt", SMELT, List.of())));
+        var station = queue.claim(WORLD, "miner", Set.of(SMELT), 1).job();
+        queue.recordRouteStickNeed("batch", "smelt", station.lease(), true, 2);
+        queue.recordMealNeed("batch", "smelt", station.lease(), false, false, 2);
+        queue.claim(WORLD, "courier", Set.of(VERIFY), 2);
+        var route = queue.offerStickResupply(WORLD, "courier", null, 3,
+                worker -> new ProjectQueue.ResourceSite(4, worker.equals("miner") ? 40 : 55, 7),
+                (worker, item) -> 1);
+        assertNotNull(route);
+        var request = queue.routeToolDelivery("batch", route.job().work().id(), route.job().lease(), 4);
+        assertEquals("miner", request.recipient());
+        assertEquals("minecraft:stick", request.item());
+        assertEquals(1, request.quantity());
+        queue.recordRouteStickReceipt("batch", "smelt", station.lease(), 5);
+        assertEquals(ProjectQueue.State.DONE, queue.snapshot(6).get(0).jobs().get(1).state());
+    }
+
     @Test void loadedFurnaceRecoveryPersistsItsExactStationAndReopensOnlyFuel() throws Exception {
         var file = directory.resolve("loaded-furnace.json");
         var raw = job("raw", GATHER, List.of());

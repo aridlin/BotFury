@@ -1530,7 +1530,7 @@ final class ProjectQueue {
         }
         if (kinds.contains(Kind.GATHER)) {
             if (toolUses != null) {
-                var mining = offerEquippedMiner(world, worker, projectId, toolUses, now, position, true);
+                var mining = offerEquippedMiner(world, worker, projectId, toolUses, now, position, true, false);
                 if (mining != null) return mining;
             }
             if (recoverStalledGathering(world, projectId, now, heldCount)
@@ -2125,12 +2125,18 @@ final class ProjectQueue {
 
     synchronized Assignment offerEquippedMiner(String world, String worker, String projectId,
                                                 Map<String, Integer> toolUses, long now, ResourceSite position) throws IOException {
-        return offerEquippedMiner(world, worker, projectId, toolUses, now, position, false);
+        return offerEquippedMiner(world, worker, projectId, toolUses, now, position, false, false);
+    }
+
+    synchronized Assignment offerEquippedMiner(String world, String worker, String projectId,
+                                                Map<String, Integer> toolUses, long now, ResourceSite position,
+                                                boolean checkpointApproach) throws IOException {
+        return offerEquippedMiner(world, worker, projectId, toolUses, now, position, false, checkpointApproach);
     }
 
     private Assignment offerEquippedMiner(String world, String worker, String projectId,
                                           Map<String, Integer> toolUses, long now, ResourceSite position,
-                                          boolean exhaustedOnly) throws IOException {
+                                          boolean exhaustedOnly, boolean checkpointApproach) throws IOException {
         if (toolUses == null || toolUses.isEmpty() || projects.values().stream().flatMap(project -> project.jobs.stream())
                 .anyMatch(job -> workerCommittedToLease(job, worker))) return null;
         for (var project : projects.values()) {
@@ -2153,15 +2159,24 @@ final class ProjectQueue {
                 var key = stalled ? "stalled-equipped-miner:" + gather.work.id : equippedRescueKey(gather);
                 String workerRetry = key + ":" + worker.toLowerCase(java.util.Locale.ROOT);
                 int recoveriesUsed = project.supplyRecoveries.getOrDefault(key, 0);
-                if (reopening && (craft.state != State.DONE || recoveriesUsed >= (stalled ? 3 : 1)
-                        || stalled && project.supplyRecoveries.containsKey(workerRetry))) continue;
+                String durabilityKey = key + ":durability";
+                int durability = toolUses.get(carriedTool);
+                Integer previousDurability = project.supplyRecoveries.get(durabilityKey);
+                boolean retryFromHere = exhausted && recoveriesUsed > 0
+                        && (previousDurability != null ? durability > previousDurability
+                        : checkpointApproach && position != null && cargoCheckpoint(project, gather) > 0
+                            && durability < SubsurfaceAccess.miningHarvestReserve(0));
+                if (reopening && craft.state != State.DONE
+                        || exhausted && recoveriesUsed > 0 && !retryFromHere
+                        || stalled && (recoveriesUsed >= 3 || project.supplyRecoveries.containsKey(workerRetry))) continue;
                 if (!reopening && craft.state == State.DONE) continue;
                 if (stalled && (worker.equalsIgnoreCase(craft.worker) || worker.equalsIgnoreCase(gather.worker))) continue;
                 if (reopening && gather.work.needs.stream().anyMatch(need -> find(project, need).state != State.DONE)) continue;
                 var prep = reopening ? Set.<String>of() : stalledPrivatePreparation(project, gather, craft);
                 if (!reopening && prep.isEmpty()) continue;
+                var site = retryFromHere && position != null ? position : gatheringSite(project, gather, position);
                 var lease = new Job(gather.work, State.LEASED, gather.attempts + 1, worker, UUID.randomUUID(),
-                        now + LEASE_MS, null, gather.chest, gatheringSite(project, gather, position));
+                        now + LEASE_MS, null, gather.chest, site);
                 var jobs = project.jobs.stream().map(job -> {
                     if (job == gather) return lease;
                     if (!prep.contains(job.work.id)) return job;
@@ -2171,6 +2186,7 @@ final class ProjectQueue {
                 if (reopening) {
                     var recoveries = new HashMap<>(project.supplyRecoveries);
                     recoveries.put(key, recoveriesUsed + 1);
+                    if (exhausted) recoveries.put(durabilityKey, durability);
                     if (stalled) recoveries.put(workerRetry, 1);
                     commit(project.withRecovery(jobs, recoveries));
                 } else commit(project.withJobs(jobs));

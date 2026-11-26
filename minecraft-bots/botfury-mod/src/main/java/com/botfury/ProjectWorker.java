@@ -278,6 +278,7 @@ final class ProjectWorker {
         waitingForSafety = false;
         nextSafetyReport = 0;
         idleRecovery.reset();
+        breathing.stop(client);
         halt(client);
         assignment = null;
         block = null;
@@ -643,10 +644,18 @@ final class ProjectWorker {
     }
 
     private static boolean recoverBreathing(MinecraftClient client) {
-        if (!breathing.tick(client)) return false;
+        boolean wasSwimmingAshore = breathing.reachingShore();
+        boolean stationApproach = success == null && block != null && (production != null || chest != null);
+        if (!breathing.tick(client, stationApproach)) {
+            if (wasSwimmingAshore && !client.player.isTouchingWater()) {
+                halt(client);
+                nextWorkstationSearch = retryApproach = 0;
+            }
+            return false;
+        }
         releaseCentering(client);
         jumpEnds = 0;
-        status = "Swimming toward air";
+        status = breathing.reachingShore() ? "Swimming to dry footing" : "Swimming toward air";
         return true;
     }
 

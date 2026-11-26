@@ -1076,6 +1076,50 @@ class ProjectQueueTest {
         assertEquals("original", jobs.get(2).worker());
     }
 
+    @Test void completedDefensePreparationDoesNotHideTheMiningToolTier() throws Exception {
+        var tools = new ProjectQueue.Work("tools", CRAFT, """
+                {"recipe":"minecraft:stone_pickaxe"}
+                """, List.of(), Set.of());
+        var sword = new ProjectQueue.Work("sword", CRAFT, """
+                {"recipe":"minecraft:stone_sword"}
+                """, List.of(tools.id()), Set.of(), tools.id());
+        var ore = new ProjectQueue.Work("ore", GATHER, """
+                {"resource":"iron","variant":"both","item":"minecraft:raw_iron","count":3}
+                """, List.of(sword.id()), Set.of(), sword.id());
+        var from = new ProjectQueue.ResourceSite(4, 20, 4);
+        var position = new ProjectQueue.ResourceSite(50, 34, 4);
+        var vein = new ProjectQueue.ReachableOre("minecraft:iron_ore", new ProjectQueue.ResourceSite(52, 34, 4));
+        long now = 40_000;
+        for (String recovery : List.of("equipped", "observed", "relocated")) {
+            var journal = directory.resolve("defense-before-ore-" + recovery + ".json");
+            String failure = recovery.equals("equipped") ? ProjectQueue.GATHER_TOOLS_NEEDED + " after 2 supply recoveries"
+                    : ProjectQueue.GATHER_STALLED;
+            var jobs = List.of(new ProjectQueue.Job(tools, ProjectQueue.State.DONE, 1, "original", null, 0, "Crafted", null),
+                    new ProjectQueue.Job(sword, ProjectQueue.State.DONE, 1, "original", null, 0, "Crafted", null),
+                    new ProjectQueue.Job(ore, ProjectQueue.State.FAILED, 3, "original", null, 1, failure, null, from));
+            var plan = new ProjectQueue.Project("stock", WORLD, jobs, null, "block:3,64,0", java.util.Map.of("tools", 2));
+            Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                    "projects", java.util.Map.of(plan.id(), plan))));
+            var queue = new ProjectQueue(journal);
+            String worker = recovery.equals("relocated") ? "original" : "helper";
+            var wood = java.util.Map.of("minecraft:wooden_pickaxe", 50);
+            var stone = java.util.Map.of("minecraft:stone_pickaxe", 120);
+            queue.claim(WORLD, worker, Set.of(VERIFY), now);
+            assertNull(queue.offerEquippedMiner(WORLD, worker, "stock", wood, now, position));
+            var lease = switch (recovery) {
+                case "observed" -> queue.offerObservedOreRecovery(WORLD, worker, "stock", position,
+                        java.util.Map.of("minecraft:stone_pickaxe", 6), List.of(vein), now);
+                case "relocated" -> queue.offerRelocatedMiner(WORLD, worker, "stock", position, stone, now);
+                default -> queue.offerEquippedMiner(WORLD, worker, "stock", stone, now, position);
+            };
+            assertNotNull(lease, recovery);
+            assertEquals(ore, lease.job().work());
+            assertEquals(worker, lease.job().worker());
+            var after = queue.snapshot(now).get(0).jobs();
+            assertEquals(jobs.subList(0, 2), after.subList(0, 2));
+        }
+    }
+
     @Test void stalledOreCanUseDistinctEquippedWorkersButCannotCycleThroughThem() throws Exception {
         var journal = directory.resolve("distinct-equipped-workers.json");
         var queue = prepareStalledSupply(journal, false);

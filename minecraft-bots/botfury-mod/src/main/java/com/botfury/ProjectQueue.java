@@ -2429,9 +2429,7 @@ final class ProjectQueue {
                         || gather.work.sameWorkerAs == null || gather.work.needs.size() != 1
                         || gatherSource(gather.work.payload) == null || checkpointDepositActive(project, gather)) continue;
                 var craft = find(project, gather.work.sameWorkerAs);
-                if (craft.work.kind != Kind.CRAFT) continue;
-                var recipe = JSON.fromJson(craft.work.payload, ToolRecipe.class);
-                int tier = recipe == null || recipe.recipe == null || recipe.recipe == null ? -1 : PICKAXE_TIERS.indexOf(recipe.recipe);
+                int tier = reopening ? completedPickaxeTier(project, craft) : pickaxeRecipeTier(craft);
                 if (tier < 0) continue;
                 String carriedTool = carriedMiningPickaxe(project, gather, tier, toolUses);
                 if (carriedTool == null) continue;
@@ -2487,10 +2485,7 @@ final class ProjectQueue {
                 if ((!exhausted && !stalledPinnedGathering(gather)) || now < gather.expiresAt
                         || checkpointDepositActive(project, gather)
                         || gather.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) continue;
-                var preparation = find(project, gather.work.sameWorkerAs);
-                if (preparation.work.kind != Kind.CRAFT) continue;
-                var recipe = JSON.fromJson(preparation.work.payload, ToolRecipe.class);
-                int tier = recipe == null || recipe.recipe == null ? -1 : PICKAXE_TIERS.indexOf(recipe.recipe);
+                int tier = completedPickaxeTier(project, find(project, gather.work.sameWorkerAs));
                 if (tier < 0) continue;
                 var source = gatherSource(gather.work.payload);
                 if (source == null || !ResourceCatalog.isOre(source.resource)) continue;
@@ -2550,15 +2545,13 @@ final class ProjectQueue {
                 if (!stalledPinnedGathering(gather) || now < gather.expiresAt || !worker.equalsIgnoreCase(gather.worker)
                         || gather.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) continue;
                 var source = gatherSource(gather.work.payload);
-                var preparation = find(project, gather.work.sameWorkerAs);
-                if (source == null || !ResourceCatalog.isOre(source.resource) || preparation.work.kind != Kind.CRAFT) continue;
+                if (source == null || !ResourceCatalog.isOre(source.resource)) continue;
                 boolean missingSite = gather.resourceSite == null;
                 if (missingSite) {
                     Integer depth = SubsurfaceAccess.prospectingAltitude(source.resource);
                     if (depth == null || Math.abs((long) position.y - depth) > 32) continue;
                 } else if (!newMiningGround(gather.resourceSite, position)) continue;
-                var recipe = JSON.fromJson(preparation.work.payload, ToolRecipe.class);
-                int tier = recipe == null || recipe.recipe == null ? -1 : PICKAXE_TIERS.indexOf(recipe.recipe);
+                int tier = completedPickaxeTier(project, find(project, gather.work.sameWorkerAs));
                 if (tier < 0 || carriedMiningPickaxe(project, gather, tier, toolUses) == null) continue;
 
                 // Old journals may lack the failed location. Retry once near the ore layer to establish a checkpoint.
@@ -2588,6 +2581,22 @@ final class ProjectQueue {
     private static boolean newMiningGround(ResourceSite failed, ResourceSite position) {
         return (long)position.y - failed.y >= 12
                 || Math.hypot((double)position.x - failed.x, (double)position.z - failed.z) >= 48;
+    }
+
+    private static int completedPickaxeTier(Project project, Job preparation) {
+        // Defensive gear and other completed preparation may follow the pickaxe recipe.
+        for (var step = preparation; step != null && step.state == State.DONE;
+             step = find(project, step.work.sameWorkerAs)) {
+            int tier = pickaxeRecipeTier(step);
+            if (tier >= 0) return tier;
+        }
+        return -1;
+    }
+
+    private static int pickaxeRecipeTier(Job job) {
+        if (job == null || job.work.kind != Kind.CRAFT) return -1;
+        var recipe = JSON.fromJson(job.work.payload, ToolRecipe.class);
+        return recipe == null || recipe.recipe == null ? -1 : PICKAXE_TIERS.indexOf(recipe.recipe);
     }
 
     private static String equippedRescueKey(Job gather) {
@@ -4679,9 +4688,8 @@ final class ProjectQueue {
                 var deposit = contributionDeposit(project, gather);
                 var craft = find(project, gather.work.sameWorkerAs);
                 if (deposit == null || !deposit.work.locks.contains(project.supplyChest)
-                        || craft.state != State.DONE || craft.work.kind != Kind.CRAFT || craft.worker == null) continue;
-                var recipe = JSON.fromJson(craft.work.payload, ToolRecipe.class);
-                int tier = recipe == null || recipe.recipe == null ? -1 : PICKAXE_TIERS.indexOf(recipe.recipe);
+                        || craft.state != State.DONE || craft.worker == null) continue;
+                int tier = completedPickaxeTier(project, craft);
                 if (tier < 0 || PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
                         .anyMatch(tool -> heldCount.applyAsInt(craft.worker, tool) != 0)) continue;
                 var source = gatherSource(gather.work.payload);
@@ -4723,15 +4731,8 @@ final class ProjectQueue {
         var jobs = new HashMap<String, Job>();
         project.jobs.forEach(job -> jobs.put(job.work.id, job));
         var supplier = jobs.get(gathering.work.sameWorkerAs);
-        for (var stage = supplier; stage != null; stage = jobs.get(stage.work.sameWorkerAs)) {
-            if (stage.state != State.DONE) return false;
-            if (stage.work.kind != Kind.CRAFT) continue;
-            var recipe = JSON.fromJson(stage.work.payload, ToolRecipe.class);
-            if (recipe != null && recipe.recipe != null && PICKAXE_TIERS.contains(recipe.recipe)) {
-                return rewindSupply(project, gathering, supplier, jobs, GATHER_TOOLS_NEEDED, gathering.chest, site, now);
-            }
-        }
-        return false;
+        return completedPickaxeTier(project, supplier) >= 0
+                && rewindSupply(project, gathering, supplier, jobs, GATHER_TOOLS_NEEDED, gathering.chest, site, now);
     }
 
     private static boolean missingProductionInput(Job job, String evidence) {

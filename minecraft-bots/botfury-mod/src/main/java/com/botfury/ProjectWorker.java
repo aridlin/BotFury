@@ -128,6 +128,7 @@ final class ProjectWorker {
     private static boolean pickingUpRouteTool;
     private static boolean deliveringRouteTool;
     private static ProjectQueue.RouteToolDelivery craftingRouteDelivery;
+    private static FieldForage fieldForage;
     private static int approachAge;
     private static Vec3d approachProgress;
     private static long retryApproach;
@@ -340,6 +341,10 @@ final class ProjectWorker {
     }
 
     private static void halt(MinecraftClient client) {
+        if (fieldForage != null) {
+            fieldForage.close();
+            fieldForage = null;
+        }
         approachRecovery.reset();
         routeToolPickup.reset();
         pickingUpRouteTool = false;
@@ -521,7 +526,16 @@ final class ProjectWorker {
             }
         }
         if (pickupRouteTool(client)) return;
-        if (routeWorkbench != null) {
+        if (fieldForage != null) {
+            var result = fieldForage.tick(client);
+            status = "Foraging for " + craftingRouteDelivery.recipient();
+            if (result == FieldForage.Result.WORKING) return;
+            fieldForage.close();
+            fieldForage = null;
+            if (result == FieldForage.Result.READY) startRouteDelivery(client, craftingRouteDelivery);
+            else finish(client, false, "Could not collect food from the reserved animal");
+            craftingRouteDelivery = null;
+        } else if (routeWorkbench != null) {
             var result = routeWorkbench.tick(client, now, port);
             status = routeWorkbench.status();
             if (result == null) return;
@@ -1906,6 +1920,10 @@ final class ProjectWorker {
             args.put("supportsMealTrail", true);
             var meal = TaskDefense.spareMeal(client);
             if (meal != null) args.put("spareMeal", meal);
+            else {
+                var source = TaskDefense.accessibleFoodSource(client);
+                if (source != null) args.put("forageSource", source);
+            }
             args.put("supportsPickupReserve", true);
             var tools = new HashMap<String, Integer>();
             var inventory = client.player.getInventory();
@@ -2008,7 +2026,11 @@ final class ProjectWorker {
                     if (work.kind() == ProjectQueue.Kind.RESUPPLY) {
                         var delivery = JSON.fromJson(work.payload(), ProjectQueue.RouteToolDelivery.class);
                         var item = Registries.ITEM.get(new Identifier(delivery.item()));
-                        if (delivery.benchStock() != null) {
+                        if (delivery.forage() != null) {
+                            craftingRouteDelivery = delivery;
+                            fieldForage = new FieldForage(delivery.forage());
+                            BotEvents.add("info", "projects", "Foraging for " + delivery.recipient());
+                        } else if (delivery.benchStock() != null) {
                             craftingRouteDelivery = delivery;
                             var spec = ProjectChest.parse(delivery.benchStock().payload());
                             block = spec.location();

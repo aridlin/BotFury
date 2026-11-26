@@ -2,7 +2,6 @@ package com.botfury;
 
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor;
-import net.minecraft.entity.EntityType;
 import net.minecraft.entity.ItemEntity;
 import net.minecraft.entity.mob.WardenEntity;
 import net.minecraft.entity.passive.AnimalEntity;
@@ -46,7 +45,7 @@ final class TaskDefense {
         var inventory = client.player.getInventory();
         for (int slot = 0; slot < 36; slot++) {
             var stack = inventory.getStack(slot);
-            if (!stack.isEmpty() && nourishing(stack.getItem())) return true;
+            if (!stack.isEmpty() && emergencyFood(stack.getItem())) return true;
         }
         return false;
     }
@@ -60,8 +59,19 @@ final class TaskDefense {
     }
 
     static boolean emergencyFood(net.minecraft.item.Item item) {
-        return nourishing(item) || item == Items.BEEF || item == Items.PORKCHOP
+        return nourishing(item) || rawForageFood(item);
+    }
+
+    static boolean rawForageFood(net.minecraft.item.Item item) {
+        return item == Items.BEEF || item == Items.PORKCHOP
                 || item == Items.MUTTON || item == Items.RABBIT;
+    }
+
+    static FieldForage.Source accessibleFoodSource(MinecraftClient client) {
+        var player = client.player;
+        if (!eligible(client, true) || player.getHungerManager().getFoodLevel() < 15
+                || player.getHealth() <= player.getMaxHealth() / 2) return null;
+        return FieldForage.available(client);
     }
 
     static boolean recentlyAteMeal(MinecraftClient client) {
@@ -233,10 +243,8 @@ final class TaskDefense {
         if (!client.world.getEntitiesByClass(ItemEntity.class, player.getBoundingBox().expand(3),
                 entity -> entity.isAlive() && emergencyFood(entity.getStack().getItem())).isEmpty()) return false;
         var target = LocalFormation.defenseTarget(client, config.owner, config.protectedNames,
-                other -> other instanceof AnimalEntity animal && !animal.isBaby() && !animal.hasCustomName()
-                        && !animal.isLeashed() && (animal.getType() == EntityType.COW
-                        || animal.getType() == EntityType.PIG || animal.getType() == EntityType.SHEEP
-                        || animal.getType() == EntityType.RABBIT));
+                other -> other instanceof AnimalEntity animal && FieldForage.food(animal) != null
+                        && !BuildProtection.blocked(animal.getBlockPos()));
         if (!(target instanceof AnimalEntity animal)) return false;
         if (prey != animal) {
             prey = animal;
@@ -265,7 +273,7 @@ final class TaskDefense {
         pathPaused = false;
     }
 
-    private static boolean equipWeapon(MinecraftClient client) {
+    static boolean equipWeapon(MinecraftClient client) {
         var inventory = client.player.getInventory();
         int slot = -1;
         double best = 0;
@@ -306,7 +314,7 @@ final class TaskDefense {
         if (!select(client, slot)) return true;
         if (client.interactionManager.interactItem(player, Hand.MAIN_HAND).isAccepted()) {
             if (!eating) BotEvents.add("info", "defense", "Eating carried food");
-            if (nourishing(inventory.getMainHandStack().getItem())) {
+            if (emergencyFood(inventory.getMainHandStack().getItem())) {
                 mealStartedAt = System.nanoTime();
                 hungerBeforeMeal = hunger;
             }

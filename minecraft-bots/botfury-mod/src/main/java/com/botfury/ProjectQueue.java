@@ -165,9 +165,13 @@ final class ProjectQueue {
     }
     record RouteBenchStock(String payload, String location, int reserve, Set<String> locks) {}
     record RouteToolDelivery(String recipient, ResourceSite position, String item, int previousCount, int craftTarget,
-                             RouteBenchStock benchStock, int count, List<ResourceSite> waypoints) {
+                             RouteBenchStock benchStock, int count, List<ResourceSite> waypoints, FieldForage.Source forage) {
         RouteToolDelivery {
             waypoints = waypoints == null ? List.of() : List.copyOf(waypoints);
+        }
+        RouteToolDelivery(String recipient, ResourceSite position, String item, int previousCount, int craftTarget,
+                          RouteBenchStock benchStock, int count, List<ResourceSite> waypoints) {
+            this(recipient, position, item, previousCount, craftTarget, benchStock, count, waypoints, null);
         }
         RouteToolDelivery(String recipient, ResourceSite position, String item, int previousCount, int craftTarget,
                           RouteBenchStock benchStock, int count) {
@@ -1862,10 +1866,20 @@ final class ProjectQueue {
                                                java.util.function.Function<String, ResourceSite> position,
                                                java.util.function.ToIntBiFunction<String, String> held,
                                                boolean supportsMealTrail) throws IOException {
-        if (mealRequests.isEmpty() || item == null || held.applyAsInt(worker, item) < 3
+        return offerMealResupply(world, worker, projectId, now, item, position, held, supportsMealTrail, null);
+    }
+
+    synchronized Assignment offerMealResupply(String world, String worker, String projectId, long now, String item,
+                                               java.util.function.Function<String, ResourceSite> position,
+                                               java.util.function.ToIntBiFunction<String, String> held,
+                                               boolean supportsMealTrail, FieldForage.Source source) throws IOException {
+        if (mealRequests.isEmpty() || item == null || source == null && held.applyAsInt(worker, item) < 3
                 || pendingBuildMaterials(world, worker).contains(item) || hasPendingDepositOf(world, worker, item)) return null;
         var origin = position.apply(worker);
         if (origin == null) return null;
+        if (source != null && (source.animal() == null || source.site() == null
+                || gatheringDistance(origin, source.site()) > FieldForage.SEARCH_RADIUS
+                || Math.abs(origin.y - source.site().y) > 20 || animalReserved(world, source.animal(), now))) return null;
         for (var project : projects.values()) {
             if (!world.equals(project.world) || cancelled(project) || project.jobs.size() >= MAX_JOBS
                     || projectId != null && !projectId.equals(project.id)
@@ -1886,15 +1900,23 @@ final class ProjectQueue {
                 int existing = held.applyAsInt(recipient.worker, item);
                 if (existing != 0) continue;
                 return assignMealOrSticks(project, id, worker, now,
-                        new RouteToolDelivery(recipient.worker, destination, item, existing, 0, null, 1, waypoints));
+                        new RouteToolDelivery(recipient.worker, destination, item, existing, 0, null, 1, waypoints, source));
             }
         }
         return null;
     }
 
+    private boolean animalReserved(String world, UUID animal, long now) {
+        String lock = "animal:" + animal;
+        return projects.values().stream().filter(project -> world.equals(project.world))
+                .flatMap(project -> project.jobs.stream())
+                .anyMatch(job -> job.state == State.LEASED && job.expiresAt > now && job.work.locks.contains(lock));
+    }
+
     private Assignment assignMealOrSticks(Project project, String id, String worker, long now,
                                            RouteToolDelivery payload) throws IOException {
-        var work = new Work(id, Kind.RESUPPLY, JSON.toJson(payload), List.of(), Set.of());
+        var locks = payload.forage == null ? Set.<String>of() : Set.of("animal:" + payload.forage.animal());
+        var work = new Work(id, Kind.RESUPPLY, JSON.toJson(payload), List.of(), locks);
         var loan = new Job(work, State.LEASED, 1, worker, UUID.randomUUID(), now + LEASE_MS, null, null);
         var jobs = new ArrayList<>(project.jobs);
         jobs.add(loan);

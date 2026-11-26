@@ -14,6 +14,7 @@ import java.util.List;
 /** Grounded waypoints walked by one worker, in travel order. */
 final class WorkerReturnTrail {
     private static final int CAPACITY = 256;
+    private static final int MAX_SUPPLY_WAYPOINTS = 64;
     private static final int CLIMB_PROGRESS = 8;
     private static final Gson JSON = new Gson();
     private record Saved(WorkerEnrollment worker, List<ResourceSite> points) {}
@@ -49,6 +50,41 @@ final class WorkerReturnTrail {
 
     List<ResourceSite> backtrackToSurface(ResourceSite current, ResourceSite surface) {
         return backtrack(current, surface, true);
+    }
+
+    List<ResourceSite> supplyTrail(ResourceSite current) {
+        var trail = new ArrayList<ResourceSite>();
+        trail.add(current);
+        boolean joined = false;
+        for (int i = points.size() - 1; i >= 0 && trail.size() < MAX_SUPPLY_WAYPOINTS; i--) {
+            var step = points.get(i);
+            if (!joined && (distanceSquared(current, step) > 8 * 8 || Math.abs(current.y() - step.y()) > 4)) continue;
+            joined = true;
+            if (!step.equals(current)) trail.add(step);
+        }
+        return List.copyOf(trail);
+    }
+
+    static List<ResourceSite> supplyWaypoints(List<ResourceSite> trail, ResourceSite donor, ResourceSite recipient) {
+        if (!validSupplyTrail(trail) || distanceSquared(trail.get(0), recipient) > 12 * 12
+                || Math.abs((long) trail.get(0).y() - recipient.y()) > 6) return List.of();
+        for (int i = 1; i < trail.size(); i++) {
+            var step = trail.get(i);
+            if (Math.abs((long) step.y() - donor.y()) > 4 || distanceSquared(step, donor) > 12 * 12) continue;
+            var approach = new ArrayList<>(trail.subList(0, i + 1));
+            java.util.Collections.reverse(approach);
+            return List.copyOf(approach);
+        }
+        return List.of();
+    }
+
+    static boolean validSupplyTrail(List<ResourceSite> trail) {
+        if (trail == null || trail.size() < 2 || trail.size() > MAX_SUPPLY_WAYPOINTS
+                || trail.stream().anyMatch(java.util.Objects::isNull)) return false;
+        for (int i = 1; i < trail.size(); i++) {
+            if (distanceSquared(trail.get(i - 1), trail.get(i)) > 18 * 18) return false;
+        }
+        return true;
     }
 
     private List<ResourceSite> backtrack(ResourceSite current, ResourceSite destination, boolean surface) {
@@ -114,10 +150,10 @@ final class WorkerReturnTrail {
     }
 
     private static double distanceSquared(ResourceSite a, ResourceSite b) {
-        return horizontalSquared(a, b) + Math.pow(a.y() - b.y(), 2);
+        return horizontalSquared(a, b) + Math.pow((double) a.y() - b.y(), 2);
     }
 
     private static double horizontalSquared(ResourceSite a, ResourceSite b) {
-        return Math.pow(a.x() - b.x(), 2) + Math.pow(a.z() - b.z(), 2);
+        return Math.pow((double) a.x() - b.x(), 2) + Math.pow((double) a.z() - b.z(), 2);
     }
 }

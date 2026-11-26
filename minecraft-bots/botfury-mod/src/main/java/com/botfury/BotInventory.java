@@ -7,10 +7,13 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.command.argument.EntityAnchorArgumentType;
 import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
+import net.minecraft.world.RaycastContext;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -37,7 +40,7 @@ final class BotInventory {
         if (value) routeRecovery.reset();
         manualPause = value;
     }
-    private static int age, delivered, waitTicks;
+    private static int age, delivered, waitTicks, nextPathAttempt;
     private static DeliveryLease projectDelivery;
     private static List<ProjectQueue.ResourceSite> supplyTrail = List.of();
     private static BaritoneSettings supplySettings;
@@ -128,7 +131,7 @@ final class BotInventory {
         paused = true;
         task = request;
         session = client.getNetworkHandler();
-        age = delivered = waitTicks = recipientSeen = nextLocationRead = 0;
+        age = delivered = waitTicks = recipientSeen = nextLocationRead = nextPathAttempt = 0;
         locationRead = null;
         if (request.destination != null && request.destination.sameWorld(LocalFormation.here())) {
             lastRecipient = request.destination.position;
@@ -178,7 +181,7 @@ final class BotInventory {
                 }
                 if (client.player.squaredDistanceTo(recipient) > 6.25 || !client.player.canSee(recipient)) {
                     status = "Approaching " + task.recipient;
-                    path(client, recipient.getPos()); return;
+                    path(client, recipient.getPos(), projectDelivery == null ? null : recipient); return;
                 }
                 routeRecovery.reset();
                 BaritoneClient.execute("stop");
@@ -341,22 +344,51 @@ final class BotInventory {
         double lane=((Integer.getInteger("botfury.port",8765)%3)-1)*1.25;
         spreadGoal=client.player.getPos().add(away.multiply(6)).add(-away.z*lane,0,away.x*lane);
         status=completion.equals("Done")?"Moving outward":completion+" · moving outward";
+        nextPathAttempt = age;
         path(client, spreadGoal);
     }
     private static void path(MinecraftClient client, Vec3d goal) {
+        path(client, goal, null);
+    }
+
+    private static void path(MinecraftClient client, Vec3d goal, PlayerEntity recipient) {
         if (!BaritoneClient.available()) { finish("Cannot move: Baritone unavailable"); return; }
-        var pos = net.minecraft.util.math.BlockPos.ofFloored(goal);
+        var pos = BlockPos.ofFloored(goal);
         var recovery = routeRecovery.tick(client, pos, candidate -> true);
         if (recovery == StallRecovery.State.DETOUR) {
             status = "Clearing a stalled inventory route";
             return;
         }
-        if (recovery != StallRecovery.State.REPLAN) {
-            if (age % 20 != 0 && age != 1 && spreadGoal == null) return;
-            if (spreadGoal != null && waitTicks % 20 != 0) return;
-        }
-        BaritoneClient.execute("goto " + pos.getX() + " " + pos.getY() + " " + pos.getZ());
+        boolean replan = recovery == StallRecovery.State.REPLAN;
+        if (!replan && age < nextPathAttempt) return;
+        nextPathAttempt = age + 20;
+        var stops = recipient == null ? List.of(pos) : deliveryStands(client, recipient, pos);
+        // Keep Baritone's current search or path while its goal still reaches the recipient.
+        if (!replan && stops.stream().anyMatch(BaritoneClient::pursuing)) return;
+        BaritoneClient.goToAny(stops);
     }
+
+    private static List<BlockPos> deliveryStands(MinecraftClient client, PlayerEntity recipient, BlockPos target) {
+        var worker = client.player;
+        if (!target.isWithinDistance(worker.getBlockPos(), 12)) return List.of(target);
+        var world = client.world;
+        var stops = new ArrayList<BlockPos>();
+        var recipientEyes = recipient.getEyePos();
+        double eyeHeight = worker.getEyeY() - worker.getY();
+        for (var stand : BlockPos.iterateOutwards(target, 2, 1, 2)) {
+            var center = Vec3d.ofBottomCenter(stand);
+            if (stand.equals(target) || recipient.squaredDistanceTo(center) > 5
+                    || !ProjectWorker.knownTrailFooting(client, stand)) continue;
+            var body = worker.getBoundingBox().offset(center.subtract(worker.getPos()));
+            if (!world.getOtherEntities(worker, body, entity -> entity instanceof PlayerEntity other
+                    && other.isAlive() && !other.isSpectator()).isEmpty()) continue;
+            var hit = world.raycast(new RaycastContext(center.add(0, eyeHeight, 0), recipientEyes,
+                    RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.NONE, worker));
+            if (hit.getType() == HitResult.Type.MISS) stops.add(stand.toImmutable());
+        }
+        return stops.isEmpty() ? List.of(target) : stops;
+    }
+
     private static void finish(String message) {
         routeRecovery.reset();
         if (task != null || baritoneTask) BaritoneClient.execute("stop");

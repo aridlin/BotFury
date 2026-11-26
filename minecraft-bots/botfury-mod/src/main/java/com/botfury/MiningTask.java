@@ -40,6 +40,9 @@ final class MiningTask {
     private static final int SURFACE_ROUTE_DEPTH = 12;
     private static final int SURFACE_EXIT_STALL_TICKS = 280;
     private static final int SURFACE_EXIT_BACKOFF_TICKS = 1200;
+    private static final int RECORDED_SITE_RETRY_TICKS = 100;
+    private static final int RECORDED_SITE_NO_PATH_TICKS = 160;
+    private static final int RECORDED_SITE_STALL_TICKS = 280;
     private static final Gson JSON=new Gson();
     private static final ExecutorService IO=Executors.newFixedThreadPool(2,r->{var t=new Thread(r,"BotFury-mining");t.setDaemon(true);return t;});
     private static final HttpClient HTTP=HttpClient.newBuilder().executor(IO).connectTimeout(Duration.ofMillis(300)).build();
@@ -84,6 +87,8 @@ final class MiningTask {
     private static final Map<UUID, BlockPos> failedDropRoutes = new LinkedHashMap<>();
     private static final DroppedItemSearch minedDrops = new DroppedItemSearch();
     private static BlockPos rememberedSite;
+    private static final Set<BlockPos> rememberedRouteRegions = new HashSet<>();
+    private static int rememberedProgressAt, nextRememberedPath;
     private static BlockPos deepExplorationGoal;
     private static BlockPos surfaceSearchAnchor, lastExplorationExit;
     private static BlockPos surfaceLedgeOrigin;
@@ -296,6 +301,8 @@ final class MiningTask {
         nextCaveProbe = 0;
         lastProspectingCheckpointY = client.player.getBlockY();
         rememberedSite = null;
+        rememberedRouteRegions.clear();
+        rememberedProgressAt = nextRememberedPath = 0;
         observedSite = null;
         surfaceSearchAnchor = lastExplorationExit = null;
         surfaceLedgeOrigin = null;
@@ -1126,10 +1133,20 @@ final class MiningTask {
         if (rememberedSite == null) return false;
         var point = Vec3d.ofBottomCenter(rememberedSite);
         if (age < rememberedUntil && client.player.squaredDistanceTo(point) > 25) {
-            if (age >= nextPath && (!pathActive || !BaritoneClient.pursuing(rememberedSite))) {
+            var feet = client.player.getBlockPos();
+            var region = new BlockPos(feet.getX() >> 2, feet.getY() >> 2, feet.getZ() >> 2);
+            if (rememberedRouteRegions.add(region)) rememberedProgressAt = age;
+            boolean pursuing = pathActive && BaritoneClient.pursuing(rememberedSite);
+            int timeout = pursuing ? RECORDED_SITE_STALL_TICKS : RECORDED_SITE_NO_PATH_TICKS;
+            if (age - rememberedProgressAt >= timeout) {
+                BotEvents.add("info", "mining", "Leaving a stalled route to recorded gathering site "
+                        + rememberedSite.toShortString());
+                rememberedSite = null;
+            } else if (age >= nextPath && age >= nextRememberedPath && !pursuing) {
+                nextRememberedPath = age + RECORDED_SITE_RETRY_TICKS;
                 if (pathActive && trySurfaceLedge(client, rememberedSite)) return true;
                 if (path(rememberedSite)) {
-                    nextPath = age + 100;
+                    nextPath = age + RECORDED_SITE_RETRY_TICKS;
                     BotEvents.add("debug", "mining", "Sent route to recorded gathering site " + rememberedSite.toShortString());
                 } else {
                     rememberedSite = null;

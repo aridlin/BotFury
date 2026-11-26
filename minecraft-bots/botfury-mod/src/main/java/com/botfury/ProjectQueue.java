@@ -2450,6 +2450,7 @@ final class ProjectQueue {
     }
 
     private static boolean canUseCarriedSmeltingOutput(Project project, Job job) {
+        if (resumesLoadedFurnace(job.work)) return false;
         if (rebuildingSmeltingOutput(job)) return true;
         return job.work.kind == Kind.SMELT && job.state == State.WAITING && job.evidence == null
                 && job.work.sameWorkerAs != null && find(project, job.work.sameWorkerAs).state != State.DONE

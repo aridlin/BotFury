@@ -76,6 +76,7 @@ final class MiningTask {
     private static ItemEntity reservedDrop;
     private static int nextDropScan, dropDeadline;
     private static final int LOOSE_DROP_RADIUS = 12;
+    private static int nextPickupRoomCheck;
     private static final int MAX_FAILED_DROP_ROUTES = 64;
     private static final Map<UUID, BlockPos> failedDropRoutes = new LinkedHashMap<>();
     private static final DroppedItemSearch minedDrops = new DroppedItemSearch();
@@ -298,7 +299,7 @@ final class MiningTask {
         job=next;generation++;owner=UUID.randomUUID()+"-"+client.player.getGameProfile().getName();
         var here=LocalFormation.here();world=here.server()+"|"+here.dimension();
         paused=false;
-        nextDropScan = 0;
+        nextDropScan = nextPickupRoomCheck = 0;
         failedDropRoutes.clear();
         age=nextSearch=nextPath=nextRenew=exploration=0;requesting=dead=false;target=null;stand=null;pickup=null;leaseToken=null;origin=client.player.getPos();rejected.clear();
         rejectedStands.clear();
@@ -464,6 +465,12 @@ final class MiningTask {
                 if (protectedOrePickup && (subsurface.continuePassage(client, age, excluded)
                         || subsurface.continueLocalApproach(client, age))) return;
                 protectedOrePickup = false;
+                if (client.player.getInventory().getEmptySlot() < 0 && age >= nextPickupRoomCheck) {
+                    var drop = client.world.getEntitiesByClass(ItemEntity.class, new Box(BlockPos.ofFloored(pickup)).expand(1.5),
+                            item -> item.isOnGround() && eligibleDrop(client, item)).stream()
+                            .min(Comparator.comparingDouble(client.player::squaredDistanceTo)).orElse(null);
+                    if (drop != null) makeRoomForDrop(client, drop);
+                }
                 var state = minedDrops.tick(client, projectDrop::matches, pickup);
                 if (age >= pickupUntil || state == DroppedItemSearch.State.UNAVAILABLE
                         || state == DroppedItemSearch.State.SEARCHING && age >= nextSearch) {
@@ -558,15 +565,26 @@ final class MiningTask {
         var loose = client.world.getEntitiesByClass(ItemEntity.class, player.getBoundingBox().expand(LOOSE_DROP_RADIUS),
                 item -> item.isOnGround() && player.squaredDistanceTo(item) <= LOOSE_DROP_RADIUS * LOOSE_DROP_RADIUS
                         && rejected.getOrDefault(item.getBlockPos(), 0) <= age
-                        && !item.getBlockPos().equals(failedDropRoutes.get(item.getUuid())) && availableDrop(client, item))
+                        && !item.getBlockPos().equals(failedDropRoutes.get(item.getUuid())) && eligibleDrop(client, item))
                 .stream().min(Comparator.comparingDouble(player::squaredDistanceTo)).orElse(null);
-        if (loose == null) return false;
+        if (loose == null || !makeRoomForDrop(client, loose)) return false;
         var cell = loose.getBlockPos();
         request(client, cell, Vec3d.ofBottomCenter(cell), "claim", loose);
         return true;
     }
 
     private static boolean availableDrop(MinecraftClient client, ItemEntity item) {
+        return eligibleDrop(client, item) && ProjectInventory.canFit(client, item.getStack(), 1);
+    }
+
+    private static boolean makeRoomForDrop(MinecraftClient client, ItemEntity drop) {
+        if (ProjectInventory.canFit(client, drop.getStack(), 1)) return true;
+        if (age < nextPickupRoomCheck || !SubsurfaceAccess.hasFooting(client)) return false;
+        nextPickupRoomCheck = age + 20;
+        return ProjectInventory.releaseSurplus(client, client.player.playerScreenHandler, projectDrop::matches, "mined cargo");
+    }
+
+    private static boolean eligibleDrop(MinecraftClient client, ItemEntity item) {
         if (!item.isAlive() || !projectDrop.matches(item.getStack())) return false;
         var cell = item.getBlockPos();
         if (BuildProtection.blocked(cell) || excluded != null && excluded.contains(cell)) return false;
@@ -574,8 +592,7 @@ final class MiningTask {
         for (var peer : client.world.getPlayers()) {
             if (peer != client.player && peer.isAlive() && !peer.isSpectator() && peer.squaredDistanceTo(item) <= 9) return false;
         }
-        var inventory = client.player.getInventory();
-        return inventory.getEmptySlot() >= 0 || inventory.getOccupiedSlotWithRoomForStack(item.getStack()) >= 0;
+        return true;
     }
 
     private static void collectReservedDrop(MinecraftClient client) {

@@ -763,7 +763,14 @@ final class ProjectBroker {
                         }
                         if (assignment == null) {
                             assignment = board.offerStarterMiner(world, request.worker, request.project, position,
-                                    request.localStarterLogs, now);
+                                    request.localStarterLogs, work -> {
+                                        if (position == null || !request.kinds.contains(ProjectQueue.Kind.CRAFT)) return false;
+                                        var station = ProjectProduction.parse(work.payload(), ProjectQueue.Kind.CRAFT).station();
+                                        if (station == null) return false;
+                                        boolean portable = heldCount(request.worker, station.block().toString()) > 0;
+                                        return craftingStationIsLocal(new BlockPos(position.x(), position.y(), position.z()),
+                                                station.target(), portable);
+                                    }, now);
                         }
                     }
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.BUILD)

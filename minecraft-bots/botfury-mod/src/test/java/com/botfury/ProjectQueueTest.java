@@ -809,9 +809,9 @@ class ProjectQueueTest {
             long now = 40_000;
             queue.claim(WORLD, "volunteer", Set.of(VERIFY), now);
             assertNull(queue.offerStarterMiner(WORLD, "volunteer", "stock", position,
-                    List.of("minecraft:birch_log"), now));
+                    List.of("minecraft:birch_log"), work -> false, now));
             var result = queue.offerStarterMiner(WORLD, "volunteer", "stock", position,
-                    List.of("minecraft:oak_log"), now);
+                    List.of("minecraft:oak_log"), work -> false, now);
             if (shared) assertNull(result);
             else {
                 assertNotNull(result);
@@ -819,9 +819,41 @@ class ProjectQueueTest {
                 assertEquals("volunteer", result.job().worker());
                 assertEquals(position, result.job().resourceSite());
                 assertNull(queue.offerStarterMiner(WORLD, "volunteer", "stock", position,
-                        List.of("minecraft:oak_log"), now));
+                        List.of("minecraft:oak_log"), work -> false, now));
             }
         }
+    }
+
+    @Test void timedOutCarriedCraftRestartsPrivatePreparationAtTheWorkbench() throws Exception {
+        var journal = directory.resolve("stranded-craft.json");
+        var logs = new ProjectQueue.Work("logs", GATHER,
+                "{\"resource\":\"block:minecraft:oak_log\",\"variant\":\"both\",\"item\":\"minecraft:oak_log\",\"count\":2}",
+                List.of(), Set.of());
+        var ingredients = new ProjectQueue.Work("ingredients", CRAFT, "{}", List.of(logs.id()), Set.of(), logs.id());
+        var craft = new ProjectQueue.Work("tools", CRAFT, "{\"recipe\":\"minecraft:stone_pickaxe\"}",
+                List.of(ingredients.id()), Set.of("block:7,64,0"), ingredients.id());
+        var jobs = List.of(
+                new ProjectQueue.Job(logs, ProjectQueue.State.DONE, 1, "previous", null, 0, null, null),
+                new ProjectQueue.Job(ingredients, ProjectQueue.State.DONE, 1, "previous", null, 0, null, null),
+                new ProjectQueue.Job(craft, ProjectQueue.State.FAILED, 3, null, null, 0, ProjectQueue.TARGET_TIMEOUT, null));
+        var project = new ProjectQueue.Project("stock", WORLD, jobs, null, "block:9,64,0",
+                java.util.Map.of("carried-craft:tools", 1));
+        Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                "projects", java.util.Map.of("stock", project))));
+        var queue = new ProjectQueue(journal);
+        var surface = new ProjectQueue.ResourceSite(8, 65, 0);
+        var timber = List.of("minecraft:oak_log");
+        assertNull(queue.claim(WORLD, "helper", Set.of(VERIFY), 1));
+        assertNull(queue.claim(WORLD, "previous", Set.of(VERIFY), 1));
+        assertNull(queue.offerStarterMiner(WORLD, "helper", "stock", surface, timber, work -> false, 1));
+        assertNull(queue.offerStarterMiner(WORLD, "previous", "stock", surface, timber, work -> true, 2));
+        var result = queue.offerStarterMiner(WORLD, "helper", "stock", surface, timber, craft::equals, 3);
+        assertNotNull(result);
+        assertEquals(logs, result.job().work());
+        assertEquals("helper", result.job().worker());
+        assertNull(queue.claim(WORLD, "another", Set.of(GATHER, CRAFT), 4));
+        assertTrue(queue.finish("stock", logs.id(), result.job().lease(), true, "Found timber", 5));
+        assertEquals(ingredients, queue.claim(WORLD, "helper", Set.of(CRAFT), 6).job().work());
     }
 
     @Test void stalledSupplyRewindsOnlyWhenItsPreparationIsPrivate() throws Exception {

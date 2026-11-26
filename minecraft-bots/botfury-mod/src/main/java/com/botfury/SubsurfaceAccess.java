@@ -21,7 +21,7 @@ import java.util.List;
 /** Makes short, reversible Baritone approaches when a cave does not reach the ore layer. */
 final class SubsurfaceAccess {
     // Increment when a new return method can recover a previously unreachable route.
-    static final int RETURN_ROUTE_REVISION = 11;
+    static final int RETURN_ROUTE_REVISION = 12;
     private record Passage(BlockPos from, BlockPos to) {
         boolean climbing() { return to.getY() > from.getY(); }
         int clearance() { return 2 + Math.max(0, from.getY() - to.getY()); }
@@ -264,8 +264,9 @@ final class SubsurfaceAccess {
                 localAscent = true;
                 return true;
             }
-            if (!exits.isEmpty() && start(client, position, exits, area, age, true)) return true;
-            return false;
+            if (ascending && (exits.isEmpty() || stalledAscent)
+                    && approachAscentFooting(client, age, position, area, preferred)) return true;
+            return !exits.isEmpty() && start(client, position, exits, area, age, true);
         }
         int initial = Math.floorMod(client.player.getUuid().hashCode(), HEADINGS.length);
         int preferredHeading = initial + heading / 2;
@@ -381,23 +382,56 @@ final class SubsurfaceAccess {
         return false;
     }
 
+    private boolean approachAscentFooting(MinecraftClient client, int age, BlockPos from, ProjectGather.Area area,
+                                          int preferred) {
+        var world = client.world;
+        for (var candidate : BlockPos.iterateOutwards(from, 3, 0, 3)) {
+            if (candidate.equals(from) || !validDestination(client, candidate, area)
+                    || !ProjectPlacement.flushFloor(world.getBlockState(candidate.down()), world, candidate.down())
+                    || !world.getFluidState(candidate).isEmpty() || !world.getFluidState(candidate.up()).isEmpty()
+                    || !world.isSpaceEmpty(client.player, client.player.getBoundingBox()
+                            .offset(Vec3d.ofBottomCenter(candidate).subtract(client.player.getPos())))) continue;
+            var walk = new Passage(from, candidate.toImmutable());
+            if (triedPassage(walk)) continue;
+            for (int turn = 0; turn < HEADINGS.length; turn++) {
+                var step = new Passage(walk.to(), walk.to().offset(HEADINGS[Math.floorMod(preferred + turn, HEADINGS.length)]).up());
+                if (triedPassage(step) || !safePassage(client, step, area) || !canClearReturnStep(client, step)) continue;
+                if (!start(client, from, List.of(walk.to()), area, age, true, false, false)) return false;
+                rememberPassage(walk);
+                nextReturnRecovery = age + RETURN_RECOVERY_TICKS;
+                localAscent = true;
+                BotEvents.add("info", "movement", "Approaching footing for a protected return step at " + walk.to().toShortString());
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean triedPassage(Passage passage) {
+        return attemptedPassages.contains(passage) || attemptedPassages.contains(new Passage(passage.to(), passage.from()));
+    }
+
+    private void rememberPassage(Passage passage) {
+        if (attemptedPassages.size() >= 24) attemptedPassages.remove(attemptedPassages.iterator().next());
+        attemptedPassages.add(passage);
+    }
+
+    private boolean canClearReturnStep(MinecraftClient client, Passage step) {
+        return canDigRoute(client) || step.blocksToClear().stream().allMatch(pos -> {
+            var state = client.world.getBlockState(pos);
+            return passageClear(client, pos, state) || handClearance(state) || emergencyHandClearance(client, pos, state);
+        });
+    }
+
     private boolean beginPassage(MinecraftClient client, int age, Passage candidate, ProjectGather.Area area) {
-        if (client.currentScreen != null || attemptedPassages.contains(candidate)
-                || attemptedPassages.contains(new Passage(candidate.to(), candidate.from()))
-                || !safePassage(client, candidate, area)) return false;
+        if (client.currentScreen != null || triedPassage(candidate) || !safePassage(client, candidate, area)) return false;
         boolean clear = passageOpen(client, candidate);
         if (!clear) {
-            if (candidate.climbing() && diggingToolSlot(client, true) < 0
-                    && candidate.blocksToClear().stream().anyMatch(pos -> {
-                        var state = client.world.getBlockState(pos);
-                        return !passageClear(client, pos, state) && !handClearance(state)
-                                && !emergencyHandClearance(client, pos, state);
-                    })) return false;
+            if (candidate.climbing() && !canClearReturnStep(client, candidate)) return false;
             var hit = passageHit(client, candidate, area);
             if (hit == null || !preparePassageHit(client, hit, candidate.climbing())) return false;
         }
-        if (attemptedPassages.size() >= 24) attemptedPassages.remove(attemptedPassages.iterator().next());
-        attemptedPassages.add(candidate);
+        rememberPassage(candidate);
         if (clear) return start(client, candidate.from(), List.of(candidate.to()), area, age, candidate.climbing());
         passage = candidate;
         passageDeadline = age + (allowEmergencyHandAscent ? 340 : 220);
@@ -613,7 +647,12 @@ final class SubsurfaceAccess {
 
     private boolean start(MinecraftClient client, BlockPos position, List<BlockPos> destinations,
                           ProjectGather.Area area, int age, boolean returning, boolean explorationExit) {
-        boolean equipped = equipDiggingTool(client, returning);
+        return start(client, position, destinations, area, age, returning, explorationExit, true);
+    }
+
+    private boolean start(MinecraftClient client, BlockPos position, List<BlockPos> destinations,
+                          ProjectGather.Area area, int age, boolean returning, boolean explorationExit, boolean allowDigging) {
+        boolean equipped = allowDigging && equipDiggingTool(client, returning);
         if (!equipped && !returning && !explorationExit) return false;
         try {
             settings = explorationExit ? BaritoneSettings.explorationExit(equipped) : BaritoneSettings.prospecting(equipped);

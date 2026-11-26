@@ -17,7 +17,7 @@ final class BotTracker {
                double x, double y, double z, float health, float maxHealth, String server, String dimension,
                String mode, String state, String inventory, String mining, String build, boolean baritone,boolean defenseCapable, boolean scaffoldCleanupCapable, boolean scaffoldBatchCapable,
                Map<String,Integer> items, List<BlockPos> route, boolean inventoryCoordinates, long contactAt, long positionAt,
-               String error, String task, boolean fuelChoicesCapable) {
+               String error, String task, boolean fuelChoicesCapable, boolean projectDefenseCapable) {
         boolean fresh() { return reachable && System.currentTimeMillis() - contactAt < 3000; }
         boolean sameWorld() {
             var here = LocalFormation.here();
@@ -100,8 +100,13 @@ final class BotTracker {
     static void sendDefenses(){
         var here=LocalFormation.here();if(here==null)return;
         String names=String.join(",",all().stream().filter(Bot::sameWorld).map(Bot::name).toList());
-        String command="defense:"+(BotUiConfig.defense?"on":"off")+"|"+here.server()+"|"+here.dimension()+"|"+here.name()+"|"+names;
-        for(Bot bot:all())if(bot.fresh()&&bot.connected&&bot.sameWorld()&&bot.defenseCapable)command(bot.port,command,false);
+        String context = "|" + here.server() + "|" + here.dimension() + "|" + here.name() + "|" + names;
+        for (Bot bot : all()) {
+            if (!bot.fresh() || !bot.connected || !bot.sameWorld() || !bot.defenseCapable) continue;
+            var mode = BotUiConfig.defense;
+            if (mode == TaskDefense.Mode.AUTO && !bot.projectDefenseCapable) mode = TaskDefense.Mode.OFF;
+            command(bot.port, "defense:" + mode.wire + context, false);
+        }
     }
     private static HttpRequest.Builder request(int port,String path){return HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+port+path)).timeout(Duration.ofMillis(700));}
     private static void poll(int port){
@@ -123,7 +128,7 @@ final class BotTracker {
                 text(s,"formation","idle"),text(s,"movementState",""),text(s,"inventoryTask",""),text(s,"miningTask",""),text(s,"build","0.2"),
                 p!=null&&bool(p,"baritone",false),bool(s,"taskDefenseCapable",false),bool(s,"scaffoldCleanupCapable",false),bool(s,"scaffoldBatchCapable",false),s.has("items")?itemCounts(s):connected?null:old==null?null:old.items,
                 position ? route(s) : List.of(),bool(s,"inventoryCoordinates",false),now,position?now:old==null?0:old.positionAt,text(s,"lastEventLevel","info").equals("info")?"":text(s,"lastEvent",""), text(s,"taskKind",""),
-                bool(s,"fuelChoicesCapable",false));
+                bool(s,"fuelChoicesCapable",false),bool(s,"projectDefenseCapable",false));
             bots.put(port,value);return null;
         }).whenComplete((ignored,error)->{if(error!=null)offline(port);inflight.remove(port);});
     }
@@ -181,7 +186,7 @@ final class BotTracker {
         });
     }
 
-    private static void offline(int port){bots.computeIfPresent(port,(p,b)->new Bot(b.port,b.name,false,b.connected,b.alive,b.x,b.y,b.z,b.health,b.maxHealth,b.server,b.dimension,b.mode,b.state,b.inventory,b.mining,b.build,b.baritone,b.defenseCapable,b.scaffoldCleanupCapable,b.scaffoldBatchCapable,b.items,List.of(),b.inventoryCoordinates,b.contactAt,b.positionAt,"Unreachable",b.task,b.fuelChoicesCapable));}
+    private static void offline(int port){bots.computeIfPresent(port,(p,b)->new Bot(b.port,b.name,false,b.connected,b.alive,b.x,b.y,b.z,b.health,b.maxHealth,b.server,b.dimension,b.mode,b.state,b.inventory,b.mining,b.build,b.baritone,b.defenseCapable,b.scaffoldCleanupCapable,b.scaffoldBatchCapable,b.items,List.of(),b.inventoryCoordinates,b.contactAt,b.positionAt,"Unreachable",b.task,b.fuelChoicesCapable,b.projectDefenseCapable));}
     static void command(int port,String command){command(port,command,true);}
     private static void command(int port,String command,boolean report){
         Bot bot=bots.get(port);if(bot==null||!bot.fresh()){if(report)BotEvents.add("warn","bots","Bot is offline");return;}

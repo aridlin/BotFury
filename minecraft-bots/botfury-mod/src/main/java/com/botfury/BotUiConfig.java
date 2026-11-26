@@ -10,7 +10,7 @@ final class BotUiConfig {
     static boolean hud = true;
     static boolean esp = true;
     static boolean paths = true;
-    static boolean defense;
+    static TaskDefense.Mode defense = TaskDefense.Mode.AUTO;
     static boolean fleetGuideSeen;
     static String item = "";
     static final int TRACK_LIMIT = 6;
@@ -49,7 +49,10 @@ final class BotUiConfig {
             if (value.has("hud")) hud = value.get("hud").getAsBoolean();
             if (value.has("paths")) paths = value.get("paths").getAsBoolean();
             if (value.has("esp")) esp = value.get("esp").getAsBoolean();
-            if (value.has("defense")) defense = value.get("defense").getAsBoolean();
+            if (value.get("defense") instanceof com.google.gson.JsonPrimitive preference) {
+                if (preference.isBoolean()) defense = preference.getAsBoolean() ? TaskDefense.Mode.ON : TaskDefense.Mode.OFF;
+                else if ("auto".equals(preference.getAsString())) defense = TaskDefense.Mode.AUTO;
+            }
             if (value.has("fleetGuideSeen")) fleetGuideSeen = value.get("fleetGuideSeen").getAsBoolean();
             if (value.has("item")) item = value.get("item").getAsString();
             squads.clear();
@@ -99,7 +102,13 @@ final class BotUiConfig {
     }
 
     static void save() {
-        try { Files.createDirectories(path().getParent()); Files.writeString(path(), new Gson().toJson(Map.of("hud", hud, "esp", esp, "paths", paths, "item", item, "trackedItems", trackedItems, "defense", defense, "fleetGuideSeen", fleetGuideSeen, "squads", squads))); }
+        Object savedDefense = defense == TaskDefense.Mode.AUTO ? defense.wire : defense == TaskDefense.Mode.ON;
+        try {
+            Files.createDirectories(path().getParent());
+            Files.writeString(path(), new Gson().toJson(Map.of("hud", hud, "esp", esp, "paths", paths,
+                    "item", item, "trackedItems", trackedItems, "defense", savedDefense,
+                    "fleetGuideSeen", fleetGuideSeen, "squads", squads)));
+        }
         catch (Exception error) { BotEvents.add("warn", "settings", "Could not save HUD preference"); }
     }
 }

@@ -15,7 +15,34 @@ import net.minecraft.util.math.Vec3d;
 import java.util.List;
 
 final class TaskDefense {
-    record Config(boolean enabled,String server,String dimension,String owner,List<String> protectedNames) {}
+    enum Mode {
+        AUTO("auto"), ON("on"), OFF("off");
+
+        final String wire;
+
+        Mode(String wire) { this.wire = wire; }
+
+        static Mode parse(String wire) {
+            return switch (wire) {
+                case "auto" -> AUTO;
+                case "on" -> ON;
+                case "off" -> OFF;
+                default -> throw new IllegalArgumentException("Invalid task defense mode");
+            };
+        }
+
+        boolean enabled(boolean projectWorker) { return this == ON || this == AUTO && projectWorker; }
+
+        Mode next() {
+            return switch (this) {
+                case AUTO -> ON;
+                case ON -> OFF;
+                case OFF -> AUTO;
+            };
+        }
+    }
+
+    record Config(Mode mode,String server,String dimension,String owner,List<String> protectedNames) {}
     private static Config config;
     private static long receivedAt,holdUntil;
     private static long lastWalkEvent;
@@ -33,13 +60,13 @@ final class TaskDefense {
     private static boolean retreatJump;
     static Config parse(String value){
         String[] parts=value.split("\\|",-1);
-        if(parts.length!=5||!java.util.Set.of("on","off").contains(parts[0])
+        if(parts.length!=5
                 ||!parts[3].matches("[A-Za-z0-9_]{1,16}")||parts[1].isBlank()||parts[2].isBlank())
             throw new IllegalArgumentException("Invalid task defense configuration");
-        return new Config(parts[0].equals("on"),parts[1],parts[2],parts[3],BotFriends.parse(parts[4]));
+        return new Config(Mode.parse(parts[0]),parts[1],parts[2],parts[3],BotFriends.parse(parts[4]));
     }
     static void configure(Config next){config=next;receivedAt=System.nanoTime();}
-    static boolean enabled(){return config!=null&&config.enabled&&System.nanoTime()-receivedAt<8_000_000_000L;}
+    static boolean enabled(){return config!=null&&config.mode.enabled(ProjectWorker.enabled())&&System.nanoTime()-receivedAt<8_000_000_000L;}
 
     static boolean hasMeal(MinecraftClient client) {
         var inventory = client.player.getInventory();

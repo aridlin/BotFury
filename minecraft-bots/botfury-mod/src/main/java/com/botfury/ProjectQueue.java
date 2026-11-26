@@ -1494,10 +1494,11 @@ final class ProjectQueue {
                         || !kinds.contains(job.work.kind)) continue;
                 boolean nearbyPickup = canRetryConstructionPickup(job, position);
                 boolean nearbyCleanup = canRetryScaffoldCleanup(job, position, hasExcavationTool);
+                boolean nearbyVerification = canRetryBlockVerification(job, position);
                 var excavationMaterial = excavationToolMaterial(job);
                 boolean equippedRetry = excavationMaterial != null && hasExcavationTool.test(excavationMaterial);
                 if (excavationMaterial != null && !equippedRetry) continue;
-                if (job.state != State.WAITING && !nearbyPickup && !nearbyCleanup
+                if (job.state != State.WAITING && !nearbyPickup && !nearbyCleanup && !nearbyVerification
                         && !canResumeExpiredProduction(job, worker)
                         && !(equippedRetry && job.state == State.FAILED && job.attempts == MAX_ATTEMPTS)) continue;
                 if (!done.containsAll(job.work.needs)) {
@@ -1537,7 +1538,7 @@ final class ProjectQueue {
                         || CONSTRUCTION_PICKUP.equals(job.evidence) && job.expiresAt > now) {
                     return assignWithPreparationStock(project, job, worker, now, position, kinds, supportsPickupReserve ? heldCount : null);
                 }
-                if (fallbackJob == null || (nearbyPickup || nearbyCleanup) && fallbackJob.state != State.FAILED
+                if (fallbackJob == null || (nearbyPickup || nearbyCleanup || nearbyVerification) && fallbackJob.state != State.FAILED
                         || manifest && project == fallbackProject && fallbackJob.state == State.WAITING
                                 && earlierManifestBatch(job.work.id, fallbackJob.work.id)) {
                     fallbackProject = project;
@@ -1673,6 +1674,16 @@ final class ProjectQueue {
         var block = JSON.fromJson(job.work.payload, StationTarget.class);
         return block != null && block.target != null && block.block != null && distance(position, block.target) <= 8
                 && Math.abs((long) position.y - block.target.y()) <= 3 && hasExcavationTool.test(block.block);
+    }
+
+    private static boolean canRetryBlockVerification(Job job, ResourceSite position) {
+        if (position == null || job.work.kind != Kind.VERIFY || job.state != State.FAILED
+                || job.attempts != MAX_ATTEMPTS || !TARGET_TIMEOUT.equals(job.evidence)) return false;
+        var block = JSON.fromJson(job.work.payload, StationTarget.class);
+        // Nearby chunks carry block states through the full build height.
+        return block != null && block.target != null
+                && Math.abs((long) position.x - block.target.x()) <= 16
+                && Math.abs((long) position.z - block.target.z()) <= 16;
     }
 
     private static boolean earlierDepositInProgress(Job deposit, Map<String, Job> jobs, Set<String> done) {

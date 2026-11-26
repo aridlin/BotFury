@@ -964,23 +964,24 @@ final class ProjectWorker {
         var kind = work.kind();
         boolean excavate = kind == ProjectQueue.Kind.EXCAVATE;
         boolean build = kind == ProjectQueue.Kind.BUILD;
+        boolean verify = kind == ProjectQueue.Kind.VERIFY;
         if ((kind == ProjectQueue.Kind.EXCAVATE || kind == ProjectQueue.Kind.BUILD || kind == ProjectQueue.Kind.FILL_BUCKETS)
                 && BuildProtection.blocked(assignment.world(), target, assignment.project())) {
             finish(client, false, "Block is in an exclusion zone at " + target.toShortString());
             return;
         }
         boolean targetLoaded = client.world.getChunkManager().isChunkLoaded(target.getX() >> 4, target.getZ() >> 4);
-        if ((excavate || build) && targetLoaded) {
+        if ((excavate || build || verify) && targetLoaded && client.world.isInBuildLimit(target)) {
             var observed = client.world.getBlockState(target);
             if (excavate ? observed.isAir() : block.matches(observed)) {
-                // The loaded block state proves completed work even when the old approach is gone.
+                // Loaded state can prove the result without reaching a stand used for physical work.
                 if (approach != null || breaking || centering) halt(client);
                 if (stableSince == 0) stableSince = now;
                 if (now - stableSince >= seconds(1)) finish(client, true, blockObservation(observed));
                 return;
             }
-            stableSince = 0;
         }
+        if (excavate || build || verify) stableSince = 0;
         var currentCell = player.getBlockPos();
         boolean reachedAlternative = interactionGoals.contains(currentCell);
         if (reachedAlternative) interactionStand = currentCell;
@@ -1086,7 +1087,7 @@ final class ProjectWorker {
             }
         }
         Vec3d feet = Vec3d.ofBottomCenter(stand);
-        boolean inspectNearby = kind == ProjectQueue.Kind.VERIFY && targetLoaded
+        boolean inspectNearby = verify && targetLoaded
                 && player.getPos().squaredDistanceTo(Vec3d.ofBottomCenter(target)) <= 16;
         boolean exactFooting = excavate || kind == ProjectQueue.Kind.BUILD;
         boolean edge = kind == ProjectQueue.Kind.BUILD && block.edgePlacement();
@@ -1236,12 +1237,6 @@ final class ProjectWorker {
         }
         var state = client.world.getBlockState(target);
         var actual = Registries.BLOCK.getId(state.getBlock());
-        if (kind == ProjectQueue.Kind.VERIFY && targetLoaded && block.matches(state)) {
-            halt(client);
-            if (stableSince == 0) stableSince = now;
-            if (now - stableSince >= seconds(1)) finish(client, true, blockObservation(state));
-            return;
-        }
         stableSince = 0;
         if (kind == ProjectQueue.Kind.BUILD) {
             if (edge && (!ProjectPlacement.flushFloor(client.world.getBlockState(block.support()), client.world, block.support())
@@ -1269,7 +1264,7 @@ final class ProjectWorker {
             }
             return;
         }
-        if (kind == ProjectQueue.Kind.VERIFY) {
+        if (verify) {
             String expected = block.block() + (block.properties().isEmpty() ? "" : block.properties().toString());
             String observed = actual + (block.properties().isEmpty() ? "" : ProjectBlock.properties(state).toString());
             finish(client, false, "Expected " + expected + " but observed " + observed + " at " + target.toShortString());

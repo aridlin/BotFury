@@ -34,6 +34,8 @@ final class MiningTask {
     private static final int MAX_EXPLORATION_EXITS = 3;
     private static final int MAX_CANOPY_LEAVES = 6;
     private static final int MAX_ORE_COVER = 2;
+    private static final int EXPOSED_ORE_PICKUP_STEPS = 4;
+    private static final int COVERED_ORE_WALK_RADIUS = 8;
     private static final int SURFACE_ROUTE_DEPTH = 12;
     private static final Gson JSON=new Gson();
     private static final ExecutorService IO=Executors.newFixedThreadPool(2,r->{var t=new Thread(r,"BotFury-mining");t.setDaemon(true);return t;});
@@ -88,6 +90,7 @@ final class MiningTask {
     private static boolean checkedSurfaceTrail;
     private static final int NEARBY_SITE_RADIUS = 48;
     private static final int WIDE_CHUNKS_PER_TICK = 32;
+    private static int nextLocalWideScan;
     private static Iterator<ChunkPos> wideChunks = Collections.emptyIterator();
     private static boolean surfaceResource;
     private static boolean checkedWiderBeforeRememberedSite;
@@ -208,7 +211,7 @@ final class MiningTask {
             if (observations.containsKey(id) || BuildProtection.blocked(pos) || supportsAnotherPlayer(client, pos)
                     || !hasTool(client, state) || feet.getSquaredDistance(pos) > 100) continue;
             var stand = nearOreDropHeight(client, pos, feet) && canReachFromHere(client, feet, pos)
-                    ? feet : walkableOreStand(client, feet, pos);
+                    ? feet : walkableOreStand(client, feet, pos, 0);
             if (stand == null) continue;
             observations.put(id, new ProjectQueue.ReachableOre(id,
                     new ProjectQueue.ResourceSite(pos.getX(), pos.getY(), pos.getZ()),
@@ -218,15 +221,18 @@ final class MiningTask {
         return List.copyOf(observations.values());
     }
 
-    private static BlockPos walkableOreStand(MinecraftClient client, BlockPos feet, BlockPos ore) {
+    private static BlockPos walkableOreStand(MinecraftClient client, BlockPos feet, BlockPos ore, int cover) {
         for (var stand : BlockPos.iterateOutwards(ore.withY(feet.getY()), 3, 0, 3)) {
-            if (stand.getSquaredDistance(feet) > 64 || stand.down().equals(ore)
+            if (!stand.isWithinDistance(feet, COVERED_ORE_WALK_RADIUS) || stand.down().equals(ore)
+                    || cover > 0 && (rejectedStands.containsKey(stand)
+                        || excluded != null && (excluded.contains(stand) || excluded.contains(stand.up())))
                     || !ProjectWorker.knownTrailFooting(client, stand)
                     || !nearOreDropHeight(client, ore, stand)) continue;
             var start = client.player.getPos();
             var finish = Vec3d.ofBottomCenter(stand);
             double reach = Math.min(4.3, client.interactionManager.getReachDistance() - .1);
-            if (miningHit(client, ore, finish.add(0, 1.62, 0), reach) == null) continue;
+            var eye = finish.add(0, client.player.getEyeY() - start.y, 0);
+            if (miningHit(client, ore, eye, reach) == null && coverHitFrom(client, stand, ore, cover, eye) == null) continue;
             int steps = Math.max(1, (int) Math.ceil(finish.distanceTo(start) * 2));
             boolean clear = true;
             for (int i = 1; i <= steps; i++) {
@@ -270,6 +276,7 @@ final class MiningTask {
         localOnly = false;
         surfaceResource = surface;
         checkedWiderBeforeRememberedSite = false;
+        nextLocalWideScan = 0;
         surfaceRouteGoal = surfaceExplorationGoal = null;
         resetSurfaceTrail();
         nextSurfaceSurvey = 0;
@@ -340,7 +347,7 @@ final class MiningTask {
             }
             if(!matches(client,target)){
                 pickup=Vec3d.ofBottomCenter(target);pickupUntil=age+(projectDrop==null?60:100);
-                exposedOrePickupSteps = !openedCover.isEmpty() && !surfaceResource ? 2 : 0;
+                exposedOrePickupSteps = !openedCover.isEmpty() && !surfaceResource ? EXPOSED_ORE_PICKUP_STEPS : 0;
                 protectedOrePickup = false;
                 clearReservation();nextSearch=age+12;
                 if (projectDrop == null) pickupPath();
@@ -489,7 +496,11 @@ final class MiningTask {
         if (pendingCandidates.isEmpty()) {
             if (age < nextSearch) return;
             if (MiningViewDistance.active()) {
-                scanWider(client);
+                if (age >= nextLocalWideScan) {
+                    nextLocalWideScan = age + 100;
+                    scan(client);
+                }
+                if (pendingCandidates.isEmpty()) scanWider(client);
             } else scan(client);
         }
         for (int checked = 0; checked < STANDS_PER_TICK && !pendingCandidates.isEmpty(); checked++) {
@@ -593,6 +604,7 @@ final class MiningTask {
         var nearbyHits = new ArrayList<BlockPos>();
         boolean safeFooting = canMineFromCurrentFooting(client, position);
         int coverLimit = safeFooting ? coverLimit(client) : 0;
+        boolean lookForCoveredOre = coverLimit > 0 && !surfaceResource;
         var suitability = new HashMap<BlockState, Boolean>();
         scanNeedsTool = false;
         int radius = surfaceResource ? 20 : 12;
@@ -601,7 +613,8 @@ final class MiningTask {
             var state = world.getBlockState(pos);
             boolean covered = coverLimit > 0 && matches(state)
                     && coverHit(client, position, pos, coverLimit) != null;
-            if (!eligibleCandidate(client, pos, state, suitability, covered)) continue;
+            boolean localCover = covered || lookForCoveredOre && pos.isWithinDistance(position, COVERED_ORE_WALK_RADIUS);
+            if (!eligibleCandidate(client, pos, state, suitability, localCover)) continue;
             if (safeFooting && (covered || canReachFromHere(client, position, pos))) nearbyHits.add(pos.toImmutable());
             else candidates.add(pos.toImmutable());
         }
@@ -688,6 +701,15 @@ final class MiningTask {
                 && (!ResourceCatalog.isOre(job.resource) || nearOreDropHeight(client, target, feet))
                 && (canReachFromHere(client, feet, target)
                     || coverHit(client, feet, target, coverLimit(client)) != null)) return Vec3d.ofBottomCenter(feet);
+        if (projectMining && !surfaceResource && ResourceCatalog.isOre(job.resource)
+                && completelyCovered(client.world, target)) {
+            if (canMineFromCurrentFooting(client, feet) && target.isWithinDistance(feet, COVERED_ORE_WALK_RADIUS)) {
+                int cover = coverLimit(client);
+                var nearby = cover == 0 ? null : walkableOreStand(client, feet, target, cover);
+                if (nearby != null) return Vec3d.ofBottomCenter(nearby);
+            }
+            if (excluded != null) return null;
+        }
         return standing(client, target);
     }
 
@@ -697,8 +719,12 @@ final class MiningTask {
     }
 
     private static BlockHitResult coverHit(MinecraftClient client, BlockPos feet, BlockPos resource, int limit) {
+        return coverHitFrom(client, feet, resource, limit, client.player.getEyePos());
+    }
+
+    private static BlockHitResult coverHitFrom(MinecraftClient client, BlockPos feet, BlockPos resource,
+                                               int limit, Vec3d eye) {
         if (limit == 0) return null;
-        var eye = client.player.getEyePos();
         var point = Vec3d.ofCenter(resource);
         double reach = Math.min(4.3, client.interactionManager.getReachDistance() - .1);
         if (eye.squaredDistanceTo(point) > reach * reach || feet.down().equals(resource)

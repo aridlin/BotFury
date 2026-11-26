@@ -497,6 +497,8 @@ final class MiningTask {
         if (retracingSurfaceTrail() && followSurfaceTrail(client, client.player.getBlockPos())) return;
         if (requestLooseDrop(client)) return;
         if (subsurface.continuePassage(client, age, excluded)) {
+            // The bounded cut can exceed the exit timer. Keep the route through its first walking step.
+            if (surfaceRouteGoal != null) surfaceProgressAt = age;
             status = surfaceRouteGoal == null ? "Opening a short prospecting passage"
                     : "Opening stairs to the surface for " + job.resource;
             return;

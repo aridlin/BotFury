@@ -87,6 +87,7 @@ final class ProjectQueue {
             }
         }
     }
+    record FurnaceSite(ResourceSite target, ResourceSite stand) {}
     private record GatherSource(String resource, String variant, String item) {}
     private record GatherQuantity(Integer count, ProjectGather.Bounds exclude) {}
     record ChestReport(String location, Map<String, Integer> items, Integer free) {
@@ -1355,12 +1356,17 @@ final class ProjectQueue {
         recoverMissingSuppliers(world, now);
         Set<String> reserved = new HashSet<>();
         Map<String, String> projectReservations = new HashMap<>();
+        Map<String, Work> furnaceReservations = new HashMap<>();
         for (Project project : projects.values()) {
             if (!world.equals(project.world)) continue;
             var storage = reservedStorage(project);
             if (storage != null) projectReservations.putIfAbsent(storage, project.id);
             var blocked = blockedJobs(project);
             for (Job job : project.jobs) {
+                if (job.state == State.WAITING && !blocked.contains(job.work.id) && resumesLoadedFurnace(job.work)) {
+                    var target = JSON.fromJson(job.work.payload, StationTarget.class).target.checked();
+                    furnaceReservations.putIfAbsent(ProjectBlock.key(target), job.work);
+                }
                 if (job.work.cleanup != null && (job.state == State.WAITING || job.state == State.LEASED)
                         && !blocked.contains(job.work.id)) projectReservations.putIfAbsent(job.work.cleanup.site, project.id);
             }
@@ -1458,8 +1464,10 @@ final class ProjectQueue {
                 }
                 boolean usesStation = job.work.kind == Kind.TRANSFER || job.work.kind == Kind.CRAFT || job.work.kind == Kind.SMELT;
                 if (usesStation && !Collections.disjoint(unavailableStations, job.work.locks)) continue;
+                if (!canGatherLoadedFurnaceFuel(job.work, worker, hasExcavationTool, heldCount)) continue;
                 if (!Collections.disjoint(reserved, job.work.locks) || job.work.locks.stream().anyMatch(key ->
-                        projectReservations.containsKey(key) && !project.id.equals(projectReservations.get(key)))) {
+                        projectReservations.containsKey(key) && !project.id.equals(projectReservations.get(key))
+                                || furnaceReservations.containsKey(key) && furnaceReservations.get(key) != job.work)) {
                     waitingWithCargo |= pinned;
                     continue;
                 }
@@ -3488,6 +3496,12 @@ final class ProjectQueue {
     synchronized boolean finish(String projectId, String jobId, UUID token, boolean success, String evidence,
                                 ChestReport chest, ResourceSite site, boolean pickupShortfall,
                                 List<StockCarrier> carriers, long now) throws IOException {
+        return finish(projectId, jobId, token, success, evidence, chest, site, pickupShortfall, carriers, null, now);
+    }
+
+    synchronized boolean finish(String projectId, String jobId, UUID token, boolean success, String evidence,
+                                ChestReport chest, ResourceSite site, boolean pickupShortfall,
+                                List<StockCarrier> carriers, FurnaceSite loadedFurnace, long now) throws IOException {
         if (evidence == null || evidence.isBlank() || evidence.length() > 2048) {
             throw new IllegalArgumentException("Report an observed outcome or failure reason");
         }
@@ -3583,7 +3597,9 @@ final class ProjectQueue {
             restoredLeases.remove(token);
             return true;
         }
-        if (!success && recoverMissingProduction(project, job, evidence)) {
+        if (!success && (loadedFurnace != null
+                ? missingSmeltingFuel(job, evidence) && recoverLoadedFurnace(project, job, loadedFurnace)
+                : !resumesLoadedFurnace(job.work) && recoverMissingProduction(project, job, evidence))) {
             markAssignmentSeen(project, job.worker, now);
             restoredLeases.remove(token);
             return true;
@@ -4138,8 +4154,85 @@ final class ProjectQueue {
                 || (spec.fuel != null && ("Missing furnace fuel " + spec.fuel).equals(evidence)));
     }
 
+    private static boolean resumesLoadedFurnace(Work work) {
+        return work.kind == Kind.SMELT && ProjectProduction.resumesLoadedFurnace(work.payload);
+    }
+
+    private static boolean canGatherLoadedFurnaceFuel(Work work, String worker,
+            java.util.function.Predicate<String> hasTool,
+            java.util.function.ToIntBiFunction<String, String> heldCount) {
+        if (work.kind != Kind.GATHER || !work.payload.contains("\"fuelForLoadedFurnace\"")) return true;
+        var payload = JSON.fromJson(work.payload, com.google.gson.JsonObject.class);
+        if (payload == null || !payload.has("fuelForLoadedFurnace")) return true;
+        var source = gatherSource(work.payload);
+        if (source == null || !ResourceCatalog.isOre(source.resource)) return true;
+        return heldCount != null && heldCount.applyAsInt(worker, source.item) >= payload.get("count").getAsInt()
+                || ResourceCatalog.blocks(source.resource, source.variant).stream().anyMatch(hasTool);
+    }
+
+    private static boolean missingSmeltingFuel(Job job, String evidence) {
+        if (job.work.kind != Kind.SMELT) return false;
+        var spec = JSON.fromJson(job.work.payload, SmeltFuel.class);
+        return spec != null && spec.fuel != null && ("Missing furnace fuel " + spec.fuel).equals(evidence);
+    }
+
+    synchronized boolean recoverLegacyFurnace(String world, String projectId, String jobId, FurnaceSite site)
+            throws IOException {
+        var project = projects.get(projectId);
+        var job = find(project, jobId);
+        if (job == null || !project.world.equals(world) || job.state != State.FAILED || job.evidence == null) return false;
+        String reason = job.evidence.split(" after ", 2)[0];
+        return missingSmeltingFuel(job, reason) && recoverLoadedFurnace(project, job, site);
+    }
+
+    private boolean recoverLoadedFurnace(Project project, Job job, FurnaceSite site) throws IOException {
+        if (site == null || site.target == null || site.stand == null || project.supplyChest == null
+                || project.repeat != null || cancelled(project) || resumesLoadedFurnace(job.work)) return false;
+        var fuelStep = find(project, job.work.sameWorkerAs);
+        var spec = JSON.fromJson(job.work.payload, SmeltFuel.class);
+        String planned = spec.plannedFuel == null ? spec.fuel : spec.plannedFuel;
+        if (fuelStep == null || fuelStep.state != State.DONE || fuelStep.work.kind != Kind.GATHER
+                || fuelStep.work.sameWorkerAs == null
+                || !privatePreparationReady(project, job, Set.of(fuelStep.work.id))
+                || job.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) return false;
+        var origin = find(project, fuelStep.work.sameWorkerAs);
+        var fuelSource = gatherSource(fuelStep.work.payload);
+        var rawSource = origin.work.kind == Kind.GATHER ? gatherSource(origin.work.payload) : null;
+        if (rawSource == null || !rawSource.item.equals(spec.input) || fuelSource == null
+                || !fuelSource.item.equals(planned)) return false;
+
+        var target = new ProjectBlock.Position(site.target.x, site.target.y, site.target.z).checked();
+        var stand = new ProjectBlock.Position(site.stand.x, site.stand.y, site.stand.z).checked();
+        if (!ProjectBlock.validStand(target, stand)) return false;
+        var locks = Set.copyOf(ProjectBlock.stationCells(target, stand));
+        if (projects.values().stream().filter(other -> other.world.equals(project.world))
+                .flatMap(other -> other.jobs.stream()).anyMatch(other -> other != job
+                        && (other.state == State.LEASED || other.state == State.WAITING && resumesLoadedFurnace(other.work))
+                        && !Collections.disjoint(other.work.locks, locks))) return false;
+
+        var payload = JSON.fromJson(job.work.payload, com.google.gson.JsonObject.class);
+        payload.add("target", JSON.toJsonTree(site.target));
+        payload.add("stand", JSON.toJsonTree(site.stand));
+        payload.addProperty("fuel", planned);
+        payload.remove("plannedFuel");
+        payload.remove("properties");
+        payload.remove("face");
+        payload.addProperty("resumeLoadedFurnace", true);
+        var smelt = new Work(job.work.id, Kind.SMELT, JSON.toJson(payload), job.work.needs, locks, fuelStep.work.id);
+        // The raw material is in the furnace, so the next fuel gatherer can take over.
+        var fuelPayload = JSON.fromJson(fuelStep.work.payload, com.google.gson.JsonObject.class);
+        fuelPayload.addProperty("fuelForLoadedFurnace", true);
+        var gather = new Work(fuelStep.work.id, Kind.GATHER, JSON.toJson(fuelPayload), fuelStep.work.needs, fuelStep.work.locks);
+        var jobs = new ArrayList<>(project.jobs);
+        jobs.set(jobs.indexOf(fuelStep), freshStockWork(gather));
+        jobs.set(jobs.indexOf(job), freshStockWork(smelt));
+        commit(project.withJobs(jobs));
+        return true;
+    }
+
     private boolean recoverMissingProduction(Project project, Job job, String evidence) throws IOException {
-        if (project.supplyChest == null || job.work.sameWorkerAs == null || !missingProductionInput(job, evidence)) return false;
+        if (project.supplyChest == null || job.work.sameWorkerAs == null || !missingProductionInput(job, evidence)
+                || resumesLoadedFurnace(job.work)) return false;
         var jobs = new HashMap<String, Job>();
         project.jobs.forEach(stage -> jobs.put(stage.work.id, stage));
         var supplier = jobs.get(job.work.sameWorkerAs);
@@ -4159,7 +4252,7 @@ final class ProjectQueue {
             var jobs = new HashMap<String, Job>();
             project.jobs.forEach(job -> jobs.put(job.work.id, job));
             for (Job job : project.jobs) {
-                if (job.state != State.WAITING || job.work.sameWorkerAs == null
+                if (job.state != State.WAITING || job.work.sameWorkerAs == null || resumesLoadedFurnace(job.work)
                         || !job.work.needs.stream().allMatch(id -> jobs.get(id).state == State.DONE)) continue;
                 var supplier = jobs.get(job.work.sameWorkerAs);
                 var key = workerKey(world, supplier.worker, project.id);

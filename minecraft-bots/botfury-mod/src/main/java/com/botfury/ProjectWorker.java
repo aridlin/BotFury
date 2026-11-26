@@ -63,6 +63,8 @@ final class ProjectWorker {
     private static ProjectGather.Area miningCraftArea;
     private static ProjectBlock portableWorkbench, productionWorkbench;
     private static ProjectProduction.Result pendingProductionResult;
+    private static boolean resumesLoadedFurnace;
+    private static ProjectQueue.FurnaceSite loadedFurnace;
     private static WorkbenchPickup workbenchPickup;
     private static long nextSafetyReport;
     private static boolean waitingForSafety;
@@ -307,6 +309,8 @@ final class ProjectWorker {
         miningCraftArea = null;
         portableWorkbench = productionWorkbench = null;
         pendingProductionResult = null;
+        resumesLoadedFurnace = false;
+        loadedFurnace = null;
         workbenchPickup = null;
         nextMiningWeaponCheck = nextRoutePickaxeCheck = 0;
         pausedForMiningCraft = false;
@@ -829,6 +833,7 @@ final class ProjectWorker {
     }
 
     private static boolean prepareFieldWorkstation(MinecraftClient client, long now) {
+        if (resumesLoadedFurnace) return false;
         var kind = assignment.job().work().kind();
         String stationName = kind == ProjectQueue.Kind.SMELT ? "furnace" : "workbench";
         if (fieldStoneUntil != 0) {
@@ -1787,6 +1792,9 @@ final class ProjectWorker {
     }
 
     private static void finishProduction(MinecraftClient client, ProjectProduction.Result result, long now) {
+        if (result.loadedFurnace() && block != null) {
+            loadedFurnace = new ProjectQueue.FurnaceSite(routePoint(block.target()), routePoint(block.stand()));
+        }
         if (result.success() && productionWorkbench != null) {
             halt(client);
             pendingProductionResult = result;
@@ -1869,6 +1877,7 @@ final class ProjectWorker {
             if (success != null && action.equals("finish")) {
                 args.put("success", success);
                 args.put("evidence", evidence);
+                if (loadedFurnace != null) args.put("loadedFurnace", loadedFurnace);
                 if (chestReport != null && !resupply) args.put("chest", chestReport);
                 if (pickupShortfall) args.put("pickupShortfall", true);
             }
@@ -1945,6 +1954,8 @@ final class ProjectWorker {
                         chest = new ProjectChest(spec);
                         if (chest.depositing()) projectCargoItem = spec.item();
                     } else if (work.kind() == ProjectQueue.Kind.CRAFT || work.kind() == ProjectQueue.Kind.SMELT) {
+                        resumesLoadedFurnace = work.kind() == ProjectQueue.Kind.SMELT
+                                && ProjectProduction.resumesLoadedFurnace(work.payload());
                         var spec = ProjectProduction.useInventoryGrid(client, ProjectProduction.parse(work.payload(), work.kind()));
                         block = spec.station();
                         production = new ProjectProduction(spec);

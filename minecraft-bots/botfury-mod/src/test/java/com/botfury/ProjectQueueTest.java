@@ -15,6 +15,46 @@ class ProjectQueueTest {
     @TempDir Path directory;
     private static final String WORLD = "test|overworld";
 
+    @Test void loadedFurnaceRecoveryPersistsItsExactStationAndReopensOnlyFuel() throws Exception {
+        var file = directory.resolve("loaded-furnace.json");
+        var raw = job("raw", GATHER, List.of());
+        raw = raw.withPayload("{\"resource\":\"iron\",\"variant\":\"both\",\"item\":\"minecraft:raw_iron\",\"count\":3}");
+        var coal = new ProjectQueue.Work("fuel", GATHER,
+                "{\"resource\":\"coal\",\"variant\":\"both\",\"item\":\"minecraft:coal\",\"count\":1}",
+                List.of(raw.id()), Set.of(), raw.id());
+        var smelt = new ProjectQueue.Work("smelt", SMELT,
+                "{\"input\":\"minecraft:raw_iron\",\"fuel\":\"minecraft:crafting_table\",\"plannedFuel\":\"minecraft:coal\",\"count\":3}",
+                List.of(coal.id()), Set.of("block:0,64,0"), coal.id());
+        var queue = new ProjectQueue(file);
+        queue.submitSupplied("stock", WORLD, List.of(raw, coal, smelt), "block:1,64,0");
+        for (var work : List.of(raw, coal)) {
+            var lease = queue.claim(WORLD, "miner", Set.of(GATHER), 1).job();
+            assertEquals(work.id(), lease.work().id());
+            assertTrue(queue.finish("stock", work.id(), lease.lease(), true, "Gathered", 2));
+        }
+        var first = queue.claim(WORLD, "miner", Set.of(SMELT), 3).job();
+        var field = new ProjectQueue.FurnaceSite(new ProjectQueue.ResourceSite(20, 32, 10),
+                new ProjectQueue.ResourceSite(19, 32, 10));
+        assertTrue(queue.finish("stock", smelt.id(), first.lease(), false, "Missing furnace fuel minecraft:crafting_table",
+                null, null, false, List.of(), field, 4));
+        queue = new ProjectQueue(file);
+        queue.submit("other", WORLD, List.of(new ProjectQueue.Work("take", CRAFT, "{}",
+                List.of(), Set.of("block:20,32,10"))));
+        assertNull(queue.claim(WORLD, "other", Set.of(CRAFT), "other", 5));
+        assertNull(queue.claim(WORLD, "unarmed", Set.of(GATHER), "stock", 6));
+        var fuel = queue.claim(WORLD, "courier", Set.of(GATHER), "stock", 6, null,
+                "minecraft:coal_ore"::equals).job();
+        assertEquals(coal.id(), fuel.work().id());
+        assertTrue(queue.finish("stock", fuel.work().id(), fuel.lease(), true, "Observed coal", 7));
+        assertNull(queue.claim(WORLD, "miner", Set.of(SMELT), "stock", 8));
+        var recovery = queue.claim(WORLD, "courier", Set.of(SMELT), "stock", 9).job();
+        assertTrue(recovery.work().locks().contains("block:20,32,10"));
+        assertFalse(recovery.work().locks().contains("block:0,64,0"));
+        assertTrue(recovery.work().payload().contains("\"fuel\":\"minecraft:coal\""));
+        assertEquals(ProjectQueue.State.DONE, queue.snapshot(10).stream()
+                .filter(project -> project.id().equals("stock")).findFirst().orElseThrow().jobs().get(0).state());
+    }
+
     @Test void unfinishedFurnaceDoesNotReserveTheWorkerNeededToBuildIt() throws Exception {
         var file = directory.resolve("unavailable-furnace-worker.json");
         String furnaceKey = "block:2,64,0";

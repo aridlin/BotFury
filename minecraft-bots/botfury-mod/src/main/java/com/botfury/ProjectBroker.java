@@ -35,6 +35,7 @@ final class ProjectBroker {
     private record Request(String action, String project, String worker, Set<ProjectQueue.Kind> kinds,
                            List<ProjectQueue.Work> work, String job, UUID token, Boolean success,
                            String evidence, ProjectQueue.ChestReport chest, ProjectQueue.ChestReport routeStock, ProjectQueue.ResourceSite resourceSite,
+                           ProjectQueue.FurnaceSite loadedFurnace,
                            boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool, int routeCraftTarget, boolean needsRouteBench, boolean canSupplyBench, boolean receivedRouteBench,
                            boolean supportsPickupReserve, boolean supportsStickResupply, boolean needsMeal, boolean carryingMeal, String spareMeal, List<ProjectQueue.ReachableOre> reachableOre, boolean groundedGatherRetry, List<String> localStarterLogs) {}
 
@@ -793,6 +794,10 @@ final class ProjectBroker {
                     var renewed = board.renew(request.project, request.job, request.token, request.resourceSite, now, request.needsRouteTool, request.needsRouteBench);
                     reply(exchange, renewed == null ? 409 : 200, renewed);
                 }
+                case "recover-furnace" -> {
+                    boolean recovered = board.recoverLegacyFurnace(world, request.project, request.job, request.loadedFurnace);
+                    reply(exchange, recovered ? 200 : 409, recovered);
+                }
                 case "finish" -> {
                     if (request.success == null) throw new IllegalArgumentException("Report a success or failure");
                     board.recordRouteStock(request.project, request.job, request.token, now, request.routeStock);
@@ -806,7 +811,7 @@ final class ProjectBroker {
                             ? idleStockCarriers() : List.<ProjectQueue.StockCarrier>of();
                     boolean accepted = board.finish(request.project, request.job, request.token,
                             request.success, request.evidence, request.chest, request.resourceSite, request.pickupShortfall,
-                            carriers, now);
+                            carriers, request.loadedFurnace, now);
                     var next = accepted && request.success ? board.batchContinuation(request.project, request.token, now) : null;
                     reply(exchange, accepted ? 200 : 409, next == null ? accepted : next);
                 }

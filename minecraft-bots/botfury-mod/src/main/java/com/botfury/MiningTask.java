@@ -107,6 +107,7 @@ final class MiningTask {
     private static BaritoneSettings settings;
     private static final StallRecovery routeRecovery = new StallRecovery();
     private static final SubsurfaceAccess subsurface = new SubsurfaceAccess();
+    private static final OreRouteBackoff oreRoutes = new OreRouteBackoff();
     private static final Map<BlockPos,Integer> rejected=new HashMap<>();
     private static final Map<BlockPos,Integer> rejectedStands = new HashMap<>();
     private static int approachProgress;
@@ -433,14 +434,17 @@ final class MiningTask {
                 if (age - approachProgress >= 250) {
                     rejectedStands.put(p, age + 600);
                     boolean prospectAgain = prospectingAltitude(client) != null;
-                    rejected.put(target, age + 1200);
+                    if (projectMining && ResourceCatalog.isOre(job.resource)) {
+                        oreRoutes.defer(world, job.resource, target, feet, System.nanoTime());
+                        BotEvents.add("info", "mining", "Trying a different vein after blocked approaches near " + target.toShortString());
+                    } else rejected.put(target, age + 1200);
                     stopPath();
                     clearReservation();
                     client.interactionManager.cancelBlockBreaking();
                     status = "Trying another approach to " + job.resource;
                     nextSearch = age + 1;
                     if (prospectAgain) {
-                        // A different stand for the same vein can still be on the other side of the wall.
+                        // Clear the remembered route so prospecting can move to another vein.
                         rememberedSite = null;
                         pendingCandidates.clear();
                         nextSearch = age + 20;
@@ -513,7 +517,8 @@ final class MiningTask {
         for (int checked = 0; checked < STANDS_PER_TICK && !pendingCandidates.isEmpty(); checked++) {
             var candidate = pendingCandidates.removeFirst();
             if (!client.world.isChunkLoaded(candidate.getX() >> 4, candidate.getZ() >> 4)
-                    || !matches(client, candidate) || protectedTarget(client, candidate)) continue;
+                    || !matches(client, candidate) || protectedTarget(client, candidate)
+                    || deferredOreRoute(client, candidate)) continue;
             if (!hasTool(client, client.world.getBlockState(candidate))) {
                 scanNeedsTool = true;
                 continue;
@@ -642,10 +647,20 @@ final class MiningTask {
         pendingCandidates.addAll(candidates);
     }
 
+    private static boolean deferredOreRoute(MinecraftClient client, BlockPos ore) {
+        if (!projectMining || !ResourceCatalog.isOre(job.resource)) return false;
+        var feet = client.player.getBlockPos();
+        if (!oreRoutes.deferred(world, job.resource, ore, feet, System.nanoTime())) return false;
+        // The previous approach no longer matters if the worker has a usable hit from its current footing.
+        return !ore.isWithinDistance(feet, 5) || !canMineFromCurrentFooting(client, feet)
+                || !nearOreDropHeight(client, ore, feet)
+                || !canReachFromHere(client, feet, ore) && coverHit(client, feet, ore, coverLimit(client)) == null;
+    }
+
     private static boolean eligibleCandidate(MinecraftClient client, BlockPos pos, BlockState state,
                                              Map<BlockState, Boolean> suitability, boolean canExpose) {
         if (!matches(state) || excluded != null && excluded.contains(pos)
-                || rejected.containsKey(pos) || protectedTarget(client, pos)) return false;
+                || rejected.containsKey(pos) || protectedTarget(client, pos) || deferredOreRoute(client, pos)) return false;
         if (!canExpose && projectMining && excluded != null && state.isFullCube(client.world, pos)
                 && completelyCovered(client.world, pos)) return false;
         if (suitability.computeIfAbsent(state, block -> hasTool(client, block))) return true;

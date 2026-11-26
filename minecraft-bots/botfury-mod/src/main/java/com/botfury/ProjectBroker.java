@@ -41,6 +41,7 @@ final class ProjectBroker {
                            boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool, int routeCraftTarget, boolean needsRouteBench, boolean canSupplyBench, boolean receivedRouteBench,
                            boolean supportsPickupReserve, boolean supportsStickResupply, boolean needsMeal, boolean carryingMeal, String spareMeal,
                            boolean supportsMealTrail, List<ProjectQueue.ResourceSite> mealTrail,
+                           FieldForage.Source forageSource,
                            List<ProjectQueue.ReachableOre> reachableOre, boolean groundedGatherRetry, List<String> localStarterLogs) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
@@ -740,6 +741,14 @@ final class ProjectBroker {
                                 .filter(TaskDefense::nourishing).isPresent()) {
                             assignment = board.offerMealResupply(world, request.worker, request.project, now, meal.toString(),
                                     ProjectBroker::workerPosition, ProjectBroker::heldCount, request.supportsMealTrail);
+                        }
+                        if (assignment == null && request.forageSource != null && request.forageSource.item() != null) {
+                            var meat = Identifier.tryParse(request.forageSource.item());
+                            if (meat != null && Registries.ITEM.getOrEmpty(meat).filter(TaskDefense::rawForageFood).isPresent()) {
+                                assignment = board.offerMealResupply(world, request.worker, request.project, now,
+                                        meat.toString(), ProjectBroker::workerPosition, ProjectBroker::heldCount,
+                                        request.supportsMealTrail, request.forageSource);
+                            }
                         }
                         if (assignment == null && request.supportsStickResupply) {
                             assignment = board.offerStickResupply(world, request.worker, request.project, now,

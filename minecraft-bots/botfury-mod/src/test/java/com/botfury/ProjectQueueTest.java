@@ -266,6 +266,27 @@ class ProjectQueueTest {
         assertEquals(miner.lease(), queue.snapshot(9).get(0).jobs().get(0).lease());
     }
 
+    @Test void oneFoodAnimalCanSupplyOnlyOneActiveCourierEvenAcrossProjects() throws Exception {
+        var queue = new ProjectQueue(directory.resolve("food-animal.json"));
+        var gather = new ProjectQueue.Work("ore", GATHER,
+                "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":4}",
+                List.of(), Set.of());
+        var field = new ProjectQueue.ResourceSite(8, 24, 0);
+        var animal = new FieldForage.Source(java.util.UUID.randomUUID(), field, "minecraft:beef");
+        for (var suffix : List.of("a", "b")) {
+            String project = "mine-" + suffix;
+            queue.submit(project, WORLD, List.of(gather));
+            var miner = queue.claim(WORLD, "miner-" + suffix, Set.of(GATHER), project, 1, field).job();
+            queue.recordMealNeed(project, "ore", miner.lease(), true, false, 2);
+            assertNull(queue.claim(WORLD, "courier-" + suffix, Set.of(RESUPPLY), project, 2, field));
+        }
+        var delivery = queue.offerMealResupply(WORLD, "courier-a", "mine-a", 3, animal.item(),
+                name -> field, (name, item) -> 0, true, animal).job();
+        assertEquals(animal, queue.routeToolDelivery("mine-a", delivery.work().id(), delivery.lease(), 4).forage());
+        assertNull(queue.offerMealResupply(WORLD, "courier-b", "mine-b", 4, animal.item(),
+                name -> field, (name, item) -> 0, true, animal));
+    }
+
     @Test void spareSticksCanBeDeliveredOnceWithoutMovingTheToolLease() throws Exception {
         var journal = directory.resolve("stick-resupply.json");
         var queue = new ProjectQueue(journal);

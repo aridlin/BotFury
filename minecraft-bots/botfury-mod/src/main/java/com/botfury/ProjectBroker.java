@@ -126,6 +126,7 @@ final class ProjectBroker {
             checkOwnedPlacements(client, board, world);
             confirmLocalScaffoldClearance(client, board, world);
             confirmLocalInspections(client, board, world, now);
+            reuseRetainedToolMaterials(client, board, world);
             reuseCarriedSmeltingOutputs(client, board, world);
             resumeCarriedSmelting(client, board, world);
             retryNearbyWorkstationCrafts(client, board, world);
@@ -219,6 +220,21 @@ final class ProjectBroker {
                             + " with ingredients near the workbench");
                     return;
                 }
+            }
+        }
+    }
+
+    private static void reuseRetainedToolMaterials(net.minecraft.client.MinecraftClient client, ProjectQueue board,
+                                                   String world) throws IOException {
+        long now = System.currentTimeMillis();
+        for (var bot : BotTracker.all()) {
+            if (!bot.fresh() || !bot.connected() || !bot.alive() || !bot.sameWorld() || bot.items().isEmpty()) continue;
+            var pos = BlockPos.ofFloored(bot.x(), bot.y(), bot.z());
+            var site = new ProjectQueue.ResourceSite(pos.getX(), pos.getY(), pos.getZ());
+            if (board.reuseRetainedToolMaterials(world, bot.name(), site, bot.items(), now,
+                    (pickaxe, furnace) -> ProjectProduction.retainedPickaxeMaterial(client, pickaxe.payload(), furnace.payload()))) {
+                BotEvents.add("info", "projects", bot.name() + " is preparing replacement tools with carried furnace output");
+                return;
             }
         }
     }

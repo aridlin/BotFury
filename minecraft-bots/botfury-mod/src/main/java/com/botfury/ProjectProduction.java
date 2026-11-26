@@ -189,6 +189,15 @@ final class ProjectProduction {
         return output.isEmpty() || output.hasNbt() ? null : Registries.ITEM.getId(output.getItem());
     }
 
+    static String retainedPickaxeMaterial(MinecraftClient client, String pickaxe, String furnace) {
+        var output = smeltingOutput(client, furnace);
+        if (output == null || output.equals(Identifier.of("minecraft", "stick"))) return null;
+        String item = output.toString();
+        int count = parse(furnace, ProjectQueue.Kind.SMELT).count();
+        var ingredients = carriedCraftingIngredients(client, pickaxe, Map.of(item, count, "minecraft:stick", 2));
+        return ingredients.contains(item) ? item : null;
+    }
+
     static Identifier carriedSmeltingFuel(MinecraftClient client, String work, Map<String, Integer> inventory) {
         var spec = parse(work, ProjectQueue.Kind.SMELT);
         if (inventory.getOrDefault(spec.input.toString(), 0) == 0) return null;

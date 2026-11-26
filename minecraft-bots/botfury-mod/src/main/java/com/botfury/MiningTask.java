@@ -71,6 +71,8 @@ final class MiningTask {
     private static ItemEntity reservedDrop;
     private static int nextDropScan, dropDeadline;
     private static final int LOOSE_DROP_RADIUS = 12;
+    private static final int MAX_FAILED_DROP_ROUTES = 64;
+    private static final Map<UUID, BlockPos> failedDropRoutes = new LinkedHashMap<>();
     private static final DroppedItemSearch minedDrops = new DroppedItemSearch();
     private static BlockPos rememberedSite;
     private static BlockPos deepExplorationGoal;
@@ -282,6 +284,7 @@ final class MiningTask {
         var here=LocalFormation.here();world=here.server()+"|"+here.dimension();
         paused=false;
         nextDropScan = 0;
+        failedDropRoutes.clear();
         age=nextSearch=nextPath=nextRenew=exploration=0;requesting=dead=false;target=null;stand=null;pickup=null;leaseToken=null;origin=client.player.getPos();rejected.clear();
         rejectedStands.clear();
         pendingCandidates.clear();
@@ -506,7 +509,8 @@ final class MiningTask {
         var player = client.player;
         var loose = client.world.getEntitiesByClass(ItemEntity.class, player.getBoundingBox().expand(LOOSE_DROP_RADIUS),
                 item -> item.isOnGround() && player.squaredDistanceTo(item) <= LOOSE_DROP_RADIUS * LOOSE_DROP_RADIUS
-                        && rejected.getOrDefault(item.getBlockPos(), 0) <= age && availableDrop(client, item))
+                        && rejected.getOrDefault(item.getBlockPos(), 0) <= age
+                        && !item.getBlockPos().equals(failedDropRoutes.get(item.getUuid())) && availableDrop(client, item))
                 .stream().min(Comparator.comparingDouble(player::squaredDistanceTo)).orElse(null);
         if (loose == null) return false;
         var cell = loose.getBlockPos();
@@ -528,12 +532,16 @@ final class MiningTask {
 
     private static void collectReservedDrop(MinecraftClient client) {
         if (reservedDrop.getBlockPos().equals(target) && availableDrop(client, reservedDrop)
-                && age < dropDeadline && System.currentTimeMillis() < leaseUntil
-                && minedDrops.approachReserved(client, reservedDrop) == DroppedItemSearch.State.APPROACHING) {
-            status = "Collecting dropped " + projectDrop;
-            return;
+                && System.currentTimeMillis() < leaseUntil) {
+            if (age < dropDeadline && minedDrops.approachReserved(client, reservedDrop) == DroppedItemSearch.State.APPROACHING) {
+                status = "Collecting dropped " + projectDrop;
+                return;
+            }
+            // Cache the failed approach for this entity at this cell, leaving moved or new items eligible.
+            failedDropRoutes.put(reservedDrop.getUuid(), target);
+            if (failedDropRoutes.size() > MAX_FAILED_DROP_ROUTES) failedDropRoutes.remove(failedDropRoutes.keySet().iterator().next());
+            BotEvents.add("debug", "mining", "Skipped stalled drop route at " + target.toShortString());
         }
-        if (reservedDrop.isAlive()) rejected.put(target, age + 160);
         minedDrops.reset();
         clearReservation();
         nextSearch = age + 1;

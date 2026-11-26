@@ -246,7 +246,6 @@ final class ProjectQueue {
     private static final String CONTRIBUTION_SETTLED = "Partial stock contribution settled";
     static final String CARGO_CHECKPOINT = "Banking a mining checkpoint";
     private static final int MINING_CARGO_LIMIT = 4;
-    private static final int MIN_FULL_GATHER_TOOL_USES = 32;
     private static final int WOOD_CARGO_LIMIT = 16;
     private static final String CONSTRUCTION_PICKUP = "Collecting replacement materials for a nearby builder";
     static final String ALTERNATIVE_FUEL = "Using carried smelting fuel ";
@@ -2969,8 +2968,7 @@ final class ProjectQueue {
 
     private static String carriedMiningPickaxe(Project project, Job gather, int tier, Map<String, Integer> toolUses) {
         int checkpoint = cargoCheckpoint(project, gather);
-        int minimumUses = checkpoint == 0 ? MIN_FULL_GATHER_TOOL_USES
-                : Math.min(MIN_FULL_GATHER_TOOL_USES, checkpoint + SubsurfaceAccess.MIN_ROUTE_TOOL_USES);
+        int minimumUses = SubsurfaceAccess.miningHarvestReserve(checkpoint);
         return PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
                 .filter(tool -> toolUses.getOrDefault(tool, 0) >= minimumUses).findFirst().orElse(null);
     }

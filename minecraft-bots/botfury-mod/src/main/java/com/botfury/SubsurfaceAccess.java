@@ -38,6 +38,7 @@ final class SubsurfaceAccess {
     private static final int REACH = 12;
     private static final int HARVEST_RESERVE = 32;
     static final int MIN_ROUTE_TOOL_USES = 21;
+    private int harvestReserve = HARVEST_RESERVE;
     private static final int ASCENT_CHECKPOINT = 12;
     private static final int DESCENT_RECOVERY_TICKS = 240;
     private static final int RETURN_RECOVERY_TICKS = 400;
@@ -91,7 +92,16 @@ final class SubsurfaceAccess {
         };
     }
 
-    static boolean canDigRoute(MinecraftClient client) { return diggingToolSlot(client, false) >= 0; }
+    static int miningHarvestReserve(int checkpoint) {
+        return checkpoint <= 0 || checkpoint >= HARVEST_RESERVE - MIN_ROUTE_TOOL_USES
+                ? HARVEST_RESERVE : checkpoint + MIN_ROUTE_TOOL_USES;
+    }
+
+    void setMiningCheckpoint(int checkpoint) { harvestReserve = miningHarvestReserve(checkpoint); }
+
+    static boolean canDigRoute(MinecraftClient client) { return diggingToolSlot(client, false, HARVEST_RESERVE) >= 0; }
+
+    boolean hasDiggingTool(MinecraftClient client) { return diggingToolSlot(client, false, harvestReserve) >= 0; }
 
     static boolean hasBasicRoutePickaxe(MinecraftClient client) {
         var inventory = client.player.getInventory();
@@ -154,7 +164,7 @@ final class SubsurfaceAccess {
 
     boolean openLowerStationStep(MinecraftClient client, int age, BlockPos destination, ProjectGather.Area area) {
         var feet = client.player.getBlockPos();
-        return hasFooting(client) && canDigRoute(client) && validDestination(client, destination, null)
+        return hasFooting(client) && hasDiggingTool(client) && validDestination(client, destination, null)
                 && openTowardMiningStand(client, age, feet, destination, area);
     }
 
@@ -420,7 +430,7 @@ final class SubsurfaceAccess {
     }
 
     private boolean canClearReturnStep(MinecraftClient client, Passage step) {
-        return canDigRoute(client) || step.blocksToClear().stream().allMatch(pos -> {
+        return hasDiggingTool(client) || step.blocksToClear().stream().allMatch(pos -> {
             var state = client.world.getBlockState(pos);
             return passageClear(client, pos, state) || handClearance(state) || emergencyHandClearance(client, pos, state);
         });
@@ -438,7 +448,7 @@ final class SubsurfaceAccess {
         if (clear) return start(client, candidate.from(), List.of(candidate.to()), area, age, candidate.climbing());
         passage = candidate;
         passageDeadline = age + (allowEmergencyHandAscent ? 340 : 220);
-        String detail = candidate.climbing() && allowEmergencyHandAscent && !canDigRoute(client)
+        String detail = candidate.climbing() && allowEmergencyHandAscent && !hasDiggingTool(client)
                 ? "Opening an emergency return step without a pickaxe at "
                 : candidate.climbing() ? "Opening a protected return step at "
                 : candidate.to().getY() == candidate.from().getY() ? "Opening a short prospecting passage at "
@@ -574,7 +584,7 @@ final class SubsurfaceAccess {
 
     private boolean emergencyHandClearance(MinecraftClient client, BlockPos pos, BlockState state) {
         float hardness = state.getHardness(client.world, pos);
-        return allowEmergencyHandAscent && !canDigRoute(client) && hardness >= 0 && hardness <= 3
+        return allowEmergencyHandAscent && !hasDiggingTool(client) && hardness >= 0 && hardness <= 3
                 && BaritoneSettings.recoverableTerrain(state.getBlock());
     }
 
@@ -688,7 +698,7 @@ final class SubsurfaceAccess {
         if (followingNaturalAscent() || client.player == null) return true;
         var held = client.player.getMainHandStack();
         if (held.getItem() instanceof PickaxeItem pickaxe && pickaxe.getMaterial().getMiningLevel() >= 2
-                && held.getMaxDamage() - held.getDamage() <= HARVEST_RESERVE) return true;
+                && held.getMaxDamage() - held.getDamage() <= harvestReserve) return true;
         if (client.world == null || !pos.isWithinDistance(origin, escapingExploration ? 6 : REACH)
                 || excluded != null && excluded.contains(pos)) return true;
         var terrain = client.world.getBlockState(pos);
@@ -711,7 +721,7 @@ final class SubsurfaceAccess {
                 && player.getBlockPos().down().equals(pos));
     }
 
-    private static int diggingToolSlot(MinecraftClient client, boolean returning) {
+    private static int diggingToolSlot(MinecraftClient client, boolean returning, int harvestReserve) {
         var inventory = client.player.getInventory();
         int best = -1;
         int bestPriority = Integer.MAX_VALUE;
@@ -719,7 +729,7 @@ final class SubsurfaceAccess {
             var stack = inventory.getStack(index);
             if (!(stack.getItem() instanceof PickaxeItem pickaxe)) continue;
             int level = pickaxe.getMaterial().getMiningLevel();
-            int reserve = level >= 2 ? HARVEST_RESERVE : 0;
+            int reserve = level >= 2 ? harvestReserve : 0;
             if (stack.getMaxDamage() - stack.getDamage() <= reserve) continue;
             int priority = returning ? level : level == 1 ? -1 : level;
             if (priority < bestPriority) {
@@ -730,10 +740,10 @@ final class SubsurfaceAccess {
         return best;
     }
 
-    static boolean equipDiggingTool(MinecraftClient client, boolean returning) {
+    boolean equipDiggingTool(MinecraftClient client, boolean returning) {
         var player = client.player;
         var inventory = player.getInventory();
-        int best = diggingToolSlot(client, returning);
+        int best = diggingToolSlot(client, returning, harvestReserve);
         if (best < 0) return false;
         if (best < 9) {
             inventory.selectedSlot = best;
@@ -777,6 +787,7 @@ final class SubsurfaceAccess {
 
     void reset() {
         stop();
+        harvestReserve = HARVEST_RESERVE;
         lastAscentProbe = Integer.MIN_VALUE;
         retryAt = heading = 0;
         allowEmergencyHandAscent = false;

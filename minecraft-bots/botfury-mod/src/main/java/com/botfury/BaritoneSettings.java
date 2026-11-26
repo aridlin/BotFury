@@ -121,9 +121,13 @@ final class BaritoneSettings implements AutoCloseable {
     }
 
     boolean surfaceLedgeDrop(boolean recovering) {
+        return setWalkingFallLimit(recovering ? 4 : 1);
+    }
+
+    boolean setWalkingFallLimit(int blocks) {
         if (fallHeight == null) return false;
         try {
-            value.set(fallHeight, recovering ? 4 : 1);
+            value.set(fallHeight, blocks);
             return true;
         } catch (IllegalAccessException unavailable) {
             return false;

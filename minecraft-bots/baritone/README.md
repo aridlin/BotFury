@@ -1,6 +1,6 @@
 # Cooperative work in Baritone
 
-The source patch here applies to cabaletta/baritone v1.10.1 (7487b90). It adds ordered goals with explicit completion and a travel goal that passes a snapshot of occupied cells into native A* movement evaluation. The patch retains Baritone's LGPL notices. Build it with JDK 17 from a BotFury checkout.
+The source patch here applies to cabaletta/baritone v1.10.1 (7487b90). It adds ordered goals with explicit completion and a travel goal that passes a snapshot of occupied cells into native A* movement evaluation. It also uses the dimension's minimum height for natural falls, so valid descents still work below Y0. The patch retains Baritone's LGPL notices. Build it with JDK 17 from a BotFury checkout.
 
 ```sh
 git clone --branch v1.10.1 https://github.com/cabaletta/baritone.git /tmp/botfury-baritone-src

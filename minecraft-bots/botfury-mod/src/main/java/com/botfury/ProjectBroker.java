@@ -100,6 +100,13 @@ final class ProjectBroker {
             if (cleanupCheckDue) {
                 nextScaffoldCleanupCheck = now + java.time.Duration.ofSeconds(1).toNanos();
                 retryLocalStationPlacements(client, board, world);
+                for (var carrier : idleStockCarriers()) {
+                    if (board.rotateStalledDeposits(world, carrier, System.currentTimeMillis(),
+                            ProjectBroker::workerPosition, ProjectBroker::heldCount)) {
+                        BotEvents.add("info", "projects", carrier.worker() + " took over a stalled delivery nearby");
+                        break;
+                    }
+                }
                 recoverScaffoldCleanups(client, board, world);
             }
             if (!stationCheckDue) return;

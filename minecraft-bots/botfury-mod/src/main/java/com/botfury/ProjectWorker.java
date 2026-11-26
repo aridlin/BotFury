@@ -613,7 +613,8 @@ final class ProjectWorker {
                 pausedForMiningCraft = MiningTask.working();
                 if (pausedForMiningCraft) MiningTask.pause(true);
             } else if (!MiningTask.active()) {
-                MiningTask.startProject(client, gather.mining(port), gather.exclude(), gatherSite, gather.item());
+                MiningTask.startProject(client, gather.mining(port), gather.exclude(), gatherSite, gather.item(),
+                        assignment.cargoCheckpoint());
                 if (!MiningTask.active()) finish(client, false, MiningTask.lastStatus());
             } else {
                 if (pausedForMiningCraft) {

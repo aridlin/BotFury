@@ -157,11 +157,12 @@ final class MiningTask {
     }
 
     static void startProject(MinecraftClient client, Job next, ProjectGather.Area exclude, ProjectQueue.ResourceSite site,
-                             ProjectItem drop) {
+                             ProjectItem drop, int cargoCheckpoint) {
         stop();
         startMining(client, next, true, exclude);
         if (job == null) return;
         projectDrop = drop;
+        if (ResourceCatalog.isOre(next.resource)) subsurface.setMiningCheckpoint(cargoCheckpoint);
         if (site == null) return;
         var location = new BlockPos(site.x(), site.y(), site.z());
         Integer prospectingY = prospectingAltitude(client);
@@ -178,7 +179,7 @@ final class MiningTask {
     }
 
     static void startLocalProject(MinecraftClient client, Job next, ProjectGather.Area exclude, ProjectItem drop) {
-        startProject(client, next, exclude, null, drop);
+        startProject(client, next, exclude, null, drop, 0);
         localOnly = job != null;
     }
 
@@ -430,7 +431,7 @@ final class MiningTask {
                 }
                 if (projectMining && !localApproachTried && localApproachSteps < MAX_PROTECTED_APPROACH_STEPS
                         && age - approachProgress >= 80
-                        && SubsurfaceAccess.canDigRoute(client)
+                        && subsurface.hasDiggingTool(client)
                         && SubsurfaceAccess.localApproachInRange(feet, p, prospecting)
                         && shouldOpenLocalApproach(feet, p, prospecting)) {
                     stopPath();
@@ -770,7 +771,7 @@ final class MiningTask {
 
     private static int coverLimit(MinecraftClient client) {
         if (surfaceResource) return MAX_CANOPY_LEAVES;
-        return projectMining && ResourceCatalog.isOre(job.resource) && SubsurfaceAccess.canDigRoute(client) ? MAX_ORE_COVER : 0;
+        return projectMining && ResourceCatalog.isOre(job.resource) && subsurface.hasDiggingTool(client) ? MAX_ORE_COVER : 0;
     }
 
     private static BlockHitResult coverHit(MinecraftClient client, BlockPos feet, BlockPos resource, int limit) {
@@ -814,7 +815,7 @@ final class MiningTask {
             coverAttemptEnds = age + 60;
             BotEvents.add("debug", "mining", "Clearing natural " + material + " in reach of reserved " + target.toShortString());
         }
-        if (age >= coverAttemptEnds || !surfaceResource && !SubsurfaceAccess.equipDiggingTool(client, true)) return false;
+        if (age >= coverAttemptEnds || !surfaceResource && !subsurface.equipDiggingTool(client, true)) return false;
         stopPath();
         client.player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, cover.getPos());
         client.interactionManager.updateBlockBreakingProgress(cover.getBlockPos(), cover.getSide());
@@ -877,7 +878,7 @@ final class MiningTask {
                 status = "Prospecting for " + job.resource + " toward Y " + depth;
                 return;
             }
-            if (!SubsurfaceAccess.canDigRoute(client)) {
+            if (!subsurface.hasDiggingTool(client)) {
                 toolShortfall = true;
                 routeToolShortfall = true;
                 status = "Route pickaxes are worn out";

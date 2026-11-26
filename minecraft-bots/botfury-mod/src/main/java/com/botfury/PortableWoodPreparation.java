@@ -78,7 +78,7 @@ final class PortableWoodPreparation {
                     }
                 } else belowSurfaceSince = 0;
                 if (!gathering) {
-                    MiningTask.startProject(client, new MiningTask.Job("any_logs", "both", coordinator), excluded, site, LOGS);
+                    MiningTask.startProject(client, new MiningTask.Job("any_logs", "both", coordinator), excluded, site, LOGS, 0);
                     gathering = true;
                 }
                 if (!MiningTask.active()) return new ProjectProduction.Result(false, MiningTask.lastStatus());

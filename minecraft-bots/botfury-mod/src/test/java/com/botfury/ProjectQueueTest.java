@@ -428,6 +428,36 @@ class ProjectQueueTest {
         assertEquals(3, OutputManifest.batchLimit(3, 10));
     }
 
+    @Test void savedManifestStartsDifferentMaterialsBeforeMoreBatchesOfTheFirstItem() throws Exception {
+        var journal = directory.resolve("ready-materials.json");
+        var queue = new ProjectQueue(journal);
+        String project = "manifest-materials";
+        String chest = "block:6,64,0";
+        String dirt = """
+                {"resource":"block:minecraft:dirt","variant":"both","item":"minecraft:dirt","count":32}
+                """;
+        String logs = """
+                {"resource":"any_logs","variant":"both","item":"any_logs","count":13}
+                """;
+        var first = job("stock-0-0-produce-0", GATHER, List.of()).withPayload(dirt);
+        var second = job("stock-0-1-produce-0", GATHER, List.of()).withPayload(dirt);
+        var wood = job("stock-1-0-gather", GATHER, List.of()).withPayload(logs);
+        var bank = new ProjectQueue.Work("stock-0-0-deposit", TRANSFER,
+                """
+                {"direction":"DEPOSIT","item":"minecraft:dirt","stock":32}
+                """, List.of(first.id()), Set.of(chest), first.id());
+        queue.submitSupplied(project, WORLD, List.of(first, bank, second, wood), chest);
+
+        queue = new ProjectQueue(journal);
+        var gathering = queue.claim(WORLD, "Alpha", Set.of(GATHER, TRANSFER), project, 1).job();
+        assertEquals(first.id(), gathering.work().id());
+        assertEquals(wood.id(), queue.claim(WORLD, "Beta", Set.of(GATHER, TRANSFER), project, 2).job().work().id());
+        assertTrue(queue.finish(project, first.id(), gathering.lease(), true,
+                "Observed 32 minecraft:dirt in worker inventory", 3));
+        assertEquals(bank.id(), queue.claim(WORLD, "Alpha", Set.of(GATHER, TRANSFER), project, 4).job().work().id());
+        assertEquals(second.id(), queue.claim(WORLD, "Gamma", Set.of(GATHER, TRANSFER), project, 5).job().work().id());
+    }
+
     @Test void idleWorkerCanShareOnlyTheOutstandingStockAcrossIndependentToolChains() throws Exception {
         var path = directory.resolve("shared.json");
         var queue = new ProjectQueue(path);

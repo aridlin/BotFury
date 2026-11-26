@@ -212,6 +212,8 @@ final class ProjectQueue {
     private static final String BATCH_RESERVED = "Reserved for batch";
     static final int MAX_BATCH_STEPS = 8;
     private static final java.util.regex.Pattern SCHEMATIC_PLACEMENT = java.util.regex.Pattern.compile("place-[0-9]+");
+    private static final java.util.regex.Pattern MANIFEST_PRODUCTION = java.util.regex.Pattern.compile(
+            "stock-[0-9]{1,4}-([0-9]{1,4})-(?:gather|produce-[0-9]+)");
     private static final java.util.regex.Pattern PRODUCED_INVENTORY = java.util.regex.Pattern.compile(
             "Observed [0-9]+ ([a-z0-9_.-]+:[a-z0-9_./-]+) "
                     + "(?:in worker inventory|already carried by the worker|carried for replacement tools)");
@@ -1470,6 +1472,7 @@ final class ProjectQueue {
             var unavailableStations = unavailableOwnedStations(project);
             var blocked = blockedJobs(project);
             String deposit = project.repeat == null ? null : pendingDeposit(project, done);
+            boolean manifest = project.supplyChest != null && project.repeat == null && project.id.startsWith("manifest-");
             for (Job job : project.jobs) {
                 if (job.work.constructionMaterial != null && carried.contains(job.work.constructionMaterial)
                         && !recoveryPickupPrecedesReservations(project, job, worker)) continue;
@@ -1524,7 +1527,9 @@ final class ProjectQueue {
                         || CONSTRUCTION_PICKUP.equals(job.evidence) && job.expiresAt > now) {
                     return assignWithPreparationStock(project, job, worker, now, position, kinds, supportsPickupReserve ? heldCount : null);
                 }
-                if (fallbackJob == null || (nearbyPickup || nearbyCleanup) && fallbackJob.state != State.FAILED) {
+                if (fallbackJob == null || (nearbyPickup || nearbyCleanup) && fallbackJob.state != State.FAILED
+                        || manifest && project == fallbackProject && fallbackJob.state == State.WAITING
+                                && earlierManifestBatch(job.work.id, fallbackJob.work.id)) {
                     fallbackProject = project;
                     fallbackJob = job;
                 }
@@ -1554,6 +1559,14 @@ final class ProjectQueue {
         }
         return fallbackJob == null ? null
                 : assignWithPreparationStock(fallbackProject, fallbackJob, worker, now, position, kinds, supportsPickupReserve ? heldCount : null);
+    }
+
+    private static boolean earlierManifestBatch(String candidate, String current) {
+        var first = MANIFEST_PRODUCTION.matcher(candidate);
+        var second = MANIFEST_PRODUCTION.matcher(current);
+        // Start the first available batch of each material before assigning additional workers to one material.
+        return first.matches() && second.matches()
+                && Integer.parseInt(first.group(1)) < Integer.parseInt(second.group(1));
     }
 
     private boolean useCarriedGatheringPickaxe(Project project, Job craft, String worker,

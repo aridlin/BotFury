@@ -25,12 +25,19 @@ import net.minecraft.world.RaycastContext;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 /** A workstation job with a bounded inventory target. Uses the server's own recipe and slot rules. */
 final class ProjectProduction {
     private static final double[] OUTLINE_SAMPLES = {.2, .8};
     record Spec(ProjectBlock station, ProjectQueue.Kind kind, Identifier recipe, Identifier input,
-                Identifier fuel, int count) {}
+                Identifier fuel, int count, Set<Identifier> fuelChoices) {
+        Spec(ProjectBlock station, ProjectQueue.Kind kind, Identifier recipe, Identifier input,
+             Identifier fuel, int count) {
+            this(station, kind, recipe, input, fuel, count, Set.of());
+        }
+    }
+    record FuelSelection(Identifier first, Set<String> choices) {}
     record Result(boolean success, String detail, boolean loadedFurnace) {
         Result(boolean success, String detail) { this(success, detail, false); }
     }
@@ -41,7 +48,7 @@ final class ProjectProduction {
         var flag = data.get("resumeLoadedFurnace");
         return flag != null && flag.isJsonPrimitive() && flag.getAsBoolean();
     }
-    private record Payload(String recipe, String input, String fuel, Integer count, boolean inventory) {}
+    private record Payload(String recipe, String input, String fuel, Integer count, boolean inventory, Set<String> fuelChoices) {}
     private static final int FURNACE_BURN_TIME = 0;
     private static final int FURNACE_COOK_TIME = 2;
     private static final long SETTLE = Duration.ofMillis(750).toNanos();
@@ -67,7 +74,8 @@ final class ProjectProduction {
     }
 
     ProjectProduction atStation(ProjectBlock station) {
-        var relocated = new ProjectProduction(new Spec(station, spec.kind, spec.recipe, spec.input, spec.fuel, spec.count));
+        var relocated = new ProjectProduction(new Spec(station, spec.kind, spec.recipe, spec.input, spec.fuel,
+                spec.count, spec.fuelChoices));
         relocated.contactedStation = contactedStation;
         return relocated;
     }
@@ -99,8 +107,12 @@ final class ProjectProduction {
         }
         var recipe = payload.recipe == null ? null : Identifier.tryParse(payload.recipe);
         if (recipe == null) throw new IllegalArgumentException("Invalid recipe ID");
-        return new Spec(station, kind, recipe, smelt ? item(payload.input) : null,
-                smelt ? item(payload.fuel) : null, payload.count);
+        var fuel = smelt ? item(payload.fuel) : null;
+        Set<Identifier> choices = smelt && payload.fuelChoices != null
+                ? payload.fuelChoices.stream().map(ProjectProduction::item).collect(java.util.stream.Collectors.toUnmodifiableSet())
+                : Set.of();
+        if (!choices.isEmpty() && !choices.contains(fuel)) throw new IllegalArgumentException("Invalid recovered furnace fuel");
+        return new Spec(station, kind, recipe, smelt ? item(payload.input) : null, fuel, payload.count, choices);
     }
 
     static Spec useInventoryGrid(MinecraftClient client, Spec spec) {
@@ -198,7 +210,8 @@ final class ProjectProduction {
         return ingredients.contains(item) ? item : null;
     }
 
-    static Identifier carriedSmeltingFuel(MinecraftClient client, String work, Map<String, Integer> inventory) {
+    static FuelSelection carriedSmeltingFuel(MinecraftClient client, String work, Map<String, Integer> inventory,
+                                              Set<String> reserved) {
         var spec = parse(work, ProjectQueue.Kind.SMELT);
         if (inventory.getOrDefault(spec.input.toString(), 0) == 0) return null;
         var recipe = client.world.getRecipeManager().get(spec.recipe).orElse(null);
@@ -207,21 +220,31 @@ final class ProjectProduction {
         int output = smelt.getOutput(client.world.getRegistryManager()).getCount();
         if (output < 1) return null;
         int required = (spec.count + output - 1) / output;
-        if (inventory.getOrDefault(spec.input.toString(), 0) < required) return null;
+        if (inventory.getOrDefault(spec.input.toString(), 0) < required || reserved.contains(spec.input.toString())) return null;
         long cookTicks = (long) smelt.getCookTime() * required;
+        if (cookTicks <= 0) return null;
         var burnTimes = net.minecraft.block.entity.AbstractFurnaceBlockEntity.createFuelTimeMap();
-        if (!spec.fuel.equals(spec.input) && (long) burnTimes.getOrDefault(Registries.ITEM.get(spec.fuel), 0)
-                * inventory.getOrDefault(spec.fuel.toString(), 0) >= cookTicks && cookTicks > 0) return spec.fuel;
         var carried = new LinkedHashMap<Identifier, Integer>();
         inventory.forEach((key, count) -> {
             var id = Identifier.tryParse(key);
-            if (id != null && count != null && count > 0) carried.put(id, count);
+            if (id != null && count != null && count > 0 && !reserved.contains(key) && !id.equals(spec.input)
+                    && burnTimes.getOrDefault(Registries.ITEM.get(id), 0) > 0
+                    && (id.equals(spec.fuel) || automaticFuel(id))) carried.put(id, count);
         });
-        return alternativeFuel(carried, spec.input, spec.fuel, cookTicks, false);
+        long preferredBurn = (long) burnTimes.getOrDefault(Registries.ITEM.get(spec.fuel), 0)
+                * carried.getOrDefault(spec.fuel, 0);
+        var first = preferredBurn >= cookTicks ? spec.fuel : alternativeFuel(carried, spec.input, spec.fuel, cookTicks, true);
+        return first == null ? null : new FuelSelection(first,
+                carried.keySet().stream().map(Identifier::toString).collect(java.util.stream.Collectors.toUnmodifiableSet()));
     }
 
     private static Identifier alternativeFuel(Map<Identifier, Integer> carried, Identifier input,
                                               Identifier preferred, long cookTicks, boolean mixFuels) {
+        return alternativeFuel(carried, input, preferred, cookTicks, mixFuels, Set.of());
+    }
+
+    private static Identifier alternativeFuel(Map<Identifier, Integer> carried, Identifier input,
+                                              Identifier preferred, long cookTicks, boolean mixFuels, Set<Identifier> choices) {
         if (cookTicks <= 0) return null;
         var burnTimes = net.minecraft.block.entity.AbstractFurnaceBlockEntity.createFuelTimeMap();
         Identifier best = null;
@@ -232,7 +255,7 @@ final class ProjectProduction {
         for (var entry : carried.entrySet()) {
             var id = entry.getKey();
             int ticks = burnTimes.getOrDefault(Registries.ITEM.get(id), 0);
-            if (ticks <= 0 || id.equals(input) || !id.equals(preferred) && !automaticFuel(id)) continue;
+            if (ticks <= 0 || id.equals(input) || !allowedFuel(id, preferred, choices)) continue;
             long burn = (long) ticks * entry.getValue();
             availableBurn += burn;
             if (id.equals(preferred)) continue;
@@ -249,6 +272,10 @@ final class ProjectProduction {
         }
         if (best != null) return best;
         return mixFuels && availableBurn >= cookTicks ? longest : null;
+    }
+
+    private static boolean allowedFuel(Identifier id, Identifier preferred, Set<Identifier> choices) {
+        return choices.isEmpty() ? id.equals(preferred) || automaticFuel(id) : choices.contains(id);
     }
 
     private static boolean automaticFuel(Identifier id) {
@@ -487,12 +514,13 @@ final class ProjectProduction {
         if (!result.isEmpty()) return takeOutput(client, 2);
         var progress = ((com.botfury.mixin.FurnaceProgressAccess) furnace).botfury$properties();
         var carried = carriedFuel(client);
+        if (!spec.fuelChoices.isEmpty()) carried.keySet().retainAll(spec.fuelChoices);
         var burnTimes = net.minecraft.block.entity.AbstractFurnaceBlockEntity.createFuelTimeMap();
         long credited = (long) progress.get(FURNACE_COOK_TIME) + progress.get(FURNACE_BURN_TIME);
         long availableBurn = credited + (long) burnTimes.getOrDefault(existingFuel.getItem(), 0) * existingFuel.getCount();
         for (var entry : carried.entrySet()) {
             var id = entry.getKey();
-            if (!id.equals(spec.input) && (id.equals(spec.fuel) || automaticFuel(id))) {
+            if (!id.equals(spec.input) && allowedFuel(id, spec.fuel, spec.fuelChoices)) {
                 availableBurn += (long) burnTimes.getOrDefault(Registries.ITEM.get(id), 0) * entry.getValue();
             }
         }
@@ -514,7 +542,7 @@ final class ProjectProduction {
                             Map<Identifier, Integer> carried) {
         if (feed(client, 1, preferred, 1)) return true;
         if (!substitutedFuel.isEmpty() && feed(client, 1, substitutedFuel, 1)) return true;
-        var alternative = alternativeFuel(carried, spec.input, spec.fuel, cookTicks, true);
+        var alternative = alternativeFuel(carried, spec.input, spec.fuel, cookTicks, true, spec.fuelChoices);
         if (alternative == null) return false;
         var fuel = Registries.ITEM.get(alternative).getDefaultStack();
         if (!furnace.getSlot(1).canInsert(fuel) || !feed(client, 1, fuel, 1)) return false;

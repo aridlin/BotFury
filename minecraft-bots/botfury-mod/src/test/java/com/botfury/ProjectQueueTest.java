@@ -586,29 +586,8 @@ class ProjectQueueTest {
 
     @Test void exhaustedMiningCanResumeWithNewApproachRulesOrBetterEquipment() throws Exception {
         var journal = directory.resolve("equipped-checkpoint-recovery.json");
-        String chest = "block:3,64,0";
-        var wood = job("wood", GATHER, List.of());
-        var pickaxe = new ProjectQueue.Work("pickaxe", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\",\"count\":1}",
-                List.of("wood"), Set.of(), "wood");
-        var ore = new ProjectQueue.Work("ore", GATHER,
-                "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":8}",
-                List.of("pickaxe"), Set.of(), "pickaxe");
-        var bank = new ProjectQueue.Work("bank", TRANSFER,
-                "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":8}",
-                List.of("ore"), Set.of(chest), "ore");
-        var oldSite = new ProjectQueue.ResourceSite(101, -52, 31);
+        var queue = exhaustedDiamondQueue(journal);
         var footing = new ProjectQueue.ResourceSite(4, -52, 4);
-        var jobs = List.of(
-                new ProjectQueue.Job(wood, ProjectQueue.State.DONE, 1, "miner", null, 0, "Found", null),
-                new ProjectQueue.Job(pickaxe, ProjectQueue.State.DONE, 1, "miner", null, 0, "Crafted", null),
-                new ProjectQueue.Job(ore, ProjectQueue.State.FAILED, 3, null, null, 0,
-                        ProjectQueue.GATHER_TOOLS_NEEDED + " after 2 supply recoveries", null, oldSite),
-                new ProjectQueue.Job(bank, ProjectQueue.State.WAITING, 0, null, null, 0, null, null));
-        var saved = new ProjectQueue.Project("stock", WORLD, jobs, null, chest,
-                java.util.Map.of("wood", 2, "tool-depth:ore", -52, "tool-stock:ore", 8, "equipped-miner:ore", 1));
-        Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
-                "projects", java.util.Map.of(saved.id(), saved))));
-        var queue = new ProjectQueue(journal);
         var worn = java.util.Map.of("minecraft:iron_pickaxe", 31);
         assertNull(queue.offerEquippedMiner(WORLD, "miner", "stock", worn, 2, footing));
         var attempt = queue.offerEquippedMiner(WORLD, "miner", "stock", worn, 3, footing, true);
@@ -621,6 +600,54 @@ class ProjectQueueTest {
         assertNull(queue.offerEquippedMiner(WORLD, "miner", "stock", worn, 5, footing, true));
         var renewed = java.util.Map.of("minecraft:iron_pickaxe", 40);
         assertEquals("ore", queue.offerEquippedMiner(WORLD, "miner", "stock", renewed, 6, footing, true).job().work().id());
+    }
+
+    @Test void exhaustedMiningCanUseAWornPickaxeAtAConfirmedReachableVein() throws Exception {
+        var journal = directory.resolve("observed-ore-after-exhaustion.json");
+        var queue = exhaustedDiamondQueue(journal);
+        var footing = new ProjectQueue.ResourceSite(4, -52, 4);
+        var ore = new ProjectQueue.ReachableOre("minecraft:deepslate_diamond_ore", new ProjectQueue.ResourceSite(6, -52, 4));
+        var worn = java.util.Map.of("minecraft:iron_pickaxe", 4);
+        queue.claim(WORLD, "miner", Set.of(VERIFY), 2);
+        assertNull(queue.offerEquippedMiner(WORLD, "miner", "stock", worn, 3, footing, true));
+        assertNull(queue.offerObservedOreRecovery(WORLD, "miner", "stock", footing,
+                java.util.Map.of("minecraft:iron_pickaxe", 3), List.of(ore), 3));
+        assertNull(queue.offerObservedOreRecovery(WORLD, "miner", "stock", footing,
+                java.util.Map.of("minecraft:stone_pickaxe", 100), List.of(ore), 3));
+        var attempt = queue.offerObservedOreRecovery(WORLD, "miner", "stock", footing, worn, List.of(ore), 3);
+        assertEquals("ore", attempt.job().work().id());
+        assertEquals(footing, attempt.job().resourceSite());
+        assertEquals(4, attempt.cargoCheckpoint());
+        assertTrue(queue.finish("stock", "ore", attempt.job().lease(), false,
+                ProjectQueue.GATHER_TOOLS_NEEDED, null, footing, 4));
+        queue = new ProjectQueue(journal);
+        queue.claim(WORLD, "miner", Set.of(VERIFY), 5);
+        assertNull(queue.offerObservedOreRecovery(WORLD, "miner", "stock", footing, worn, List.of(ore), 6));
+    }
+
+    private ProjectQueue exhaustedDiamondQueue(java.nio.file.Path journal) throws Exception {
+        String chest = "block:3,64,0";
+        var wood = job("wood", GATHER, List.of());
+        var pickaxe = new ProjectQueue.Work("pickaxe", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\",\"count\":1}",
+                List.of("wood"), Set.of(), "wood");
+        var ore = new ProjectQueue.Work("ore", GATHER,
+                "{\"resource\":\"diamond\",\"variant\":\"both\",\"item\":\"minecraft:diamond\",\"count\":8}",
+                List.of("pickaxe"), Set.of(), "pickaxe");
+        var bank = new ProjectQueue.Work("bank", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":8}",
+                List.of("ore"), Set.of(chest), "ore");
+        var oldSite = new ProjectQueue.ResourceSite(101, -52, 31);
+        var jobs = List.of(
+                new ProjectQueue.Job(wood, ProjectQueue.State.DONE, 1, "miner", null, 0, "Found", null),
+                new ProjectQueue.Job(pickaxe, ProjectQueue.State.DONE, 1, "miner", null, 0, "Crafted", null),
+                new ProjectQueue.Job(ore, ProjectQueue.State.FAILED, 3, null, null, 0,
+                        ProjectQueue.GATHER_TOOLS_NEEDED + " after 2 supply recoveries", null, oldSite),
+                new ProjectQueue.Job(bank, ProjectQueue.State.WAITING, 0, null, null, 0, null, null));
+        var saved = new ProjectQueue.Project("stock", WORLD, jobs, null, chest,
+                java.util.Map.of("wood", 2, "tool-depth:ore", -52, "tool-stock:ore", 8, "equipped-miner:ore", 1));
+        Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                "projects", java.util.Map.of(saved.id(), saved))));
+        return new ProjectQueue(journal);
     }
 
     @Test void equippedMinerCanResumeAStalledPrivateToolChainAndStillRestock() throws Exception {

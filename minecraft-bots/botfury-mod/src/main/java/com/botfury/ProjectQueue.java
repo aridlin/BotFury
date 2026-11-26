@@ -2204,7 +2204,10 @@ final class ProjectQueue {
             if (project.supplyChest == null || !world.equals(project.world) || cancelled(project)
                     || projectId != null && !projectId.equals(project.id) || !availableProjectWorker(project, worker, now)) continue;
             for (var gather : project.jobs) {
-                if (!stalledPinnedGathering(gather) || now < gather.expiresAt
+                boolean exhausted = gather.state == State.FAILED && gather.work.kind == Kind.GATHER
+                        && gather.work.sameWorkerAs != null && EXHAUSTED_TOOLS.equals(gather.evidence);
+                if ((!exhausted && !stalledPinnedGathering(gather)) || now < gather.expiresAt
+                        || checkpointDepositActive(project, gather)
                         || gather.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) continue;
                 var preparation = find(project, gather.work.sameWorkerAs);
                 if (preparation.work.kind != Kind.CRAFT) continue;
@@ -2215,7 +2218,9 @@ final class ProjectQueue {
                 if (source == null || !ResourceCatalog.isOre(source.resource)) continue;
                 var plan = JSON.fromJson(gather.work.payload, GatherQuantity.class);
                 if (plan == null || plan.count == null || plan.count < 1) continue;
-                int minimumUses = Math.max(3, Math.min(16, plan.count));
+                int checkpoint = exhausted ? cargoCheckpoint(project, gather) : 0;
+                // The ore report already proves a clear approach. Budget for the harvest rather than opening tunnels.
+                int minimumUses = Math.max(3, checkpoint > 0 ? checkpoint : Math.min(16, plan.count));
                 if (PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
                         .noneMatch(tool -> toolUses.getOrDefault(tool, 0) >= minimumUses)) continue;
                 String key = "observed-ore:" + gather.work.id;
@@ -2228,6 +2233,10 @@ final class ProjectQueue {
                     var cell = observation.site;
                     String siteKey = key + ":" + cell.x + "," + cell.y + "," + cell.z;
                     if (project.supplyRecoveries.containsKey(siteKey)) continue;
+                    if (project.jobs.stream().anyMatch(peer -> peer.state == State.LEASED && peer.expiresAt > now
+                            && peer.work.kind == Kind.GATHER && peer.resourceSite != null
+                            && source.equals(gatherSource(peer.work.payload))
+                            && gatheringDistance(cell, peer.resourceSite) <= 6)) continue;
                     if (plan.exclude != null && plan.exclude.checked().contains(new net.minecraft.util.math.BlockPos(cell.x, cell.y, cell.z))) continue;
                     var approach = observation.stand == null ? position : observation.stand;
                     if (plan.exclude != null && plan.exclude.checked().contains(new net.minecraft.util.math.BlockPos(

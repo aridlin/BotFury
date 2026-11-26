@@ -120,6 +120,16 @@ final class BaritoneSettings implements AutoCloseable {
         return block.getDefaultState().isIn(BlockTags.DIRT) && !block.getDefaultState().isToolRequired();
     }
 
+    boolean surfaceLedgeDrop(boolean recovering) {
+        if (fallHeight == null) return false;
+        try {
+            value.set(fallHeight, recovering ? 4 : 1);
+            return true;
+        } catch (IllegalAccessException unavailable) {
+            return false;
+        }
+    }
+
     @Override public void close() {
         try {
             value.set(breaking, oldBreak);

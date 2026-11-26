@@ -191,6 +191,7 @@ final class ProjectQueue {
     record FuelUse(String job, String recipe, String input, String expectedFuel, int count) {}
     private record SmeltFuel(String recipe, String input, String fuel, String plannedFuel, int count) {}
     record OwnedStation(String project, String job, String payload) {}
+    record StalledStation(String project, Work placement, Work recipe) {}
     record BlockedDeposit(String project, Work work) {}
     private static final String OWNED_STATION_MISSING = "Owned station is missing";
     record OwnedPlacement(String project, String job, String payload) {}
@@ -1038,6 +1039,69 @@ final class ProjectQueue {
         if (job.evidence == null || !job.evidence.startsWith("Missing material ") || stationKey(job) == null) return false;
         var target = JSON.fromJson(job.work.payload, StationTarget.class);
         return ("Missing material " + target.block).equals(job.evidence);
+    }
+
+    synchronized List<StalledStation> stalledStations(String world) {
+        var result = new ArrayList<StalledStation>();
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || cancelled(project)) continue;
+            for (var placement : project.jobs) {
+                var recipe = stalledStationRecipe(project, placement);
+                if (recipe != null) result.add(new StalledStation(project.id, placement.work, recipe.work));
+            }
+        }
+        return result;
+    }
+
+    private static Job stalledStationRecipe(Project project, Job placement) {
+        if (placement == null || placement.state != State.FAILED || !TARGET_TIMEOUT.equals(placement.evidence)
+                || stationKey(placement) == null || project.supplyRecoveries.containsKey(stationHandoffKey(placement))) return null;
+        var recipe = find(project, placement.work.sameWorkerAs);
+        if (recipe == null || recipe.state != State.DONE || recipe.work.kind != Kind.CRAFT
+                || placement.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)
+                || !privatePreparationReady(project, placement, Set.of(recipe.work.id))) return null;
+        var target = JSON.fromJson(placement.work.payload, StationTarget.class);
+        var craft = JSON.fromJson(recipe.work.payload, InventoryRecipe.class);
+        return craft != null && target.block.equals(craft.recipe) && Integer.valueOf(1).equals(craft.count) ? recipe : null;
+    }
+
+    private static String stationHandoffKey(Job placement) { return "station-handoff:" + placement.work.id; }
+
+    synchronized boolean handoffStalledStation(String world, StalledStation request, String worker,
+                                                boolean carriesStation, Set<String> ingredients, long now) throws IOException {
+        var project = projects.get(request.project);
+        if (project == null || !world.equals(project.world) || cancelled(project) || !availableProjectWorker(project, worker, now)) {
+            return false;
+        }
+        var placement = find(project, request.placement.id);
+        var recipe = stalledStationRecipe(project, placement);
+        if (recipe == null || !request.placement.equals(placement.work) || !request.recipe.equals(recipe.work)) return false;
+        if (project.supplyChest != null && reservedStorage(project) == null
+                && projects.values().stream().anyMatch(other -> other != project && world.equals(other.world)
+                        && project.supplyChest.equals(reservedStorage(other)))) return false;
+        var target = JSON.fromJson(placement.work.payload, StationTarget.class);
+        var supplies = carriesStation ? Set.of(target.block) : ingredients;
+        if (supplies.isEmpty() || !Collections.disjoint(supplies, pendingBuildMaterials(world, worker))
+                || supplies.stream().anyMatch(item -> hasPendingDepositOf(world, worker, item))) return false;
+
+        var jobs = new ArrayList<>(project.jobs);
+        if (carriesStation) {
+            jobs.set(jobs.indexOf(recipe), new Job(recipe.work, State.DONE, recipe.attempts, worker, null, 0,
+                    "Observed the station block already carried by the local builder", recipe.chest, recipe.resourceSite));
+        } else {
+            var input = find(project, recipe.work.sameWorkerAs);
+            if (input == null || input.state != State.DONE || !privatePreparationReady(project, recipe, Set.of(input.work.id))) {
+                return false;
+            }
+            jobs.set(jobs.indexOf(input), new Job(input.work, State.DONE, input.attempts, worker, null, 0,
+                    "Preparation satisfied by observed station ingredients", input.chest, input.resourceSite));
+            jobs.set(jobs.indexOf(recipe), freshStockWork(recipe.work));
+        }
+        jobs.set(jobs.indexOf(placement), freshStockWork(placement.work));
+        var recoveries = new HashMap<>(project.supplyRecoveries);
+        recoveries.put(stationHandoffKey(placement), 1);
+        commit(project.withRecovery(jobs, recoveries));
+        return true;
     }
 
     synchronized boolean restoreOwnedStation(String world, String projectId, String jobId, List<Work> footing) throws IOException {

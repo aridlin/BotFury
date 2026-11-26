@@ -9,6 +9,7 @@ import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.Heightmap;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -98,6 +99,7 @@ final class ProjectBroker {
             var board = queue();
             if (cleanupCheckDue) {
                 nextScaffoldCleanupCheck = now + java.time.Duration.ofSeconds(1).toNanos();
+                retryLocalStationPlacements(client, board, world);
                 recoverScaffoldCleanups(client, board, world);
             }
             if (!stationCheckDue) return;
@@ -218,6 +220,42 @@ final class ProjectBroker {
                 if (board.reassignTimedOutCraft(world, request, bot.name(), inputs, now)) {
                     BotEvents.add("info", "projects", bot.name() + " resumed " + request.work().id()
                             + " with ingredients near the workbench");
+                    return;
+                }
+            }
+        }
+    }
+
+    private static void retryLocalStationPlacements(net.minecraft.client.MinecraftClient client, ProjectQueue board,
+                                                    String world) throws IOException {
+        for (var request : board.stalledStations(world)) {
+            var station = ProjectBlock.parse(request.placement().payload());
+            var target = station.target();
+            var stand = station.stand();
+            var level = client.world;
+            if (!level.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
+                    || !level.isChunkLoaded(stand.getX() >> 4, stand.getZ() >> 4) || !level.isAir(target)
+                    || BuildProtection.blocked(world, target, request.project())
+                    || !ProjectWorker.usableInteractionStand(client, stand, target)
+                    || ProjectPlacement.supportHit(client, station, Vec3d.ofBottomCenter(stand).add(0, 1.62, 0)) == null) {
+                continue;
+            }
+            var material = station.block().toString();
+            var recipe = ProjectProduction.parse(request.recipe().payload(), ProjectQueue.Kind.CRAFT);
+            var candidates = BotTracker.all().stream()
+                    .filter(bot -> bot.fresh() && bot.connected() && bot.alive() && bot.sameWorld() && !bot.items().isEmpty())
+                    .filter(bot -> Math.abs(bot.y() - stand.getY()) <= 4
+                            && stand.getSquaredDistance(bot.x(), bot.y(), bot.z()) <= 12 * 12)
+                    .sorted(java.util.Comparator.<BotTracker.Bot>comparingInt(bot -> bot.items().containsKey(material) ? 0 : 1)
+                            .thenComparingDouble(bot -> stand.getSquaredDistance(bot.x(), bot.y(), bot.z())))
+                    .toList();
+            for (var bot : candidates) {
+                boolean carries = bot.items().getOrDefault(material, 0) > 0;
+                if (!carries && !canUseCraftingStation(client, recipe, bot)) continue;
+                var ingredients = carries ? Set.<String>of()
+                        : ProjectProduction.carriedCraftingIngredients(client, request.recipe().payload(), bot.items());
+                if (board.handoffStalledStation(world, request, bot.name(), carries, ingredients, System.currentTimeMillis())) {
+                    BotEvents.add("info", "projects", bot.name() + " took over station setup at " + target.toShortString());
                     return;
                 }
             }

@@ -38,6 +38,8 @@ final class MiningTask {
     private static final int EXPOSED_ORE_PICKUP_STEPS = 4;
     private static final int COVERED_ORE_WALK_RADIUS = 8;
     private static final int SURFACE_ROUTE_DEPTH = 12;
+    private static final int ELEVATED_STAND_MIN_RISE = 4;
+    private static final int ELEVATED_STAND_RANGE = 16;
     private static final int SURFACE_EXIT_STALL_TICKS = 280;
     private static final int SURFACE_EXIT_BACKOFF_TICKS = 1200;
     private static final int RECORDED_SITE_RETRY_TICKS = 100;
@@ -424,6 +426,9 @@ final class MiningTask {
                     }
                     localApproachFrom = null;
                 }
+                if (surfaceResource && age - approachProgress >= 80
+                        && (age - approachProgress >= 250 || !BaritoneClient.pursuing(p))
+                        && climbTowardElevatedStand(client, feet, p)) return;
                 boolean prospecting = prospectingAltitude(client) != null;
                 if (projectMining && ResourceCatalog.isOre(job.resource) && !p.isWithinDistance(feet, DISTANT_ORE_STAND)
                         && age - approachProgress >= 80 && !BaritoneClient.pursuing(p)) {
@@ -507,6 +512,7 @@ final class MiningTask {
             status = "Opening a local exit to continue gathering " + job.resource;
             return;
         }
+        if (surfaceRouteGoal != null && seekSurface(client)) return;
         var routeGoal = surfaceRouteGoal != null ? surfaceRouteGoal
                 : rememberedSite != null ? rememberedSite : surfaceExplorationGoal;
         if (pathActive && recoverRoute(client, routeGoal)) return;
@@ -988,6 +994,25 @@ final class MiningTask {
         }
         status = "Climbing toward the surface for " + job.resource;
         return true;
+    }
+
+    private static boolean climbTowardElevatedStand(MinecraftClient client, BlockPos feet, BlockPos goal) {
+        if (localOnly || !client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)
+                || goal.getY() - feet.getY() < ELEVATED_STAND_MIN_RISE
+                || !goal.isWithinDistance(feet, ELEVATED_STAND_RANGE)
+                || rejectedSurfaceExits.getOrDefault(goal, 0) > age
+                || BuildProtection.blocked(goal) || BuildProtection.blocked(goal.up())
+                || excluded != null && (excluded.contains(goal) || excluded.contains(goal.up()))
+                || !ProjectWorker.knownTrailFooting(client, goal)) return false;
+        stopPath();
+        clearReservation();
+        pendingCandidates.clear();
+        resetSurfaceTrail();
+        surfaceRouteGoal = goal;
+        observeSurfaceProgress(feet);
+        nextPath = age;
+        BotEvents.add("info", "movement", "Climbing toward a stalled surface stand at " + goal.toShortString());
+        return seekSurface(client);
     }
 
     private static void observeSurfaceProgress(BlockPos feet) {

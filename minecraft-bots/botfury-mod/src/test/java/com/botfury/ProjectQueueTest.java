@@ -2544,6 +2544,49 @@ class ProjectQueueTest {
         assertEquals(mined.lease(), restored.snapshot(11).get(0).jobs().get(1).lease());
     }
 
+    @Test void nearbyCarrierCanResumeACompletelyTimedOutDepositWithoutRewritingItsGather() throws Exception {
+        var journal = directory.resolve("timed-out-deposit.json");
+        String project = "stock";
+        String chest = "block:3,64,0";
+        String dirt = "minecraft:dirt";
+        var first = new ProjectQueue.Work("first", TRANSFER,
+                "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:dirt\",\"stock\":64}", List.of(), Set.of(chest));
+        var gather = new ProjectQueue.Work("gather", GATHER,
+                "{\"resource\":\"dirt\",\"variant\":\"both\",\"item\":\"minecraft:dirt\",\"count\":32}", List.of(), Set.of());
+        var deposit = new ProjectQueue.Work("deposit", TRANSFER, """
+                {"target":{"x":3,"y":64,"z":0},"direction":"DEPOSIT","item":"minecraft:dirt","stock":96}
+                """, List.of(first.id(), gather.id()), Set.of(chest), gather.id());
+        var verify = new ProjectQueue.Work("verify", TRANSFER,
+                "{\"direction\":\"VERIFY_STOCK\",\"item\":\"minecraft:dirt\",\"stock\":96}", List.of(deposit.id()), Set.of(chest));
+        var queue = new ProjectQueue(journal);
+        queue.submitSupplied(project, WORLD, List.of(first, gather, deposit, verify), chest);
+        var firstLease = queue.claim(WORLD, "miner", Set.of(TRANSFER), 1).job();
+        assertTrue(queue.finish(project, first.id(), firstLease.lease(), true, "Banked",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(dirt, 64)), 2));
+        var gathered = queue.claim(WORLD, "miner", Set.of(GATHER), 3).job();
+        assertTrue(queue.finish(project, gather.id(), gathered.lease(), true, "Gathered", 4));
+        for (int now = 5; now < 11; now += 2) {
+            var lease = queue.claim(WORLD, "miner", Set.of(TRANSFER), now).job();
+            assertTrue(queue.finish(project, deposit.id(), lease.lease(), false, ProjectQueue.TARGET_TIMEOUT, now + 1));
+        }
+
+        assertNull(queue.claim(WORLD, "helper", Set.of(TRANSFER), 11));
+        var far = new ProjectQueue.StockCarrier("helper", new ProjectQueue.ResourceSite(3, 44, 0), java.util.Map.of(dirt, 64));
+        assertFalse(queue.rescueFailedDeposit(WORLD, far, 12));
+        var local = new ProjectQueue.StockCarrier("helper", new ProjectQueue.ResourceSite(3, 63, 3), java.util.Map.of(dirt, 40));
+        assertTrue(queue.rescueFailedDeposit(WORLD, local, 13));
+        assertFalse(queue.rescueFailedDeposit(WORLD, local, 13));
+        var recovered = new ProjectQueue(journal);
+        var rescue = recovered.claim(WORLD, "helper", Set.of(TRANSFER), 14).job();
+        assertEquals(deposit, rescue.work());
+        assertEquals(64, recovered.chestStock(WORLD).get(chest).report().items().get(dirt));
+        assertNull(recovered.claim(WORLD, "miner", Set.of(TRANSFER), 15));
+        assertTrue(recovered.finish(project, deposit.id(), rescue.lease(), true, "Verified",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(dirt, 96)), 16));
+        assertEquals(verify, recovered.claim(WORLD, "helper", Set.of(TRANSFER), 17).job().work());
+        assertEquals(gathered.lease(), recovered.snapshot(18).get(0).jobs().get(1).lease());
+    }
+
     @Test void shortDepositReservesAStockedCarrierBeforeRewinding() throws Exception {
         var journal = directory.resolve("short-deposit-carrier.json");
         var queue = new ProjectQueue(journal);

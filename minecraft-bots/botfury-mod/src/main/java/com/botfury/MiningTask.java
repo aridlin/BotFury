@@ -89,7 +89,16 @@ final class MiningTask {
     private static final int LOOSE_DROP_RADIUS = 12;
     private static int nextPickupRoomCheck;
     private static final int MAX_FAILED_DROP_ROUTES = 64;
-    private static final Map<UUID, BlockPos> failedDropRoutes = new LinkedHashMap<>();
+    private static final long DROP_ROUTE_BACKOFF = java.time.Duration.ofMinutes(2).toNanos();
+    private static final Map<UUID, FailedDropApproach> failedDropRoutes = new LinkedHashMap<>();
+
+    private record FailedDropApproach(String world, BlockPos cell, BlockPos feet, long retryAt) {
+        boolean stillApplies(String currentWorld, BlockPos itemCell, BlockPos playerCell, long now) {
+            return retryAt > now && world.equals(currentWorld) && cell.equals(itemCell)
+                    && Math.abs(feet.getY() - playerCell.getY()) <= 1 && feet.isWithinDistance(playerCell, 6);
+        }
+    }
+
     private static final DroppedItemSearch minedDrops = new DroppedItemSearch();
     private static BlockPos rememberedSite;
     private static final Set<BlockPos> rememberedRouteRegions = new HashSet<>();
@@ -341,7 +350,6 @@ final class MiningTask {
         var here=LocalFormation.here();world=here.server()+"|"+here.dimension();
         paused=false;
         nextDropScan = nextPickupRoomCheck = 0;
-        failedDropRoutes.clear();
         age=nextSearch=nextPath=nextRenew=exploration=0;requesting=dead=false;target=null;stand=null;pickup=null;leaseToken=null;origin=client.player.getPos();rejected.clear();
         rejectedStands.clear();
         pendingCandidates.clear();
@@ -630,15 +638,23 @@ final class MiningTask {
         if (requesting || projectDrop == null || age < nextDropScan) return false;
         nextDropScan = age + 10;
         var player = client.player;
+        var feet = player.getBlockPos();
+        long now = System.nanoTime();
+        failedDropRoutes.values().removeIf(route -> route.retryAt() <= now);
         var loose = client.world.getEntitiesByClass(ItemEntity.class, player.getBoundingBox().expand(LOOSE_DROP_RADIUS),
                 item -> item.isOnGround() && player.squaredDistanceTo(item) <= LOOSE_DROP_RADIUS * LOOSE_DROP_RADIUS
                         && rejected.getOrDefault(item.getBlockPos(), 0) <= age
-                        && !item.getBlockPos().equals(failedDropRoutes.get(item.getUuid())) && eligibleDrop(client, item))
+                        && !deferDropRoute(item, feet, now) && eligibleDrop(client, item))
                 .stream().min(Comparator.comparingDouble(player::squaredDistanceTo)).orElse(null);
         if (loose == null || !makeRoomForDrop(client, loose)) return false;
         var cell = loose.getBlockPos();
         request(client, cell, Vec3d.ofBottomCenter(cell), "claim", loose);
         return true;
+    }
+
+    private static boolean deferDropRoute(ItemEntity item, BlockPos feet, long now) {
+        var prior = failedDropRoutes.get(item.getUuid());
+        return prior != null && prior.stillApplies(world, item.getBlockPos(), feet, now);
     }
 
     private static boolean availableDrop(MinecraftClient client, ItemEntity item) {
@@ -670,8 +686,11 @@ final class MiningTask {
                 status = "Collecting dropped " + projectDrop;
                 return;
             }
-            // Cache the failed approach for this entity at this cell, leaving moved or new items eligible.
-            failedDropRoutes.put(reservedDrop.getUuid(), target);
+            // Keep the failed approach across assignments and retry if the drop or footing changes.
+            var id = reservedDrop.getUuid();
+            failedDropRoutes.remove(id);
+            failedDropRoutes.put(id, new FailedDropApproach(world, target, client.player.getBlockPos(),
+                    System.nanoTime() + DROP_ROUTE_BACKOFF));
             if (failedDropRoutes.size() > MAX_FAILED_DROP_ROUTES) failedDropRoutes.remove(failedDropRoutes.keySet().iterator().next());
             BotEvents.add("debug", "mining", "Skipped stalled drop route at " + target.toShortString());
         }

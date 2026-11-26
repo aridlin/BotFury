@@ -1847,7 +1847,17 @@ final class ProjectQueue {
         var project = projects.get(projectId);
         if (project == null || !world.equals(project.world) || cancelled(project)) return null;
         var delivery = routeToolDelivery(projectId, jobId, token, now);
-        return delivery == null ? null : delivery.recipient;
+        if (delivery == null) return null;
+        // Each resupply ID is scoped to the recipient's work lease, including its retry variants.
+        for (var recipient : project.jobs) {
+            if (recipient.state != State.LEASED || recipient.expiresAt <= now || recipient.lease == null
+                    || !delivery.recipient.equalsIgnoreCase(recipient.worker)) continue;
+            String source = recipient.lease.toString();
+            if (jobId.equals("stick-resupply-" + source) || jobId.equals("route-tool-" + source)
+                    || jobId.equals("route-tool-" + source + "-retry") || jobId.equals("food-resupply-" + source)
+                    || jobId.startsWith("food-resupply-" + source + "-")) return delivery.recipient;
+        }
+        return null;
     }
 
     synchronized Assignment offerStickResupply(String world, String worker, String projectId, long now,

@@ -317,6 +317,8 @@ class ProjectQueueTest {
         assertEquals("miner", queue.routeResupplyRecipient(WORLD, "tools", loan.work().id(), loan.lease(), 6));
         assertNull(queue.routeResupplyRecipient("other|overworld", "tools", loan.work().id(), loan.lease(), 6));
         assertNull(queue.routeResupplyRecipient(WORLD, "tools", loan.work().id(), java.util.UUID.randomUUID(), 6));
+        assertNotNull(queue.routeToolDelivery("tools", loan.work().id(), loan.lease(), miner.expiresAt()));
+        assertNull(queue.routeResupplyRecipient(WORLD, "tools", loan.work().id(), loan.lease(), miner.expiresAt()));
         assertEquals(2, queue.routeToolDelivery("tools", loan.work().id(), loan.lease(), 6).quantity());
         assertNull(queue.claim(WORLD, "alternate", Set.of(RESUPPLY), "tools", 7, field));
         assertNull(queue.offerStickResupply(WORLD, "alternate", "tools", 8, name -> field,

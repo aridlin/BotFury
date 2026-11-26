@@ -136,6 +136,13 @@ final class SubsurfaceAccess {
         return destination.isWithinDistance(feet, 9) && start(client, feet, List.of(destination), area, age, false);
     }
 
+    boolean openMiningPickupStep(MinecraftClient client, int age, BlockPos destination, ProjectGather.Area area) {
+        var feet = client.player.getBlockPos();
+        return destination.isWithinDistance(feet, 5) && !destination.equals(feet)
+                && hasFooting(client) && validDestination(client, destination, area)
+                && openTowardMiningStand(client, age, feet, destination, area);
+    }
+
     boolean continueLocalApproach(MinecraftClient client, int age) {
         if (!active()) return false;
         var goal = goals.get(0);

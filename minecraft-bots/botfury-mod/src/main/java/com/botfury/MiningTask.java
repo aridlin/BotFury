@@ -68,6 +68,8 @@ final class MiningTask {
     private static Vec3d stand,origin,pickup;
     private static int alternateStandAttempts;
     private static int pickupUntil;
+    private static int exposedOrePickupSteps;
+    private static boolean protectedOrePickup;
     private static ProjectItem projectDrop;
     private static ItemEntity reservedDrop;
     private static int nextDropScan, dropDeadline;
@@ -327,6 +329,8 @@ final class MiningTask {
             }
             if(!matches(client,target)){
                 pickup=Vec3d.ofBottomCenter(target);pickupUntil=age+(projectDrop==null?60:100);
+                exposedOrePickupSteps = !openedCover.isEmpty() && !surfaceResource ? 2 : 0;
+                protectedOrePickup = false;
                 clearReservation();nextSearch=age+12;
                 if (projectDrop == null) pickupPath();
                 else stopPath();
@@ -435,10 +439,14 @@ final class MiningTask {
         }
         if(pickup!=null){
             if (projectDrop != null) {
+                if (protectedOrePickup && (subsurface.continuePassage(client, age, excluded)
+                        || subsurface.continueLocalApproach(client, age))) return;
+                protectedOrePickup = false;
                 var state = minedDrops.tick(client, projectDrop::matches, pickup);
                 if (age >= pickupUntil || state == DroppedItemSearch.State.UNAVAILABLE
                         || state == DroppedItemSearch.State.SEARCHING && age >= nextSearch) {
                     minedDrops.reset();
+                    if (openExposedOrePickup(client)) return;
                     pickup = null;
                     nextSearch = age + 1;
                 } else status = "Gathering mined drops";
@@ -502,6 +510,19 @@ final class MiningTask {
             nextSearch = wideChunks.hasNext() ? age + 1 : age + 10;
             status = "Checking more loaded chunks for " + job.resource;
         } else explore(client);
+    }
+
+    private static boolean openExposedOrePickup(MinecraftClient client) {
+        if (exposedOrePickupSteps <= 0) return false;
+        var drop = client.world.getEntitiesByClass(ItemEntity.class, new Box(BlockPos.ofFloored(pickup)).expand(1.5),
+                item -> item.isOnGround() && availableDrop(client, item)).stream()
+                .min(Comparator.comparingDouble(client.player::squaredDistanceTo)).orElse(null);
+        if (drop == null || !subsurface.openMiningPickupStep(client, age, drop.getBlockPos(), excluded)) return false;
+        exposedOrePickupSteps--;
+        protectedOrePickup = true;
+        pickupUntil = age + 100;
+        status = "Opening a protected pickup route for " + job.resource;
+        return true;
     }
 
     private static boolean requestLooseDrop(MinecraftClient client) {

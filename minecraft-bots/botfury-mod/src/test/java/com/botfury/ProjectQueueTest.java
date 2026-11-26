@@ -625,6 +625,61 @@ class ProjectQueueTest {
         assertNull(queue.offerObservedOreRecovery(WORLD, "miner", "stock", footing, worn, List.of(ore), 6));
     }
 
+    @Test void aWorkerWithSmeltedToolMaterialsOnlyRepeatsTheRemainingPreparation() throws Exception {
+        var journal = directory.resolve("retained-tool-materials.json");
+        String chest = "block:3,64,0";
+        var raw = job("raw", GATHER, List.of());
+        var smelt = new ProjectQueue.Work("smelt", SMELT, "{\"count\":3}", List.of("raw"), Set.of(), "raw");
+        var wood = new ProjectQueue.Work("wood", GATHER, "{\"resource\":\"any_logs\",\"count\":1}",
+                List.of("smelt"), Set.of(), "smelt");
+        var sticks = new ProjectQueue.Work("sticks", CRAFT, "{\"recipe\":\"minecraft:stick\",\"count\":2}",
+                List.of("wood"), Set.of(), "wood");
+        var pickaxe = new ProjectQueue.Work("pickaxe", CRAFT, "{\"recipe\":\"minecraft:iron_pickaxe\",\"count\":1}",
+                List.of("sticks"), Set.of(), "sticks");
+        var ore = new ProjectQueue.Work("ore", GATHER,
+                "{\"resource\":\"diamond\",\"item\":\"minecraft:diamond\",\"count\":8}",
+                List.of("pickaxe"), Set.of(), "pickaxe");
+        var bank = new ProjectQueue.Work("bank", TRANSFER, "{\"direction\":\"DEPOSIT\",\"item\":\"minecraft:diamond\",\"stock\":8}",
+                List.of("ore"), Set.of(chest), "ore");
+        var completed = List.of(raw, smelt, wood, sticks, pickaxe).stream().map(work ->
+                new ProjectQueue.Job(work, ProjectQueue.State.DONE, 1, "old", null, 0, "Completed", null)).toList();
+        var jobs = new ArrayList<>(completed);
+        var oldSite = new ProjectQueue.ResourceSite(7, -51, 9);
+        jobs.add(new ProjectQueue.Job(ore, ProjectQueue.State.FAILED, 3, null, null, 0,
+                ProjectQueue.GATHER_TOOLS_NEEDED + " after 2 supply recoveries", null, oldSite));
+        jobs.add(new ProjectQueue.Job(bank, ProjectQueue.State.WAITING, 0, null, null, 0, null, null));
+        var saved = new ProjectQueue.Project("stock", WORLD, jobs, null, chest, java.util.Map.of("raw", 2));
+        Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1,
+                "projects", java.util.Map.of(saved.id(), saved))));
+
+        var queue = new ProjectQueue(journal);
+        queue.claim(WORLD, "helper", Set.of(VERIFY), "stock", 10);
+        var here = new ProjectQueue.ResourceSite(8, 64, 8);
+        var material = "minecraft:iron_ingot";
+        assertFalse(queue.reuseRetainedToolMaterials(WORLD, "helper", here, java.util.Map.of(material, 2),
+                11, (tool, furnace) -> material));
+        assertTrue(queue.reuseRetainedToolMaterials(WORLD, "helper", here, java.util.Map.of(material, 3),
+                11, (tool, furnace) -> tool.equals(pickaxe) && furnace.equals(smelt) ? material : null));
+        queue = new ProjectQueue(journal);
+        assertEquals(completed.get(0), queue.snapshot(12).get(0).jobs().get(0));
+        assertEquals("helper", queue.snapshot(12).get(0).jobs().get(1).worker());
+        assertNull(queue.claim(WORLD, "old", Set.of(GATHER), "stock", 12));
+        var gathering = queue.claim(WORLD, "helper", Set.of(GATHER), "stock", 12);
+        assertEquals(wood, gathering.job().work());
+        assertEquals(here, gathering.job().resourceSite());
+        assertFalse(queue.reuseToolDuringGathering("stock", "wood", gathering.job().lease(),
+                java.util.Map.of("minecraft:iron_pickaxe", 25), 13));
+        assertTrue(queue.finish("stock", "wood", gathering.job().lease(), true, "Collected a log", 14));
+        var crafting = queue.claim(WORLD, "helper", Set.of(CRAFT), "stock", 15);
+        assertEquals(sticks, crafting.job().work());
+        assertTrue(queue.finish("stock", "sticks", crafting.job().lease(), true, "Crafted sticks", 16));
+        var replacement = queue.claim(WORLD, "helper", Set.of(CRAFT, GATHER), "stock", 17, here, ignored -> true,
+                (worker, item) -> 0, java.util.Map.of("minecraft:iron_pickaxe", 25));
+        assertEquals(pickaxe, replacement.job().work());
+        assertTrue(queue.finish("stock", "pickaxe", replacement.job().lease(), true, "Crafted a fresh pickaxe", 18));
+        assertEquals(ore, queue.claim(WORLD, "helper", Set.of(GATHER), "stock", 19).job().work());
+    }
+
     private ProjectQueue exhaustedDiamondQueue(java.nio.file.Path journal) throws Exception {
         String chest = "block:3,64,0";
         var wood = job("wood", GATHER, List.of());

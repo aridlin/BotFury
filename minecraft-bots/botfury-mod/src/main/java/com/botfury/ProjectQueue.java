@@ -259,6 +259,7 @@ final class ProjectQueue {
     private static final String EXHAUSTED_TOOLS = GATHER_TOOLS_NEEDED + " after " + MAX_SUPPLY_RECOVERIES
             + " supply recoveries";
     private static final String RECOVERING_TOOLS = GATHER_TOOLS_NEEDED + "; reacquiring materials";
+    private static final String RETAINED_TOOL_MATERIALS = "Preparing replacement tools from retained materials";
     private static final List<String> PICKAXE_TIERS = List.of("minecraft:wooden_pickaxe", "minecraft:stone_pickaxe",
             "minecraft:iron_pickaxe", "minecraft:diamond_pickaxe", "minecraft:netherite_pickaxe");
     private static final long STALLED_WORKER_COOLDOWN_MS = 30_000;
@@ -2143,7 +2144,7 @@ final class ProjectQueue {
             if (project.supplyChest == null || !world.equals(project.world) || cancelled(project)
                     || projectId != null && !project.id.equals(projectId)) continue;
             for (var gather : project.jobs) {
-                boolean exhausted = gather.state == State.FAILED && EXHAUSTED_TOOLS.equals(gather.evidence);
+                boolean exhausted = exhaustedPinnedGathering(gather);
                 boolean stalled = stalledPinnedGathering(gather);
                 boolean reopening = exhausted || stalled;
                 if ((!reopening && (exhaustedOnly || gather.state != State.WAITING)) || gather.work.kind != Kind.GATHER
@@ -2204,8 +2205,7 @@ final class ProjectQueue {
             if (project.supplyChest == null || !world.equals(project.world) || cancelled(project)
                     || projectId != null && !projectId.equals(project.id) || !availableProjectWorker(project, worker, now)) continue;
             for (var gather : project.jobs) {
-                boolean exhausted = gather.state == State.FAILED && gather.work.kind == Kind.GATHER
-                        && gather.work.sameWorkerAs != null && EXHAUSTED_TOOLS.equals(gather.evidence);
+                boolean exhausted = exhaustedPinnedGathering(gather);
                 if ((!exhausted && !stalledPinnedGathering(gather)) || now < gather.expiresAt
                         || checkpointDepositActive(project, gather)
                         || gather.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) continue;
@@ -2594,6 +2594,74 @@ final class ProjectQueue {
             }
         }
         return result;
+    }
+
+    synchronized boolean reuseRetainedToolMaterials(String world, String worker, ResourceSite position,
+                                                    Map<String, Integer> inventory, long now,
+                                                    java.util.function.BiFunction<Work, Work, String> material) throws IOException {
+        if (position == null || inventory.isEmpty() || hasReadyPinnedWork(world, worker)) return false;
+        var reserved = pendingBuildMaterials(world, worker);
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || project.supplyChest == null || project.repeat != null
+                    || cancelled(project) || !availableProjectWorker(project, worker, now)) continue;
+            for (var gather : project.jobs) {
+                if (!exhaustedPinnedGathering(gather) || checkpointDepositActive(project, gather)) continue;
+                String key = "retained-tool-materials:" + gather.work.id;
+                if (project.supplyRecoveries.containsKey(key)) continue;
+                var pickaxe = find(project, gather.work.sameWorkerAs);
+                var tool = pickaxe.work.kind == Kind.CRAFT ? JSON.fromJson(pickaxe.work.payload, ToolRecipe.class) : null;
+                if (tool == null || tool.recipe == null || !PICKAXE_TIERS.contains(tool.recipe)) continue;
+
+                // Keep the furnace receipt and reopen only the private steps that consume its output.
+                var suffix = new LinkedHashSet<String>();
+                var smelt = pickaxe;
+                while (smelt != null && smelt.state == State.DONE
+                        && (smelt.work.kind == Kind.CRAFT || smelt.work.kind == Kind.GATHER)) {
+                    suffix.add(smelt.work.id);
+                    smelt = find(project, smelt.work.sameWorkerAs);
+                }
+                if (smelt == null || smelt.state != State.DONE || smelt.work.kind != Kind.SMELT) continue;
+                var furnace = smelt;
+                suffix.add(furnace.work.id);
+                if (!privatePreparationReady(project, gather, suffix)
+                        || gather.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) continue;
+                var spec = JSON.fromJson(furnace.work.payload, SmeltFuel.class);
+                if (spec == null || spec.count < 1) continue;
+                var item = material.apply(pickaxe.work, furnace.work);
+                if (item == null || inventory.getOrDefault(item, 0) < spec.count || reserved.contains(item)
+                        || hasPendingDepositOf(world, worker, item)) continue;
+                var jobs = project.jobs.stream().map(job -> {
+                    if (job == furnace) {
+                        return new Job(job.work, State.DONE, job.attempts, worker, null, 0,
+                                "Observed " + spec.count + " " + item + " carried for replacement tools", job.chest, job.resourceSite);
+                    }
+                    if (job == gather || suffix.contains(job.work.id)) {
+                        var site = job == gather ? job.resourceSite
+                                : job.work.kind == Kind.GATHER ? position : null;
+                        return new Job(job.work, State.WAITING, 0, null, null, 0, RETAINED_TOOL_MATERIALS, job.chest, site);
+                    }
+                    return job;
+                }).toList();
+                var recoveries = new HashMap<>(project.supplyRecoveries);
+                recoveries.put(key, 1);
+                commit(project.withRecovery(jobs, recoveries));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasReadyPinnedWork(String world, String worker) {
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || cancelled(project)) continue;
+            for (var job : project.jobs) {
+                if (job.state != State.WAITING || job.work.sameWorkerAs == null) continue;
+                var prior = find(project, job.work.sameWorkerAs);
+                if (prior.state == State.DONE && worker.equalsIgnoreCase(prior.worker)
+                        && job.work.needs.stream().allMatch(id -> find(project, id).state == State.DONE)) return true;
+            }
+        }
+        return false;
     }
 
     synchronized List<CarriedSmelt> reusableSmeltingOutputs(String world) {
@@ -2993,7 +3061,8 @@ final class ProjectQueue {
 
     private static String carriedMiningPickaxe(Project project, Job gather, int tier, Map<String, Integer> toolUses) {
         int checkpoint = cargoCheckpoint(project, gather);
-        int minimumUses = SubsurfaceAccess.miningHarvestReserve(checkpoint);
+        int minimumUses = RETAINED_TOOL_MATERIALS.equals(gather.evidence)
+                ? SubsurfaceAccess.miningHarvestReserve(0) + 1 : SubsurfaceAccess.miningHarvestReserve(checkpoint);
         return PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
                 .filter(tool -> toolUses.getOrDefault(tool, 0) >= minimumUses).findFirst().orElse(null);
     }
@@ -4091,6 +4160,11 @@ final class ProjectQueue {
     private static boolean stalledPinnedGathering(Job job) {
         return job.state == State.FAILED && job.work.kind == Kind.GATHER && job.work.sameWorkerAs != null
                 && GATHER_STALLED.equals(job.evidence);
+    }
+
+    private static boolean exhaustedPinnedGathering(Job job) {
+        return job.state == State.FAILED && job.work.kind == Kind.GATHER && job.work.sameWorkerAs != null
+                && EXHAUSTED_TOOLS.equals(job.evidence);
     }
 
     private boolean recoverStalledGathering(String world, String projectId, long now,

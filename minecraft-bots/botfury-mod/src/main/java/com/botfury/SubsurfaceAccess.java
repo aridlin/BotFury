@@ -136,6 +136,13 @@ final class SubsurfaceAccess {
         return destination.isWithinDistance(feet, 9) && start(client, feet, List.of(destination), area, age, false);
     }
 
+    boolean openMiningPickupStep(MinecraftClient client, int age, BlockPos destination, ProjectGather.Area area) {
+        var feet = client.player.getBlockPos();
+        return destination.isWithinDistance(feet, 5) && !destination.equals(feet)
+                && hasFooting(client) && validDestination(client, destination, area)
+                && openTowardMiningStand(client, age, feet, destination, area);
+    }
+
     boolean continueLocalApproach(MinecraftClient client, int age) {
         if (!active()) return false;
         var goal = goals.get(0);
@@ -481,6 +488,12 @@ final class SubsurfaceAccess {
         return true;
     }
 
+    static boolean canClearOreCover(MinecraftClient client, BlockPos pos, ProjectGather.Area area) {
+        return pos.getY() >= client.player.getBlockY()
+                && BaritoneSettings.prospectingTerrain(client.world.getBlockState(pos).getBlock())
+                && safeClearance(client, pos, area, false);
+    }
+
     private boolean preparePassageHit(MinecraftClient client, BlockHitResult hit, boolean returning) {
         return returning && handClearance(client.world.getBlockState(hit.getBlockPos()))
                 || equipDiggingTool(client, returning);
@@ -632,7 +645,7 @@ final class SubsurfaceAccess {
         return best;
     }
 
-    private boolean equipDiggingTool(MinecraftClient client, boolean returning) {
+    static boolean equipDiggingTool(MinecraftClient client, boolean returning) {
         var player = client.player;
         var inventory = player.getInventory();
         int best = diggingToolSlot(client, returning);

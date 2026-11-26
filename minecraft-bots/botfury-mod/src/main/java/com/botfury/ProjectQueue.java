@@ -4075,11 +4075,18 @@ final class ProjectQueue {
                 || now < gather.expiresAt || project.supplyRecoveries.containsKey(observedGatherKey(gather))) return false;
         boolean exhaustedRoute = GATHER_STALLED.equals(gather.evidence)
                 && project.supplyRecoveries.containsKey("stalled-stock-gather:" + gather.work.id);
-        if (!exhaustedRoute && !LEASE_EXPIRED.equals(gather.evidence)) return false;
+        if (gather.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) return false;
+        boolean expiredLease = LEASE_EXPIRED.equals(gather.evidence);
+        if ((GATHER_STALLED.equals(gather.evidence) || expiredLease) && gather.work.locks.isEmpty()) {
+            var consumer = onlyInventoryCraftConsumer(project, gather);
+            var recipe = consumer == null ? null : JSON.fromJson(consumer.work.payload, InventoryRecipe.class);
+            // The next stage follows whoever gathers the inputs, so no completed recipe is lost.
+            if (recipe != null && recipe.inventory) return true;
+        }
+        if (!exhaustedRoute && !expiredLease) return false;
         var deposit = contributionDeposit(project, gather);
         return deposit != null && deposit.work.locks.contains(project.supplyChest)
-                && depositPrerequisitesReady(project, gather, deposit)
-                && gather.work.needs.stream().allMatch(id -> find(project, id).state == State.DONE);
+                && depositPrerequisitesReady(project, gather, deposit);
     }
 
     private static Job stalledSurfacePreparationSupplier(Project project, Job gather, long now) {

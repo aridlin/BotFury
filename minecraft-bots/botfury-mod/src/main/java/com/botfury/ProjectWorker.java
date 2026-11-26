@@ -387,13 +387,7 @@ final class ProjectWorker {
         var world = client.world;
         var state = world.getBlockState(pos);
         if (canopy || elevatedPlacementStand != null && state.getBlock() instanceof LeavesBlock) {
-            if (!naturalLeaves(state) || !state.getFluidState().isEmpty()
-                    || world.getBlockState(pos.up()).getBlock() instanceof FallingBlock) return true;
-            for (var side : Direction.values()) {
-                var neighbor = pos.offset(side);
-                if (!world.isChunkLoaded(neighbor.getX() >> 4, neighbor.getZ() >> 4)
-                        || !world.getFluidState(neighbor).isEmpty()) return true;
-            }
+            if (!canClearNaturalLeaves(client, pos)) return true;
         } else if (!BaritoneSettings.recoverableTerrain(state.getBlock())) return true;
         return client.world.getPlayers().stream().anyMatch(player -> player.isAlive() && !player.isSpectator()
                 && player.getBlockPos().down().equals(pos));
@@ -1482,6 +1476,19 @@ final class ProjectWorker {
 
     private static boolean naturalLeaves(net.minecraft.block.BlockState state) {
         return state.getBlock() instanceof LeavesBlock && !state.get(LeavesBlock.PERSISTENT);
+    }
+
+    static boolean canClearNaturalLeaves(MinecraftClient client, BlockPos pos) {
+        var world = client.world;
+        var state = world.getBlockState(pos);
+        if (!naturalLeaves(state) || !state.getFluidState().isEmpty()
+                || world.getBlockState(pos.up()).getBlock() instanceof FallingBlock) return false;
+        for (var side : Direction.values()) {
+            var neighbor = pos.offset(side);
+            if (!world.isChunkLoaded(neighbor.getX() >> 4, neighbor.getZ() >> 4)
+                    || !world.getFluidState(neighbor).isEmpty()) return false;
+        }
+        return true;
     }
 
     private static boolean tryElevatedApproach(MinecraftClient client, BlockPos destination, long now, boolean placement) {

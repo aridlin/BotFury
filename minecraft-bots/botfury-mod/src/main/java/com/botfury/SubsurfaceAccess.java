@@ -131,8 +131,8 @@ final class SubsurfaceAccess {
     }
 
     boolean advanceToward(MinecraftClient client, int age, BlockPos destination, ProjectGather.Area area,
-                          boolean allowNaturalAscent, boolean carryingDeposit) {
-        allowEmergencyHandAscent = carryingDeposit;
+                          boolean allowNaturalAscent, boolean allowHandAscent) {
+        allowEmergencyHandAscent = allowHandAscent;
         return advance(client, age, destination.getY(), area, destination, allowNaturalAscent, true);
     }
 

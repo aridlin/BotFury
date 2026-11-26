@@ -136,6 +136,7 @@ final class MiningTask {
                 && client.player.getBlockY() <= 8 && SubsurfaceAccess.deepResource(job.resource);
     }
     static boolean retracingSurfaceTrail() { return surfaceTrailWaypoint != null; }
+    static boolean climbingToSurface() { return working() && surfaceRouteGoal != null; }
     static String status(){return job==null?"":status;}
     static String lastStatus(){return status;}
     static boolean toolShortfall() { return toolShortfall; }
@@ -496,7 +497,8 @@ final class MiningTask {
         if (retracingSurfaceTrail() && followSurfaceTrail(client, client.player.getBlockPos())) return;
         if (requestLooseDrop(client)) return;
         if (subsurface.continuePassage(client, age, excluded)) {
-            status = "Opening a short prospecting passage";
+            status = surfaceRouteGoal == null ? "Opening a short prospecting passage"
+                    : "Opening stairs to the surface for " + job.resource;
             return;
         }
         if (subsurface.continueExplorationExit(client, age)) {
@@ -952,7 +954,7 @@ final class MiningTask {
         }
         if (surfaceRouteGoal != null) {
             double distance = Math.sqrt(surfaceRouteGoal.getSquaredDistance(feet));
-            if (feet.getY() >= surfaceProgressY + 2 || distance <= surfaceProgressDistance - 3) {
+            if (feet.getY() > surfaceProgressY || distance <= surfaceProgressDistance - 3) {
                 surfaceProgressAt = age;
                 surfaceProgressY = Math.max(surfaceProgressY, feet.getY());
                 surfaceProgressDistance = Math.min(surfaceProgressDistance, distance);
@@ -977,8 +979,7 @@ final class MiningTask {
         if (followSurfaceTrail(client, feet)) return true;
         if (!pathActive || !BaritoneClient.pursuing(surfaceRouteGoal)) {
             if (pathActive) stopPath();
-            if (!subsurface.tryNaturalAscent(client, age, surfaceRouteGoal.getY(), 3)
-                    && !subsurface.advanceToward(client, age, surfaceRouteGoal, excluded, true) && age >= nextPath) {
+            if (!subsurface.advanceToward(client, age, surfaceRouteGoal, excluded, true, true) && age >= nextPath) {
                 nextPath = age + 100;
                 path(surfaceRouteGoal);
             }

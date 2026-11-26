@@ -935,7 +935,8 @@ final class ProjectWorker {
     private static boolean gatherProgress(MinecraftClient client, int held, long now) {
         var feet = client.player.getBlockPos();
         return gatherProgress.active(feet.getX(), feet.getY(), feet.getZ(),
-                gatherAtSurface, held, now, seconds(90));
+                gatherAtSurface, MiningTask.climbingToSurface() && SubsurfaceAccess.hasFooting(client),
+                held, now, seconds(90));
     }
 
     private static void execute(MinecraftClient client, long now) {

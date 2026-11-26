@@ -149,7 +149,8 @@ final class ProjectBroker {
         for (var request : board.carriedCraftCandidates(world, System.currentTimeMillis())) {
             var bot = liveWorker(request.worker());
             if (bot == null || !bot.sameWorld()) continue;
-            if (!bot.items().isEmpty()) {
+            var spec = ProjectProduction.parse(request.work().payload(), ProjectQueue.Kind.CRAFT);
+            if (!bot.items().isEmpty() && canUseCraftingStation(client, spec, bot)) {
                 var inputs = ProjectProduction.carriedCraftingIngredients(client, request.work().payload(), bot.items());
                 if (board.useCarriedCraftingIngredients(world, request, inputs, System.currentTimeMillis())) {
                     BotEvents.add("info", "projects", bot.name() + " already carries the ingredients for " + request.work().id());
@@ -158,7 +159,8 @@ final class ProjectBroker {
             }
             for (var helper : BotTracker.all()) {
                 if (!helper.fresh() || !helper.connected() || !helper.alive() || !helper.sameWorld()
-                        || helper.name().equalsIgnoreCase(bot.name()) || helper.items().isEmpty()) continue;
+                        || helper.name().equalsIgnoreCase(bot.name()) || helper.items().isEmpty()
+                        || !canUseCraftingStation(client, spec, helper)) continue;
                 var inputs = ProjectProduction.carriedCraftingIngredients(client, request.work().payload(), helper.items());
                 if (board.offerCarriedCraftHandoff(world, request, helper.name(), inputs,
                         ProjectBroker::heldCount, System.currentTimeMillis())) {
@@ -167,6 +169,20 @@ final class ProjectBroker {
                 }
             }
         }
+    }
+
+    private static boolean canUseCraftingStation(net.minecraft.client.MinecraftClient client,
+                                                  ProjectProduction.Spec spec, BotTracker.Bot bot) {
+        if (spec.station() == null || ProjectProduction.fitsInventory(client, spec.recipe())) return true;
+        var station = spec.station().target();
+        var worker = BlockPos.ofFloored(bot.x(), bot.y(), bot.z());
+        boolean portable = bot.items().getOrDefault(spec.station().block().toString(), 0) > 0;
+        return craftingStationIsLocal(worker, station, portable);
+    }
+
+    static boolean craftingStationIsLocal(BlockPos worker, BlockPos station, boolean portable) {
+        return portable || (Math.abs(worker.getY() - station.getY()) <= 6
+                && worker.getSquaredDistance(station) <= 24 * 24);
     }
 
     private static void retryNearbyWorkstationCrafts(net.minecraft.client.MinecraftClient client, ProjectQueue board,

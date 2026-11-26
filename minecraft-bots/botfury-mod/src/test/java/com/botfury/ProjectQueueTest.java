@@ -1057,6 +1057,30 @@ class ProjectQueueTest {
         assertEquals(ProjectQueue.State.DONE, queue.snapshot(5).get(0).jobs().get(1).state());
     }
 
+    @Test void coordinatorCanRecoverTimedOutOriginalScaffoldClearanceAcrossRestart() throws Exception {
+        var journal = directory.resolve("planned-scaffold.json");
+        var queue = new ProjectQueue(journal);
+        String cell = "block:8,100,2";
+        String target = "{\"x\":8,\"y\":100,\"z\":2}";
+        String gate = "check-access-2";
+        var check = new ProjectQueue.Work(gate, ProjectQueue.Kind.VERIFY,
+                "{\"target\":" + target + ",\"block\":\"minecraft:air\"}", List.of(), Set.of(cell));
+        var place = new ProjectQueue.Work("place-access-2", BUILD,
+                "{\"target\":" + target + ",\"block\":\"minecraft:cobblestone\"}", List.of(gate), Set.of(cell));
+        queue.submit("house", WORLD, List.of(check, place));
+        long now = 1;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            var lease = queue.claim(WORLD, "checker", Set.of(ProjectQueue.Kind.VERIFY), now++).job();
+            assertTrue(queue.finish("house", gate, lease.lease(), false, ProjectQueue.TARGET_TIMEOUT, now++));
+        }
+        queue = new ProjectQueue(journal);
+        assertEquals(ProjectQueue.State.FAILED, queue.snapshot(now).get(0).jobs().get(0).state());
+        assertNull(queue.claim(WORLD, "builder", Set.of(BUILD), now++));
+        var observed = queue.scaffoldClearances(WORLD).get(0);
+        assertTrue(queue.confirmScaffoldClearance(WORLD, observed, "Observed clear scaffold cell"));
+        assertEquals(place.id(), queue.claim(WORLD, "builder", Set.of(BUILD), now++).job().work().id());
+    }
+
     @Test void equippedReplacementRescuesStalledPinnedGatheringAcrossRestarts() throws Exception {
         var journal = directory.resolve("stalled-equipped.json");
         var queue = prepareStalledSupply(journal, false);
@@ -2958,8 +2982,10 @@ class ProjectQueueTest {
         String check = "check-access-repair-place-1-0";
         String step = "place-access-repair-place-1-0";
         String done = "repair-place-1-settled";
-        var verification = new ProjectQueue.Work(check, ProjectQueue.Kind.VERIFY, "{}", List.of(intake), Set.of(key));
-        var temporary = new ProjectQueue.Work(step, BUILD, "{\"target\":{\"x\":6,\"y\":64,\"z\":1}}",
+        var verification = new ProjectQueue.Work(check, ProjectQueue.Kind.VERIFY,
+                "{\"target\":{\"x\":6,\"y\":64,\"z\":1},\"block\":\"minecraft:air\"}", List.of(intake), Set.of(key));
+        var temporary = new ProjectQueue.Work(step, BUILD,
+                "{\"target\":{\"x\":6,\"y\":64,\"z\":1},\"block\":\"minecraft:cobblestone\"}",
                 List.of(intake, check), Set.of(key), intake);
         var moved = new ProjectQueue.Work("place-1", BUILD, "{\"stand\":{\"x\":6,\"y\":65,\"z\":1}}",
                 List.of("pickup", step), Set.of("wall"), "pickup");

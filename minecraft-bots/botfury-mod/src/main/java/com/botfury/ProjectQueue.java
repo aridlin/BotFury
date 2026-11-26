@@ -825,10 +825,11 @@ final class ProjectQueue {
 
     synchronized List<ScaffoldClearance> scaffoldClearances(String world) {
         var ready = new ArrayList<ScaffoldClearance>();
+        var writes = activeInspectionWrites(world);
         for (var project : projects.values()) {
             if (!project.world.equals(world) || cancelled(project)) continue;
             for (var job : project.jobs) {
-                if (scaffoldClearanceReady(project, job)) ready.add(new ScaffoldClearance(project.id, job.work));
+                if (scaffoldClearanceReady(project, job, writes)) ready.add(new ScaffoldClearance(project.id, job.work));
             }
         }
         return ready;
@@ -836,20 +837,29 @@ final class ProjectQueue {
 
     synchronized boolean confirmScaffoldClearance(String world, ScaffoldClearance check, String evidence) throws IOException {
         var project = projects.get(check.project);
+        if (project == null || !world.equals(project.world) || cancelled(project)) return false;
         var current = find(project, check.job.id);
-        if (current == null || !world.equals(project.world) || cancelled(project)
-                || !current.work.equals(check.job) || !scaffoldClearanceReady(project, current)) return false;
+        if (current == null || !current.work.equals(check.job)
+                || !scaffoldClearanceReady(project, current, activeInspectionWrites(world))) return false;
         replace(project, new Job(current.work, State.DONE, current.attempts, null, null, 0, evidence, null));
+        restoredLeases.remove(current.lease);
         return true;
     }
 
-    private static boolean scaffoldClearanceReady(Project project, Job job) {
-        String prefix = "check-access-repair-";
-        String id = job.work.id;
-        if (job.work.kind != Kind.VERIFY || job.state == State.DONE || !id.startsWith(prefix)) return false;
-        int step = id.lastIndexOf('-');
-        return step > prefix.length() && project.supplyRecoveries.containsKey("access:" + id.substring(prefix.length(), step))
-                && job.work.needs.stream().allMatch(need -> find(project, need).state == State.DONE);
+    private static boolean scaffoldClearanceReady(Project project, Job job, Set<String> writes) {
+        String prefix = "check-access-";
+        if (job.work.kind != Kind.VERIFY || job.state == State.DONE || job.work.sameWorkerAs != null
+                || !job.work.id.startsWith(prefix) || !job.work.needs.stream().allMatch(need -> find(project, need).state == State.DONE)) {
+            return false;
+        }
+        var placement = find(project, "place-access-" + job.work.id.substring(prefix.length()));
+        if (placement == null || placement.work.kind != Kind.BUILD || !placement.work.needs.contains(job.work.id)
+                || project.jobs.stream().anyMatch(other -> job.work.id.equals(other.work.sameWorkerAs))) return false;
+        var check = JSON.fromJson(job.work.payload, StationTarget.class);
+        var build = JSON.fromJson(placement.work.payload, StationTarget.class);
+        return check != null && check.target != null && "minecraft:air".equals(check.block)
+                && build != null && "minecraft:cobblestone".equals(build.block) && check.target.equals(build.target)
+                && !writes.contains(ProjectBlock.key(check.target.checked()));
     }
 
     synchronized boolean installAccess(String world, BlockedAccess request, StructureProject.AccessRepair repair,

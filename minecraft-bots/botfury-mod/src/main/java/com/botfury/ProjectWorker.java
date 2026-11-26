@@ -117,6 +117,7 @@ final class ProjectWorker {
     private static BlockPos stationToolAttempt;
     private static boolean needsRouteTool;
     private static boolean needsRouteSticks;
+    private static boolean reportingRouteSticks, acknowledgedRouteSticks;
     private static boolean allowedResupplyWait;
     private static boolean needsRouteBench, needsProductionBench;
     private static boolean receivedRouteBench;
@@ -299,6 +300,7 @@ final class ProjectWorker {
         stationToolAttempt = null;
         needsRouteTool = needsRouteBench = needsProductionBench = receivedRouteBench = allowedResupplyWait = false;
         needsRouteSticks = false;
+        reportingRouteSticks = acknowledgedRouteSticks = false;
         craftingRouteDelivery = null;
         inspection = null;
         fill = null;
@@ -1130,6 +1132,7 @@ final class ProjectWorker {
         else if (stationJob) releaseCentering(client);
         stationDescentSteps = 0;
         needsRouteSticks = false;
+        reportingRouteSticks = acknowledgedRouteSticks = false;
         if (!targetLoaded) {
             stableSince = 0;
             return;
@@ -1518,7 +1521,16 @@ final class ProjectWorker {
                 status = assignment.project() + "/" + assignment.job().work().id() + ": Waiting for a stick delivery";
                 return true;
             }
+            if (!SubsurfaceAccess.canDigRoute(client) && !acknowledgedRouteSticks) {
+                if (!reportingRouteSticks) {
+                    reportingRouteSticks = true;
+                    nextRequest = 0;
+                }
+                status = assignment.project() + "/" + assignment.job().work().id() + ": Confirming receipt of sticks";
+                return true;
+            }
             needsRouteSticks = false;
+            reportingRouteSticks = acknowledgedRouteSticks = false;
             if (!SubsurfaceAccess.canDigRoute(client) && startMiningCraft(client, now, ROUTE_PICKAXE, protectedStation)) return true;
         }
         if (stationDescent.continuePassage(client, approachAge, protectedStation)
@@ -1922,6 +1934,7 @@ final class ProjectWorker {
                 if (TaskDefense.requestsMeal(client)) args.put("needsMeal", true);
                 if (TaskDefense.hasMeal(client)) args.put("carryingMeal", true);
                 if (needsRouteSticks) args.put("needsRouteSticks", true);
+                if (reportingRouteSticks) args.put("receivedRouteSticks", true);
             }
             if (receivedRouteBench) args.put("receivedRouteBench", true);
             if (needsRouteTool && !SubsurfaceAccess.canDigRoute(client)) {
@@ -2034,6 +2047,7 @@ final class ProjectWorker {
                     var renewed = JSON.fromJson(reply.body(), ProjectQueue.Job.class);
                     if (renewed == null) return;
                     deadline = deadline(renewed, now);
+                    if (args.containsKey("receivedRouteSticks")) acknowledgedRouteSticks = true;
                 }
                 if (success == null) nextRequest = now + seconds(4);
             } catch (IllegalArgumentException | com.google.gson.JsonParseException invalid) {

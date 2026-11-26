@@ -1796,6 +1796,16 @@ final class ProjectQueue {
         else routeStickRequests.remove(token);
     }
 
+    synchronized void recordRouteStickReceipt(String projectId, String jobId, UUID token, long now) throws IOException {
+        var project = projects.get(projectId);
+        var recipient = find(project, jobId);
+        if (!owns(recipient, token, now) || !routeStickRequests.contains(token)) return;
+        var delivery = find(project, "stick-resupply-" + token);
+        if (delivery == null || delivery.state != State.LEASED) return;
+        replace(project, new Job(delivery.work, State.DONE, delivery.attempts, delivery.worker, delivery.lease,
+                0, "Recipient confirmed the sticks for a route pickaxe", delivery.chest));
+    }
+
     synchronized void recordMealNeed(String projectId, String jobId, UUID token, boolean needsMeal,
                                       boolean carryingMeal, long now) throws IOException {
         var project = projects.get(projectId);

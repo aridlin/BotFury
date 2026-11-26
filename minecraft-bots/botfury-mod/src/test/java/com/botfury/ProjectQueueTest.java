@@ -30,6 +30,8 @@ class ProjectQueueTest {
         assertEquals("miner", request.recipient());
         assertEquals("minecraft:stick", request.item());
         assertEquals(1, request.quantity());
+        queue.recordRouteStickReceipt("batch", "smelt", station.lease(), 5);
+        assertEquals(ProjectQueue.State.DONE, queue.snapshot(6).get(0).jobs().get(1).state());
     }
 
     @Test void loadedFurnaceRecoveryPersistsItsExactStationAndReopensOnlyFuel() throws Exception {

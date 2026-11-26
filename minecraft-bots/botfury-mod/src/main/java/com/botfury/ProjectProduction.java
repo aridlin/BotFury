@@ -15,7 +15,6 @@ import net.minecraft.screen.FurnaceScreenHandler;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.slot.Slot;
 import net.minecraft.screen.slot.SlotActionType;
-import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
@@ -477,7 +476,7 @@ final class ProjectProduction {
             opening = true;
             contactedStation = true;
             player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, hit.getPos());
-            client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
+            client.interactionManager.interactBlock(player, ProjectInventory.workstationHand(client), hit);
             nextAction = now + SETTLE;
             return null;
         }

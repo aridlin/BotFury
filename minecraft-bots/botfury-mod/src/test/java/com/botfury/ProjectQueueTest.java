@@ -2981,14 +2981,16 @@ class ProjectQueueTest {
         var taken = queue.claim(WORLD, "miner", Set.of(TRANSFER), 3).job();
         assertTrue(queue.finish("house", taken.work().id(), taken.lease(), true, "Observed two blocks carried",
                 new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:cobblestone", 1)), 4));
-        queue.submit("mining", WORLD, List.of(job("mine", GATHER, List.of())));
+        queue.submit("mining", WORLD, List.of(job("mine", GATHER, List.of()), job("more-mining", GATHER, List.of())));
         var mining = queue.claim(WORLD, "miner", Set.of(GATHER), 5).job();
         var kinds = Set.of(BUILD, TRANSFER);
-        assertTrue(queue.offerConstructionHandoff(WORLD, "builder", null, kinds, 6,
-                worker -> new ProjectQueue.ResourceSite(8, worker.equals("miner") ? 14 : 64, 9), (worker, item) -> 0));
-        queue = new ProjectQueue(journal);
-        var supplied = queue.claim(WORLD, "builder", kinds, 7).job();
+        var nearby = new ProjectQueue.ResourceSite(8, 64, 9);
+        var supplied = queue.claim(WORLD, "builder", Set.of(BUILD, TRANSFER, GATHER), null, 6, nearby,
+                material -> false, (worker, item) -> 0, java.util.Map.of(), 0, false,
+                worker -> worker.equals("miner") ? new ProjectQueue.ResourceSite(8, 14, 9) : nearby).job();
         assertEquals("recovery-place-access-0-cargo", supplied.work().id());
+        queue = new ProjectQueue(journal);
+        assertEquals(supplied.lease(), queue.claim(WORLD, "builder", kinds, 7).job().lease());
         assertTrue(supplied.work().payload().contains("\"stock\":1"));
         assertTrue(queue.finish("house", supplied.work().id(), supplied.lease(), true, "Observed one block carried",
                 new ProjectQueue.ChestReport(chest, java.util.Map.of()), 8));

@@ -1389,6 +1389,15 @@ final class ProjectQueue {
                                   ResourceSite position, java.util.function.Predicate<String> hasExcavationTool,
                                   java.util.function.ToIntBiFunction<String, String> heldCount,
                                   Map<String, Integer> toolUses, int returnRevision, boolean supportsPickupReserve) throws IOException {
+        return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
+                returnRevision, supportsPickupReserve, null);
+    }
+
+    synchronized Assignment claim(String world, String worker, Set<Kind> kinds, String projectId, long now,
+                                  ResourceSite position, java.util.function.Predicate<String> hasExcavationTool,
+                                  java.util.function.ToIntBiFunction<String, String> heldCount,
+                                  Map<String, Integer> toolUses, int returnRevision, boolean supportsPickupReserve,
+                                  java.util.function.Function<String, ResourceSite> locate) throws IOException {
         if (world == null || !validId(worker) || kinds == null || kinds.isEmpty()
                 || projectId != null && !validId(projectId)) {
             throw new IllegalArgumentException("Invalid worker or world");
@@ -1433,7 +1442,7 @@ final class ProjectQueue {
                     if (!canResume) return null;
                     if (kinds.contains(Kind.GATHER) && useCarriedGatheringPickaxe(project, job, worker, toolUses)) {
                         return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
-                                returnRevision, supportsPickupReserve);
+                                returnRevision, supportsPickupReserve, locate);
                     }
                     return assignment(project, job);
                 }
@@ -1508,11 +1517,11 @@ final class ProjectQueue {
                 var missingRaw = missingRebuiltFurnaceInput(job, byId, worker, heldCount);
                 if (missingRaw != null && recoverMissingProduction(project, job, missingRaw)) {
                     return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
-                            returnRevision, supportsPickupReserve);
+                            returnRevision, supportsPickupReserve, locate);
                 }
                 if (kinds.contains(Kind.GATHER) && useCarriedGatheringPickaxe(project, job, worker, toolUses)) {
                     return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
-                            returnRevision, supportsPickupReserve);
+                            returnRevision, supportsPickupReserve, locate);
                 }
                 boolean usesStation = job.work.kind == Kind.TRANSFER || job.work.kind == Kind.CRAFT || job.work.kind == Kind.SMELT;
                 if (usesStation && !Collections.disjoint(unavailableStations, job.work.locks)) continue;
@@ -1555,8 +1564,14 @@ final class ProjectQueue {
                     || heldCount != null && (recoverExpiredMiningTools(world, projectId, heldCount)
                         || recoverToolsAfterBanking(world, projectId))) {
                 return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
-                        returnRevision, supportsPickupReserve);
+                        returnRevision, supportsPickupReserve, locate);
             }
+        }
+        // A nearby builder can unlock a stalled structure before leaving on a fresh gathering assignment.
+        if (fallbackJob != null && fallbackJob.work.kind == Kind.GATHER && locate != null && heldCount != null
+                && kinds.contains(Kind.BUILD) && offerConstructionHandoff(world, worker, projectId, kinds, now, locate, heldCount)) {
+            return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
+                    returnRevision, supportsPickupReserve);
         }
         return fallbackJob == null ? null
                 : assignWithPreparationStock(fallbackProject, fallbackJob, worker, now, position, kinds, supportsPickupReserve ? heldCount : null);

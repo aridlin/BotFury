@@ -101,8 +101,10 @@ final class ProjectBroker {
                 nextScaffoldCleanupCheck = now + java.time.Duration.ofSeconds(1).toNanos();
                 retryLocalStationPlacements(client, board, world);
                 for (var carrier : idleStockCarriers()) {
-                    if (board.rotateStalledDeposits(world, carrier, System.currentTimeMillis(),
-                            ProjectBroker::workerPosition, ProjectBroker::heldCount)) {
+                    long recoveryTime = System.currentTimeMillis();
+                    if (board.rotateStalledDeposits(world, carrier, recoveryTime,
+                            ProjectBroker::workerPosition, ProjectBroker::heldCount)
+                            || board.rescueFailedDeposit(world, carrier, recoveryTime)) {
                         BotEvents.add("info", "projects", carrier.worker() + " took over a stalled delivery nearby");
                         break;
                     }

@@ -1761,6 +1761,45 @@ final class ProjectQueue {
         return false;
     }
 
+    synchronized boolean rescueFailedDeposit(String world, StockCarrier carrier, long now) throws IOException {
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || project.repeat != null || project.supplyChest == null || cancelled(project)
+                    || !availableProjectWorker(project, carrier.worker, now)) continue;
+            var stock = new HashMap<String, ChestObservation>();
+            collectChestStock(world, project, stock);
+            var observation = stock.get(project.supplyChest);
+            for (var deposit : project.jobs) {
+                if (deposit.state != State.FAILED || deposit.work.kind != Kind.TRANSFER
+                        || !TARGET_TIMEOUT.equals(deposit.evidence) || !deposit.work.locks.contains(project.supplyChest)) continue;
+                var target = transferTarget(deposit);
+                if (target == null || target.item == null || !"DEPOSIT".equals(target.direction)) continue;
+                int carried = stockCount(carrier.items, target.item);
+                int observed = observation == null ? 0 : stockCount(observation.report, target.item);
+                int missing = target.stock - observed;
+                if (missing <= 0 || carried < missing) continue;
+                var chest = JSON.fromJson(deposit.work.payload, StationTarget.class).target;
+                if (chest == null || distance(carrier.position, chest) > STOCK_RECOVERY_RADIUS
+                        || chest.y() - carrier.position.y > CONSTRUCTION_PICKUP_RETRY_CLIMB) continue;
+                var gather = privateDepositCargo(project, deposit, target.item);
+                if (gather == null || ownChestContributionBlocked(project, gather, deposit)) continue;
+                var items = new HashSet<>(target.item.equals("any_logs")
+                        ? ResourceCatalog.blocks(target.item, "both") : List.of(target.item));
+                items.add(target.item);
+                if (items.stream().anyMatch(item -> item.endsWith("_log"))) items.add("any_logs");
+                if (!Collections.disjoint(pendingBuildMaterials(world, carrier.worker), items)
+                        || items.stream().anyMatch(item -> hasPendingDepositOf(world, carrier.worker, item))) continue;
+                String rescue = "failed-deposit-carrier:" + deposit.work.id + ":" + carrier.worker.toLowerCase(Locale.ROOT);
+                if (project.supplyRecoveries.containsKey(rescue)) continue;
+                var updated = depositContribution(project, deposit, observation, observed, carrier, carried, now);
+                var recoveries = new HashMap<>(updated.supplyRecoveries);
+                recoveries.put(rescue, 1);
+                commit(updated.withRecovery(updated.jobs, recoveries));
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** Give the first delivery to a local carrier without changing the cumulative chest targets. */
     synchronized boolean rotateStalledDeposits(String world, StockCarrier local, long now,
                                                 java.util.function.Function<String, ResourceSite> locate,
@@ -4314,13 +4353,19 @@ final class ProjectQueue {
                     || !availableProjectWorker(project, worker, now)
                     || pendingBuildMaterials(project.world, worker).contains(target.item)
                     || hasPendingDepositOf(project.world, worker, target.item)) continue;
-            var replacement = new Job(deposit.work, State.LEASED, 1, worker, UUID.randomUUID(),
-                    now + LEASE_MS, CONTRIBUTION_ACTIVE, observation);
-            var jobs = project.jobs.stream().map(job -> job == deposit ? replacement : job).toList();
-            commit(project.withContribution(jobs, key, held, carrier.position, stock, 0));
+            commit(depositContribution(project, deposit, observation, stock, carrier, held, now));
             return true;
         }
         return false;
+    }
+
+    private static Project depositContribution(Project project, Job deposit,
+                                               ChestObservation observation, int stock,
+                                               StockCarrier carrier, int held, long now) {
+        var replacement = new Job(deposit.work, State.LEASED, 1, carrier.worker, UUID.randomUUID(),
+                now + LEASE_MS, CONTRIBUTION_ACTIVE, observation);
+        var jobs = project.jobs.stream().map(job -> job == deposit ? replacement : job).toList();
+        return project.withContribution(jobs, contributionCargo(deposit, carrier.worker), held, carrier.position, stock, 0);
     }
 
     private static int stockCount(ChestReport chest, String item) {

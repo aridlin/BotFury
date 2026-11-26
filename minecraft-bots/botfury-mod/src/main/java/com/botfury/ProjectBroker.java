@@ -263,7 +263,8 @@ final class ProjectBroker {
             for (var bot : BotTracker.all()) {
                 if (!bot.fresh() || !bot.connected() || !bot.alive() || !bot.sameWorld() || bot.items().isEmpty()) continue;
                 var reserved = board.reservedSmeltingInputs(world, bot.name(), bot.items().keySet());
-                var fuel = ProjectProduction.carriedSmeltingFuel(client, request.work().payload(), bot.items(), reserved);
+                var fuel = ProjectProduction.carriedSmeltingFuel(client, request.work().payload(), bot.items(),
+                        reserved, bot.fuelChoicesCapable());
                 if (fuel != null && board.resumeCarriedSmelting(world, request, bot.name(), fuel.first().toString(),
                         fuel.choices(), System.currentTimeMillis())) {
                     BotEvents.add("info", "projects", "Resumed " + request.work().id() + " with supplies carried by " + bot.name());

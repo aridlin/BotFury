@@ -211,7 +211,7 @@ final class ProjectProduction {
     }
 
     static FuelSelection carriedSmeltingFuel(MinecraftClient client, String work, Map<String, Integer> inventory,
-                                              Set<String> reserved) {
+                                              Set<String> reserved, boolean supportsFuelChoices) {
         var spec = parse(work, ProjectQueue.Kind.SMELT);
         if (inventory.getOrDefault(spec.input.toString(), 0) == 0) return null;
         var recipe = client.world.getRecipeManager().get(spec.recipe).orElse(null);
@@ -233,9 +233,12 @@ final class ProjectProduction {
         });
         long preferredBurn = (long) burnTimes.getOrDefault(Registries.ITEM.get(spec.fuel), 0)
                 * carried.getOrDefault(spec.fuel, 0);
-        var first = preferredBurn >= cookTicks ? spec.fuel : alternativeFuel(carried, spec.input, spec.fuel, cookTicks, true);
-        return first == null ? null : new FuelSelection(first,
-                carried.keySet().stream().map(Identifier::toString).collect(java.util.stream.Collectors.toUnmodifiableSet()));
+        var first = preferredBurn >= cookTicks ? spec.fuel
+                : alternativeFuel(carried, spec.input, spec.fuel, cookTicks, supportsFuelChoices);
+        if (first == null) return null;
+        var choices = supportsFuelChoices ? carried.keySet().stream().map(Identifier::toString)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet()) : Set.<String>of();
+        return new FuelSelection(first, choices);
     }
 
     private static Identifier alternativeFuel(Map<Identifier, Integer> carried, Identifier input,
@@ -505,6 +508,7 @@ final class ProjectProduction {
         if (!existingInput.isEmpty() && !ItemStack.canCombine(existingInput, raw)
                 || !existingFuel.isEmpty() && !ItemStack.canCombine(existingFuel, fuel)
                     && !ItemStack.canCombine(existingFuel, substitutedFuel)
+                    && !spec.fuelChoices.contains(Registries.ITEM.getId(existingFuel.getItem()))
                 || !result.isEmpty() && !ItemStack.canCombine(result, output)) {
             return failure("Furnace contains unrelated items");
         }

@@ -73,6 +73,19 @@ final class ProjectProduction {
                 && canCraft(client, Identifier.of("minecraft", "furnace"));
     }
 
+    boolean reservesWorkbenchWood(MinecraftClient client) {
+        if (spec.kind != ProjectQueue.Kind.CRAFT) return true;
+        var recipe = client.world.getRecipeManager().get(spec.recipe).orElse(null);
+        if (!(recipe instanceof CraftingRecipe crafting) || crafting.getIngredients().isEmpty()) return true;
+        for (var ingredient : crafting.getIngredients()) {
+            for (var choice : ingredient.getMatchingStacks()) {
+                if (choice.isIn(net.minecraft.registry.tag.ItemTags.PLANKS)
+                        || choice.isIn(net.minecraft.registry.tag.ItemTags.LOGS)) return true;
+            }
+        }
+        return false;
+    }
+
     ProjectProduction atStation(ProjectBlock station) {
         var relocated = new ProjectProduction(new Spec(station, spec.kind, spec.recipe, spec.input, spec.fuel,
                 spec.count, spec.fuelChoices));

@@ -33,6 +33,7 @@ final class MiningTask {
     private static final int MAX_PROTECTED_APPROACH_STEPS = 16;
     private static final int MAX_EXPLORATION_EXITS = 3;
     private static final int MAX_CANOPY_LEAVES = 6;
+    private static final int MAX_ORE_COVER = 2;
     private static final int SURFACE_ROUTE_DEPTH = 12;
     private static final Gson JSON=new Gson();
     private static final ExecutorService IO=Executors.newFixedThreadPool(2,r->{var t=new Thread(r,"BotFury-mining");t.setDaemon(true);return t;});
@@ -104,8 +105,8 @@ final class MiningTask {
     private static boolean localApproachTried;
     private static BlockPos localApproachFrom;
     private static int localApproachSteps;
-    private static final Set<BlockPos> openedCanopy = new HashSet<>();
-    private static int canopyAttemptEnds;
+    private static final Set<BlockPos> openedCover = new HashSet<>();
+    private static int coverAttemptEnds;
     private static volatile String status="";
     static boolean active(){return job!=null;}
     static boolean working(){return job!=null&&!paused&&!dead;}
@@ -365,7 +366,7 @@ final class MiningTask {
                 String blockName=Registries.BLOCK.getId(client.world.getBlockState(target).getBlock()).getPath();
                 client.interactionManager.updateBlockBreakingProgress(ray.getBlockPos(),ray.getSide());client.player.swingHand(Hand.MAIN_HAND);
                 status="Mining "+blockName;
-            } else if (!clearCanopy(client, feet)) {
+            } else if (!clearNearbyCover(client, feet)) {
                 var p = BlockPos.ofFloored(stand);
                 double distance = client.player.getPos().distanceTo(stand);
                 if (approachDistance - distance >= .6) {
@@ -555,16 +556,17 @@ final class MiningTask {
         var candidates = new ArrayList<BlockPos>();
         var nearbyHits = new ArrayList<BlockPos>();
         boolean safeFooting = canMineFromCurrentFooting(client, position);
+        int coverLimit = safeFooting ? coverLimit(client) : 0;
         var suitability = new HashMap<BlockState, Boolean>();
         scanNeedsTool = false;
         int radius = surfaceResource ? 20 : 12;
         for (var pos : BlockPos.iterateOutwards(position, radius, 10, radius)) {
             if (!world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)) continue;
             var state = world.getBlockState(pos);
-            boolean canopy = safeFooting && surfaceResource && matches(state)
-                    && canopyObstruction(client, position, pos) != null;
-            if (!eligibleCandidate(client, pos, state, suitability, canopy)) continue;
-            if (safeFooting && (canopy || canReachFromHere(client, position, pos))) nearbyHits.add(pos.toImmutable());
+            boolean covered = coverLimit > 0 && matches(state)
+                    && coverHit(client, position, pos, coverLimit) != null;
+            if (!eligibleCandidate(client, pos, state, suitability, covered)) continue;
+            if (safeFooting && (covered || canReachFromHere(client, position, pos))) nearbyHits.add(pos.toImmutable());
             else candidates.add(pos.toImmutable());
         }
         Comparator<BlockPos> byDistance = Comparator.comparingDouble(p -> p.getSquaredDistance(position));
@@ -575,10 +577,10 @@ final class MiningTask {
     }
 
     private static boolean eligibleCandidate(MinecraftClient client, BlockPos pos, BlockState state,
-                                             Map<BlockState, Boolean> suitability, boolean canopy) {
+                                             Map<BlockState, Boolean> suitability, boolean canExpose) {
         if (!matches(state) || excluded != null && excluded.contains(pos)
                 || rejected.containsKey(pos) || protectedTarget(client, pos)) return false;
-        if (!canopy && projectMining && excluded != null && state.isFullCube(client.world, pos)
+        if (!canExpose && projectMining && excluded != null && state.isFullCube(client.world, pos)
                 && completelyCovered(client.world, pos)) return false;
         if (suitability.computeIfAbsent(state, block -> hasTool(client, block))) return true;
         scanNeedsTool = true;
@@ -649,45 +651,58 @@ final class MiningTask {
         if (!rejectedStands.containsKey(feet) && canMineFromCurrentFooting(client, feet)
                 && (!ResourceCatalog.isOre(job.resource) || nearOreDropHeight(client, target, feet))
                 && (canReachFromHere(client, feet, target)
-                    || surfaceResource && canopyObstruction(client, feet, target) != null)) return Vec3d.ofBottomCenter(feet);
+                    || coverHit(client, feet, target, coverLimit(client)) != null)) return Vec3d.ofBottomCenter(feet);
         return standing(client, target);
     }
 
-    private static BlockHitResult canopyObstruction(MinecraftClient client, BlockPos feet, BlockPos resource) {
+    private static int coverLimit(MinecraftClient client) {
+        if (surfaceResource) return MAX_CANOPY_LEAVES;
+        return projectMining && ResourceCatalog.isOre(job.resource) && SubsurfaceAccess.canDigRoute(client) ? MAX_ORE_COVER : 0;
+    }
+
+    private static BlockHitResult coverHit(MinecraftClient client, BlockPos feet, BlockPos resource, int limit) {
+        if (limit == 0) return null;
         var eye = client.player.getEyePos();
         var point = Vec3d.ofCenter(resource);
         double reach = Math.min(4.3, client.interactionManager.getReachDistance() - .1);
-        if (eye.squaredDistanceTo(point) > reach * reach || feet.down().equals(resource)) return null;
+        if (eye.squaredDistanceTo(point) > reach * reach || feet.down().equals(resource)
+                || !surfaceResource && !nearOreDropHeight(client, resource, feet)) return null;
 
-        var leaves = new ArrayList<BlockHitResult>();
+        var obstructions = new ArrayList<BlockHitResult>();
         var exposed = BlockView.raycast(eye, point, client.world, (world, pos) -> {
             var shape = pos.equals(resource) ? world.getBlockState(pos).getOutlineShape(world, pos)
                     : world.getBlockState(pos).getCollisionShape(world, pos);
             var hit = shape.raycast(eye, point, pos);
             if (hit == null || pos.equals(resource)) return hit;
-            if (leaves.size() >= MAX_CANOPY_LEAVES || feet.down().equals(pos)
-                    || excluded != null && excluded.contains(pos) || BuildProtection.blocked(pos)
-                    || !ProjectWorker.canClearNaturalLeaves(client, pos) || supportsAnotherPlayer(client, pos)) return hit;
-            leaves.add(hit.withBlockPos(pos.toImmutable()));
+            if (obstructions.size() >= limit || feet.down().equals(pos)
+                    || excluded != null && excluded.contains(pos) || BuildProtection.blocked(pos)) return hit;
+            boolean removable = surfaceResource
+                    ? ProjectWorker.canClearNaturalLeaves(client, pos) && !supportsAnotherPlayer(client, pos)
+                    : SubsurfaceAccess.canClearOreCover(client, pos, excluded);
+            if (!removable) return hit;
+            obstructions.add(hit.withBlockPos(pos.toImmutable()));
             return null;
         }, ignored -> null);
-        return exposed != null && exposed.getBlockPos().equals(resource) && !leaves.isEmpty() ? leaves.get(0) : null;
+        return exposed != null && exposed.getBlockPos().equals(resource) && !obstructions.isEmpty()
+                ? obstructions.get(0) : null;
     }
 
-    private static boolean clearCanopy(MinecraftClient client, BlockPos feet) {
-        if (!surfaceResource || !canMineFromCurrentFooting(client, feet)) return false;
-        var leaf = canopyObstruction(client, feet, target);
-        if (leaf == null || openedCanopy.size() >= MAX_CANOPY_LEAVES && !openedCanopy.contains(leaf.getBlockPos())) return false;
-        if (openedCanopy.add(leaf.getBlockPos())) {
-            canopyAttemptEnds = age + 60;
-            BotEvents.add("debug", "mining", "Clearing natural foliage in reach of reserved " + target.toShortString());
+    private static boolean clearNearbyCover(MinecraftClient client, BlockPos feet) {
+        if (!canMineFromCurrentFooting(client, feet)) return false;
+        int limit = coverLimit(client);
+        var cover = coverHit(client, feet, target, limit);
+        if (cover == null || openedCover.size() >= limit && !openedCover.contains(cover.getBlockPos())) return false;
+        String material = surfaceResource ? "foliage" : "cover";
+        if (openedCover.add(cover.getBlockPos())) {
+            coverAttemptEnds = age + 60;
+            BotEvents.add("debug", "mining", "Clearing natural " + material + " in reach of reserved " + target.toShortString());
         }
-        if (age >= canopyAttemptEnds) return false;
+        if (age >= coverAttemptEnds || !surfaceResource && !SubsurfaceAccess.equipDiggingTool(client, true)) return false;
         stopPath();
-        client.player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, leaf.getPos());
-        client.interactionManager.updateBlockBreakingProgress(leaf.getBlockPos(), leaf.getSide());
+        client.player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, cover.getPos());
+        client.interactionManager.updateBlockBreakingProgress(cover.getBlockPos(), cover.getSide());
         client.player.swingHand(Hand.MAIN_HAND);
-        status = "Clearing natural foliage for " + job.resource;
+        status = "Clearing natural " + material + " for " + job.resource;
         return true;
     }
 
@@ -1236,7 +1251,7 @@ final class MiningTask {
                         }
                         alternateStandAttempts = 0;
                         localApproachSteps = 0;
-                        openedCanopy.clear();
+                        openedCover.clear();
                     }
                     approachProgress = age;
                     localApproachTried = false;

@@ -726,8 +726,29 @@ final class MiningTask {
         Comparator<BlockPos> byDistance = Comparator.comparingDouble(p -> p.getSquaredDistance(position));
         nearbyHits.sort(byDistance);
         candidates.sort(byDistance);
-        pendingCandidates.addAll(nearbyHits);
-        pendingCandidates.addAll(candidates);
+        nearbyHits.addAll(candidates);
+        queueDryTargetsFirst(client, nearbyHits);
+    }
+
+    private static void queueDryTargetsFirst(MinecraftClient client, List<BlockPos> sorted) {
+        if (!projectMining) {
+            pendingCandidates.addAll(sorted);
+            return;
+        }
+        var wet = new ArrayList<BlockPos>();
+        for (var target : sorted) {
+            if (fluidExposed(client.world, target)) wet.add(target);
+            else pendingCandidates.addLast(target);
+        }
+        pendingCandidates.addAll(wet);
+    }
+
+    private static boolean fluidExposed(BlockView world, BlockPos target) {
+        if (!world.getFluidState(target).isEmpty()) return true;
+        for (var side : Direction.values()) {
+            if (!world.getFluidState(target.offset(side)).isEmpty()) return true;
+        }
+        return false;
     }
 
     private static boolean deferredOreRoute(MinecraftClient client, BlockPos ore) {
@@ -792,7 +813,7 @@ final class MiningTask {
             }
             if (!candidates.isEmpty()) {
                 candidates.sort(Comparator.comparingDouble(p -> p.getSquaredDistance(feet)));
-                pendingCandidates.addAll(candidates);
+                queueDryTargetsFirst(client, candidates);
                 return;
             }
         }

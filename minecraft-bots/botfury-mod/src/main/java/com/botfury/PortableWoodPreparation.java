@@ -6,7 +6,6 @@ import net.minecraft.item.Item;
 import net.minecraft.item.Items;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
-import net.minecraft.world.Heightmap;
 
 final class PortableWoodPreparation {
     static final Identifier TABLE = Identifier.of("minecraft", "crafting_table");
@@ -19,7 +18,7 @@ final class PortableWoodPreparation {
     private final boolean allowWoodPreparation;
     private ProjectProduction production;
     private boolean craftingProduct;
-    private long belowSurfaceSince;
+    private long gatherUntil;
     private boolean gathering;
     private String status;
 
@@ -42,15 +41,7 @@ final class PortableWoodPreparation {
     static boolean canSupply(MinecraftClient client) {
         if (client.player.getInventory().contains(Items.CRAFTING_TABLE.getDefaultStack())
                 || ProjectProduction.canCraft(client, TABLE) || FieldWorkstation.plankRecipe(client, 4) != null) return true;
-        return nearLoadedSurface(client);
-    }
-
-    private static boolean nearLoadedSurface(MinecraftClient client) {
-        var pos = client.player.getBlockPos();
-        if (!client.world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)) return false;
-        // MOTION_BLOCKING is sent to the client. The no-leaves variant is server-side.
-        int depth = client.world.getTopY(Heightmap.Type.MOTION_BLOCKING, pos.getX(), pos.getZ()) - pos.getY();
-        return depth >= 0 && depth <= 12;
+        return MiningTask.hasReachableLocalBlock(client, "any_logs");
     }
 
     String status() { return status; }
@@ -79,22 +70,27 @@ final class PortableWoodPreparation {
                     : allowWoodPreparation ? FieldWorkstation.plankRecipe(client, sticks ? 2 : 4) : null;
             if (spec == null) {
                 if (!allowWoodPreparation) return new ProjectProduction.Result(false, "Spare planks are no longer available");
-                if (!sticks && !nearLoadedSurface(client)) {
-                    if (belowSurfaceSince == 0) belowSurfaceSince = now;
-                    if (now - belowSurfaceSince >= Duration.ofSeconds(6).toNanos()) {
-                        return new ProjectProduction.Result(false, "Underground without materials for a workbench");
-                    }
-                } else belowSurfaceSince = 0;
                 if (!gathering) {
-                    MiningTask.startProject(client, new MiningTask.Job("any_logs", "both", coordinator), excluded, site, LOGS, 0);
+                    var task = new MiningTask.Job("any_logs", "both", coordinator);
+                    if (sticks) {
+                        MiningTask.startProject(client, task, excluded, site, LOGS, 0);
+                    } else {
+                        if (!MiningTask.hasReachableLocalBlock(client, "any_logs")) {
+                            return new ProjectProduction.Result(false, "No reachable wood for an emergency workbench");
+                        }
+                        if (gatherUntil == 0) gatherUntil = now + Duration.ofSeconds(18).toNanos();
+                        MiningTask.startReachableProject(client, task, excluded, LOGS);
+                    }
                     gathering = true;
+                }
+                if (!sticks && now >= gatherUntil) {
+                    return new ProjectProduction.Result(false, "Could not collect nearby wood for an emergency workbench");
                 }
                 if (!MiningTask.active()) return new ProjectProduction.Result(false, MiningTask.lastStatus());
                 MiningTask.tick(client);
                 status = MiningTask.status();
                 return null;
             }
-            belowSurfaceSince = 0;
             if (gathering) {
                 MiningTask.stop();
                 gathering = false;

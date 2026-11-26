@@ -37,6 +37,8 @@ final class MiningTask {
     private static final int MAX_ORE_COVER = 2;
     private static final int EXPOSED_ORE_PICKUP_STEPS = 4;
     private static final int COVERED_ORE_WALK_RADIUS = 8;
+    private static final int REACHABLE_SCAN_RADIUS = 5;
+    private static final int REACHABLE_SCAN_HEIGHT = 4;
     private static final int SURFACE_ROUTE_DEPTH = 12;
     private static final int ELEVATED_STAND_MIN_RISE = 4;
     private static final int ELEVATED_STAND_RANGE = 16;
@@ -57,6 +59,7 @@ final class MiningTask {
     private static long leaseUntil;
     private static boolean requesting,dead,paused,pathActive,projectMining;
     private static boolean localOnly;
+    private static boolean reachableOnly;
     private static final Deque<BlockPos> pendingCandidates = new ArrayDeque<>();
     private static boolean scanNeedsTool;
     private static boolean toolShortfall;
@@ -186,6 +189,25 @@ final class MiningTask {
         localOnly = job != null;
     }
 
+    static void startReachableProject(MinecraftClient client, Job next, ProjectGather.Area exclude, ProjectItem drop) {
+        startLocalProject(client, next, exclude, drop);
+        reachableOnly = job != null;
+    }
+
+    static boolean hasReachableLocalBlock(MinecraftClient client, String resource) {
+        if (!SubsurfaceAccess.hasFooting(client) || client.interactionManager == null || client.player.isTouchingWater()) return false;
+        var feet = client.player.getBlockPos();
+        var world = client.world;
+        var wanted = ResourceCatalog.blocks(resource, "both").stream()
+                .map(id -> Registries.BLOCK.get(new Identifier(id))).collect(java.util.stream.Collectors.toSet());
+        for (var pos : BlockPos.iterateOutwards(feet, REACHABLE_SCAN_RADIUS, REACHABLE_SCAN_HEIGHT, REACHABLE_SCAN_RADIUS)) {
+            if (!world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)) continue;
+            if (wanted.contains(world.getBlockState(pos).getBlock()) && !BuildProtection.blocked(pos)
+                    && canReachFromHere(client, feet, pos) && !supportsAnotherPlayer(client, pos)) return true;
+        }
+        return false;
+    }
+
     static boolean hasExposedLocalBlock(MinecraftClient client, String resource) {
         var wanted = Set.copyOf(ResourceCatalog.blocks(resource, "both"));
         var world = client.world;
@@ -290,7 +312,7 @@ final class MiningTask {
             return;
         }
         projectMining = project;
-        localOnly = false;
+        localOnly = reachableOnly = false;
         surfaceResource = surface;
         checkedWiderBeforeRememberedSite = false;
         nextLocalWideScan = 0;
@@ -408,6 +430,13 @@ final class MiningTask {
                 String blockName=Registries.BLOCK.getId(client.world.getBlockState(target).getBlock()).getPath();
                 client.interactionManager.updateBlockBreakingProgress(ray.getBlockPos(),ray.getSide());client.player.swingHand(Hand.MAIN_HAND);
                 status="Mining "+blockName;
+            } else if (reachableOnly) {
+                stopPath();
+                rejected.put(target, age + 100);
+                client.interactionManager.cancelBlockBreaking();
+                clearReservation();
+                nextSearch = age + 1;
+                return;
             } else if (!clearNearbyCover(client, feet)) {
                 var p = BlockPos.ofFloored(stand);
                 double distance = client.player.getPos().distanceTo(stand);
@@ -663,16 +692,17 @@ final class MiningTask {
         boolean lookForCoveredOre = coverLimit > 0 && !surfaceResource;
         var suitability = new HashMap<BlockState, Boolean>();
         scanNeedsTool = false;
-        int radius = surfaceResource ? 20 : 12;
-        for (var pos : BlockPos.iterateOutwards(position, radius, 10, radius)) {
+        int radius = reachableOnly ? REACHABLE_SCAN_RADIUS : surfaceResource ? 20 : 12;
+        int height = reachableOnly ? REACHABLE_SCAN_HEIGHT : 10;
+        for (var pos : BlockPos.iterateOutwards(position, radius, height, radius)) {
             if (!world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)) continue;
             var state = world.getBlockState(pos);
-            boolean covered = coverLimit > 0 && matches(state)
+            boolean covered = !reachableOnly && coverLimit > 0 && matches(state)
                     && coverHit(client, position, pos, coverLimit) != null;
             boolean localCover = covered || lookForCoveredOre && pos.isWithinDistance(position, COVERED_ORE_WALK_RADIUS);
             if (!eligibleCandidate(client, pos, state, suitability, localCover)) continue;
             if (safeFooting && (covered || canReachFromHere(client, position, pos))) nearbyHits.add(pos.toImmutable());
-            else candidates.add(pos.toImmutable());
+            else if (!reachableOnly) candidates.add(pos.toImmutable());
         }
         Comparator<BlockPos> byDistance = Comparator.comparingDouble(p -> p.getSquaredDistance(position));
         nearbyHits.sort(byDistance);
@@ -763,6 +793,10 @@ final class MiningTask {
 
     private static Vec3d chooseStand(MinecraftClient client, BlockPos target) {
         var feet = client.player.getBlockPos();
+        if (reachableOnly) {
+            return canMineFromCurrentFooting(client, feet) && canReachFromHere(client, feet, target)
+                    ? Vec3d.ofBottomCenter(feet) : null;
+        }
         if (!rejectedStands.containsKey(feet) && canMineFromCurrentFooting(client, feet)
                 && (!ResourceCatalog.isOre(job.resource) || nearOreDropHeight(client, target, feet))
                 && (canReachFromHere(client, feet, target)

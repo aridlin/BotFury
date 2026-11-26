@@ -21,7 +21,7 @@ import java.util.List;
 /** Makes short, reversible Baritone approaches when a cave does not reach the ore layer. */
 final class SubsurfaceAccess {
     // Increment when a new return method can recover a previously unreachable route.
-    static final int RETURN_ROUTE_REVISION = 12;
+    static final int RETURN_ROUTE_REVISION = 13;
     private record Passage(BlockPos from, BlockPos to) {
         boolean climbing() { return to.getY() > from.getY(); }
         int clearance() { return 2 + Math.max(0, from.getY() - to.getY()); }
@@ -385,17 +385,19 @@ final class SubsurfaceAccess {
     private boolean approachAscentFooting(MinecraftClient client, int age, BlockPos from, ProjectGather.Area area,
                                           int preferred) {
         var world = client.world;
-        for (var candidate : BlockPos.iterateOutwards(from, 3, 0, 3)) {
-            if (candidate.equals(from) || !validDestination(client, candidate, area)
+        for (var candidate : BlockPos.iterateOutwards(from, 3, 2, 3)) {
+            if (candidate.equals(from) || candidate.getY() > from.getY() || !validDestination(client, candidate, area)
                     || !ProjectPlacement.flushFloor(world.getBlockState(candidate.down()), world, candidate.down())
                     || !world.getFluidState(candidate).isEmpty() || !world.getFluidState(candidate.up()).isEmpty()
                     || !world.isSpaceEmpty(client.player, client.player.getBoundingBox()
                             .offset(Vec3d.ofBottomCenter(candidate).subtract(client.player.getPos())))) continue;
             var walk = new Passage(from, candidate.toImmutable());
-            if (triedPassage(walk)) continue;
+            // A previously opened stair can lead back to a different branch below an obstructed ceiling.
+            if (walk.to().getY() == from.getY() ? triedPassage(walk) : attemptedPassages.contains(walk)) continue;
             for (int turn = 0; turn < HEADINGS.length; turn++) {
                 var step = new Passage(walk.to(), walk.to().offset(HEADINGS[Math.floorMod(preferred + turn, HEADINGS.length)]).up());
-                if (triedPassage(step) || !safePassage(client, step, area) || !canClearReturnStep(client, step)) continue;
+                if (step.to().equals(from) || triedPassage(step) || !safePassage(client, step, area)
+                        || !canClearReturnStep(client, step)) continue;
                 if (!start(client, from, List.of(walk.to()), area, age, true, false, false)) return false;
                 rememberPassage(walk);
                 nextReturnRecovery = age + RETURN_RECOVERY_TICKS;

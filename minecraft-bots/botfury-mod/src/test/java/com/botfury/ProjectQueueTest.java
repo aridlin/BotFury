@@ -314,6 +314,11 @@ class ProjectQueueTest {
         var loan = queue.offerStickResupply(WORLD, "courier", "tools", 5, name -> field,
                 (name, item) -> name.equals("courier") ? 4 : 0).job();
         assertEquals("miner", queue.routeToolDelivery("tools", loan.work().id(), loan.lease(), 6).recipient());
+        assertEquals("miner", queue.routeResupplyRecipient(WORLD, "tools", loan.work().id(), loan.lease(), 6));
+        assertNull(queue.routeResupplyRecipient("other|overworld", "tools", loan.work().id(), loan.lease(), 6));
+        assertNull(queue.routeResupplyRecipient(WORLD, "tools", loan.work().id(), java.util.UUID.randomUUID(), 6));
+        assertNotNull(queue.routeToolDelivery("tools", loan.work().id(), loan.lease(), miner.expiresAt()));
+        assertNull(queue.routeResupplyRecipient(WORLD, "tools", loan.work().id(), loan.lease(), miner.expiresAt()));
         assertEquals(2, queue.routeToolDelivery("tools", loan.work().id(), loan.lease(), 6).quantity());
         assertNull(queue.claim(WORLD, "alternate", Set.of(RESUPPLY), "tools", 7, field));
         assertNull(queue.offerStickResupply(WORLD, "alternate", "tools", 8, name -> field,
@@ -323,6 +328,7 @@ class ProjectQueueTest {
         assertEquals(ProjectQueue.PREPARED_REQUIRED_STICKS, queue.snapshot(10).get(0).jobs().get(0).evidence());
         assertTrue(queue.finish("tools", "log", miner.lease(), true, ProjectQueue.PREPARED_COMPATIBLE_STICKS, 10));
         assertNull(queue.routeToolDelivery("tools", loan.work().id(), loan.lease(), 10));
+        assertNull(queue.routeResupplyRecipient(WORLD, "tools", loan.work().id(), loan.lease(), 10));
         assertEquals("pickaxe", queue.claim(WORLD, "miner", Set.of(CRAFT), 11).job().work().id());
     }
 

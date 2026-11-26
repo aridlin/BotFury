@@ -13,6 +13,7 @@ import net.minecraft.command.argument.EntityAnchorArgumentType;
 import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 /** Explicit inventory tasks; only the 36 main inventory slots are modified. */
@@ -23,6 +24,7 @@ final class BotInventory {
         }
     }
     record Request(String action, Item item, int count, String recipient, Destination destination) {}
+    record DeliveryLease(String project, String job, UUID token) {}
     private static Request task;
     private static boolean paused;
     private static boolean manualPause,baritoneTask;
@@ -36,7 +38,7 @@ final class BotInventory {
         manualPause = value;
     }
     private static int age, delivered, waitTicks;
-    private static boolean projectDelivery;
+    private static DeliveryLease projectDelivery;
     private static List<ProjectQueue.ResourceSite> supplyTrail = List.of();
     private static BaritoneSettings supplySettings;
     private static int supplyWaypoint, supplyProgressAt;
@@ -99,13 +101,12 @@ final class BotInventory {
         ProjectWorker.stop(client);
         MiningTask.stop();
         begin(client, request);
-        projectDelivery = false;
     }
 
     static void startProjectDelivery(MinecraftClient client, Item item, int quantity, String recipient,
-                                     Destination destination, List<ProjectQueue.ResourceSite> waypoints) {
+                                     Destination destination, List<ProjectQueue.ResourceSite> waypoints, DeliveryLease lease) {
         begin(client, new Request("deliver", item, quantity, recipient, destination));
-        projectDelivery = true;
+        projectDelivery = lease;
         if (task == null || waypoints.isEmpty()) return;
         try {
             supplySettings = new BaritoneSettings(false);
@@ -188,7 +189,7 @@ final class BotInventory {
                 client.player.lookAt(EntityAnchorArgumentType.EntityAnchor.EYES, recipient.getEyePos());
                 client.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.LookAndOnGround(
                         client.player.getYaw(), client.player.getPitch(), client.player.isOnGround()));
-                delivered += projectDelivery ? dropProjectItem(client, task.item)
+                delivered += projectDelivery != null ? dropProjectItem(client, task.item)
                         : drop(client, task.item, task.count - delivered, false);
             }
             case "drop" -> {
@@ -254,7 +255,8 @@ final class BotInventory {
         }
         if (locationRead == null && age >= nextLocationRead) {
             nextLocationRead = age + 20;
-            locationRead = BotTracker.recipientLocation(destination, task.recipient);
+            locationRead = projectDelivery == null ? BotTracker.recipientLocation(destination, task.recipient)
+                    : BotTracker.resupplyRecipientLocation(destination, projectDelivery);
         }
         if (lastRecipient != null && age - recipientSeen <= 240) {
             status = "Following coordinates to " + task.recipient;
@@ -365,6 +367,7 @@ final class BotInventory {
         supplyProgress = null;
         pickup.reset();
         task = null;
+        projectDelivery = null;
         locationRead = null;
         baritoneTask=false;
         spreadGoal = null;

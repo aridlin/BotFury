@@ -1,6 +1,7 @@
 package com.botfury;
 
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.world.ClientWorld;
 import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
@@ -18,9 +19,9 @@ final class BreathingRecovery {
     private static final int SEARCH_STEPS = 18;
     private static final int SEARCH_CELLS = 2048;
     private static final int SHORE_STALL_TICKS = 36;
-    private static final int SHORE_SWIM_TICKS = 120;
+    private static final int SHORE_SWIM_TICKS = 200;
     private static final int SHORE_STEP_STALL_TICKS = 24;
-    private static final long SHORE_RETRY_TICKS = 160;
+    private static final long SHORE_RETRY_TICKS = 800;
     private static final int MAX_REJECTED_SHORE_STEPS = 32;
     private static final Direction[] SWIM_DIRECTIONS = {
             Direction.UP, Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST, Direction.DOWN
@@ -38,6 +39,7 @@ final class BreathingRecovery {
     private int stationaryTicks;
     private int shoreTicksLeft;
     private final Map<ShoreStep, Long> rejectedShoreSteps = new LinkedHashMap<>();
+    private ClientWorld shoreWorld;
     private ShoreStep shoreStep;
     private double closestToShoreStep;
     private int shoreStepStall;
@@ -49,6 +51,10 @@ final class BreathingRecovery {
         boolean submerged = player.isSubmergedInWater();
         boolean hasAir = recovering && !reachingShore ? !submerged && player.getAir() >= player.getMaxAir() - 20
                 : !submerged || player.getAir() > START_AIR;
+        if (shoreWorld != client.world || !player.isAlive()) {
+            rejectedShoreSteps.clear();
+            shoreWorld = client.world;
+        }
         if (!player.isAlive()) {
             stop(client);
             return false;
@@ -59,7 +65,7 @@ final class BreathingRecovery {
                 reachingShore = false;
                 ticksToSearch = 0;
             }
-        } else if (needsDryFooting && player.isTouchingWater()) {
+        } else if (needsDryFooting && (player.isTouchingWater() || reachingShore && !onDryFooting(client))) {
             if (!reachingShore) {
                 var position = player.getPos();
                 if (shoreProbe == null || shoreProbe.squaredDistanceTo(position) >= .36) {
@@ -114,13 +120,29 @@ final class BreathingRecovery {
         }
 
         var direction = center(waypoint).subtract(player.getPos());
-        boolean moving = direction.horizontalLengthSquared() > .09;
+        var alignment = reachingShore ? alignWithBank(player.getPos(), shoreStep) : null;
+        if (alignment != null) direction = alignment;
+        boolean moving = direction.horizontalLengthSquared() > (alignment == null ? .09 : .01);
         if (moving) {
             player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES,
                     player.getEyePos().add(direction.x, 0, direction.z));
         }
         swim(client, moving, direction.y < -.35, direction.y > .07);
         return true;
+    }
+
+    private static Vec3d alignWithBank(Vec3d position, ShoreStep step) {
+        if (step == null || step.to.getY() != step.from.getY() + 1) return null;
+        var from = center(step.from);
+        double rise = from.y - position.y;
+        // Enter a one-block opening along its centerline before jumping into it.
+        if (step.from.getX() != step.to.getX() && Math.abs(from.z - position.z) > .16) {
+            return new Vec3d(0, rise, from.z - position.z);
+        }
+        if (step.from.getZ() != step.to.getZ() && Math.abs(from.x - position.x) > .16) {
+            return new Vec3d(from.x - position.x, rise, 0);
+        }
+        return null;
     }
 
     private void selectShoreStep(MinecraftClient client) {
@@ -154,7 +176,10 @@ final class BreathingRecovery {
     }
 
     void stop(MinecraftClient client) {
-        if (client.player == null || !client.player.isTouchingWater()) rejectedShoreSteps.clear();
+        if (client.world == null) {
+            rejectedShoreSteps.clear();
+            shoreWorld = null;
+        }
         shoreProbe = null;
         stationaryTicks = 0;
         if (!recovering) return;
@@ -183,10 +208,17 @@ final class BreathingRecovery {
         var seen = new HashSet<BlockPos>();
         open.add(new Step(start, null, 0));
         seen.add(start);
+        BlockPos isolatedLanding = null;
         while (!open.isEmpty()) {
             var step = open.removeFirst();
-            if (step.first != null && (shore ? dryStand(client, step.feet)
-                    : client.world.getFluidState(step.feet.up()).isEmpty())) return step.first;
+            if (step.first != null) {
+                if (!shore && client.world.getFluidState(step.feet.up()).isEmpty()) return step.first;
+                if (shore && dryStand(client, step.feet)) {
+                    if (canWalkAway(client, step.feet)) return step.first;
+                    if (isolatedLanding == null) isolatedLanding = step.first;
+                    continue;
+                }
+            }
             if (step.distance >= SEARCH_STEPS || seen.size() >= SEARCH_CELLS) continue;
             for (var direction : SWIM_DIRECTIONS) {
                 var next = step.feet.offset(direction);
@@ -194,7 +226,9 @@ final class BreathingRecovery {
                     var bank = next.up();
                     if (!rejected.containsKey(new ShoreStep(step.feet, bank))
                             && swimmable(client, step.feet.up()) && swimmable(client, bank) && dryStand(client, bank)) {
-                        return step.first == null ? bank : step.first;
+                        var first = step.first == null ? bank : step.first;
+                        if (canWalkAway(client, bank)) return first;
+                        if (isolatedLanding == null) isolatedLanding = first;
                     }
                 }
                 if (seen.contains(next) || !swimmable(client, next)) continue;
@@ -204,7 +238,24 @@ final class BreathingRecovery {
                 open.addLast(new Step(next, step.first == null ? next : step.first, step.distance + 1));
             }
         }
-        return null;
+        return isolatedLanding;
+    }
+
+    private static boolean canWalkAway(MinecraftClient client, BlockPos feet) {
+        for (var side : Direction.Type.HORIZONTAL) {
+            var adjacent = feet.offset(side);
+            if (swimmable(client, adjacent) && dryStand(client, adjacent)) return true;
+            var upper = adjacent.up();
+            if (swimmable(client, feet.up()) && swimmable(client, upper) && dryStand(client, upper)) return true;
+            var lower = adjacent.down();
+            if (swimmable(client, adjacent) && swimmable(client, lower) && dryStand(client, lower)) return true;
+        }
+        return false;
+    }
+
+    static boolean onDryFooting(MinecraftClient client) {
+        var player = client.player;
+        return !player.isTouchingWater() && dryStand(client, player.getBlockPos()) && SubsurfaceAccess.hasFooting(client);
     }
 
     private static boolean dryStand(MinecraftClient client, BlockPos feet) {

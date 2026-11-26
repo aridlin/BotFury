@@ -72,9 +72,8 @@ final class ProjectWorker {
     private static ProjectGather gather;
     private static boolean checkedCarriedFuel;
     private static ProjectQueue.ResourceSite gatherSite;
-    private static long lastGatherProgress;
-    private static int gatheredHighWater;
-    private static Vec3d gatherProgressPosition;
+    private static final GatherProgress gatherProgress = new GatherProgress();
+    private static boolean gatherAtSurface;
     private static int checkpointAt, cargoHighWater;
     private static long lastCargoIncrease;
     private static DroppedItemSearch pickup;
@@ -316,9 +315,7 @@ final class ProjectWorker {
         projectCargoItem = null;
         checkedCarriedFuel = false;
         gatherSite = null;
-        lastGatherProgress = 0;
-        gatheredHighWater = 0;
-        gatherProgressPosition = null;
+        gatherProgress.reset();
         checkpointAt = cargoHighWater = 0;
         lastCargoIncrease = 0;
         pickup = null;
@@ -807,7 +804,7 @@ final class ProjectWorker {
             else finish(client, false, ProjectQueue.ROUTE_PREPARATION_FAILED + result.detail());
         } else if (replacement) {
             if (result.success() && SubsurfaceAccess.canDigRoute(client)) {
-                lastGatherProgress = now;
+                gatherProgress.recordPreparation(now);
                 BotEvents.add("info", "mining", excavation ? "Crafted a pickaxe for excavation"
                         : gather == null ? "Crafted a pickaxe for the return route" : "Crafted a replacement prospecting pickaxe");
             } else if (gather != null && !SubsurfaceAccess.canDigRoute(client)) {
@@ -909,14 +906,9 @@ final class ProjectWorker {
     }
 
     private static boolean gatherProgress(MinecraftClient client, int held, long now) {
-        var position = client.player.getPos();
-        if (gatherProgressPosition == null || held > gatheredHighWater
-                || position.squaredDistanceTo(gatherProgressPosition) >= 9) {
-            lastGatherProgress = now;
-            gatheredHighWater = Math.max(held, gatheredHighWater);
-            gatherProgressPosition = position;
-        }
-        return now - lastGatherProgress < seconds(90);
+        var feet = client.player.getBlockPos();
+        return gatherProgress.active(feet.getX(), feet.getY(), feet.getZ(),
+                gatherAtSurface, held, now, seconds(90));
     }
 
     private static void execute(MinecraftClient client, long now) {
@@ -1931,6 +1923,8 @@ final class ProjectWorker {
                         } else startRouteDelivery(client, delivery);
                     } else if (work.kind() == ProjectQueue.Kind.GATHER) {
                         gather = ProjectGather.parse(work.payload());
+                        gatherAtSurface = !gather.fromDrops() && MiningTask.isSurfaceGathering(client,
+                                ResourceCatalog.blocks(gather.resource(), gather.variant()));
                         projectCargoItem = gather.item();
                         gatherSite = assignment.job().resourceSite();
                         if (assignment.flexibleStickCount() > 0) {

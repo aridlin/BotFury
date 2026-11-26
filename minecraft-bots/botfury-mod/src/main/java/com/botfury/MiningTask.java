@@ -235,15 +235,19 @@ final class MiningTask {
                 || block instanceof FlowerBlock || block instanceof TallFlowerBlock;
     }
 
+    static boolean isSurfaceGathering(MinecraftClient client, List<String> sources) {
+        return client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)
+                && sources.stream().map(id -> Registries.BLOCK.get(new Identifier(id)))
+                .allMatch(MiningTask::isSurfaceResource);
+    }
+
     private static void startMining(MinecraftClient client, Job next, boolean project, ProjectGather.Area exclude) {
         if(client.player==null||client.world==null||LocalFormation.here()==null){fail("Not in game");return;}
         if(!BaritoneClient.available()){fail("Install Baritone for mining");return;}
         var ids=ResourceCatalog.blocks(next.resource,next.variant);
         for(String id:ids)if(!Registries.BLOCK.containsId(new Identifier(id))){fail("Unknown mining block: "+id);return;}
         for(String id:ids){var state=Registries.BLOCK.get(new Identifier(id)).getDefaultState();if(state.isAir()||state.getHardness(client.world,client.player.getBlockPos())<0){fail("Choose a breakable mining block");return;}}
-        boolean surface = project && client.world.getRegistryKey().equals(net.minecraft.world.World.OVERWORLD)
-                && ids.stream().map(id -> Registries.BLOCK.get(new Identifier(id)))
-                .allMatch(MiningTask::isSurfaceResource);
+        boolean surface = project && isSurfaceGathering(client, ids);
         try {
             settings = surface ? BaritoneSettings.surfaceGathering() : new BaritoneSettings(exclude == null, project);
         } catch (ReflectiveOperationException | LinkageError error) {

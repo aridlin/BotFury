@@ -2919,6 +2919,46 @@ class ProjectQueueTest {
         assertEquals("place-2", restored.claim(WORLD, "roofer", kinds, now + 6).job().work().id());
     }
 
+    @Test void delegatesOneScaffoldStepWithoutReassigningTheMinersRemainingBlocks() throws Exception {
+        var journal = directory.resolve("scaffold-handoff.json");
+        var queue = new ProjectQueue(journal);
+        var chest = "block:3,64,0";
+        var pickup = new ProjectQueue.Work("pickup", TRANSFER,
+                """
+                {"direction":"TAKE","item":"minecraft:cobblestone","stock":2}
+                """, List.of("clear"), Set.of(chest), null, null, "minecraft:cobblestone");
+        var step = new ProjectQueue.Work("place-access-0", BUILD,
+                """
+                {"target":{"x":8,"y":64,"z":8},"block":"minecraft:cobblestone"}
+                """, List.of("pickup"), Set.of("block:8,64,8"), "pickup");
+        var wall = new ProjectQueue.Work("place-1", BUILD, "",
+                List.of(step.id(), pickup.id()), Set.of("block:8,65,8"), pickup.id());
+        queue.submitSupplied("house", WORLD, List.of(job("clear", EXCAVATE, List.of()), pickup, step, wall), chest);
+        var clear = queue.claim(WORLD, "miner", Set.of(EXCAVATE), 1).job();
+        assertTrue(queue.finish("house", clear.work().id(), clear.lease(), true, "Observed air", 2));
+        var taken = queue.claim(WORLD, "miner", Set.of(TRANSFER), 3).job();
+        assertTrue(queue.finish("house", taken.work().id(), taken.lease(), true, "Observed two blocks carried",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:cobblestone", 1)), 4));
+        queue.submit("mining", WORLD, List.of(job("mine", GATHER, List.of())));
+        var mining = queue.claim(WORLD, "miner", Set.of(GATHER), 5).job();
+        var kinds = Set.of(BUILD, TRANSFER);
+        assertTrue(queue.offerConstructionHandoff(WORLD, "builder", null, kinds, 6,
+                worker -> new ProjectQueue.ResourceSite(8, worker.equals("miner") ? 14 : 64, 9), (worker, item) -> 0));
+        queue = new ProjectQueue(journal);
+        var supplied = queue.claim(WORLD, "builder", kinds, 7).job();
+        assertEquals("recovery-place-access-0-cargo", supplied.work().id());
+        assertTrue(supplied.work().payload().contains("\"stock\":1"));
+        assertTrue(queue.finish("house", supplied.work().id(), supplied.lease(), true, "Observed one block carried",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of()), 8));
+        var placement = queue.claim(WORLD, "builder", kinds, 9).job();
+        assertEquals(step.id(), placement.work().id());
+        assertTrue(queue.finish("house", step.id(), placement.lease(), true, "Observed scaffold", 10));
+        assertNull(queue.claim(WORLD, "builder", kinds, 11));
+        assertEquals(mining.lease(), queue.claim(WORLD, "miner", Set.of(GATHER), 12).job().lease());
+        assertTrue(queue.finish("mining", mining.work().id(), mining.lease(), true, "Observed ore", 13));
+        assertEquals(wall.id(), queue.claim(WORLD, "miner", kinds, 14).job().work().id());
+    }
+
     private void checkConstructionHandoff(boolean stockAvailable, boolean busySupplier, boolean closeSupplier) throws Exception {
         var journal = directory.resolve("construction-handoff-" + stockAvailable + ".json");
         var queue = new ProjectQueue(journal);

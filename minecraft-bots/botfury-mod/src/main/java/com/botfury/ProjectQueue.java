@@ -212,6 +212,7 @@ final class ProjectQueue {
     private static final String BATCH_RESERVED = "Reserved for batch";
     static final int MAX_BATCH_STEPS = 8;
     private static final java.util.regex.Pattern SCHEMATIC_PLACEMENT = java.util.regex.Pattern.compile("place-[0-9]+");
+    private static final java.util.regex.Pattern SCAFFOLD_PLACEMENT = java.util.regex.Pattern.compile("place-access-(?:[0-9]+-)?[0-9]+");
     private static final java.util.regex.Pattern MANIFEST_PRODUCTION = java.util.regex.Pattern.compile(
             "stock-[0-9]{1,4}-([0-9]{1,4})-(?:gather|produce-[0-9]+)");
     private static final java.util.regex.Pattern PRODUCED_INVENTORY = java.util.regex.Pattern.compile(
@@ -1692,8 +1693,10 @@ final class ProjectQueue {
             for (var job : project.jobs) {
                 boolean failedApproach = placementHandoffOpen(job, now)
                         || job.state == State.FAILED && placementApproachFailure(job);
+                boolean scaffold = SCAFFOLD_PLACEMENT.matcher(job.work.id).matches();
                 if (job.state != State.WAITING && !failedApproach || job.work.kind != Kind.BUILD
-                        || job.work.sameWorkerAs == null || !SCHEMATIC_PLACEMENT.matcher(job.work.id).matches()) continue;
+                        || job.work.sameWorkerAs == null
+                        || !scaffold && !SCHEMATIC_PLACEMENT.matcher(job.work.id).matches()) continue;
                 var pickup = find(project, job.work.sameWorkerAs);
                 String material = pickup.work.constructionMaterial;
                 if (pickup.state != State.DONE || pickup.worker == null || material == null
@@ -1706,9 +1709,10 @@ final class ProjectQueue {
                 if (target == null) continue;
                 double distance = distance(candidate, target);
                 String handoff = "build-handoff:" + pickup.work.id;
-                String poseHandoff = "pose-handoff:" + job.work.id;
+                String poseHandoff = (scaffold ? "scaffold-handoff:" : "pose-handoff:") + job.work.id;
                 if (project.supplyRecoveries.containsKey(poseHandoff)) continue;
-                boolean useAlternatePose = project.supplyRecoveries.getOrDefault(handoff, 0) >= MAX_SUPPLY_RECOVERIES;
+                boolean useAlternatePose = !scaffold
+                        && project.supplyRecoveries.getOrDefault(handoff, 0) >= MAX_SUPPLY_RECOVERIES;
                 if (useAlternatePose) {
                     if (job.state != State.FAILED || !failedApproach
                             || !project.supplyRecoveries.containsKey("pose:" + job.work.id)) continue;
@@ -1724,8 +1728,9 @@ final class ProjectQueue {
                 } else if (original == null || distance(original, target) < distance + 16) continue;
                 int held = heldCount.applyAsInt(worker, material);
                 boolean canCollect = kinds.contains(Kind.TRANSFER);
-                boolean reassigned = useAlternatePose
-                        ? handoffReplannedPlacement(project, job, pickup, worker, held, canCollect, poseHandoff, now)
+                // A single scaffold step can unblock the build while the original worker keeps the rest of its cargo.
+                boolean reassigned = scaffold || useAlternatePose
+                        ? handoffSinglePlacement(project, job, pickup, worker, held, canCollect, poseHandoff, now)
                         : reassignConstructionCargo(project, pickup, worker, held, canCollect, handoff, MAX_SUPPLY_RECOVERIES, now);
                 if (reassigned) {
                     return true;
@@ -1740,7 +1745,7 @@ final class ProjectQueue {
                 (double) site.z - target.z());
     }
 
-    private boolean handoffReplannedPlacement(Project project, Job placement, Job batchPickup, String worker,
+    private boolean handoffSinglePlacement(Project project, Job placement, Job batchPickup, String worker,
                                               int held, boolean canCollect, String recovery, long now) throws IOException {
         String pickupId = "recovery-" + placement.work.id + "-cargo";
         if (held < 0 || project.jobs.size() >= MAX_JOBS || find(project, pickupId) != null) return false;
@@ -1750,7 +1755,7 @@ final class ProjectQueue {
         var pickupWork = new Work(pickupId, Kind.TRANSFER, JSON.toJson(payload), original.needs,
                 original.locks, null, null, original.constructionMaterial);
         var pickup = new Job(pickupWork, State.DONE, 0, worker, null, 0,
-                "Observed carried material for the replanned placement", batchPickup.chest);
+                "Observed carried material for the delegated placement", batchPickup.chest);
         if (held == 0) {
             if (!canCollect) return false;
             pickup = replacementConstructionPickup(project, pickup, worker, 1, held, now);
@@ -1762,7 +1767,7 @@ final class ProjectQueue {
         var jobs = new ArrayList<>(project.jobs);
         int index = jobs.indexOf(placement);
         jobs.set(index, new Job(replanned, State.WAITING, 0, null, null, 0,
-                "Reassigned replanned placement to a nearby builder", placement.chest, placement.resourceSite));
+                "Reassigned placement to a nearby builder", placement.chest, placement.resourceSite));
         jobs.add(index, pickup);
         var counts = new HashMap<>(project.supplyRecoveries);
         counts.put(recovery, 1);
@@ -3734,7 +3739,8 @@ final class ProjectQueue {
         String id = pickup.work.id;
         if (!id.startsWith("recovery-") || !id.endsWith("-cargo")) return false;
         String placement = id.substring("recovery-".length(), id.length() - "-cargo".length());
-        if (!recoveryProject.supplyRecoveries.containsKey("pose-handoff:" + placement)) return false;
+        if (!recoveryProject.supplyRecoveries.containsKey("pose-handoff:" + placement)
+                && !recoveryProject.supplyRecoveries.containsKey("scaffold-handoff:" + placement)) return false;
         String material = pickup.work.constructionMaterial;
         for (var project : projects.values()) {
             if (project.supplyChest == null || !project.world.equals(recoveryProject.world)) continue;

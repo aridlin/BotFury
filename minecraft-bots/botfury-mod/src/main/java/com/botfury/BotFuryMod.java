@@ -180,6 +180,7 @@ public class BotFuryMod implements ClientModInitializer {
         status.put("lastEventLevel", BotEvents.lastLevel);
         status.put("coordinatedMining", true);
         status.put("taskDefenseCapable", true);
+        status.put("projectDefenseCapable", true);
         status.put("scaffoldCleanupCapable", true);
         status.put("scaffoldBatchCapable", BaritoneClient.cooperativeTravelAvailable());
         status.put("fuelChoicesCapable", true);

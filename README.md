@@ -447,8 +447,11 @@ creative/spectator players. Use Add friends / Remove friends in the dashboard
 with comma-separated Minecraft usernames. The list is saved as
 `botfury-friends.txt` beside the advanced-modules settings file.
 
-Task defense can be toggled in the Bots roster. While enabled, managed bots punch
-nearby unprotected living targets during mining, inventory and Baritone tasks.
+The Bots roster cycles task defense through Auto, On and Off. On a fresh profile,
+Auto protects enrolled project workers. They take cover, fight nearby hostile mobs
+and recover food as needed. On also allows managed bots to punch nearby unprotected
+living targets during manual mining, inventory and Baritone tasks. Existing saved
+on and off preferences are preserved.
 Friends, the controller, known fleet bots, teammates and creative/spectator
 players are protected. Defense uses normal reach, visibility and attack cooldowns,
 and does not pursue enemies. Stop, task pause, or loss of the controller heartbeat

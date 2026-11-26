@@ -124,8 +124,8 @@ final class BotRosterScreen extends FleetPanel {
                 controls(1, "Resume", () -> BotTracker.manageSelected("resume"), "Join my world", this::joinBots);
                 controls(2, "Track items…", () -> client.setScreen(new ItemTrackingScreen(this)),
                         "Toggle rendering", () -> BotTracker.targets().forEach(bot -> BotTracker.command(bot.port(), "toggle_render")));
-                button("Defense " + (BotUiConfig.defense ? "on" : "off"), MARGIN, y, 93, () -> {
-                    BotUiConfig.defense = !BotUiConfig.defense;
+                button("Defense " + BotUiConfig.defense.wire, MARGIN, y, 93, () -> {
+                    BotUiConfig.defense = BotUiConfig.defense.next();
                     BotUiConfig.save();
                     BotTracker.sendDefenses();
                     rebuild();

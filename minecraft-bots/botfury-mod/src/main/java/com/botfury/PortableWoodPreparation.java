@@ -82,8 +82,8 @@ final class PortableWoodPreparation {
                     gathering = true;
                 }
                 if (!MiningTask.active()) return new ProjectProduction.Result(false, MiningTask.lastStatus());
-                status = sticks ? "Gathering compatible logs for sticks" : "Gathering wood for an emergency workbench";
                 MiningTask.tick(client);
+                status = MiningTask.status();
                 return null;
             }
             belowSurfaceSince = 0;

@@ -12,8 +12,11 @@ import net.minecraft.recipe.SmeltingRecipe;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.ChunkPos;
+import net.minecraft.world.chunk.ChunkStatus;
 
 import java.util.*;
+import java.util.function.ToIntFunction;
 
 final class MaterialRecipe {
     private static final Gson JSON = new Gson();
@@ -106,6 +109,7 @@ final class MaterialRecipe {
     private final Map<Identifier, List<Recipe<?>>> recipes = new HashMap<>();
     private final MinecraftClient client;
     private final Map<Identifier, Integer> ingredientAvailability = new HashMap<>();
+    private final Map<Block, Integer> widerSourceProximity = new IdentityHashMap<>();
     private Map<Block, Integer> nearbyBlocks;
 
     private int remaining = 512;
@@ -264,10 +268,7 @@ final class MaterialRecipe {
                     Identifier match = null;
                     var alternatives = Arrays.stream(ingredient.getMatchingStacks())
                             .map(stack -> Registries.ITEM.getId(stack.getItem())).distinct().toList();
-                    if (alternatives.size() > 1) {
-                        alternatives = alternatives.stream()
-                                .sorted(Comparator.comparingInt(this::ingredientAvailability).reversed()).toList();
-                    }
+                    if (alternatives.size() > 1) alternatives = rankAlternatives(alternatives);
                     for (var id : alternatives) {
                         if (resolve(id, candidate, ancestors)) { match = id; break; }
                     }
@@ -291,21 +292,89 @@ final class MaterialRecipe {
     }
 
     private int ingredientAvailability(Identifier item) {
-        return ingredientAvailability.computeIfAbsent(item, id -> {
-            int best = nearbySources(id);
-            for (var recipe : recipes.getOrDefault(id, List.of())) {
-                int available = Integer.MAX_VALUE;
-                for (var ingredient : recipe.getIngredients()) {
-                    if (ingredient.isEmpty()) continue;
-                    int count = Arrays.stream(ingredient.getMatchingStacks())
-                            .mapToInt(stack -> nearbySources(Registries.ITEM.getId(stack.getItem()))).max().orElse(0);
-                    available = Math.min(available, count);
-                    if (available == 0) break;
-                }
-                if (available != Integer.MAX_VALUE) best = Math.max(best, available);
+        return ingredientAvailability.computeIfAbsent(item, id -> availability(id, this::nearbySources));
+    }
+
+    private int availability(Identifier item, ToIntFunction<Identifier> sourceScore) {
+        int best = sourceScore.applyAsInt(item);
+        for (var recipe : recipes.getOrDefault(item, List.of())) {
+            int available = Integer.MAX_VALUE;
+            for (var ingredient : recipe.getIngredients()) {
+                if (ingredient.isEmpty()) continue;
+                int score = Arrays.stream(ingredient.getMatchingStacks())
+                        .mapToInt(stack -> sourceScore.applyAsInt(Registries.ITEM.getId(stack.getItem()))).max().orElse(0);
+                available = Math.min(available, score);
+                if (available == 0) break;
             }
-            return best;
-        });
+            if (available != Integer.MAX_VALUE) best = Math.max(best, available);
+        }
+        return best;
+    }
+
+    private List<Identifier> rankAlternatives(List<Identifier> alternatives) {
+        if (alternatives.stream().anyMatch(id -> ingredientAvailability(id) > 0)) {
+            return alternatives.stream().sorted(Comparator.comparingInt(this::ingredientAvailability).reversed()).toList();
+        }
+        var sources = new HashSet<Block>();
+        for (var id : alternatives) {
+            sources.addAll(widerSources(id));
+            for (var recipe : recipes.getOrDefault(id, List.of())) {
+                for (var ingredient : recipe.getIngredients()) {
+                    for (var stack : ingredient.getMatchingStacks()) {
+                        sources.addAll(widerSources(Registries.ITEM.getId(stack.getItem())));
+                    }
+                }
+            }
+        }
+        sources.removeAll(widerSourceProximity.keySet());
+        surveyWiderSources(sources);
+        var scores = new HashMap<Identifier, Integer>();
+        for (var id : alternatives) {
+            scores.put(id, availability(id, source -> widerSources(source).stream()
+                    .mapToInt(block -> widerSourceProximity.getOrDefault(block, 0)).max().orElse(0)));
+        }
+        return alternatives.stream().sorted(Comparator.comparingInt(scores::get).reversed()).toList();
+    }
+
+    private static List<Block> widerSources(Identifier item) {
+        String source = naturalSource(item);
+        if (source == null) return List.of();
+        return ResourceCatalog.blocks(source, "both").stream()
+                .map(block -> Registries.BLOCK.get(new Identifier(block)))
+                .filter(MiningTask::isSurfaceResource).toList();
+    }
+
+    private void surveyWiderSources(Set<Block> sources) {
+        if (sources.isEmpty() || client.player == null) return;
+        sources.forEach(block -> widerSourceProximity.put(block, 0));
+        var center = client.player.getBlockPos();
+        var world = client.world;
+        int radius = 72;
+        var pos = new BlockPos.Mutable();
+        for (var coordinates : ChunkPos.stream(new ChunkPos(center), (radius + 15) / 16).toList()) {
+            var chunk = world.getChunkManager().getChunk(coordinates.x, coordinates.z, ChunkStatus.FULL, false);
+            if (chunk == null) continue;
+            var sections = chunk.getSectionArray();
+            for (int index = 0; index < sections.length; index++) {
+                int sectionY = world.sectionIndexToCoord(index) << 4;
+                var section = sections[index];
+                if (sectionY + 15 < center.getY() - 16 || sectionY > center.getY() + 16
+                        || section.isEmpty() || !section.hasAny(state -> sources.contains(state.getBlock()))) continue;
+                for (int x = 0; x < 16; x++) {
+                    for (int z = 0; z < 16; z++) {
+                        for (int y = Math.max(sectionY, center.getY() - 16); y <= Math.min(sectionY + 15, center.getY() + 16); y++) {
+                            var block = section.getBlockState(x, y & 15, z).getBlock();
+                            if (!sources.contains(block)) continue;
+                            pos.set(coordinates.getStartX() + x, y, coordinates.getStartZ() + z);
+                            int score = radius * radius + 1 - (int) pos.getSquaredDistance(center);
+                            if (score > widerSourceProximity.get(block) && !BuildProtection.blocked(pos)) {
+                                widerSourceProximity.put(block, score);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private int nearbySources(Identifier item) {

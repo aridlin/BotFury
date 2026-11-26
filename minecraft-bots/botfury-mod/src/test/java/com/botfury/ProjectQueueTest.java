@@ -699,6 +699,36 @@ class ProjectQueueTest {
         assertEquals(stand, retry.job().resourceSite());
     }
 
+    @Test void aStalledOreJobWithoutAnOldLocationGetsOneRetryNearItsOreLayer() throws Exception {
+        var journal = directory.resolve("legacy-ore-retry.json");
+        prepareStalledSupply(journal, false);
+        var document = com.google.gson.JsonParser.parseString(java.nio.file.Files.readString(journal)).getAsJsonObject();
+        var jobs = document.getAsJsonObject("projects").getAsJsonObject("stock").getAsJsonArray("jobs");
+        for (var entry : jobs) {
+            var job = entry.getAsJsonObject();
+            if (job.getAsJsonObject("work").get("id").getAsString().equals("iron")) job.remove("resourceSite");
+        }
+        java.nio.file.Files.writeString(journal, document.toString());
+        var queue = new ProjectQueue(journal);
+        long now = 40_000;
+        var stone = java.util.Map.of("minecraft:stone_pickaxe", 32);
+        var position = new ProjectQueue.ResourceSite(8, 43, 9);
+        queue.claim(WORLD, "original", Set.of(VERIFY), now);
+        queue.claim(WORLD, "other", Set.of(VERIFY), now);
+        assertNull(queue.offerRelocatedMiner(WORLD, "original", "stock", new ProjectQueue.ResourceSite(8, 80, 9), stone, now));
+        assertNull(queue.offerRelocatedMiner(WORLD, "other", "stock", position, stone, now));
+        assertNull(queue.offerRelocatedMiner(WORLD, "original", "stock", position,
+                java.util.Map.of("minecraft:stone_pickaxe", 31), now));
+        var retry = queue.offerRelocatedMiner(WORLD, "original", "stock", position, stone, now).job();
+        assertEquals("iron", retry.work().id());
+        assertEquals(position, retry.resourceSite());
+        assertTrue(queue.finish("stock", "iron", retry.lease(), false, ProjectQueue.GATHER_STALLED, null, position, now + 1));
+        queue = new ProjectQueue(journal);
+        now += 40_000;
+        queue.claim(WORLD, "original", Set.of(VERIFY), now);
+        assertNull(queue.offerRelocatedMiner(WORLD, "original", "stock", position, stone, now));
+    }
+
     @Test void relocatedMinerRetriesFromNewGroundWithoutCyclingThroughOldAreas() throws Exception {
         var journal = directory.resolve("relocated-miner.json");
         var queue = prepareStalledSupply(journal, false);

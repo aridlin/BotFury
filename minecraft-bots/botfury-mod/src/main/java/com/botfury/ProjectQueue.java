@@ -2103,21 +2103,26 @@ final class ProjectQueue {
                     || projectId != null && !projectId.equals(project.id) || !availableProjectWorker(project, worker, now)) continue;
             for (var gather : project.jobs) {
                 if (!stalledPinnedGathering(gather) || now < gather.expiresAt || !worker.equalsIgnoreCase(gather.worker)
-                        || gather.resourceSite == null || !newMiningGround(gather.resourceSite, position)
                         || gather.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) continue;
                 var source = gatherSource(gather.work.payload);
                 var preparation = find(project, gather.work.sameWorkerAs);
                 if (source == null || !ResourceCatalog.isOre(source.resource) || preparation.work.kind != Kind.CRAFT) continue;
+                boolean missingSite = gather.resourceSite == null;
+                if (missingSite) {
+                    Integer depth = SubsurfaceAccess.prospectingAltitude(source.resource);
+                    if (depth == null || Math.abs((long) position.y - depth) > 32) continue;
+                } else if (!newMiningGround(gather.resourceSite, position)) continue;
                 var recipe = JSON.fromJson(preparation.work.payload, ToolRecipe.class);
                 int tier = recipe == null || recipe.recipe == null ? -1 : PICKAXE_TIERS.indexOf(recipe.recipe);
                 if (tier < 0 || PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
                         .noneMatch(tool -> toolUses.getOrDefault(tool, 0) >= 32)) continue;
 
-                String key = "relocated-miner:" + gather.work.id;
+                // Old journals may lack the failed location. Retry once near the ore layer to establish a checkpoint.
+                String key = (missingSite ? "legacy-miner:" : "relocated-miner:") + gather.work.id;
                 int attempts = project.supplyRecoveries.getOrDefault(key, 0);
                 String region = key + ":" + Math.floorDiv(position.x, 48) + ","
                         + Math.floorDiv(position.y, 24) + "," + Math.floorDiv(position.z, 48);
-                if (attempts >= 2 || project.supplyRecoveries.containsKey(region)) continue;
+                if (attempts >= (missingSite ? 1 : 2) || project.supplyRecoveries.containsKey(region)) continue;
 
                 // Start from the worker's current footing instead of walking back to the failed route.
                 var lease = new Job(gather.work, State.LEASED, gather.attempts + 1, worker, UUID.randomUUID(),

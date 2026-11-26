@@ -1621,7 +1621,9 @@ final class ProjectWorker {
                     && !client.player.getInventory().contains(net.minecraft.item.Items.CRAFTING_TABLE.getDefaultStack());
         }
         boolean alreadyClimbing = stationReturn.active();
-        if (!stationReturn.advanceToward(client, approachAge, destination, excluded, !placement)) return false;
+        boolean carryingDeposit = !placement && chest != null && chest.depositing()
+                && projectCargoItem != null && projectCargoItem.count(client) > 0;
+        if (!stationReturn.advanceToward(client, approachAge, destination, excluded, !placement, carryingDeposit)) return false;
         String detail = placement ? "Opening a short climb to the placement stand"
                 : stationReturn.followingNaturalAscent() ? "Following a natural ascent to the station"
                 : stationReturn.openingReturnStep() ? "Opening a protected return step" : "Opening a return route to the station";

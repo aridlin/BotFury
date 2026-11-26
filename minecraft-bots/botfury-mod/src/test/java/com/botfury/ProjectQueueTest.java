@@ -2122,6 +2122,48 @@ class ProjectQueueTest {
                 .getAsJsonObject().get("count").getAsInt());
     }
 
+    @Test void laterCheckpointBanksAgainstAnActiveEarlierMinerAndUpdatesOnlyVerifiedStock() throws Exception {
+        String chest = "block:3,64,0";
+        String item = "minecraft:diamond";
+        var cave = new ProjectQueue.ResourceSite(12, -54, 23);
+        var journal = directory.resolve("active-mining-contribution.json");
+        var queue = new ProjectQueue(journal);
+        var first = job("first", GATHER, List.of()).withPayload("""
+                {"resource":"diamond","variant":"both","item":"minecraft:diamond","count":13}
+                """);
+        var later = job("later", GATHER, List.of()).withPayload(first.payload());
+        var firstBank = new ProjectQueue.Work("first-bank", TRANSFER,
+                """
+                {"direction":"DEPOSIT","item":"minecraft:diamond","stock":13}
+                """, List.of(first.id()), Set.of(chest), first.id());
+        var laterBank = new ProjectQueue.Work("later-bank", TRANSFER,
+                """
+                {"direction":"DEPOSIT","item":"minecraft:diamond","stock":26}
+                """, List.of(later.id(), firstBank.id()), Set.of(chest), later.id());
+        queue.submitSupplied("stock", WORLD, List.of(first, firstBank, later, laterBank), chest);
+        var early = queue.claim(WORLD, "early-miner", Set.of(GATHER), 1).job();
+        var checkpoint = queue.claim(WORLD, "later-miner", Set.of(GATHER), 2).job();
+        assertTrue(queue.finish("stock", later.id(), checkpoint.lease(), false,
+                ProjectQueue.CARGO_CHECKPOINT, null, cave, 3));
+
+        var deposit = queue.offerUrgentMiningDeposit(WORLD, "later-miner", null, 4, cave,
+                (worker, material) -> item.equals(material) && worker.equals("later-miner") ? 4 : 0, 8).job();
+        assertEquals(firstBank.id(), deposit.work().id());
+        assertNotNull(queue.renew("stock", first.id(), early.lease(), cave, 5));
+        assertNull(queue.offerUrgentMiningDeposit(WORLD, "later-miner", null, 6, cave,
+                (worker, material) -> 4, 8));
+        queue = new ProjectQueue(journal);
+        assertTrue(queue.finish("stock", firstBank.id(), deposit.lease(), false, "Observed part of target stock",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(item, 4)), null, true, 7));
+        var jobs = queue.snapshot(8).get(0).jobs();
+        assertTrue(jobs.get(0).work().payload().contains("\"count\":9"));
+        assertEquals(ProjectQueue.State.WAITING, jobs.get(1).state());
+        assertEquals(4, jobs.get(1).chest().report().items().get(item));
+        assertEquals(later.payload(), jobs.get(2).work().payload());
+        assertNull(jobs.get(3).chest());
+        assertNull(queue.renew("stock", first.id(), early.lease(), cave, 9));
+    }
+
     @Test void carrierCanRebankAgainstARebuiltChestAfterItsOldReceiptWasCleared() throws Exception {
         var journal = directory.resolve("rebank-after-owned-storage-loss.json");
         String chest = "block:3,64,0";

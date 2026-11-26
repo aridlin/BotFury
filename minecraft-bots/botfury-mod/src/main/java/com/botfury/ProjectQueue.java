@@ -3140,12 +3140,15 @@ final class ProjectQueue {
             var target = transferTarget(deposit);
             if (target == null || !item.equals(target.item)) continue;
             var gather = deposit.work.sameWorkerAs == null ? null : find(project, deposit.work.sameWorkerAs);
+            boolean activeGather = gather != null && gather.state == State.LEASED && gather.expiresAt > now
+                    && handoffWorker(gather) == null && !GATHER_STOCK_CONFIRMED.equals(gather.evidence);
             if (deposit.state == State.WAITING && gather != null && gather.work.kind == Kind.GATHER
-                    && (gather.state == State.WAITING || gather.state == State.FAILED)) {
+                    && (gather.state == State.WAITING || gather.state == State.FAILED || activeGather)) {
                 var source = gatherSource(gather.work.payload);
                 if (source != null && item.equals(source.item)) {
+                    // The earlier miner keeps its lease until new stock is actually observed.
                     var assignment = offerContribution(project, gather, deposit, item, worker, held,
-                            true, now, position, false, returnRevision);
+                            true, now, position, activeGather, returnRevision);
                     if (assignment != null) return assignment;
                 }
             }

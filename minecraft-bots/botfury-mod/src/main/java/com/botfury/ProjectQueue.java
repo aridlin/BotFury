@@ -1761,6 +1761,93 @@ final class ProjectQueue {
         return false;
     }
 
+    /** Give the first delivery to a local carrier without changing the cumulative chest targets. */
+    synchronized boolean rotateStalledDeposits(String world, StockCarrier local, long now,
+                                                java.util.function.Function<String, ResourceSite> locate,
+                                                java.util.function.ToIntBiFunction<String, String> heldCount) throws IOException {
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || project.repeat != null || project.supplyChest == null || cancelled(project)
+                    || !availableProjectWorker(project, local.worker, now)) continue;
+            if (reservedStorage(project) == null && projects.values().stream().anyMatch(other -> other != project
+                    && world.equals(other.world) && project.supplyChest.equals(reservedStorage(other)))) continue;
+            for (var later : project.jobs) {
+                if (later.state != State.WAITING || later.attempts != 0) continue;
+                var target = transferTarget(later);
+                if (target == null || !"DEPOSIT".equals(target.direction) || !later.work.locks.contains(project.supplyChest)) continue;
+                var localCargo = privateDepositCargo(project, later, target.item);
+                if (localCargo == null || !local.worker.equalsIgnoreCase(localCargo.worker)
+                        || pendingBuildMaterials(world, local.worker).contains(target.item)) continue;
+                var earlier = firstUnbankedDeposit(project, later, target.item);
+                if (earlier == null || earlier == later || earlier.state != State.WAITING && earlier.state != State.FAILED
+                        || !TARGET_TIMEOUT.equals(earlier.evidence) || earlier.expiresAt > now) continue;
+                String recovery = "nearby-deposit-carrier:" + earlier.work.id;
+                if (project.supplyRecoveries.containsKey(recovery)) continue;
+                var originalCargo = privateDepositCargo(project, earlier, target.item);
+                if (originalCargo == null || originalCargo.worker.equalsIgnoreCase(local.worker)
+                        || pendingBuildMaterials(world, originalCargo.worker).contains(target.item)
+                        || hasPendingDepositOf(world, local.worker, target.item, later)
+                        || hasPendingDepositOf(world, originalCargo.worker, target.item, earlier)) continue;
+                if (projects.values().stream().flatMap(other -> other.jobs.stream())
+                        .anyMatch(job -> workerCommittedToLease(job, originalCargo.worker))) continue;
+
+                var chest = JSON.fromJson(earlier.work.payload, StationTarget.class).target;
+                var origin = locate.apply(originalCargo.worker);
+                if (chest == null || origin == null) continue;
+                double localDistance = distance(local.position, chest);
+                if (localDistance > 16 || chest.y() - local.position.y > 4
+                        || distance(origin, chest) < localDistance + 12) continue;
+                int firstCount = JSON.fromJson(originalCargo.work.payload, GatherQuantity.class).count;
+                int nextCount = JSON.fromJson(localCargo.work.payload, GatherQuantity.class).count;
+                if (heldCount.applyAsInt(local.worker, target.item) < firstCount
+                        || heldCount.applyAsInt(originalCargo.worker, target.item) < nextCount) continue;
+
+                var jobs = new ArrayList<>(project.jobs);
+                jobs.set(jobs.indexOf(originalCargo), observedDepositCargo(originalCargo, local.worker, firstCount, target.item));
+                jobs.set(jobs.indexOf(localCargo), observedDepositCargo(localCargo, originalCargo.worker, nextCount, target.item));
+                jobs.set(jobs.indexOf(earlier), new Job(earlier.work, State.WAITING, 0, null, null, 0,
+                        "First delivery reassigned to a nearby carrier", earlier.chest, earlier.resourceSite));
+                var recoveries = new HashMap<>(project.supplyRecoveries);
+                recoveries.put(recovery, 1);
+                commit(project.withRecovery(jobs, recoveries));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static Job privateDepositCargo(Project project, Job deposit, String item) {
+        var cargo = find(project, deposit.work.sameWorkerAs);
+        if (cargo == null || cargo.state != State.DONE || cargo.worker == null || cargo.work.kind != Kind.GATHER
+                || !privatePreparationReady(project, deposit, Set.of(cargo.work.id))) return null;
+        var source = gatherSource(cargo.work.payload);
+        var quantity = JSON.fromJson(cargo.work.payload, GatherQuantity.class);
+        return source != null && item.equals(source.item) && quantity != null && quantity.count != null && quantity.count > 0
+                ? cargo : null;
+    }
+
+    private static Job firstUnbankedDeposit(Project project, Job later, String item) {
+        var deposit = later;
+        while (true) {
+            Job previous = null;
+            for (String id : deposit.work.needs) {
+                var need = find(project, id);
+                if (need.state == State.DONE) continue;
+                var target = transferTarget(need);
+                if (previous != null || target == null || !"DEPOSIT".equals(target.direction)
+                        || !item.equals(target.item) || !need.work.locks.contains(project.supplyChest)) return null;
+                previous = need;
+            }
+            if (previous == null) return deposit;
+            deposit = previous;
+        }
+    }
+
+    private static Job observedDepositCargo(Job cargo, String worker, int count, String item) {
+        return new Job(cargo.work, State.DONE, cargo.attempts, worker, null, 0,
+                "Observed " + count + " " + item + " for the reassigned delivery. Originally gathered by " + cargo.worker,
+                cargo.chest, cargo.resourceSite);
+    }
+
     synchronized boolean offerConstructionHandoff(String world, String worker, String projectId,
                                                   Set<Kind> kinds, long now,
                                                   java.util.function.Function<String, ResourceSite> locate,
@@ -3459,10 +3546,15 @@ final class ProjectQueue {
     }
 
     private boolean hasPendingDepositOf(String world, String worker, String item) {
+        return hasPendingDepositOf(world, worker, item, null);
+    }
+
+    private boolean hasPendingDepositOf(String world, String worker, String item, Job allowed) {
         for (Project project : projects.values()) {
             if (!world.equals(project.world) || cancelled(project)) continue;
             for (Job job : project.jobs) {
-                if (job.state != State.WAITING || job.work.kind != Kind.TRANSFER || job.work.sameWorkerAs == null) continue;
+                if (job == allowed || job.state != State.WAITING || job.work.kind != Kind.TRANSFER
+                        || job.work.sameWorkerAs == null) continue;
                 var cargo = find(project, job.work.sameWorkerAs);
                 if (cargo == null || cargo.state != State.DONE || !worker.equalsIgnoreCase(cargo.worker)) continue;
                 var transfer = JSON.fromJson(job.work.payload, PickupTarget.class);

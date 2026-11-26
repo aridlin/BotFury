@@ -840,7 +840,7 @@ final class ProjectWorker {
         var destination = new BotInventory.Destination(here.server(), here.dimension(),
                 new Vec3d(position.x() + .5, position.y(), position.z() + .5), port);
         var item = Registries.ITEM.get(new Identifier(delivery.item()));
-        BotInventory.startProjectDelivery(client, item, delivery.quantity(), delivery.recipient(), destination);
+        BotInventory.startProjectDelivery(client, item, delivery.quantity(), delivery.recipient(), destination, delivery.waypoints());
         deliveringRouteTool = true;
         taskEnd = System.nanoTime() + seconds(180);
     }
@@ -1903,6 +1903,7 @@ final class ProjectWorker {
             args.put("kinds", KINDS);
             args.put("returnRouteRevision", SubsurfaceAccess.RETURN_ROUTE_REVISION);
             args.put("supportsStickResupply", true);
+            args.put("supportsMealTrail", true);
             var meal = TaskDefense.spareMeal(client);
             if (meal != null) args.put("spareMeal", meal);
             args.put("supportsPickupReserve", true);
@@ -1936,8 +1937,11 @@ final class ProjectWorker {
             args.put("job", assignment.job().work().id());
             args.put("token", assignment.job().lease());
             if (action.equals("renew")) {
-                if (TaskDefense.requestsMeal(client)) args.put("needsMeal", true);
-                if (TaskDefense.hasMeal(client)) args.put("carryingMeal", true);
+                if (TaskDefense.requestsMeal(client)) {
+                    args.put("needsMeal", true);
+                    args.put("mealTrail", returnTrail.supplyTrail(routePoint(client.player.getBlockPos())));
+                }
+                if (TaskDefense.recentlyAteMeal(client) || TaskDefense.hasMeal(client)) args.put("carryingMeal", true);
                 if (needsRouteSticks) args.put("needsRouteSticks", true);
                 if (reportingRouteSticks) args.put("receivedRouteSticks", true);
             }

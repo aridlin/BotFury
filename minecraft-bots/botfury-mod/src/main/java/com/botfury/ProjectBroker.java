@@ -39,7 +39,9 @@ final class ProjectBroker {
                            boolean needsRouteSticks,
                            boolean receivedRouteSticks,
                            boolean pickupShortfall, Map<String, Integer> toolUses, int returnRouteRevision, boolean needsRouteTool, int routeCraftTarget, boolean needsRouteBench, boolean canSupplyBench, boolean receivedRouteBench,
-                           boolean supportsPickupReserve, boolean supportsStickResupply, boolean needsMeal, boolean carryingMeal, String spareMeal, List<ProjectQueue.ReachableOre> reachableOre, boolean groundedGatherRetry, List<String> localStarterLogs) {}
+                           boolean supportsPickupReserve, boolean supportsStickResupply, boolean needsMeal, boolean carryingMeal, String spareMeal,
+                           boolean supportsMealTrail, List<ProjectQueue.ResourceSite> mealTrail,
+                           List<ProjectQueue.ReachableOre> reachableOre, boolean groundedGatherRetry, List<String> localStarterLogs) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
         if (queue == null) {
@@ -737,7 +739,7 @@ final class ProjectBroker {
                         if (assignment == null && meal != null && Registries.ITEM.getOrEmpty(meal)
                                 .filter(TaskDefense::nourishing).isPresent()) {
                             assignment = board.offerMealResupply(world, request.worker, request.project, now, meal.toString(),
-                                    ProjectBroker::workerPosition, ProjectBroker::heldCount);
+                                    ProjectBroker::workerPosition, ProjectBroker::heldCount, request.supportsMealTrail);
                         }
                         if (assignment == null && request.supportsStickResupply) {
                             assignment = board.offerStickResupply(world, request.worker, request.project, now,
@@ -792,7 +794,7 @@ final class ProjectBroker {
                 }
                 case "renew" -> {
                     board.recordRouteStock(request.project, request.job, request.token, now, request.routeStock);
-                    board.recordMealNeed(request.project, request.job, request.token, request.needsMeal, request.carryingMeal, now);
+                    board.recordMealNeed(request.project, request.job, request.token, request.needsMeal, request.carryingMeal, request.mealTrail, now);
                     board.recordRouteStickNeed(request.project, request.job, request.token, request.needsRouteSticks, now);
                     if (request.receivedRouteSticks) board.recordRouteStickReceipt(request.project, request.job, request.token, now);
                     var renewed = board.renew(request.project, request.job, request.token, request.resourceSite, now, request.needsRouteTool, request.needsRouteBench);

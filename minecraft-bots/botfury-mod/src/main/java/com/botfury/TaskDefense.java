@@ -25,6 +25,8 @@ final class TaskDefense {
     private static String shelterStatus;
     private static boolean protectingWork;
     private static boolean eating;
+    private static long mealStartedAt, mealConfirmedAt;
+    private static int hungerBeforeMeal;
     private static AnimalEntity prey;
     private static Vec3d walkingDirection;
     private static BlockPos retreatStep;
@@ -60,6 +62,18 @@ final class TaskDefense {
     static boolean emergencyFood(net.minecraft.item.Item item) {
         return nourishing(item) || item == Items.BEEF || item == Items.PORKCHOP
                 || item == Items.MUTTON || item == Items.RABBIT;
+    }
+
+    static boolean recentlyAteMeal(MinecraftClient client) {
+        long now = System.nanoTime();
+        if (mealStartedAt != 0) {
+            if (now - mealStartedAt >= 3_000_000_000L) mealStartedAt = 0;
+            else if (client.player.getHungerManager().getFoodLevel() > hungerBeforeMeal) {
+                mealStartedAt = 0;
+                mealConfirmedAt = now;
+            }
+        }
+        return mealConfirmedAt != 0 && now - mealConfirmedAt < 8_000_000_000L;
     }
 
     static boolean nourishing(net.minecraft.item.Item item) {
@@ -191,6 +205,7 @@ final class TaskDefense {
         retreatJump = false;
     }
     private static boolean defendInPlace(MinecraftClient client) {
+        if (mealStartedAt != 0) recentlyAteMeal(client);
         if (eligible(client, true) && client.currentScreen == null && client.interactionManager != null
                 && client.player.currentScreenHandler == client.player.playerScreenHandler
                 && client.player.playerScreenHandler.getCursorStack().isEmpty()) {
@@ -291,6 +306,10 @@ final class TaskDefense {
         if (!select(client, slot)) return true;
         if (client.interactionManager.interactItem(player, Hand.MAIN_HAND).isAccepted()) {
             if (!eating) BotEvents.add("info", "defense", "Eating carried food");
+            if (nourishing(inventory.getMainHandStack().getItem())) {
+                mealStartedAt = System.nanoTime();
+                hungerBeforeMeal = hunger;
+            }
             eating = true;
             client.options.useKey.setPressed(true);
             return true;

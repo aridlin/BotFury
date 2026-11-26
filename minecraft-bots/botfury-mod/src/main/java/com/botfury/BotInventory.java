@@ -7,9 +7,11 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.command.argument.EntityAnchorArgumentType;
 import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
@@ -35,6 +37,10 @@ final class BotInventory {
     }
     private static int age, delivered, waitTicks;
     private static boolean projectDelivery;
+    private static List<ProjectQueue.ResourceSite> supplyTrail = List.of();
+    private static BaritoneSettings supplySettings;
+    private static int supplyWaypoint, supplyProgressAt;
+    private static Vec3d supplyProgress;
     private static Vec3d spreadGoal;
     private static final DroppedItemSearch pickup = new DroppedItemSearch();
     private static final StallRecovery routeRecovery = new StallRecovery();
@@ -96,9 +102,20 @@ final class BotInventory {
         projectDelivery = false;
     }
 
-    static void startProjectDelivery(MinecraftClient client, Item item, int quantity, String recipient, Destination destination) {
+    static void startProjectDelivery(MinecraftClient client, Item item, int quantity, String recipient,
+                                     Destination destination, List<ProjectQueue.ResourceSite> waypoints) {
         begin(client, new Request("deliver", item, quantity, recipient, destination));
         projectDelivery = true;
+        if (task == null || waypoints.isEmpty()) return;
+        try {
+            supplySettings = new BaritoneSettings(false);
+        } catch (ReflectiveOperationException | LinkageError unavailable) {
+            finish("Cannot follow the shared supply trail");
+            return;
+        }
+        supplyTrail = waypoints;
+        supplyProgress = client.player.getPos();
+        BotEvents.add("info", "inventory", "Following " + waypoints.size() + " shared supply waypoints");
     }
 
     private static void begin(MinecraftClient client, Request request) {
@@ -131,6 +148,7 @@ final class BotInventory {
         if (client.player.currentScreenHandler != client.player.playerScreenHandler) {
             status = "Close the bot's container to continue"; return;
         }
+        if (followSupplyTrail(client)) return;
         if (spreadGoal != null) {
             if (client.player.getPos().squaredDistanceTo(spreadGoal) < 2) {
                 finish(completion); return;
@@ -191,6 +209,33 @@ final class BotInventory {
             case "spread" -> spread(client);
             default -> finish("Stopped");
         }
+    }
+
+    private static boolean followSupplyTrail(MinecraftClient client) {
+        while (supplyWaypoint < supplyTrail.size()) {
+            var step = supplyTrail.get(supplyWaypoint);
+            var target = new BlockPos(step.x(), step.y(), step.z());
+            var feet = client.player.getPos();
+            if (feet.squaredDistanceTo(Vec3d.ofBottomCenter(target)) <= 1.5) {
+                supplyWaypoint++;
+                supplyProgressAt = age;
+                supplyProgress = feet;
+                continue;
+            }
+            if (feet.squaredDistanceTo(supplyProgress) >= 1) {
+                supplyProgress = feet;
+                supplyProgressAt = age;
+            }
+            if (age - supplyProgressAt >= 160) {
+                finish("Could not reach a shared supply waypoint");
+                return true;
+            }
+            if ((age == 1 || age % 10 == 0) && !BaritoneClient.pursuing(target)
+                    && !BaritoneClient.goTo(target)) finish("Cannot follow the shared supply trail");
+            else status = "Following shared supply waypoint " + (supplyWaypoint + 1) + "/" + supplyTrail.size();
+            return true;
+        }
+        return false;
     }
 
     private static void followCoordinates(MinecraftClient client) {
@@ -313,6 +358,11 @@ final class BotInventory {
     private static void finish(String message) {
         routeRecovery.reset();
         if (task != null || baritoneTask) BaritoneClient.execute("stop");
+        if (supplySettings != null) supplySettings.close();
+        supplySettings = null;
+        supplyTrail = List.of();
+        supplyWaypoint = supplyProgressAt = 0;
+        supplyProgress = null;
         pickup.reset();
         task = null;
         locationRead = null;

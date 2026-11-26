@@ -2,7 +2,10 @@ package com.botfury;
 
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor;
+import net.minecraft.entity.EntityType;
+import net.minecraft.entity.ItemEntity;
 import net.minecraft.entity.mob.WardenEntity;
+import net.minecraft.entity.passive.AnimalEntity;
 import net.minecraft.item.AxeItem;
 import net.minecraft.item.Items;
 import net.minecraft.item.SwordItem;
@@ -22,6 +25,7 @@ final class TaskDefense {
     private static String shelterStatus;
     private static boolean protectingWork;
     private static boolean eating;
+    private static AnimalEntity prey;
     private static Vec3d walkingDirection;
     private static BlockPos retreatStep;
     private static int retreatStartY;
@@ -51,6 +55,11 @@ final class TaskDefense {
         int hunger = player.getHungerManager().getFoodLevel();
         return (hunger <= 6 || hunger < 18 && player.getHealth() <= player.getMaxHealth() / 2)
                 && !hasMeal(client);
+    }
+
+    static boolean emergencyFood(net.minecraft.item.Item item) {
+        return nourishing(item) || item == Items.BEEF || item == Items.PORKCHOP
+                || item == Items.MUTTON || item == Items.RABBIT;
     }
 
     static boolean nourishing(net.minecraft.item.Item item) {
@@ -88,6 +97,7 @@ final class TaskDefense {
         pathPaused=false;
         holdUntil=0;
         shelterStatus=null;
+        prey = null;
     }
     static String evasionStatus() { return shelterStatus == null ? "Avoiding danger" : shelterStatus; }
 
@@ -195,9 +205,32 @@ final class TaskDefense {
                 return true;
             }
             if (eatWhenNeeded(client)) return true;
+            if (forageInReach(client)) return true;
         }
+        prey = null;
         stopEating(client);
         return false;
+    }
+
+    private static boolean forageInReach(MinecraftClient client) {
+        var player = client.player;
+        if (player.getHungerManager().getFoodLevel() > 6 || player.getInventory().getEmptySlot() < 0) return false;
+        if (!client.world.getEntitiesByClass(ItemEntity.class, player.getBoundingBox().expand(3),
+                entity -> entity.isAlive() && emergencyFood(entity.getStack().getItem())).isEmpty()) return false;
+        var target = LocalFormation.defenseTarget(client, config.owner, config.protectedNames,
+                other -> other instanceof AnimalEntity animal && !animal.isBaby() && !animal.hasCustomName()
+                        && !animal.isLeashed() && (animal.getType() == EntityType.COW
+                        || animal.getType() == EntityType.PIG || animal.getType() == EntityType.SHEEP
+                        || animal.getType() == EntityType.RABBIT));
+        if (!(target instanceof AnimalEntity animal)) return false;
+        if (prey != animal) {
+            prey = animal;
+            BotEvents.add("info", "defense", "Foraging for food: " + animal.getName().getString());
+        }
+        if (equipWeapon(client) && player.getAttackCooldownProgress(.5f) >= .95f) {
+            LocalFormation.punch(client, animal);
+        }
+        return true;
     }
 
     static boolean defendProject(MinecraftClient client) {

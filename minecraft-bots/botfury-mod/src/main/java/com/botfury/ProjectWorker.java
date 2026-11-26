@@ -441,6 +441,7 @@ final class ProjectWorker {
                 }
             }
             if (busy) stopIdleAscent(client);
+            else if (!pending && pickupRouteTool(client)) busy = true;
             else if (prepareIdleRouteTool(client, now)) busy = true;
             else if ((!pending || idleSurfaceGoal != null) && followIdleAscent(client, here, now)) busy = true;
             else if (!pending && idleRecovery.yieldWhileIdle(client)) {
@@ -652,13 +653,15 @@ final class ProjectWorker {
             if (client.world.getEntitiesByClass(net.minecraft.entity.ItemEntity.class,
                     player.getBoundingBox().expand(TOOL_DROP_RADIUS),
                     entity -> entity.isAlive() && usableRouteTool(entity.getStack(), needsSticks, needsMeal)).isEmpty()) return false;
+            if (assignment == null) stopIdleAscent(client);
             if (stickPreparation != null) stickPreparation.pauseGathering();
             else halt(client);
             pickingUpRouteTool = true;
         }
         if (routeToolPickup.tick(client, stack -> usableRouteTool(stack, needsSticks, needsMeal), null)
                 == DroppedItemSearch.State.APPROACHING) {
-            status = assignment.project() + "/" + assignment.job().work().id() + ": Collecting emergency supplies";
+            status = assignment == null ? "Collecting emergency supplies"
+                    : assignment.project() + "/" + assignment.job().work().id() + ": Collecting emergency supplies";
             return true;
         }
         pickingUpRouteTool = false;
@@ -667,7 +670,7 @@ final class ProjectWorker {
 
     private static boolean usableRouteTool(net.minecraft.item.ItemStack stack, boolean needsSticks, boolean needsMeal) {
         return needsSticks && stack.isOf(Items.STICK)
-                || needsMeal && TaskDefense.nourishing(stack.getItem())
+                || needsMeal && TaskDefense.emergencyFood(stack.getItem())
                 || (needsRouteBench || needsProductionBench) && stack.isOf(net.minecraft.item.Items.CRAFTING_TABLE)
                 || needsRouteTool && stack.getItem() instanceof net.minecraft.item.PickaxeItem
                         && stack.getMaxDamage() - stack.getDamage() >= 21;

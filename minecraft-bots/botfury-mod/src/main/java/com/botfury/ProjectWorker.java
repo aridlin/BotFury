@@ -112,6 +112,8 @@ final class ProjectWorker {
     private static long idleAscentDeadline, idleAscentProgressAt;
     private static int idleAscentHeight, nextIdleRouteProbe;
     private static final SubsurfaceAccess stationReturn = new SubsurfaceAccess();
+    private static final SubsurfaceAccess stationDescent = new SubsurfaceAccess();
+    private static int stationDescentSteps;
     private static BlockPos stationToolAttempt;
     private static boolean needsRouteTool;
     private static boolean allowedResupplyWait;
@@ -291,6 +293,8 @@ final class ProjectWorker {
         nextInteractionStandSearch = 0;
         approachAge = 0;
         stationReturn.reset();
+        stationDescent.reset();
+        stationDescentSteps = 0;
         stationToolAttempt = null;
         needsRouteTool = needsRouteBench = needsProductionBench = receivedRouteBench = allowedResupplyWait = false;
         craftingRouteDelivery = null;
@@ -348,6 +352,7 @@ final class ProjectWorker {
             deliveringRouteTool = false;
         }
         stationReturn.stop();
+        stationDescent.stop();
         releaseCentering(client);
         releaseJump(client);
         jumpEnds = 0;
@@ -375,7 +380,7 @@ final class ProjectWorker {
 
     static boolean blocksRecoveryBreak(BlockPos pos) {
         var client = MinecraftClient.getInstance();
-        if (stationReturn.blocksBreaking(client, pos)) return true;
+        if (stationReturn.blocksBreaking(client, pos) || stationDescent.blocksBreaking(client, pos)) return true;
         if (recoveryOrigin == null) return false;
         boolean stationJob = chest != null || production != null;
         boolean canopy = canopyApproachEnds != 0;
@@ -986,6 +991,10 @@ final class ProjectWorker {
             }
         }
         boolean routeFailed = approach != null && now >= retryApproach && !BaritoneClient.pursuing(stand);
+        if (needsStationApproach && tryLowerStationApproach(client, stand, routeFailed)) {
+            approachAge++;
+            return;
+        }
         if (ordinaryBuild && targetLoaded && !canBuildHere && client.world.isAir(target)
                 && (openingJumpHeadroom != null || !attemptedJumpHeadroom && (routeFailed || reachedAlternative))
                 && openJumpHeadroom(client, currentCell)) return;
@@ -1114,8 +1123,9 @@ final class ProjectWorker {
             }
             return;
         }
-        if (approach != null || stationReturn.active() || stationReturn.openingReturnStep()) halt(client);
+        if (approach != null || stationReturn.active() || stationReturn.openingReturnStep() || stationDescentSteps > 0) halt(client);
         else if (stationJob) releaseCentering(client);
+        stationDescentSteps = 0;
         if (!targetLoaded) {
             stableSince = 0;
             return;
@@ -1493,6 +1503,24 @@ final class ProjectWorker {
             if (!world.isChunkLoaded(neighbor.getX() >> 4, neighbor.getZ() >> 4)
                     || !world.getFluidState(neighbor).isEmpty()) return false;
         }
+        return true;
+    }
+
+    private static boolean tryLowerStationApproach(MinecraftClient client, BlockPos destination, boolean routeFailed) {
+        var target = block.target();
+        var protectedStation = StructureSupply.union(new ProjectGather.Area(target, target), block);
+        if (stationDescent.continuePassage(client, approachAge, protectedStation)
+                || stationDescent.continueLocalApproach(client, approachAge)) return true;
+        var current = client.player.getBlockPos();
+        int drop = current.getY() - destination.getY();
+        if (stationDescentSteps >= 12 || !current.isWithinDistance(destination, 12)
+                || drop < 0 || drop > 8 || stationDescentSteps == 0 && (!routeFailed || drop < 2)) return false;
+        if (approach != null && !routeFailed) return false;
+        if (approach != null) halt(client);
+        if (!stationDescent.openLowerStationStep(client, approachAge, destination, protectedStation)) return false;
+        stationDescentSteps++;
+        status = assignment.project() + "/" + assignment.job().work().id() + ": Opening a protected route to the lower station";
+        BotEvents.add("debug", "movement", "Opening a protected route to the lower station at " + destination.toShortString());
         return true;
     }
 

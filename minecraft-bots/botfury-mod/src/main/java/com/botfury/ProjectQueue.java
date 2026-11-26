@@ -1843,6 +1843,13 @@ final class ProjectQueue {
                 ? JSON.fromJson(job.work.payload, RouteToolDelivery.class) : null;
     }
 
+    synchronized String routeResupplyRecipient(String world, String projectId, String jobId, UUID token, long now) {
+        var project = projects.get(projectId);
+        if (project == null || !world.equals(project.world) || cancelled(project)) return null;
+        var delivery = routeToolDelivery(projectId, jobId, token, now);
+        return delivery == null ? null : delivery.recipient;
+    }
+
     synchronized Assignment offerStickResupply(String world, String worker, String projectId, long now,
                                                 java.util.function.Function<String, ResourceSite> position,
                                                 java.util.function.ToIntBiFunction<String, String> held) throws IOException {

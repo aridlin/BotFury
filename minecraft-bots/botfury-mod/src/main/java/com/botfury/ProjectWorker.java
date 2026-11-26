@@ -858,7 +858,9 @@ final class ProjectWorker {
         var destination = new BotInventory.Destination(here.server(), here.dimension(),
                 new Vec3d(position.x() + .5, position.y(), position.z() + .5), port);
         var item = Registries.ITEM.get(new Identifier(delivery.item()));
-        BotInventory.startProjectDelivery(client, item, delivery.quantity(), delivery.recipient(), destination, delivery.waypoints());
+        var lease = new BotInventory.DeliveryLease(assignment.project(), assignment.job().work().id(), assignment.job().lease());
+        BotInventory.startProjectDelivery(client, item, delivery.quantity(), delivery.recipient(),
+                destination, delivery.waypoints(), lease);
         deliveringRouteTool = true;
         taskEnd = System.nanoTime() + seconds(180);
     }

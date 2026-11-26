@@ -840,6 +840,12 @@ final class ProjectBroker {
                     boolean recovered = board.recoverLegacyFurnace(world, request.project, request.job, request.loadedFurnace);
                     reply(exchange, recovered ? 200 : 409, recovered);
                 }
+                case "resupply-location" -> {
+                    var recipient = board.routeResupplyRecipient(world, request.project, request.job, request.token, now);
+                    var tracked = recipient == null ? null : liveWorker(recipient);
+                    reply(exchange, 200, tracked != null && tracked.sameWorld() && now - tracked.positionAt() < 3000
+                            ? new net.minecraft.util.math.Vec3d(tracked.x(), tracked.y(), tracked.z()) : null);
+                }
                 case "finish" -> {
                     if (request.success == null) throw new IllegalArgumentException("Report a success or failure");
                     board.recordRouteStock(request.project, request.job, request.token, now, request.routeStock);

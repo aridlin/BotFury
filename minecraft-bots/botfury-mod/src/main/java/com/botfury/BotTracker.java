@@ -159,6 +159,28 @@ final class BotTracker {
                 });
     }
 
+    static CompletableFuture<Vec3d> resupplyRecipientLocation(BotInventory.Destination destination,
+                                                             BotInventory.DeliveryLease lease) {
+        var body = new JsonObject();
+        body.addProperty("action", "resupply-location");
+        body.addProperty("project", lease.project());
+        body.addProperty("job", lease.job());
+        body.addProperty("token", lease.token().toString());
+        var lookup = request(destination.controller(), "/projects")
+                .POST(HttpRequest.BodyPublishers.ofString(body.toString())).build();
+        return HTTP.sendAsync(lookup, HttpResponse.BodyHandlers.ofString()).handle((response, failure) -> {
+            if (failure != null || response.statusCode() != 200) return null;
+            try {
+                var location = JsonParser.parseString(response.body()).getAsJsonObject();
+                var point = new Vec3d(number(location, "x", Double.NaN), number(location, "y", Double.NaN),
+                        number(location, "z", Double.NaN));
+                return BotInventory.validLocation(point) ? point : null;
+            } catch (RuntimeException invalid) {
+                return null;
+            }
+        });
+    }
+
     private static void offline(int port){bots.computeIfPresent(port,(p,b)->new Bot(b.port,b.name,false,b.connected,b.alive,b.x,b.y,b.z,b.health,b.maxHealth,b.server,b.dimension,b.mode,b.state,b.inventory,b.mining,b.build,b.baritone,b.defenseCapable,b.scaffoldCleanupCapable,b.scaffoldBatchCapable,b.items,List.of(),b.inventoryCoordinates,b.contactAt,b.positionAt,"Unreachable",b.task,b.fuelChoicesCapable));}
     static void command(int port,String command){command(port,command,true);}
     private static void command(int port,String command,boolean report){

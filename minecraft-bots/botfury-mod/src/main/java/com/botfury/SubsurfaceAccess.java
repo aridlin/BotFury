@@ -21,7 +21,7 @@ import java.util.List;
 /** Makes short, reversible Baritone approaches when a cave does not reach the ore layer. */
 final class SubsurfaceAccess {
     // Increment when a new return method can recover a previously unreachable route.
-    static final int RETURN_ROUTE_REVISION = 10;
+    static final int RETURN_ROUTE_REVISION = 11;
     private record Passage(BlockPos from, BlockPos to) {
         boolean climbing() { return to.getY() > from.getY(); }
         int clearance() { return 2 + Math.max(0, from.getY() - to.getY()); }
@@ -52,6 +52,8 @@ final class SubsurfaceAccess {
     private boolean escapingExploration, handDigging;
     private Passage passage;
     private int passageDeadline;
+    private BlockPos passageBreakTarget;
+    private boolean allowEmergencyHandAscent;
     private BlockPos stalledAt;
     private int routeFailures;
     private int lowestProspectingY = Integer.MAX_VALUE;
@@ -114,6 +116,12 @@ final class SubsurfaceAccess {
 
     boolean advanceToward(MinecraftClient client, int age, BlockPos destination, ProjectGather.Area area,
                           boolean allowNaturalAscent) {
+        return advanceToward(client, age, destination, area, allowNaturalAscent, false);
+    }
+
+    boolean advanceToward(MinecraftClient client, int age, BlockPos destination, ProjectGather.Area area,
+                          boolean allowNaturalAscent, boolean carryingDeposit) {
+        allowEmergencyHandAscent = carryingDeposit;
         return advance(client, age, destination.getY(), area, destination, allowNaturalAscent, true);
     }
 
@@ -382,7 +390,8 @@ final class SubsurfaceAccess {
             if (candidate.climbing() && diggingToolSlot(client, true) < 0
                     && candidate.blocksToClear().stream().anyMatch(pos -> {
                         var state = client.world.getBlockState(pos);
-                        return !passageClear(client, pos, state) && !handClearance(state);
+                        return !passageClear(client, pos, state) && !handClearance(state)
+                                && !emergencyHandClearance(client, pos, state);
                     })) return false;
             var hit = passageHit(client, candidate, area);
             if (hit == null || !preparePassageHit(client, hit, candidate.climbing())) return false;
@@ -391,8 +400,10 @@ final class SubsurfaceAccess {
         attemptedPassages.add(candidate);
         if (clear) return start(client, candidate.from(), List.of(candidate.to()), area, age, candidate.climbing());
         passage = candidate;
-        passageDeadline = age + 220;
-        String detail = candidate.climbing() ? "Opening a protected return step at "
+        passageDeadline = age + (allowEmergencyHandAscent ? 340 : 220);
+        String detail = candidate.climbing() && allowEmergencyHandAscent && !canDigRoute(client)
+                ? "Opening an emergency return step without a pickaxe at "
+                : candidate.climbing() ? "Opening a protected return step at "
                 : candidate.to().getY() == candidate.from().getY() ? "Opening a short prospecting passage at "
                 : "Opening a safe prospecting step at ";
         BotEvents.add("info", "mining", detail + candidate.to().toShortString());
@@ -439,7 +450,10 @@ final class SubsurfaceAccess {
         }
         if (passageOpen(client, opening)) {
             stopPassage();
-            if (start(client, position, List.of(opening.to()), area, age, opening.climbing())) return true;
+            if (start(client, position, List.of(opening.to()), area, age, opening.climbing())) {
+                if (opening.climbing() && allowEmergencyHandAscent) nextReturnRecovery = age + RETURN_RECOVERY_TICKS;
+                return true;
+            }
             localDescent = localAscent = false;
             return false;
         }
@@ -448,6 +462,11 @@ final class SubsurfaceAccess {
             stopPassage();
             localDescent = localAscent = false;
             return false;
+        }
+        if (opening.climbing() && allowEmergencyHandAscent && !ray.getBlockPos().equals(passageBreakTarget)) {
+            // The next obstruction gets its own deadline only after the previous block clears.
+            passageBreakTarget = ray.getBlockPos();
+            passageDeadline = age + 340;
         }
         client.player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, ray.getPos());
         if (client.interactionManager.updateBlockBreakingProgress(ray.getBlockPos(), ray.getSide())) {
@@ -501,8 +520,25 @@ final class SubsurfaceAccess {
     }
 
     private boolean preparePassageHit(MinecraftClient client, BlockHitResult hit, boolean returning) {
-        return returning && handClearance(client.world.getBlockState(hit.getBlockPos()))
-                || equipDiggingTool(client, returning);
+        var pos = hit.getBlockPos();
+        var state = client.world.getBlockState(pos);
+        if (returning && handClearance(state) || equipDiggingTool(client, returning)) return true;
+        if (!returning || !emergencyHandClearance(client, pos, state)) return false;
+        var inventory = client.player.getInventory();
+        for (int slot = 0; slot < 9; slot++) {
+            var stack = inventory.getStack(slot);
+            if (stack.isEmpty() || !stack.isDamageable()) {
+                inventory.selectedSlot = slot;
+                break;
+            }
+        }
+        return true;
+    }
+
+    private boolean emergencyHandClearance(MinecraftClient client, BlockPos pos, BlockState state) {
+        float hardness = state.getHardness(client.world, pos);
+        return allowEmergencyHandAscent && !canDigRoute(client) && hardness >= 0 && hardness <= 3
+                && BaritoneSettings.recoverableTerrain(state.getBlock());
     }
 
     private static boolean handClearance(BlockState state) {
@@ -521,6 +557,7 @@ final class SubsurfaceAccess {
         var client = MinecraftClient.getInstance();
         if (client.interactionManager != null) client.interactionManager.cancelBlockBreaking();
         passage = null;
+        passageBreakTarget = null;
     }
 
     private List<BlockPos> returnExits(MinecraftClient client, BlockPos position, BlockPos destination,
@@ -700,6 +737,7 @@ final class SubsurfaceAccess {
         stop();
         lastAscentProbe = Integer.MIN_VALUE;
         retryAt = heading = 0;
+        allowEmergencyHandAscent = false;
         stalledAt = null;
         routeFailures = 0;
         lowestProspectingY = Integer.MAX_VALUE;

@@ -747,7 +747,8 @@ final class ProjectBroker {
                     }
                     if (assignment == null) assignment = board.claim(world, request.worker, request.kinds,
                             request.project, now, position, material -> hasExcavationTool(request.toolUses, material),
-                            ProjectBroker::heldCount, request.toolUses, returnRevision, request.supportsPickupReserve);
+                            ProjectBroker::heldCount, request.toolUses, returnRevision, request.supportsPickupReserve,
+                            ProjectBroker::workerPosition);
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.TRANSFER)) {
                         assignment = board.offerInterruptedDeposit(world, request.worker, request.project, now,
                                 position, ProjectBroker::heldCount, returnRevision);

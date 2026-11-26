@@ -65,7 +65,7 @@ final class ProjectBroker {
         String world = here.server() + "|" + here.dimension();
         boolean mutatesWorld = plan.jobs().stream().anyMatch(job ->
                 job.kind() == ProjectQueue.Kind.BUILD || job.kind() == ProjectQueue.Kind.EXCAVATE);
-        if (mutatesWorld) BuildProtection.reserve(world, id, plan.footprint());
+        if (mutatesWorld) BuildProtection.reserve(world, id, plan.area());
         try {
             if (supply == null) queue().submit(id, world, plan.jobs());
             else queue().submitSupplied(id, world, supply.jobs(), supply.chest());

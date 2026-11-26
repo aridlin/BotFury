@@ -1479,6 +1479,11 @@ final class ProjectQueue {
                 if (CARRIED_SMELT_ASSIGNED.equals(job.evidence)) {
                     if (job.expiresAt <= now || !worker.equalsIgnoreCase(job.worker)) continue;
                 } else if (pinned && !worker.equalsIgnoreCase(byId.get(job.work.sameWorkerAs).worker)) continue;
+                var missingRaw = missingRebuiltFurnaceInput(job, byId, worker, heldCount);
+                if (missingRaw != null && recoverMissingProduction(project, job, missingRaw)) {
+                    return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
+                            returnRevision, supportsPickupReserve);
+                }
                 if (kinds.contains(Kind.GATHER) && useCarriedGatheringPickaxe(project, job, worker, toolUses)) {
                     return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
                             returnRevision, supportsPickupReserve);
@@ -4218,6 +4223,30 @@ final class ProjectQueue {
                 || ResourceCatalog.blocks(source.resource, source.variant).stream().anyMatch(hasTool);
     }
 
+    private static Work repinnedFurnaceFuel(Work smelt, Map<String, Job> jobs) {
+        if (smelt.kind != Kind.SMELT || smelt.sameWorkerAs == null) return null;
+        var fuel = jobs.get(smelt.sameWorkerAs);
+        if (fuel == null || fuel.work.kind != Kind.GATHER || fuel.work.sameWorkerAs != null
+                || !fuel.work.payload.contains("\"fuelForLoadedFurnace\"")) return null;
+        var payload = JSON.fromJson(fuel.work.payload, com.google.gson.JsonObject.class);
+        if (!payload.has("fuelForLoadedFurnace") || fuel.work.needs.size() != 1) return null;
+        var raw = jobs.get(fuel.work.needs.get(0));
+        var input = raw == null || raw.work.kind != Kind.GATHER ? null : gatherSource(raw.work.payload);
+        var recipe = JSON.fromJson(smelt.payload, SmeltFuel.class);
+        if (input == null || recipe == null || !input.item.equals(recipe.input)) return null;
+        payload.remove("fuelForLoadedFurnace");
+        return new Work(fuel.work.id, Kind.GATHER, payload.toString(), fuel.work.needs, fuel.work.locks, raw.work.id);
+    }
+
+    private static String missingRebuiltFurnaceInput(Job smelt, Map<String, Job> jobs, String worker,
+                                                      java.util.function.ToIntBiFunction<String, String> held) {
+        if (held == null || smelt.work.kind != Kind.SMELT || resumesLoadedFurnace(smelt.work)
+                || repinnedFurnaceFuel(smelt.work, jobs) == null) return null;
+        var recipe = JSON.fromJson(smelt.work.payload, SmeltFuel.class);
+        // Only act on a confirmed empty input inventory. A partial batch may be usable.
+        return held.applyAsInt(worker, recipe.input) == 0 ? "Missing furnace input " + recipe.input : null;
+    }
+
     private static boolean missingSmeltingFuel(Job job, String evidence) {
         if (job.work.kind != Kind.SMELT) return false;
         var spec = JSON.fromJson(job.work.payload, SmeltFuel.class);
@@ -4375,15 +4404,24 @@ final class ProjectQueue {
                                  String evidence, ChestObservation observation, ResourceSite site,
                                  long preferOriginalAt, StarterMiner starter) throws IOException {
         Set<String> rewind = new HashSet<>();
+        var restoredFuel = new HashMap<String, Work>();
+        var fuel = resumesLoadedFurnace(waiting.work) ? null : repinnedFurnaceFuel(waiting.work, jobs);
+        if (fuel != null) restoredFuel.put(fuel.id, fuel);
         Job stage = supplier;
         // Earlier batches can gate gathering, but their completed work must survive recovery.
-        while (stage.work.kind != Kind.GATHER || stage.work.sameWorkerAs != null) {
-            String previous = stage.work.sameWorkerAs;
-            if (previous == null) {
-                if (stage.work.needs.size() != 1) return false;
-                previous = stage.work.needs.get(0);
+        while (true) {
+            var work = restoredFuel.getOrDefault(stage.work.id, stage.work);
+            if (work.kind == Kind.GATHER && work.sameWorkerAs == null) break;
+            if (stage.state == State.DONE || !resumesLoadedFurnace(work)) {
+                var ordinaryFuel = repinnedFurnaceFuel(work, jobs);
+                if (ordinaryFuel != null) restoredFuel.put(ordinaryFuel.id, ordinaryFuel);
             }
-            rewind.add(stage.work.id);
+            String previous = work.sameWorkerAs;
+            if (previous == null) {
+                if (work.needs.size() != 1) return false;
+                previous = work.needs.get(0);
+            }
+            rewind.add(work.id);
             stage = jobs.get(previous);
         }
         String root = stage.work.id;
@@ -4448,7 +4486,8 @@ final class ProjectQueue {
                         starter.now + LEASE_MS, null, job.chest, starter.position);
             }
             boolean preferred = preferOriginalAt > 0 && job.work.id.equals(root);
-            var work = job.state == State.DONE && resumesLoadedFurnace(job.work) ? rebuildSmeltingWork(job.work) : job.work;
+            var work = job.state == State.DONE && resumesLoadedFurnace(job.work)
+                    ? rebuildSmeltingWork(job.work) : restoredFuel.getOrDefault(job.work.id, job.work);
             return new Job(work, State.WAITING, 0, preferred ? waiting.worker : null, null,
                     preferred ? preferOriginalAt + STALLED_WORKER_COOLDOWN_MS : 0,
                     stalled && job == waiting ? evidence : evidence + "; reacquiring materials",

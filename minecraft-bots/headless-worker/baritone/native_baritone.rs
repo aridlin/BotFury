@@ -4,8 +4,9 @@ use horizon_baritone::{
     baritone_astar::{AStarPathFinder, Status},
     baritone_block_state::{BlockState, Class, FluidKind},
     baritone_block_state_interface::BlockStateInterface,
+    baritone_calc_path::Path,
     baritone_calculation_context::{BareHands, CalculationContext, PlayerFacts},
-    baritone_goals::{GoalBlock, GoalXZ, rc},
+    baritone_goals::{GoalBlock, GoalComposite, GoalRef, GoalXZ, rc},
     baritone_settings::Settings,
 };
 use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc};
@@ -97,7 +98,6 @@ pub fn find_path(
     if world.loaded_chunks() == 0 {
         return None;
     }
-    let adapter = LoadedWorld::new(world);
     let start = start.map(|coordinate| coordinate.floor() as i32);
     let end = target.map(|coordinate| coordinate.floor() as i32);
     let goal = if exact_y {
@@ -105,33 +105,7 @@ pub fn find_path(
     } else {
         rc(GoalXZ(end[0], end[2]))
     };
-    let settings = Settings::load(|key| match key {
-        "allowBreak" | "allowPlace" | "allowParkour" | "allowSwimming" | "allowSprint" => {
-            Some(String::from("false"))
-        }
-        _ => None,
-    });
-    let facts = PlayerFacts {
-        has_throwaway: false,
-        can_sprint: false,
-        ..PlayerFacts::default()
-    };
-    let ctx = CalculationContext::new(&settings, &adapter, &BareHands, &facts);
-    let mut search = AStarPathFinder::new(start, start, goal, HashMap::new(), 50, true);
-    let Status::Done(path) = search.run(&ctx, budget) else {
-        return None;
-    };
-    let path = path.post_process(&ctx);
-    if path.dest()[0] != end[0]
-        || path.dest()[2] != end[2]
-        || (exact_y && path.dest()[1] != end[1])
-        || path
-            .positions
-            .iter()
-            .any(|&[x, _, z]| !world.is_loaded(x, z))
-    {
-        return None;
-    }
+    let path = search_path(&LoadedWorld::new(world), start, goal, budget)?;
     let mut points: Vec<_> = path
         .positions
         .iter()
@@ -145,4 +119,58 @@ pub fn find_path(
         points.push([target[0], f64::from(start[1]), target[2]]);
     }
     Some(points)
+}
+
+pub fn find_approach(world: &World, start: [f64; 3], stands: Vec<[i32; 3]>) -> Option<[i32; 3]> {
+    let adapter = LoadedWorld::new(world);
+    let start = start.map(|coordinate| coordinate.floor() as i32);
+    let choices: Vec<_> = stands
+        .into_iter()
+        .filter(|&[x, y, z]| {
+            (adapter.min_y() + 1..adapter.max_y()).contains(&y)
+                && adapter.is_loaded(x, z)
+                && adapter.get0(x, y, z).is_air()
+                && adapter.get0(x, y + 1, z).is_air()
+                && adapter.get0(x, y - 1, z).sturdy_top
+        })
+        .map(|stand| rc(GoalBlock(stand)))
+        .collect();
+    if choices.is_empty() {
+        return None;
+    }
+    search_path(&adapter, start, rc(GoalComposite(choices)), 12_000).map(|path| path.dest())
+}
+
+fn search_path(
+    adapter: &LoadedWorld,
+    start: [i32; 3],
+    goal: GoalRef,
+    budget: usize,
+) -> Option<Path> {
+    let settings = Settings::load(|key| match key {
+        "allowBreak" | "allowPlace" | "allowParkour" | "allowSwimming" | "allowSprint" => {
+            Some(String::from("false"))
+        }
+        _ => None,
+    });
+    let facts = PlayerFacts {
+        has_throwaway: false,
+        can_sprint: false,
+        ..PlayerFacts::default()
+    };
+    let ctx = CalculationContext::new(&settings, adapter, &BareHands, &facts);
+    let mut search = AStarPathFinder::new(start, start, goal.clone(), HashMap::new(), 50, true);
+    let Status::Done(path) = search.run(&ctx, budget) else {
+        return None;
+    };
+    let path = path.post_process(&ctx);
+    if !goal.is_in_goal(path.dest())
+        || path
+            .positions
+            .iter()
+            .any(|&[x, _, z]| !adapter.is_loaded(x, z))
+    {
+        return None;
+    }
+    Some(path)
 }

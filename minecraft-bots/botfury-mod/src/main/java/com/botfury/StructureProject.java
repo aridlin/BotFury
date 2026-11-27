@@ -388,6 +388,7 @@ final class StructureProject {
         String lastExposedPlacement = null;
         int scaffoldFrontier = 0;
         boolean allowTemporarySupport = false;
+        boolean allowJumpPlacement = false;
         long entryClosures = pending.values().stream().filter(StructureProject::closesEntry).count();
         String entryBarrier = null;
         while (!pending.isEmpty()) {
@@ -404,6 +405,12 @@ final class StructureProject {
                 var placementState = placementState(cell, ready);
                 if (placementState == null) continue;
                 var pose = buildPose(client, cell, layout, ready, cleared, placed, !scaffolds.isEmpty());
+                if (pose == null && allowJumpPlacement) {
+                    var current = new HashMap<>(cleared);
+                    current.putAll(ready);
+                    pose = jumpBuildPose(client, cell, placementState, cleared, current, placed, !scaffolds.isEmpty());
+                    if (pose != null) allowJumpPlacement = false;
+                }
                 var temporary = pose == null && allowTemporarySupport
                         ? temporarySupport(client, new Cell(cell.pos, placementState, cell.observed), layout, cleared) : null;
                 if (temporary != null && deferredWater.contains(temporary.pillar.support)) temporary = null;
@@ -463,6 +470,10 @@ final class StructureProject {
                     allowTemporarySupport = true;
                     continue;
                 }
+                if (!allowJumpPlacement) {
+                    allowJumpPlacement = true;
+                    continue;
+                }
                 // A deferred gate cannot be the reason the current placement pass stalled.
                 boolean entriesReady = entryBarrier != null;
                 var eligible = pending.values().stream().filter(cell -> entriesReady || !closesEntry(cell)).toList();
@@ -486,6 +497,7 @@ final class StructureProject {
                     materials.merge(Registries.ITEM.getId(Blocks.COBBLESTONE.asItem()), scaffold.blocks.size(), Integer::sum);
                     area = includeScaffoldArea(area, scaffold);
                     allowTemporarySupport = false;
+                    allowJumpPlacement = false;
                     continue;
                 }
                 throw new IllegalArgumentException("No reachable support face for " + cell.desired + " at " + cell.pos.toShortString());
@@ -1179,6 +1191,34 @@ final class StructureProject {
                 var access = builtAccess(client, stand, cell.pos, cleared, current, layout, placed);
                 if (access != null) return new BuildPose(stand, face, support, exposed, access);
             }
+        }
+        return null;
+    }
+
+    private static BuildPose jumpBuildPose(MinecraftClient client, Cell cell, BlockState placement,
+                                          Map<BlockPos, BlockState> cleared, Map<BlockPos, BlockState> current,
+                                          Map<BlockPos, String> placed, boolean avoidCorners) {
+        if (ProjectWater.source(placement)) return null;
+        for (var face : ProjectPlacement.faces(placement)) {
+            var support = cell.pos.offset(face.getOpposite());
+            if (!loaded(client, support)) continue;
+            var floor = current.getOrDefault(support, client.world.getBlockState(support));
+            if (!ProjectPlacement.support(floor, placement, face, client.world, support)) continue;
+            var routes = new HashMap<BlockPos, BuildAccess>();
+            var stand = findPlacementStand(client, cell.pos, face, feet -> {
+                if (!ProjectBlock.validActionStand(cell.pos, feet)
+                        || Vec3d.ofBottomCenter(feet).squaredDistanceTo(Vec3d.ofCenter(cell.pos)) > 25
+                        || face.getAxis().isHorizontal() && feet.equals(support.up())
+                        || !loaded(client, feet.up(2)) || feet.up(2).equals(cell.pos)
+                        || !safeStand(client, feet, current) || !clearStandingSpace(client, feet.up(2), current)) return false;
+                var eye = Vec3d.ofBottomCenter(feet).add(0, 2.62, 0);
+                if (!clearBuildFace(client, eye, cell.pos, support, face, current, placement, avoidCorners)) return false;
+                var route = builtAccess(client, feet, cell.pos, cleared, current, current, placed);
+                if (route == null) return false;
+                routes.put(feet, route);
+                return true;
+            });
+            if (stand != null) return new BuildPose(stand, face, support, true, routes.get(stand));
         }
         return null;
     }

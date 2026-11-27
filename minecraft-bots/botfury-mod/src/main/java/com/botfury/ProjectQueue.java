@@ -3404,6 +3404,22 @@ final class ProjectQueue {
         return false;
     }
 
+    synchronized boolean awaitingMiningCheckpoint(String world, String worker, String projectId, long now,
+                                                  java.util.function.ToIntBiFunction<String, String> heldCount) {
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || project.supplyChest == null || cancelled(project)
+                    || projectId != null && !projectId.equals(project.id)) continue;
+            for (var gather : project.jobs) {
+                if (gather.state != State.WAITING || !CARGO_CHECKPOINT.equals(gather.evidence)
+                        || now >= gather.expiresAt || !worker.equalsIgnoreCase(gather.worker)
+                        || cargoCheckpoint(project, gather) == 0) continue;
+                var source = gatherSource(gather.work.payload);
+                if (heldCount.applyAsInt(worker, source.item) > 0) return true;
+            }
+        }
+        return false;
+    }
+
     private Assignment offerInterruptedDeposit(String world, String worker, String projectId, long now,
                                                ResourceSite position,
                                                java.util.function.ToIntBiFunction<String, String> heldCount,

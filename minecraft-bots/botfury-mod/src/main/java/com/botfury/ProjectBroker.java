@@ -695,6 +695,20 @@ final class ProjectBroker {
         return queue().cancelOutput(here.server() + "|" + here.dimension(), project.repeat().chest(), project.id());
     }
 
+    private static String brokerWorld() {
+        var here = LocalFormation.here();
+        if (here != null) return here.server() + "|" + here.dimension();
+        String configured = System.getProperty("botfury.projectWorld");
+        if (configured == null || configured.isBlank()) return null;
+        if (!configured.matches("[a-z0-9.\\[\\]:_-]+:[0-9]{1,5}\\|[a-z0-9_.-]+:[a-z0-9_./-]+")) {
+            throw new IllegalArgumentException("Invalid botfury.projectWorld; expected server:port|namespace:dimension");
+        }
+        int separator = configured.indexOf('|');
+        int port = Integer.parseInt(configured.substring(configured.lastIndexOf(':', separator) + 1, separator));
+        if (port < 1 || port > 65535) throw new IllegalArgumentException("Invalid project world port");
+        return configured;
+    }
+
     static void handle(HttpExchange exchange) throws IOException {
         String host = exchange.getRequestHeaders().getFirst("Host");
         if (!exchange.getRemoteAddress().getAddress().isLoopbackAddress()
@@ -724,12 +738,12 @@ final class ProjectBroker {
                     return;
                 }
                 if ("stock".equals(query) || "stock-summary".equals(query)) {
-                    var here = LocalFormation.here();
-                    if (here == null) {
+                    String world = brokerWorld();
+                    if (world == null) {
                         reply(exchange, 409, "Join the project world first");
                         return;
                     }
-                    var stock = queue().chestStock(here.server() + "|" + here.dimension());
+                    var stock = queue().chestStock(world);
                     if ("stock-summary".equals(query)) {
                         var lines = new java.util.ArrayList<String>();
                         stock.forEach((chest, observation) -> lines.add(chest + " " + observation.report().items()
@@ -753,12 +767,11 @@ final class ProjectBroker {
                 reply(exchange, 400, "Missing project action");
                 return;
             }
-            var here = LocalFormation.here();
-            if (here == null) {
+            String world = brokerWorld();
+            if (world == null) {
                 reply(exchange, 409, "Join the project world first");
                 return;
             }
-            String world = here.server() + "|" + here.dimension();
             ProjectQueue board = queue();
             long now = System.currentTimeMillis();
             if (request.receivedRouteBench && ("renew".equals(request.action) || "finish".equals(request.action))) {

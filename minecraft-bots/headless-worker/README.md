@@ -14,4 +14,6 @@ cargo build --locked --release
 target/release/botfury-headless-worker /path/to/mcclient/target/release/mcclient SERVER:PORT NAME COORDINATOR_PORT PROJECT JOB_COUNT
 ```
 
-The coordinator port is on loopback. The lease must name the same server and dimension as the worker. The current Java master computes its world key from its own connection and still targets Minecraft 1.20.1. A compatible coordinator for 26.3 is required. This prototype has been exercised against real Paper 26.3 with a local fixture serving the BotFury lease format.
+The coordinator port is on loopback. The lease must name the same server and dimension as the worker. For a 26.3 server, launch the BotFury master with `-Dbotfury.autoJoin=false` and `-Dbotfury.projectWorld=SERVER:PORT|minecraft:overworld` as a single JVM argument. Use `local` as the server in that argument when the worker joins via localhost or 127.0.0.1. Submit jobs through the broker at `POST /projects`.
+
+The world setting applies while the master is at the title screen. When the master joins a game, its connected world takes precedence. The project editor and in-world HUD currently use the master’s game connection. The project HTTP endpoint continues to require a loopback client.

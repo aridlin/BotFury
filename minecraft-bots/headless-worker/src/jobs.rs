@@ -233,11 +233,11 @@ impl Job<'_> {
                 })
                 .ok_or("No matching log to craft planks")?;
             self.click(source.slot, 0, "pickup")?;
-            self.click(1, 1, "pickup")?;
+            self.click(1, u8::from(source.count > 1), "pickup")?;
             if source.count > 1 {
                 self.click(source.slot, 0, "pickup")?;
             }
-            let staged = self.game.inventory()?;
+            let staged = self.game.inventory_snapshot()?;
             if !staged
                 .slots
                 .iter()

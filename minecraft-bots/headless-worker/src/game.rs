@@ -88,13 +88,18 @@ impl Game {
     }
 
     pub fn inventory(&mut self) -> Result<Inventory, String> {
+        let inventory = self.inventory_snapshot()?;
+        if inventory.cursor.is_some() {
+            return Err("The inventory cursor still holds an item".into());
+        }
+        Ok(inventory)
+    }
+
+    pub fn inventory_snapshot(&mut self) -> Result<Inventory, String> {
         let inventory: Inventory = serde_json::from_value(self.call("inventory", json!({}))?)
             .map_err(|error| error.to_string())?;
         if inventory.item_decode_errors != 0 {
             return Err("Client reported an inventory decoding error".into());
-        }
-        if inventory.cursor.is_some() {
-            return Err("The inventory cursor still holds an item".into());
         }
         Ok(inventory)
     }

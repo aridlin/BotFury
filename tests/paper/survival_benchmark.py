@@ -32,6 +32,9 @@ RUNTIME = Path(__file__).resolve().parents[2] / "minecraft-bots/botfury-mod/buil
 def find_site(connection, player, cells):
     position = connection.command(f"data get entity {player} Pos")
     x, y, z = (math.floor(float(part)) for part in re.findall(r"(-?[0-9.]+)d", position))
+    wait(lambda: connection.command(
+        "execute " + " ".join(f"if loaded {x+dx} {y} {z+dz}" for dx in (-40, 40) for dz in (-40, 40))
+    ) == "Test passed", 70)
     width = max(dx for dx, _, _, _ in cells)
     depth = max(dz for _, _, dz, _ in cells)
     corners = [(0, 0), (width, 0), (0, depth), (width, depth)]
@@ -46,6 +49,8 @@ def find_site(connection, player, cells):
     def matches(conditions):
         return connection.command("execute " + " ".join(conditions)) == "Test passed"
 
+    supported_centers = 0
+    clear_entries = 0
     for dx, dz in offsets:
         left, front = x + dx, z + dz
         center_x, center_z = left + width // 2, front + depth // 2
@@ -54,6 +59,7 @@ def find_site(connection, player, cells):
             if not matches([f"if block {center_x} {bottom-1} {center_z} {ground}",
                             f"if block {center_x} {bottom} {center_z} minecraft:air"]):
                 continue
+            supported_centers += 1
             clear_entry = [
                 condition
                 for sx, sz in entries
@@ -62,6 +68,7 @@ def find_site(connection, player, cells):
             ]
             if not matches(clear_entry):
                 continue
+            clear_entries += 1
             # Allow natural terrain one block into the floor. The house order will excavate it.
             if all(
                 matches([f"if block {left+sx} {bottom-1} {front+sz} {ground}"])
@@ -69,7 +76,9 @@ def find_site(connection, player, cells):
                 for sx, sz in samples
             ):
                 return left, bottom, front
-    raise RuntimeError(f"No supported house site near {position} for {len(cells)} schematic cells")
+    print(f"Survey at {position}: {supported_centers} supported centers and {clear_entries} clear entries.",
+          flush=True)
+    return None
 
 
 def read_status(index):
@@ -291,8 +300,26 @@ def run(args):
         time.sleep(1)
         master = launch(0, MASTER)
         wait(lambda: ready(0, MASTER), 150)
-        site = tuple(args.site) if args.site else find_site(connection, MASTER, cells)
         command(f"gamemode creative {MASTER}")
+        site = tuple(args.site) if args.site else find_site(connection, MASTER, cells)
+        relocated_spawn = False
+        if site is None:
+            located = command(f"execute at {MASTER} run locate biome minecraft:plains")
+            biome = re.search(r"\[(-?\d+),\s*(?:~|-?\d+),\s*(-?\d+)\]", located)
+            if not biome:
+                raise RuntimeError(f"Could not locate a plains survey area: {located}")
+            biome_x, biome_z = map(int, biome.groups())
+            command(f"execute positioned {biome_x} 0 {biome_z} positioned over motion_blocking_no_leaves "
+                    f"run tp {MASTER} ~ ~ ~")
+            wait(lambda: master_at((biome_x, None, biome_z)), 120)
+            site = find_site(connection, MASTER, cells)
+            if site is None:
+                raise RuntimeError(f"No supported house site near the located plains at {biome_x}, {biome_z}")
+            spawn = site[0] + 1, site[1], site[2] - 2
+            command(f"setworldspawn {' '.join(map(str, spawn))}")
+            command("gamerule spawnRadius 0")
+            relocated_spawn = True
+        print(f"Selected house site {site}. Relocated initial fleet spawn: {relocated_spawn}.", flush=True)
         viewpoint = site[0] + 1.5, site[1], site[2] - 3.5
         command(f"tp {MASTER} {' '.join(map(str, viewpoint))} 0 4")
         wait(lambda: master_at(viewpoint), 120)
@@ -327,7 +354,7 @@ def run(args):
         manifest_id = order(master_window, STOCK_ORDER, r"Queued (manifest-[a-f0-9]{8}) for 10 bots")
         print(f"Paper accepted stock order {manifest_id}.", flush=True)
         (out / "orders.json").write_text(json.dumps({
-            "seed": world_seed, "site": site, "inventories": initial,
+            "seed": world_seed, "site": site, "relocatedSpawn": relocated_spawn, "inventories": initial,
             "house": house_id, "manifest": manifest_id, "schematicSha256": reference["sha256"],
         }, indent=2) + "\n")
         assign_shared_workers(manifest_id)

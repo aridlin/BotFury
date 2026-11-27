@@ -46,6 +46,7 @@ struct Bounds {
 #[derive(Deserialize)]
 struct Gather {
     resource: String,
+    variant: Option<String>,
     item: String,
     count: u32,
     exclude: Option<Bounds>,
@@ -55,7 +56,11 @@ struct Gather {
 struct Craft {
     recipe: String,
     count: u32,
+    #[serde(default)]
     inventory: bool,
+    block: Option<String>,
+    target: Option<Pos>,
+    stand: Option<Pos>,
 }
 
 #[derive(Deserialize)]
@@ -286,19 +291,29 @@ impl Job<'_> {
         Err("Another player is within pickup range of the block".into())
     }
 
-    fn gather_approach(&mut self, block: &str, exclude: Option<&Bounds>) -> Result<Pos, String> {
+    fn gather_approach(
+        &mut self,
+        search_name: &str,
+        blocks: &[&str],
+        exclude: Option<&Bounds>,
+    ) -> Result<Pos, String> {
         let radius = if self.game.baritone { 12 } else { 4 };
-        let search = self.game.call(
-            "find_blocks",
-            json!({"name": block, "radius":radius, "limit":64}),
-        )?;
+        let mut query = json!({"name": search_name, "radius":radius, "limit":64});
+        if self.game.baritone {
+            query["exposed_names"] = json!(blocks);
+        }
+        let search = self.game.call("find_blocks", query)?;
         let found = search["found"]
             .as_array()
             .ok_or("Missing block search results")?;
         let usable = |pos: Pos| !exclude.is_some_and(|area| pos.contains(area.min, area.max));
         let mut targets = found
             .iter()
-            .filter(|candidate| candidate["block"] == block)
+            .filter(|candidate| {
+                candidate["block"]
+                    .as_str()
+                    .is_some_and(|name| blocks.contains(&name))
+            })
             .filter_map(|candidate| {
                 serde_json::from_value::<[i32; 3]>(candidate["pos"].clone()).ok()
             })
@@ -349,16 +364,31 @@ impl Job<'_> {
 
     fn gather(&mut self, work: Gather) -> Result<Outcome, String> {
         let item = vanilla(&work.item)?;
-        let block = vanilla(
-            work.resource
-                .strip_prefix("block:")
-                .ok_or("Expected an exact block resource")?,
-        )?;
-        if item != block
-            || !(1..=64).contains(&work.count)
-            || !(item.ends_with("_log") || item.ends_with("_stem") || item == "dirt")
-        {
-            return Err("Unsupported pilot gathering recipe".into());
+        let variant = work.variant.as_deref().unwrap_or("both");
+        let (search, blocks, tier): (&str, &[&str], u8) = match (work.resource.as_str(), item) {
+            ("stone", "cobblestone") => ("stone", &["stone"], 1),
+            ("deepslate", "cobbled_deepslate") => ("deepslate", &["deepslate"], 1),
+            ("iron", "raw_iron") => (
+                "iron_ore",
+                ore_variants(variant, &["iron_ore", "deepslate_iron_ore"])?,
+                2,
+            ),
+            ("diamond", "diamond") => (
+                "diamond_ore",
+                ore_variants(variant, &["diamond_ore", "deepslate_diamond_ore"])?,
+                3,
+            ),
+            ("dirt" | "block:minecraft:dirt", "dirt") => ("dirt", &["dirt"], 0),
+            (resource, item)
+                if resource.strip_prefix("block:minecraft:") == Some(item)
+                    && (item.ends_with("_log") || item.ends_with("_stem")) =>
+            {
+                (item, &[item], 0)
+            }
+            _ => return Err("Unsupported gathering resource and output item".into()),
+        };
+        if !(1..=576).contains(&work.count) {
+            return Err("Invalid gather count".into());
         }
         while self
             .game
@@ -369,10 +399,28 @@ impl Job<'_> {
             .unwrap_or(0)
             < work.count
         {
-            let pos = self.gather_approach(block, work.exclude.as_ref())?;
-            if self.block_at(pos)?["block"] != block {
-                return Err("The target block changed while approaching it".into());
+            if tier > 0 {
+                let inventory = self.game.inventory()?;
+                let pickaxe = inventory
+                    .slots
+                    .iter()
+                    .filter(|slot| (9..45).contains(&slot.slot) && pickaxe_tier(&slot.item) >= tier)
+                    .max_by_key(|slot| pickaxe_tier(&slot.item))
+                    .ok_or_else(|| {
+                        let minimum = ["", "wooden", "stone", "iron"][usize::from(tier)];
+                        format!(
+                            "Need a {minimum} pickaxe or better to gather {}",
+                            work.resource
+                        )
+                    })?;
+                self.select_item(pickaxe.slot, &pickaxe.item)?;
             }
+            let pos = self.gather_approach(search, blocks, work.exclude.as_ref())?;
+            let actual = self.block_at(pos)?;
+            let block = actual["block"]
+                .as_str()
+                .filter(|name| blocks.contains(name))
+                .ok_or("The target block changed while approaching it")?;
             let old_count = self
                 .game
                 .inventory()?
@@ -419,9 +467,10 @@ impl Job<'_> {
     }
 
     fn click(&mut self, slot: usize, button: u8, mode: &str) -> Result<(), String> {
+        let await_pickup = self.game.baritone && mode == "pickup";
         self.act(
             "click_slot",
-            json!({"slot":slot,"button":button,"mode":mode}),
+            json!({"slot":slot,"button":button,"mode":mode,"await_pickup":await_pickup}),
         )?;
         Ok(())
     }
@@ -468,22 +517,7 @@ impl Job<'_> {
             .max_by_key(|stack| stack.slot)
             .ok_or_else(|| format!("Missing material {}", work.block))?
             .slot;
-        let hotbar = if slot >= 36 {
-            slot - 36
-        } else {
-            self.click(slot, 0, "swap")?;
-            0
-        };
-        self.act("select_slot", json!({"slot": hotbar}))?;
-        if !self
-            .game
-            .inventory()?
-            .slots
-            .iter()
-            .any(|stack| stack.slot == 36 + hotbar && stack.item == item)
-        {
-            return Err("Server did not confirm the selected building material".into());
-        }
+        self.select_item(slot, item)?;
         let current = self.block_at(work.target)?;
         if work.matches(&current)? {
             return Ok(observed(format!("Observed existing {}", work.block)));
@@ -511,57 +545,161 @@ impl Job<'_> {
         )))
     }
 
+    fn select_item(&mut self, slot: usize, item: &str) -> Result<(), String> {
+        let hotbar = if slot >= 36 {
+            slot - 36
+        } else {
+            self.click(slot, 0, "swap")?;
+            0
+        };
+        self.act("select_slot", json!({"slot": hotbar}))?;
+        if !self
+            .game
+            .inventory()?
+            .slots
+            .iter()
+            .any(|stack| stack.slot == 36 + hotbar && stack.item == item)
+        {
+            return Err("Server did not confirm the selected item".into());
+        }
+        Ok(())
+    }
+
     fn craft(&mut self, work: Craft) -> Result<Outcome, String> {
         let recipe = vanilla(&work.recipe)?;
-        let wood = recipe
-            .strip_suffix("_planks")
-            .ok_or("Expected a plank recipe")?;
-        if !work.inventory || !(1..=64).contains(&work.count) {
-            return Err("Unsupported pilot crafting recipe".into());
-        }
+        let wood = recipe.strip_suffix("_planks").unwrap_or_default();
         let log = format!("{wood}_log");
         let stem = format!("{wood}_stem");
-        loop {
-            let inventory = self.game.inventory()?;
-            if inventory.counts().get(&work.recipe).copied().unwrap_or(0) >= work.count {
-                break;
+        let (pattern, output, table) = match recipe {
+            _ if !wood.is_empty() => ("L", 4, false),
+            "stick" => ("P P ", 4, false),
+            "crafting_table" => ("PPPP", 1, false),
+            "wooden_pickaxe" => ("PPP S  S ", 1, true),
+            "stone_pickaxe" => ("CCC S  S ", 1, true),
+            "iron_pickaxe" => ("III S  S ", 1, true),
+            _ => return Err("Unsupported crafting recipe".into()),
+        };
+        if !(1..=64).contains(&work.count) || table == work.inventory {
+            return Err("Unexpected crafting station or output count".into());
+        }
+
+        let mut inventory = self.game.inventory()?;
+        let count = |inventory: &crate::game::Inventory| {
+            inventory
+                .slots
+                .iter()
+                .filter(|s| (9..45).contains(&s.slot) && s.item == recipe)
+                .map(|s| s.count)
+                .sum::<u32>()
+        };
+        if count(&inventory) >= work.count {
+            return Ok(observed(format!("Observed {} {}", work.count, work.recipe)));
+        }
+        if table {
+            let target = work.target.ok_or("Crafting table position is missing")?;
+            let stand = work.stand.ok_or("Crafting table approach is missing")?;
+            if work.block.as_deref() != Some("minecraft:crafting_table") {
+                return Err("Expected a crafting table".into());
             }
-            if inventory.slots.iter().any(|stack| stack.slot <= 4) {
+            self.move_to(stand)?;
+            if self.block_at(target)?["block"] != "crafting_table" {
+                return Err("The crafting table is missing".into());
+            }
+            self.act("use_block", json!({"x":target.x,"y":target.y,"z":target.z}))?;
+            inventory = self.game.inventory()?;
+        }
+
+        while count(&inventory) < work.count {
+            if !self.craft_grid(table, &inventory)?.is_empty() {
                 return Err("The crafting grid already has items".into());
             }
-            let source = inventory
+            let mut sources: Vec<_> = inventory
                 .slots
                 .iter()
-                .find(|stack| {
-                    (9..45).contains(&stack.slot) && (stack.item == log || stack.item == stem)
-                })
-                .ok_or("No matching log to craft planks")?;
-            self.click(source.slot, 0, "pickup")?;
-            self.click(1, u8::from(source.count > 1), "pickup")?;
-            if source.count > 1 {
-                self.click(source.slot, 0, "pickup")?;
+                .filter(|s| (9..45).contains(&s.slot))
+                .map(|s| (s, s.count))
+                .collect();
+            let mut placements: BTreeMap<usize, (u32, Vec<usize>)> = BTreeMap::new();
+            for (offset, ingredient) in pattern.bytes().enumerate().filter(|&(_, id)| id != b' ') {
+                let (source, remaining) = sources
+                    .iter_mut()
+                    .find(|(s, left)| {
+                        *left > 0
+                            && match ingredient {
+                                b'L' => s.item == log || s.item == stem,
+                                b'P' => s.item.ends_with("_planks"),
+                                b'S' => s.item == "stick",
+                                b'C' => s.item == "cobblestone",
+                                b'I' => s.item == "iron_ingot",
+                                _ => false,
+                            }
+                    })
+                    .ok_or_else(|| format!("Missing ingredients for {}", work.recipe))?;
+                *remaining -= 1;
+                placements
+                    .entry(source.slot)
+                    .or_insert_with(|| (source.count, Vec::new()))
+                    .1
+                    .push(offset + 1);
             }
-            let staged = self.game.inventory_snapshot()?;
-            if !staged
-                .slots
+
+            for (slot, (available, destinations)) in placements {
+                let source = if table { slot + 1 } else { slot };
+                self.click(source, 0, "pickup")?;
+                let mut left = available;
+                for destination in destinations {
+                    self.click(destination, u8::from(left > 1), "pickup")?;
+                    left -= 1;
+                }
+                if left > 0 {
+                    self.click(source, 0, "pickup")?;
+                }
+            }
+            let staged = self.game.inventory()?;
+            if !self
+                .craft_grid(table, &staged)?
                 .iter()
-                .any(|slot| slot.slot == 0 && slot.item == recipe && slot.count == 4)
+                .any(|s| s.slot == 0 && s.item == recipe && s.count == output)
             {
                 return Err("Server did not offer the expected crafting output".into());
             }
             self.click(0, 0, "quick_move")?;
-            let count = |slots: &[Stack]| {
-                slots
-                    .iter()
-                    .filter(|s| (9..45).contains(&s.slot) && s.item == recipe)
-                    .map(|s| s.count)
-                    .sum::<u32>()
-            };
-            if count(&self.game.inventory()?.slots) != count(&inventory.slots) + 4 {
-                return Err("Server did not confirm the crafted output".into());
+            let crafted = self.game.inventory()?;
+            if count(&crafted) != count(&inventory) + output
+                || !self.craft_grid(table, &crafted)?.is_empty()
+            {
+                return Err("Server did not confirm the crafted output and empty grid".into());
             }
+            inventory = crafted;
+        }
+        if table {
+            self.act("close_menu", json!({}))?;
         }
         Ok(observed(format!("Observed {} {}", work.count, work.recipe)))
+    }
+
+    fn craft_grid(
+        &mut self,
+        table: bool,
+        inventory: &crate::game::Inventory,
+    ) -> Result<Vec<Stack>, String> {
+        if table {
+            let menu = self.game.call("menu", json!({}))?;
+            if menu["type"] != "crafting"
+                || menu["container_slots"] != 10
+                || menu["total_slots"] != 46
+            {
+                return Err("Did not open the expected crafting grid".into());
+            }
+            return serde_json::from_value(menu["items"].clone())
+                .map_err(|error| error.to_string());
+        }
+        Ok(inventory
+            .slots
+            .iter()
+            .filter(|s| s.slot < 5)
+            .cloned()
+            .collect())
     }
 
     fn transfer(&mut self, work: Transfer) -> Result<Outcome, String> {
@@ -707,6 +845,24 @@ impl Job<'_> {
             };
             previous = Some((stored, carried, maximum));
         }
+    }
+}
+
+fn ore_variants<'a>(variant: &str, both: &'a [&str; 2]) -> Result<&'a [&'a str], String> {
+    match variant {
+        "both" => Ok(both),
+        "normal" => Ok(&both[..1]),
+        "deepslate" => Ok(&both[1..]),
+        _ => Err(format!("Unsupported ore variant {variant}")),
+    }
+}
+
+fn pickaxe_tier(item: &str) -> u8 {
+    match item {
+        "wooden_pickaxe" | "golden_pickaxe" => 1,
+        "stone_pickaxe" => 2,
+        "iron_pickaxe" | "diamond_pickaxe" | "netherite_pickaxe" => 3,
+        _ => 0,
     }
 }
 

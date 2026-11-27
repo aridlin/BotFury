@@ -37,6 +37,14 @@ impl<'a> LoadedWorld<'a> {
             }),
         }
     }
+
+    fn standable(&self, [x, y, z]: [i32; 3]) -> bool {
+        (self.min_y() + 1..self.max_y()).contains(&y)
+            && self.is_loaded(x, z)
+            && self.get0(x, y, z).is_air()
+            && self.get0(x, y + 1, z).is_air()
+            && self.get0(x, y - 1, z).sturdy_top
+    }
 }
 
 impl BlockStateInterface for LoadedWorld<'_> {
@@ -121,18 +129,31 @@ pub fn find_path(
     Some(points)
 }
 
+pub fn exposed_blocks(
+    world: &World,
+    filter: &str,
+    names: &[String],
+    center: [i32; 3],
+    radius: i32,
+    limit: usize,
+) -> Vec<([i32; 3], u32)> {
+    let adapter = LoadedWorld::new(world);
+    world.find_blocks_where(filter, center, radius, limit, |[x, y, z], state| {
+        world
+            .block_name(state)
+            .is_some_and(|name| names.iter().any(|wanted| wanted == name))
+            && [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                .into_iter()
+                .any(|(dx, dz)| adapter.standable([x + dx, y, z + dz]))
+    })
+}
+
 pub fn find_approach(world: &World, start: [f64; 3], stands: Vec<[i32; 3]>) -> Option<[i32; 3]> {
     let adapter = LoadedWorld::new(world);
     let start = start.map(|coordinate| coordinate.floor() as i32);
     let choices: Vec<_> = stands
         .into_iter()
-        .filter(|&[x, y, z]| {
-            (adapter.min_y() + 1..adapter.max_y()).contains(&y)
-                && adapter.is_loaded(x, z)
-                && adapter.get0(x, y, z).is_air()
-                && adapter.get0(x, y + 1, z).is_air()
-                && adapter.get0(x, y - 1, z).sturdy_top
-        })
+        .filter(|&stand| adapter.standable(stand))
         .map(|stand| rc(GoalBlock(stand)))
         .collect();
     if choices.is_empty() {

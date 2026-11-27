@@ -1,10 +1,10 @@
 # BotFury native worker prototype
 
-The worker and game client are native executables. The worker claims an explicitly named project on the existing BotFury broker, renews before each gameplay action, and reports observed results. It supports locally reachable log, stem, or dirt gathering, player-inventory plank crafting, and single- or double-chest deposits, withdrawals, and stock checks. It can place blocks at reserved targets when it carries the material. Placement supports plain blocks and axis-oriented blocks such as logs. Verification checks the observed block and the supplied properties in loaded chunks.
+The worker and game client are native executables. The worker claims an explicitly named project on the existing BotFury broker, renews before each gameplay action, and reports observed results. It supports locally reachable logs, stems, dirt, stone, deepslate, and iron or diamond ore. Gathering checks and equips a suitable pickaxe where required. Workers can craft planks, sticks, and a crafting table in their inventory, then use a placed table to craft wooden, stone, and iron pickaxes. Single and double chests support deposits, withdrawals, and stock checks. It can place blocks at reserved targets when it carries the material. Placement supports plain blocks and axis-oriented blocks such as logs. Verification checks the observed block and the supplied properties in loaded chunks.
 
 A missing lease, unsuitable task, or mismatched world stops the worker. Use the prototype with a project whose jobs fit these capabilities.
 
-Build [mcclient](https://github.com/MVRer/mcclient) at revision `12179b06709e4d2161483e87065b35f292898783` with the included patch. This revision uses offline Minecraft accounts. The patch fixes position confirmation on 26.3 and keeps the worker's inventory and cursor in sync with chest updates. A withdrawal can enforce a minimum stock reserve and split a stack to leave the rest in storage.
+Build [mcclient](https://github.com/MVRer/mcclient) at revision `12179b06709e4d2161483e87065b35f292898783` with the included patch. This revision uses offline Minecraft accounts. The patch fixes position confirmation on 26.3 and keeps the worker's inventory and cursor in sync with chest and crafting table updates. A withdrawal can enforce a minimum stock reserve and split a stack to leave the rest in storage.
 
 ```sh
 # In a checkout of the pinned mcclient revision

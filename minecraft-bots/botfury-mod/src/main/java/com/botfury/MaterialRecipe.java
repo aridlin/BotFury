@@ -36,6 +36,11 @@ final class MaterialRecipe {
 
         int size() { return quantities.size(); }
 
+        int fieldInputs() {
+            return quantities.stream().filter(quantity -> quantity.step.kind == ProjectQueue.Kind.GATHER)
+                    .mapToInt(Quantity::count).sum();
+        }
+
         boolean needsTable() {
             return quantities.stream().anyMatch(quantity -> quantity.step.kind == ProjectQueue.Kind.CRAFT
                     && !quantity.step.inventoryCraft);
@@ -132,14 +137,19 @@ final class MaterialRecipe {
     }
 
     List<Batch> batches(Identifier item, int count, int maxPerBatch) {
+        return batches(item, count, maxPerBatch, Integer.MAX_VALUE);
+    }
+
+    List<Batch> batches(Identifier item, int count, int maxPerBatch, int fieldBudget) {
         var steps = resolveSteps(item, false);
         int lower = 1;
         int upper = Math.min(count, maxPerBatch);
         while (lower < upper) {
             int candidate = lower + (upper - lower + 1) / 2;
             try {
-                quantities(item, candidate, false, steps);
-                lower = candidate;
+                var plan = quantities(item, candidate, false, steps);
+                if (plan.fieldInputs() > fieldBudget) upper = candidate - 1;
+                else lower = candidate;
             } catch (BatchTooLarge ignored) {
                 upper = candidate - 1;
             }

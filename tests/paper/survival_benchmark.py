@@ -32,22 +32,44 @@ RUNTIME = Path(__file__).resolve().parents[2] / "minecraft-bots/botfury-mod/buil
 def find_site(connection, player, cells):
     position = connection.command(f"data get entity {player} Pos")
     x, y, z = (math.floor(float(part)) for part in re.findall(r"(-?[0-9.]+)d", position))
-    offsets = [(0, 0), (0, 6), (6, 0), (6, 6), (3, 3), (0, 3), (3, 0), (3, 6), (6, 3)]
-    for radius in (8, 18, 28, 38, 48, 58, 68):
-        for dx, dz in ((radius, 0), (-radius, 0), (0, radius), (0, -radius),
-                       (radius, radius), (-radius, -radius), (radius, -radius), (-radius, radius)):
-            left, front = x + dx, z + dz
-            for dy in (0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 8, -8, 10, -10):
-                bottom = y + dy
-                samples = " ".join(f"if block {left+sx} {bottom-1} {front+sz} minecraft:grass_block"
-                                   for sx, sz in offsets)
-                if connection.command(f"execute {samples}") != "Test passed":
-                    continue
-                clear_entry = [f"if block {left+dx} {bottom} {front-2} minecraft:air" for dx in (0, 1, 2)]
-                clear_base = [f"if block {left+sx} {bottom} {front+sz} minecraft:air" for sx, sz in offsets]
-                if connection.command("execute " + " ".join(clear_entry + clear_base)) == "Test passed":
-                    return left, bottom, front
-    raise RuntimeError(f"No open house site near spawn position {position} for {len(cells)} schematic cells")
+    width = max(dx for dx, _, _, _ in cells)
+    depth = max(dz for _, _, dz, _ in cells)
+    corners = [(0, 0), (width, 0), (0, depth), (width, depth)]
+    samples = [(width // 2, depth // 2), *corners,
+               (width // 2, 0), (width // 2, depth), (0, depth // 2), (width, depth // 2)]
+    entries = [(dx, -2) for dx in range(3)]
+    offsets = sorted(((dx, dz) for dx in range(-64, 65, 8) for dz in range(-64, 65, 8)
+                      if max(abs(dx), abs(dz)) >= 8), key=lambda p: p[0] ** 2 + p[1] ** 2)
+    elevations = sorted(range(-18, 19), key=abs)
+    ground = "#minecraft:dirt"
+
+    def matches(conditions):
+        return connection.command("execute " + " ".join(conditions)) == "Test passed"
+
+    for dx, dz in offsets:
+        left, front = x + dx, z + dz
+        center_x, center_z = left + width // 2, front + depth // 2
+        for dy in elevations:
+            bottom = y + dy
+            if not matches([f"if block {center_x} {bottom-1} {center_z} {ground}",
+                            f"if block {center_x} {bottom} {center_z} minecraft:air"]):
+                continue
+            clear_entry = [
+                condition
+                for sx, sz in entries
+                for condition in (f"if block {left+sx} {bottom} {front+sz} minecraft:air",
+                                  f"if block {left+sx} {bottom+1} {front+sz} minecraft:air")
+            ]
+            if not matches(clear_entry):
+                continue
+            # Allow natural terrain one block into the floor. The house order will excavate it.
+            if all(
+                matches([f"if block {left+sx} {bottom-1} {front+sz} {ground}"])
+                or matches([f"if block {left+sx} {bottom} {front+sz} {ground}"])
+                for sx, sz in samples
+            ):
+                return left, bottom, front
+    raise RuntimeError(f"No supported house site near {position} for {len(cells)} schematic cells")
 
 
 def read_status(index):
@@ -262,6 +284,9 @@ def run(args):
         run_process("paper", [java, "-Xmx2048m", "-XX:ActiveProcessorCount=4", "-jar", "paper.jar", "nogui"], paper)
         connection = wait(connect, 150)
         command = connection.command
+        world_seed = command("seed")
+        (out / "world.json").write_text(json.dumps({"seed": world_seed}, indent=2) + "\n")
+        print(f"Paper world {world_seed}.", flush=True)
         run_process("display", ["Xvfb", display, "-screen", "0", "960x540x24", "-nolisten", "tcp"])
         time.sleep(1)
         master = launch(0, MASTER)
@@ -302,7 +327,7 @@ def run(args):
         manifest_id = order(master_window, STOCK_ORDER, r"Queued (manifest-[a-f0-9]{8}) for 10 bots")
         print(f"Paper accepted stock order {manifest_id}.", flush=True)
         (out / "orders.json").write_text(json.dumps({
-            "seed": command("seed"), "site": site, "inventories": initial,
+            "seed": world_seed, "site": site, "inventories": initial,
             "house": house_id, "manifest": manifest_id, "schematicSha256": reference["sha256"],
         }, indent=2) + "\n")
         assign_shared_workers(manifest_id)

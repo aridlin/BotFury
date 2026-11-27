@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Clone, Copy, Deserialize)]
@@ -61,6 +61,17 @@ struct Craft {
     block: Option<String>,
     target: Option<Pos>,
     stand: Option<Pos>,
+}
+
+#[derive(Deserialize)]
+struct Smelt {
+    block: String,
+    target: Pos,
+    stand: Pos,
+    recipe: String,
+    input: String,
+    fuel: String,
+    count: u32,
 }
 
 #[derive(Deserialize)]
@@ -168,6 +179,7 @@ pub fn execute(
     match assignment.job.work.kind {
         Kind::Gather => job.gather(parse(payload)?),
         Kind::Craft => job.craft(parse(payload)?),
+        Kind::Smelt => job.smelt(parse(payload)?),
         Kind::Transfer => job.transfer(parse(payload)?),
         Kind::Build => job.place(parse(payload)?),
         Kind::Verify => job.verify(parse(payload)?),
@@ -183,6 +195,11 @@ struct Job<'a> {
 impl Job<'_> {
     /// Renew before each bounded gameplay action; fail closed if ownership is no longer confirmed.
     fn act(&mut self, name: &str, params: Value) -> Result<Value, String> {
+        self.renew()?;
+        self.game.call(name, params)
+    }
+
+    fn renew(&mut self) -> Result<(), String> {
         match self
             .coordinator
             .renew(self.assignment)
@@ -198,7 +215,7 @@ impl Job<'_> {
                         "The renewed lease is too short to safely start a game action".into(),
                     );
                 }
-                self.game.call(name, params)
+                Ok(())
             }
             Renewed::Lost => Err("Job lease is no longer active".into()),
         }
@@ -368,6 +385,11 @@ impl Job<'_> {
         let (search, blocks, tier): (&str, &[&str], u8) = match (work.resource.as_str(), item) {
             ("stone", "cobblestone") => ("stone", &["stone"], 1),
             ("deepslate", "cobbled_deepslate") => ("deepslate", &["deepslate"], 1),
+            ("coal", "coal") => (
+                "coal_ore",
+                ore_variants(variant, &["coal_ore", "deepslate_coal_ore"])?,
+                1,
+            ),
             ("iron", "raw_iron") => (
                 "iron_ore",
                 ore_variants(variant, &["iron_ore", "deepslate_iron_ore"])?,
@@ -576,6 +598,7 @@ impl Job<'_> {
             "crafting_table" => ("PPPP", 1, false),
             "wooden_pickaxe" => ("PPP S  S ", 1, true),
             "stone_pickaxe" => ("CCC S  S ", 1, true),
+            "furnace" => ("CCCC CCCC", 1, true),
             "iron_pickaxe" => ("III S  S ", 1, true),
             _ => return Err("Unsupported crafting recipe".into()),
         };
@@ -700,6 +723,139 @@ impl Job<'_> {
             .filter(|s| s.slot < 5)
             .cloned()
             .collect())
+    }
+
+    fn smelt(&mut self, work: Smelt) -> Result<Outcome, String> {
+        let input = vanilla(&work.input)?;
+        let fuel = vanilla(&work.fuel)?;
+        let burn_ticks: u32 = match fuel {
+            "coal" | "charcoal" => 1600,
+            _ => return Err("Unsupported furnace fuel".into()),
+        };
+        let output = match (vanilla(&work.recipe)?, input) {
+            ("iron_ingot_from_smelting_raw_iron", "raw_iron") => "iron_ingot",
+            _ => return Err("Unsupported furnace recipe and input".into()),
+        };
+        if work.block != "minecraft:furnace" || !(1..=64).contains(&work.count) {
+            return Err("Invalid furnace or smelting count".into());
+        }
+        let output_id = format!("minecraft:{output}");
+        let count_output = |items: &ItemCounts| items.get(&output_id).copied().unwrap_or(0);
+        let carried = self.game.inventory()?.counts();
+        if count_output(&carried) >= work.count {
+            return Ok(observed(format!("Observed {} {output_id}", work.count)));
+        }
+        self.move_to(work.stand)?;
+        if self.block_at(work.target)?["block"] != "furnace" {
+            return Err("Expected furnace is missing".into());
+        }
+        let Pos { x, y, z } = work.target;
+        self.act("use_block", json!({"x":x,"y":y,"z":z}))?;
+
+        let (slots, credited_ticks) = self.furnace_state([input, fuel, output])?;
+        let need = work.count - count_output(&carried);
+        let queued = slots[0] + slots[2];
+        if queued > need {
+            return Err("The furnace has more input or output than this job needs".into());
+        }
+        let input_to_load = need - queued;
+        let fuel_to_load = ((need - slots[2]) * 200)
+            .saturating_sub(credited_ticks + slots[1] * burn_ticks)
+            .div_ceil(burn_ticks);
+        if carried.get(&work.input).copied().unwrap_or(0) < input_to_load {
+            return Err(format!(
+                "Need {input_to_load} {} for the furnace",
+                work.input
+            ));
+        }
+        if carried.get(&work.fuel).copied().unwrap_or(0) < fuel_to_load {
+            return Err(format!("Need {fuel_to_load} {} for the furnace", work.fuel));
+        }
+
+        self.load_furnace_slot(fuel, 1, fuel_to_load)?;
+        self.load_furnace_slot(input, 0, input_to_load)?;
+        let mut latest_output = Instant::now();
+        let mut last_renewal = latest_output;
+        let mut seen_output = slots[2];
+        loop {
+            let (slots, _) = self.furnace_state([input, fuel, output])?;
+            if slots[2] == need {
+                self.click(2, 0, "quick_move")?;
+                let after = self.game.inventory()?.counts();
+                if count_output(&after) != work.count {
+                    return Err(
+                        "Server did not confirm the full smelted output was collected".into(),
+                    );
+                }
+                self.act("close_menu", json!({}))?;
+                return Ok(observed(format!("Observed {} {output_id}", work.count)));
+            }
+            if slots[2] > seen_output {
+                seen_output = slots[2];
+                latest_output = Instant::now();
+            }
+            if latest_output.elapsed() >= Duration::from_secs(30) {
+                return Err(format!("The furnace stopped producing {output_id}"));
+            }
+            if last_renewal.elapsed() >= Duration::from_secs(5) {
+                self.renew()?;
+                last_renewal = Instant::now();
+            }
+            thread::sleep(Duration::from_millis(150));
+        }
+    }
+
+    fn furnace_state(&mut self, expected: [&str; 3]) -> Result<([u32; 3], u32), String> {
+        let menu = self.game.call("menu", json!({}))?;
+        if menu["type"] != "furnace" || menu["container_slots"] != 3 || menu["total_slots"] != 39 {
+            return Err("Did not open the expected furnace".into());
+        }
+        let mut counts = [0; 3];
+        let items: Vec<Stack> =
+            serde_json::from_value(menu["items"].clone()).map_err(|error| error.to_string())?;
+        for stack in items {
+            if expected.get(stack.slot) != Some(&stack.item.as_str()) {
+                return Err("The furnace contains unrelated items".into());
+            }
+            counts[stack.slot] = stack.count;
+        }
+        let ticks = ["burn_ticks", "cook_ticks"]
+            .into_iter()
+            .filter_map(|key| menu[key].as_u64())
+            .filter_map(|ticks| u16::try_from(ticks).ok())
+            .map(u32::from)
+            .sum();
+        Ok((counts, ticks))
+    }
+
+    fn load_furnace_slot(
+        &mut self,
+        item: &str,
+        destination: usize,
+        mut amount: u32,
+    ) -> Result<(), String> {
+        while amount > 0 {
+            let inventory = self.game.inventory()?;
+            let source = inventory
+                .slots
+                .iter()
+                .find(|s| (9..45).contains(&s.slot) && s.item == item)
+                .ok_or_else(|| format!("Missing {item} for the furnace"))?;
+            let slot = source.slot - 6;
+            self.click(slot, 0, "pickup")?;
+            if source.count <= amount {
+                self.click(destination, 0, "pickup")?;
+                amount -= source.count;
+            } else {
+                for _ in 0..amount {
+                    self.click(destination, 1, "pickup")?;
+                }
+                self.click(slot, 0, "pickup")?;
+                amount = 0;
+            }
+            self.game.inventory()?;
+        }
+        Ok(())
     }
 
     fn transfer(&mut self, work: Transfer) -> Result<Outcome, String> {

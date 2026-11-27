@@ -1,0 +1,136 @@
+--- a/src/ids.rs
++++ b/src/ids.rs
+@@ -63,6 +63,7 @@
+     pub cb_chunk_batch_start: i32,
+     pub cb_container_close: i32,
+     pub cb_container_set_content: i32,
++    pub cb_container_set_data: i32,
+     pub cb_container_set_slot: i32,
+     pub cb_cookie_request: i32,
+     pub cb_disconnect: i32,
+@@ -173,6 +174,7 @@
+         cb_chunk_batch_start: 0x0C,
+         cb_container_close: 0x11,
+         cb_container_set_content: 0x12,
++        cb_container_set_data: 0x13,
+         cb_container_set_slot: 0x14,
+         cb_cookie_request: 0x15,
+         cb_disconnect: 0x20,
+@@ -275,6 +277,7 @@
+         cb_chunk_batch_start: 0x0C,
+         cb_container_close: 0x11,
+         cb_container_set_content: 0x12,
++        cb_container_set_data: 0x13,
+         cb_container_set_slot: 0x14,
+         cb_cookie_request: 0x15,
+         cb_disconnect: 0x20,
+@@ -377,6 +380,7 @@
+         cb_chunk_batch_start: 0x0C,
+         cb_container_close: 0x11,
+         cb_container_set_content: 0x12,
++        cb_container_set_data: 0x13,
+         cb_container_set_slot: 0x14,
+         cb_cookie_request: 0x15,
+         cb_disconnect: 0x20,
+@@ -479,6 +483,7 @@
+         cb_chunk_batch_start: 0x0C,
+         cb_container_close: 0x11,
+         cb_container_set_content: 0x12,
++        cb_container_set_data: 0x13,
+         cb_container_set_slot: 0x14,
+         cb_cookie_request: 0x15,
+         cb_disconnect: 0x20,
+--- a/src/engine.rs
++++ b/src/engine.rs
+@@ -209,6 +209,7 @@
+
+ #[derive(Clone, Debug)]
+ pub struct Menu {
++    pub properties: [Option<u16>; 4],
+     pub id: i32,
+     pub kind: String,
+     pub title: String,
+@@ -226,6 +227,8 @@
+     fn player_inventory_start(&self) -> Option<usize> {
+         let top = if self.kind == "crafting" {
+             10
++        } else if self.kind == "furnace" {
++            3
+         } else {
+             let rows = self.kind.strip_prefix("generic_9x")?.parse::<usize>().ok()?;
+             if !(1..=6).contains(&rows) {
+@@ -1095,7 +1098,7 @@
+             let title = chat::read_text(&mut r, &self.lang).unwrap_or_default();
+             self.log.debug(format!("menu {container} opened: {kind} \"{title}\""));
+             shared.game.lock().unwrap_or_else(|e| e.into_inner()).menu =
+-                Some(Menu { id: container, kind, title, slots: Vec::new(), state_id: 0 });
++                Some(Menu { id: container, kind, title, slots: Vec::new(), state_id: 0, properties: [None; 4] });
+         } else if id == pl.cb_container_set_content {
+             let mut g = shared.game.lock().unwrap_or_else(|e| e.into_inner());
+             let container = r.varint()?;
+@@ -1125,6 +1128,16 @@
+                         menu.state_id = state;
+                     }
+                 }
++            }
++        } else if id == pl.cb_container_set_data {
++            let container = r.varint()?;
++            let index = r.u16()? as usize;
++            let value = r.u16()?;
++            let mut g = shared.game.lock().unwrap_or_else(|e| e.into_inner());
++            if let Some(menu) = g.menu.as_mut().filter(|menu| menu.id == container && menu.kind == "furnace")
++                && let Some(property) = menu.properties.get_mut(index)
++            {
++                *property = Some(value);
+             }
+         } else if id == pl.cb_container_set_slot {
+             let mut g = shared.game.lock().unwrap_or_else(|e| e.into_inner());
+--- a/src/mcp.rs
++++ b/src/mcp.rs
+@@ -622,6 +622,10 @@
+     };
+     let top = m.container_slots();
+     let mut out = json!({"open": true, "title": m.title, "type": m.kind, "container_slots": top, "total_slots": m.slots.len()});
++    if m.kind == "furnace" {
++        out["burn_ticks"] = json!(m.properties[0]);
++        out["cook_ticks"] = json!(m.properties[2]);
++    }
+     if with_items {
+         let items: Vec<Value> = m.slots.iter().take(top).enumerate().filter_map(|(i, s)| s.as_ref().map(|it| slot_json(i, it, None))).collect();
+         out["items"] = Value::Array(items);
+--- a/tests/mcp.rs
++++ b/tests/mcp.rs
+@@ -173,6 +173,18 @@
+                 }
+                 content.u8(0);
+                 m.send(cb.cb_container_set_content, &content.data);
++            } else if command == "furnace" {
++                let furnace = id_of(regs.menu, "furnace");
++                m.send(cb.cb_open_screen, &[w().varint(2).varint(furnace).data.clone(), nbt_string("Furnace")].concat());
++                let mut content = w();
++                content.varint(2).varint(1).varint(39);
++                for _ in 0..=39 {
++                    content.u8(0);
++                }
++                m.send(cb.cb_container_set_content, &content.data);
++                m.send(cb.cb_container_set_data, &w().varint(2).i16(0).i16(434).data);
++                m.send(cb.cb_container_set_data, &w().varint(2).i16(2).i16(17).data);
++                m.send(cb.cb_container_set_data, &w().varint(1).i16(2).i16(35).data);
+             } else {
+                 m.system(&format!("Unknown command: {command}"));
+             }
+@@ -327,6 +339,14 @@
+     assert!(inventory["held_item"].is_null(), "{inventory}");
+     assert_eq!(inventory["slots"][0]["item"], "emerald", "{inventory}");
+
++    mcp.call("command", json!({"command": "/furnace"}));
++    let furnace = mcp.call("menu", json!({}));
++    assert_eq!(furnace["type"], "furnace", "{furnace}");
++    assert_eq!(furnace["container_slots"], 3, "{furnace}");
++    assert_eq!(furnace["burn_ticks"], 434, "{furnace}");
++    assert_eq!(furnace["cook_ticks"], 17, "{furnace}");
++    mcp.call("close_menu", json!({}));
++
+     let echoed = mcp.call("chat", json!({"message": "hello"}));
+     assert_eq!(echoed["chat"][0], "[echo] hello", "{echoed}");
+     let npc = mcp.call("interact", json!({"name": "shopkeeper"}));

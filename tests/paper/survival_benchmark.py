@@ -201,7 +201,7 @@ def run(args):
         status = read_status(0)
         return status.get("connected") and status.get("player") == MASTER and all(
             abs(status.get(axis, math.inf) - expected) < 1
-            for axis, expected in zip("xyz", position)
+            for axis, expected in zip("xz", (position[0], position[2]))
         )
 
     def order(master_window, text, reply, allow_chunk_retry=False):
@@ -248,10 +248,13 @@ def run(args):
         master = launch(0, MASTER)
         wait(lambda: ready(0, MASTER), 150)
         site = tuple(args.site) if args.site else find_site(connection, MASTER, cells)
-        command(f"gamemode spectator {MASTER}")
+        command(f"gamemode creative {MASTER}")
         viewpoint = site[0] + 1.5, site[1], site[2] - 3.5
         command(f"tp {MASTER} {' '.join(map(str, viewpoint))} 0 4")
         wait(lambda: master_at(viewpoint), 120)
+        site_chunks = sorted({((site[0] + x) // 16, (site[2] + z) // 16) for x, _, z, _ in cells})
+        loaded_conditions = " ".join(f"if loaded {cx * 16} {site[1]} {cz * 16}" for cx, cz in site_chunks)
+        wait(lambda: command(f"execute {loaded_conditions}") == "Test passed", 120)
         master_window = window(master, 0, 0)
         captured = run_process("capture", [
             "ffmpeg", "-nostdin", "-loglevel", "error", "-n", "-f", "x11grab", "-draw_mouse", "0",
@@ -264,6 +267,8 @@ def run(args):
             raise RuntimeError("Failed to record the hosted survival benchmark")
         house_id = order(master_window, f"bf project build {SCHEMATIC.name} {' '.join(map(str, site))} supplied",
                          r"Queued (village-homestead-[a-f0-9]{8})", allow_chunk_retry=True)
+        command(f"gamemode spectator {MASTER}")
+        command(f"tp {MASTER} {' '.join(map(str, viewpoint))} 0 4")
         handles = []
         for i, name in enumerate(WORKERS, 1):
             handles.append(launch(i, name))

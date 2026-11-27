@@ -247,6 +247,9 @@ final class ProjectQueue {
     private static final String CARRIED_SMELT_ASSIGNED = "Assigned smelting to a worker with observed supplies";
     private static final String GATHER_REASSIGNED = "Gathering reassigned to a worker with cargo";
     private static final String CONTRIBUTION_ACTIVE = "Delivering a partial stock contribution";
+    private static final String CONTRIBUTION_TRAVEL = "Traveling with a partial stock contribution";
+    static final int STAGED_STOCK_RETURN_REVISION = 14;
+    private static final int STOCK_CONTACT_RADIUS = 8;
     private static final String CONTRIBUTION_RETRY = "Partial deposit ended before chest observation";
     private static final String CONTRIBUTION_SETTLED = "Partial stock contribution settled";
     static final String CARGO_CHECKPOINT = "Banking a mining checkpoint";
@@ -646,7 +649,7 @@ final class ProjectQueue {
         for (var other : projects.values()) {
             if (!project.world.equals(other.world)) continue;
             if (!Collections.disjoint(locks, temporaryFooting(other.id)) && !other.id.equals(project.id)) return null;
-            if (other.jobs.stream().anyMatch(job -> job.state == State.LEASED
+            if (other.jobs.stream().anyMatch(job -> holdsWorkLocks(job)
                     && !Collections.disjoint(locks, job.work.locks))) return null;
         }
         return new Work(current.work.id, current.work.kind, JSON.toJson(payload), current.work.needs,
@@ -1543,6 +1546,7 @@ final class ProjectQueue {
                     // A claim response can be lost. Normally a repeated claim returns the same assignment.
                     boolean canResume = handoffWorker(job) == null && world.equals(project.world)
                             && kinds.contains(job.work.kind) && !cancelled(project)
+                            && (returnRevision >= STAGED_STOCK_RETURN_REVISION || !travelingContribution(job))
                             && (supportsPickupReserve || !PREPARATION_STOCK_PICKUP.equals(job.evidence))
                             && (projectId == null || projectId.equals(project.id));
                     if (!canResume) return null;
@@ -1552,7 +1556,7 @@ final class ProjectQueue {
                     }
                     return assignment(project, job);
                 }
-                if (world.equals(project.world)) reserved.addAll(job.work.locks);
+                if (world.equals(project.world) && holdsWorkLocks(job)) reserved.addAll(job.work.locks);
             }
         }
         if (kinds.contains(Kind.TRANSFER) && heldCount != null) {
@@ -2486,7 +2490,7 @@ final class ProjectQueue {
         var locks = new HashSet<String>();
         for (var project : projects.values()) {
             if (!world.equals(project.world)) continue;
-            for (var job : project.jobs) if (job.state == State.LEASED && job.expiresAt > now) locks.addAll(job.work.locks);
+            for (var job : project.jobs) if (holdsWorkLocks(job) && job.expiresAt > now) locks.addAll(job.work.locks);
         }
         return locks;
     }
@@ -3382,6 +3386,16 @@ final class ProjectQueue {
                                                       java.util.function.ToIntBiFunction<String, String> heldCount,
                                                       int returnRevision) throws IOException {
         expire(now);
+        if (returnRevision >= STAGED_STOCK_RETURN_REVISION) {
+            for (var project : projects.values()) {
+                if (!world.equals(project.world) || cancelled(project) || projectId != null && !projectId.equals(project.id)) continue;
+                for (var job : project.jobs) {
+                    if (job.state == State.LEASED && travelingContribution(job) && worker.equalsIgnoreCase(job.worker)) {
+                        return assignment(project, job);
+                    }
+                }
+            }
+        }
         var checkpoint = offerCheckpointDeposit(world, worker, projectId, now, position, heldCount, returnRevision);
         return checkpoint != null ? checkpoint : offerInterruptedDeposit(world, worker, projectId, now, position,
                 heldCount, CargoRecovery.TOOL_FAILURE, returnRevision);
@@ -3528,7 +3542,7 @@ final class ProjectQueue {
     }
 
     private static boolean checkpointDepositActive(Project project, Job gather) {
-        return project.jobs.stream().anyMatch(job -> job.state == State.LEASED && CONTRIBUTION_ACTIVE.equals(job.evidence)
+        return project.jobs.stream().anyMatch(job -> job.state == State.LEASED && contributionInProgress(job)
                 && gather.work.id.equals(job.work.sameWorkerAs));
     }
 
@@ -3622,7 +3636,7 @@ final class ProjectQueue {
         for (var other : projects.values()) {
             if (!project.world.equals(other.world)) continue;
             if (other != project && project.supplyChest.equals(reservedStorage(other))
-                    || other.jobs.stream().anyMatch(job -> job.state == State.LEASED
+                    || other.jobs.stream().anyMatch(job -> holdsWorkLocks(job)
                     && !Collections.disjoint(locks, job.work.locks))) return null;
         }
         payload.addProperty("direction", "TAKE");
@@ -3675,10 +3689,12 @@ final class ProjectQueue {
                     && !differentContributionApproach(deposit, origin, position)) return null;
         }
         int goal = payload.get("count").getAsInt();
-        if (!interrupted && carriedTotal < goal || ownChestContributionBlocked(project, gather, deposit)) return null;
+        boolean travel = interrupted && returnRevision >= STAGED_STOCK_RETURN_REVISION
+                && station != null && distance(position, station) > STOCK_CONTACT_RADIUS;
+        if (!interrupted && carriedTotal < goal || ownChestContributionBlocked(project, gather, deposit, travel)) return null;
         int attempts = !rebuiltStorageRetry && (retry || additionalCargo || upgradedReturn) ? 1 : 0;
         var assigned = new Job(deposit.work, State.LEASED, attempts, worker,
-                UUID.randomUUID(), now + LEASE_MS, CONTRIBUTION_ACTIVE, deposit.chest);
+                UUID.randomUUID(), now + LEASE_MS, travel ? CONTRIBUTION_TRAVEL : CONTRIBUTION_ACTIVE, deposit.chest);
         if (interrupted) {
             var jobs = project.jobs.stream().map(job -> job == deposit ? assigned : job).toList();
             var updated = project.withContribution(jobs, cargo, carriedTotal, position, stock, returnRevision);
@@ -3720,12 +3736,31 @@ final class ProjectQueue {
     }
 
     private boolean ownChestContributionBlocked(Project project, Job gather, Job deposit) {
-        if (!depositPrerequisitesReady(project, gather, deposit)) return true;
-        if (projects.values().stream().anyMatch(other -> other != project && other.world.equals(project.world)
-                && project.supplyChest.equals(reservedStorage(other)))) return true;
-        return projects.values().stream().filter(other -> other.world.equals(project.world))
-                .flatMap(other -> other.jobs.stream()).anyMatch(job -> job.state == State.LEASED
+        return ownChestContributionBlocked(project, gather, deposit, false);
+    }
+
+    private boolean ownChestContributionBlocked(Project project, Job gather, Job deposit, boolean traveling) {
+        if (!depositPrerequisitesReady(project, gather, deposit) || sharedStorageReserved(project)) return true;
+        return !traveling && projects.values().stream().filter(other -> other.world.equals(project.world))
+                .flatMap(other -> other.jobs.stream()).anyMatch(job -> holdsWorkLocks(job)
                         && !Collections.disjoint(deposit.work.locks, job.work.locks));
+    }
+
+    private boolean sharedStorageReserved(Project project) {
+        return projects.values().stream().anyMatch(other -> other != project && other.world.equals(project.world)
+                && project.supplyChest.equals(reservedStorage(other)));
+    }
+
+    static boolean travelingContribution(Job job) {
+        return CONTRIBUTION_TRAVEL.equals(job.evidence);
+    }
+
+    private static boolean contributionInProgress(Job job) {
+        return travelingContribution(job) || CONTRIBUTION_ACTIVE.equals(job.evidence);
+    }
+
+    private static boolean holdsWorkLocks(Job job) {
+        return job.state == State.LEASED && !travelingContribution(job);
     }
 
     private static boolean depositTarget(Job job) {
@@ -4163,6 +4198,12 @@ final class ProjectQueue {
 
     synchronized Job renew(String projectId, String jobId, UUID token, ResourceSite site, long now,
                            boolean needsRouteTool, boolean needsRouteBench) throws IOException {
+        return renew(projectId, jobId, token, site, now, needsRouteTool, needsRouteBench, null);
+    }
+
+    synchronized Job renew(String projectId, String jobId, UUID token, ResourceSite site, long now,
+                           boolean needsRouteTool, boolean needsRouteBench,
+                           java.util.function.Function<String, ResourceSite> locate) throws IOException {
         Project project = projects.get(projectId);
         Job job = find(project, jobId);
         if (!owns(job, token, now) || cancelled(project) || BATCH_RESERVED.equals(job.evidence) || handoffWorker(job) != null
@@ -4170,8 +4211,20 @@ final class ProjectQueue {
         if (needsRouteTool && job.work.kind == Kind.TRANSFER && depositTarget(job)
                 || needsRouteBench && productionWork(job.work)) routeToolRequests.put(token, needsRouteBench);
         else routeToolRequests.remove(token);
+        String renewedEvidence = job.evidence;
+        if (travelingContribution(job) && locate != null) {
+            var position = locate.apply(job.worker);
+            var target = JSON.fromJson(job.work.payload, StationTarget.class).target;
+            var gather = find(project, job.work.sameWorkerAs);
+            if (position != null && target != null && distance(position, target) <= STOCK_CONTACT_RADIUS
+                    && gather != null && depositPrerequisitesReady(project, gather, job)
+                    && !sharedStorageReserved(project)
+                    && Collections.disjoint(job.work.locks, leasedKeys(project.world, now))) {
+                renewedEvidence = CONTRIBUTION_ACTIVE;
+            }
+        }
         Job renewed = new Job(job.work, State.LEASED, job.attempts, job.worker,
-                job.lease, now + LEASE_MS, job.evidence, job.chest, gatheringSite(job, site), job.gatheringAfterPickup);
+                job.lease, now + LEASE_MS, renewedEvidence, job.chest, gatheringSite(job, site), job.gatheringAfterPickup);
         if (BATCH_ACTIVE.equals(job.evidence)) {
             commit(project.withJobs(project.jobs.stream().map(step -> {
                 if (step == job) return renewed;
@@ -4303,6 +4356,13 @@ final class ProjectQueue {
             return true;
         }
         var location = gatheringSite(job, site);
+        if (travelingContribution(job)) {
+            if (success || chest != null) throw new IllegalArgumentException("Deposit requires the chest reservation");
+            replace(project, interruptedContribution(job, now));
+            markAssignmentSeen(project, job.worker, now);
+            restoredLeases.remove(token);
+            return true;
+        }
         if (CONTRIBUTION_ACTIVE.equals(job.evidence)) {
             settleContribution(project, job, evidence, observation, now);
             markAssignmentSeen(project, job.worker, now);
@@ -4958,7 +5018,7 @@ final class ProjectQueue {
         var locks = Set.copyOf(ProjectBlock.stationCells(target, stand));
         if (projects.values().stream().filter(other -> other.world.equals(project.world))
                 .flatMap(other -> other.jobs.stream()).anyMatch(other -> other != job
-                        && (other.state == State.LEASED || other.state == State.WAITING && resumesLoadedFurnace(other.work))
+                        && (holdsWorkLocks(other) || other.state == State.WAITING && resumesLoadedFurnace(other.work))
                         && !Collections.disjoint(other.work.locks, locks))) return false;
 
         var payload = JSON.fromJson(job.work.payload, com.google.gson.JsonObject.class);
@@ -5201,7 +5261,7 @@ final class ProjectQueue {
                                         LEASE_EXPIRED, job.chest, job.resourceSite));
                         continue;
                     }
-                    if (CONTRIBUTION_ACTIVE.equals(job.evidence)) {
+                    if (contributionInProgress(job)) {
                         jobs.set(i, interruptedContribution(job, now));
                         continue;
                     }

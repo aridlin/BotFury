@@ -105,6 +105,7 @@ final class ProjectWorker {
     private static final WorkerReturnTrail returnTrail = new WorkerReturnTrail();
     private static final WorkerCargoRecovery cargoRecovery = new WorkerCargoRecovery();
     private static ProjectItem projectCargoItem;
+    private static boolean travelingContribution, readyToBank;
     private static final Map<String, Integer> recentInventory = new HashMap<>();
     private static boolean observedDeath;
     private static List<ProjectQueue.ResourceSite> returnWaypoints;
@@ -328,6 +329,7 @@ final class ProjectWorker {
         checkedExcavationTool = false;
         gather = null;
         projectCargoItem = null;
+        travelingContribution = readyToBank = false;
         checkedCarriedFuel = false;
         gatherSite = null;
         gatherProgress.reset();
@@ -482,6 +484,7 @@ final class ProjectWorker {
             return;
         }
         if (!pending && now >= nextRequest) request(client, here, success == null ? "renew" : "finish", now);
+        readyToBank = false;
         if (recoverBreathing(client)) return;
         if (success != null) {
             TaskDefense.evade(client, false);
@@ -1223,6 +1226,11 @@ final class ProjectWorker {
             return;
         }
         if (chest != null) {
+            if (travelingContribution) {
+                readyToBank = true;
+                status = "Waiting for the project chest reservation";
+                return;
+            }
             var result = chest.tick(client, now);
             if (result != null) {
                 if (result.stock() != null) chestReport = new ProjectQueue.ChestReport(ProjectBlock.key(target), result.stock(), result.free());
@@ -1994,6 +2002,7 @@ final class ProjectWorker {
             args.put("job", assignment.job().work().id());
             args.put("token", assignment.job().lease());
             if (action.equals("renew")) {
+                if (readyToBank) args.put("readyToBank", true);
                 if (assignment.job().work().kind() == ProjectQueue.Kind.GATHER) {
                     var tools = carriedToolUses(client);
                     if (!tools.isEmpty()) args.put("toolUses", tools);
@@ -2078,6 +2087,7 @@ final class ProjectWorker {
                         BotEvents.add("info", "projects", "Returning carried cargo to the project chest");
                     }
                     deadline = deadline(assignment.job(), now);
+                    travelingContribution = ProjectQueue.travelingContribution(assignment.job());
 
                     var work = assignment.job().work();
                     long started = System.nanoTime();
@@ -2153,6 +2163,7 @@ final class ProjectWorker {
                     var renewed = JSON.fromJson(reply.body(), ProjectQueue.Job.class);
                     if (renewed == null) return;
                     deadline = deadline(renewed, now);
+                    travelingContribution = ProjectQueue.travelingContribution(renewed);
                     if (args.containsKey("receivedRouteSticks")) acknowledgedRouteSticks = true;
                 }
                 if (success == null) nextRequest = now + seconds(4);

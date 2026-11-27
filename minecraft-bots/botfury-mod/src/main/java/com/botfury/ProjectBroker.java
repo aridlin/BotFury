@@ -45,7 +45,8 @@ final class ProjectBroker {
                            boolean supportsMealTrail, List<ProjectQueue.ResourceSite> mealTrail,
                            FieldForage.Source forageSource, boolean checkpointApproach, Set<String> stickCraftInputs,
                            List<ProjectQueue.ReachableOre> reachableOre, boolean groundedGatherRetry, List<String> localStarterLogs,
-                           Map<String, Integer> claimItems, List<ProjectQueue.ResourceSite> occupiedCells) {}
+                           Map<String, Integer> claimItems, List<ProjectQueue.ResourceSite> occupiedCells,
+                           boolean readyToBank) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
         if (queue == null) {
@@ -917,7 +918,9 @@ final class ProjectBroker {
                     board.recordMealNeed(request.project, request.job, request.token, request.needsMeal, request.carryingMeal, request.mealTrail, now);
                     board.recordRouteStickNeed(request.project, request.job, request.token, request.needsRouteSticks, now);
                     if (request.receivedRouteSticks) board.recordRouteStickReceipt(request.project, request.job, request.token, now);
-                    var renewed = board.renew(request.project, request.job, request.token, request.resourceSite, now, request.needsRouteTool, request.needsRouteBench);
+                    var renewed = board.renew(request.project, request.job, request.token, request.resourceSite, now,
+                            request.needsRouteTool, request.needsRouteBench,
+                            request.readyToBank ? ProjectBroker::workerPosition : null);
                     reply(exchange, renewed == null ? 409 : 200, renewed);
                 }
                 case "recover-furnace" -> {

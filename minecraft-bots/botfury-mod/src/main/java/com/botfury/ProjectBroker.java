@@ -22,6 +22,7 @@ import java.util.UUID;
 /** Local coordinator API. Workers must stop acting when their lease can no longer be renewed. */
 final class ProjectBroker {
     private static final Gson JSON = new Gson();
+    static final String CLEAR_PLACEMENT_HEADER = "X-BotFury-Clear-Placement";
     private static final int MAX_BODY = 512 * 1024;
     private static ProjectQueue queue;
     private static long nextStationCheck;
@@ -44,7 +45,7 @@ final class ProjectBroker {
                            boolean supportsMealTrail, List<ProjectQueue.ResourceSite> mealTrail,
                            FieldForage.Source forageSource, boolean checkpointApproach, Set<String> stickCraftInputs,
                            List<ProjectQueue.ReachableOre> reachableOre, boolean groundedGatherRetry, List<String> localStarterLogs,
-                           Map<String, Integer> claimItems) {}
+                           Map<String, Integer> claimItems, List<ProjectQueue.ResourceSite> occupiedCells) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
         if (queue == null) {
@@ -789,6 +790,12 @@ final class ProjectBroker {
                     reply(exchange, 200, true);
                 }
                 case "claim" -> {
+                    var obstruction = board.obstructedPlacement(world, request.worker, request.occupiedCells, now);
+                    if (obstruction != null) {
+                        exchange.getResponseHeaders().set(CLEAR_PLACEMENT_HEADER, Long.toString(obstruction.checked().asLong()));
+                        reply(exchange, 200, null);
+                        break;
+                    }
                     var position = workerPosition(request.worker);
                     var reported = request.claimItems;
                     boolean hasClaimInventory = reported != null && reported.size() <= 36

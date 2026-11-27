@@ -758,6 +758,28 @@ final class ProjectQueue {
         return true;
     }
 
+    synchronized ProjectBlock.Position obstructedPlacement(String world, String worker, List<ResourceSite> occupied, long now) {
+        if (!validId(worker) || occupied == null || occupied.isEmpty() || occupied.size() > 12
+                || occupied.stream().anyMatch(Objects::isNull)) return null;
+        for (var project : projects.values()) {
+            if (project.jobs.stream().anyMatch(job -> workerCommittedToLease(job, worker) && job.expiresAt > now)) return null;
+        }
+        for (var project : projects.values()) {
+            if (!project.world.equals(world) || cancelled(project)) continue;
+            for (var job : project.jobs) {
+                if (job.state != State.LEASED || job.work.kind != Kind.BUILD || job.expiresAt <= now
+                        || BATCH_RESERVED.equals(job.evidence)) continue;
+                var placement = JSON.fromJson(job.work.payload, StationTarget.class);
+                if (placement == null || placement.target == null) continue;
+                var target = placement.target.checked();
+                if (occupied.contains(new ResourceSite(target.getX(), target.getY(), target.getZ()))) {
+                    return placement.target;
+                }
+            }
+        }
+        return null;
+    }
+
     synchronized Set<String> accessReservations(String world) {
         var reserved = new HashSet<String>();
         for (var project : projects.values()) {

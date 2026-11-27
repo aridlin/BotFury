@@ -1036,6 +1036,28 @@ class ProjectQueueTest {
         assertTrue(queue.failedScaffoldCleanups(WORLD).isEmpty());
     }
 
+    @Test void onlyIdleWorkersIntersectingALivePlacementAreAskedToClearIt() throws Exception {
+        var queue = new ProjectQueue(directory.resolve("idle-clearance.json"));
+        var target = new ProjectBlock.Position(8, 116, 2);
+        var cells = List.of(new ProjectQueue.ResourceSite(8, 115, 2), new ProjectQueue.ResourceSite(8, 116, 2));
+        var place = new ProjectQueue.Work("place", BUILD,
+                "{\"target\":{\"x\":8,\"y\":116,\"z\":2},\"block\":\"minecraft:oak_planks\"}",
+                List.of(), Set.of("block:8,116,2"));
+        var supply = new ProjectQueue.Work("supply", GATHER, "{}", List.of(), Set.of());
+        queue.submit("house", WORLD, List.of(place, supply));
+        assertNull(queue.obstructedPlacement(WORLD, "idle", cells, 1));
+        var lease = queue.claim(WORLD, "builder", Set.of(BUILD), 2).job();
+        queue.claim(WORLD, "collector", Set.of(GATHER), 3);
+        assertEquals(target, queue.obstructedPlacement(WORLD, "idle", cells, 4));
+        assertNull(queue.obstructedPlacement(WORLD, "builder", cells, 4));
+        assertNull(queue.obstructedPlacement(WORLD, "collector", cells, 4));
+        assertNull(queue.obstructedPlacement("another-world", "idle", cells, 4));
+        assertNull(queue.obstructedPlacement(WORLD, "idle", cells.subList(0, 1), 4));
+        assertNull(queue.obstructedPlacement(WORLD, "idle", cells, lease.expiresAt()));
+        assertTrue(queue.finish("house", "place", lease.lease(), true, "Placed", 5));
+        assertNull(queue.obstructedPlacement(WORLD, "idle", cells, 6));
+    }
+
     @Test void coordinatorInspectionRequiresCompletedMutationsAndRetiresAStaleWorkerLease() throws Exception {
         var path = directory.resolve("local-inspection.json");
         var queue = new ProjectQueue(path);

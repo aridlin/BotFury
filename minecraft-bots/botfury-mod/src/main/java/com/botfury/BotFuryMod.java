@@ -3,6 +3,8 @@ package com.botfury;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
+import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.fabricmc.api.ClientModInitializer;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.AccessibilityOnboardingScreen;
@@ -31,6 +33,9 @@ public class BotFuryMod implements ClientModInitializer {
     private static final String runtimeId = UUID.randomUUID().toString();
     private static volatile String statusSnapshot = "{\"ready\":false,\"connected\":false,\"protocol\":3}";
     private static int snapshotTicks;
+    private static final ServerAuthentication SERVER_AUTH = MANAGED_HTTP ? ServerAuthentication.load() : null;
+    private static final java.util.ArrayDeque<ChatLine> DASHBOARD_CHAT = new java.util.ArrayDeque<>();
+    private record ChatLine(String text, long time, boolean publicChat) {}
     private static final SequenceHistory COMMAND_SEQUENCES = new SequenceHistory();
     private static final long startedAtMillis = System.currentTimeMillis();
     private static boolean autoJoinRegistered = false;
@@ -45,6 +50,7 @@ public class BotFuryMod implements ClientModInitializer {
         FormationClient.register();
         if (Boolean.parseBoolean(System.getProperty("botfury.httpEnabled", "true"))) startHttp();
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            if (MANAGED_HTTP) FleetBedSpawn.tick(client);
             if (++snapshotTicks % 5 == 0) updateStatus(client);
             if (client.getOverlay() != null) return;
             if (MANAGED_HTTP && client.currentScreen instanceof AccessibilityOnboardingScreen) {
@@ -54,7 +60,31 @@ public class BotFuryMod implements ClientModInitializer {
             }
             if (client.currentScreen instanceof TitleScreen || client.world != null) ready = true;
         });
+        if (MANAGED_HTTP) {
+            ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
+                DASHBOARD_CHAT.clear();
+                if (SERVER_AUTH != null) SERVER_AUTH.reset();
+            });
+            ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> DASHBOARD_CHAT.clear());
+            ClientReceiveMessageEvents.CHAT.register((message, signedMessage, sender, parameters, timestamp) ->
+                recordDashboardChat(message, true));
+            ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
+                FleetBedSpawn.gameMessage(message);
+                if (overlay) return;
+                if (SERVER_AUTH != null) SERVER_AUTH.handle(MinecraftClient.getInstance(), message.getString());
+                recordDashboardChat(message, false);
+            });
+        }
         registerAutoJoin();
+    }
+
+    private static void recordDashboardChat(Text message, boolean publicChat) {
+        String text = message.getString();
+        if (SERVER_AUTH != null) text = SERVER_AUTH.redact(text);
+        if (text.isBlank()) return;
+        if (DASHBOARD_CHAT.size() == 40) DASHBOARD_CHAT.removeFirst();
+        int end = text.offsetByCodePoints(0, Math.min(384, text.codePointCount(0, text.length())));
+        DASHBOARD_CHAT.addLast(new ChatLine(text.substring(0, end), System.currentTimeMillis(), publicChat));
     }
 
     private void startHttp() {
@@ -187,13 +217,25 @@ public class BotFuryMod implements ClientModInitializer {
         status.put("fuelChoicesCapable", true);
         status.put("inventoryCoordinates", true);
         status.put("taskDefenseEnabled", TaskDefense.enabled());
+        if (MANAGED_HTTP) {
+            status.put("chat", DASHBOARD_CHAT);
+            status.put("bedTask", FleetBedSpawn.status());
+        }
+        if (client.getCurrentServerEntry() != null) {
+            status.put("serverAddress", client.getCurrentServerEntry().address);
+        }
         if (client.player != null) {
             var items = new java.util.TreeMap<String, Integer>();
             var inventory = client.player.getInventory();
-            for (int slot=0;slot<inventory.size();slot++) {
-                var stack=inventory.getStack(slot);
-                if(!stack.isEmpty())items.merge(net.minecraft.registry.Registries.ITEM.getId(stack.getItem()).toString(),stack.getCount(),Integer::sum);
+            var slots = new java.util.ArrayList<java.util.Map<String, Object>>();
+            for (int slot = 0; slot < inventory.size(); slot++) {
+                var stack = inventory.getStack(slot);
+                if (stack.isEmpty()) continue;
+                String id = net.minecraft.registry.Registries.ITEM.getId(stack.getItem()).toString();
+                items.merge(id, stack.getCount(), Integer::sum);
+                if (MANAGED_HTTP) slots.add(java.util.Map.of("slot", slot, "id", id, "count", stack.getCount()));
             }
+            if (MANAGED_HTTP) status.put("inventorySlots", slots);
             status.put("items", items);
             status.put("health", client.player.getHealth());
             status.put("maxHealth", client.player.getMaxHealth());
@@ -201,7 +243,10 @@ public class BotFuryMod implements ClientModInitializer {
             status.put("alive", client.player.isAlive());
             if (MANAGED_HTTP && client.player.isAlive()) {
                 var route = BaritoneClient.route();
-                if (!route.isEmpty()) status.put("route", route.stream().mapToLong(net.minecraft.util.math.BlockPos::asLong).toArray());
+                if (!route.isEmpty()) {
+                    status.put("route", route.stream().mapToLong(net.minecraft.util.math.BlockPos::asLong).toArray());
+                    status.put("mapRoute", route.stream().map(pos -> new int[]{pos.getX(), pos.getZ()}).toList());
+                }
             }
         }
         status.putAll(LocalFormation.telemetry());
@@ -305,6 +350,19 @@ public class BotFuryMod implements ClientModInitializer {
         cmd = cmd.trim();
         MinecraftClient client = MinecraftClient.getInstance();
         if (cmd.equals("status")) return statusSnapshot;
+        if (cmd.startsWith("bed:spawn ")) {
+            if (!MANAGED_HTTP || client.player == null) return "error: bot is not connected";
+            String[] coordinates = cmd.substring(10).strip().split("\\s+");
+            if (coordinates.length != 3) return "error: bed:spawn requires X Y Z";
+            try {
+                var position = new net.minecraft.util.math.BlockPos(Integer.parseInt(coordinates[0]),
+                        Integer.parseInt(coordinates[1]), Integer.parseInt(coordinates[2]));
+                client.execute(() -> FleetBedSpawn.start(client, position));
+                return "Bed spawn queued";
+            } catch (NumberFormatException error) {
+                return "error: invalid bed coordinates";
+            }
+        }
         if (cmd.startsWith("project:worker ")) {
             if (!MANAGED_HTTP || client.player == null || !BaritoneClient.available()) {
                 return "error: project workers must be connected managed bots with Baritone";
@@ -315,7 +373,10 @@ public class BotFuryMod implements ClientModInitializer {
                 String project = enrollment.length == 2 ? enrollment[1] : null;
                 if (project != null && !ProjectQueue.validId(project)) return "error: invalid project ID";
                 if (coordinator < 1024 || coordinator > 65535) return "error: invalid coordinator port";
-                client.execute(() -> ProjectWorker.start(client, coordinator, project));
+                client.execute(() -> {
+                    FleetBedSpawn.cancel();
+                    ProjectWorker.start(client, coordinator, project);
+                });
                 return "Project worker enabled";
             } catch (NumberFormatException error) {
                 return "error: invalid coordinator port";
@@ -324,7 +385,7 @@ public class BotFuryMod implements ClientModInitializer {
         if (cmd.equals("control:stop") || cmd.equals("control:resume")) {
             boolean stop = cmd.endsWith("stop");
             client.execute(() -> {
-                if (stop) { LocalFormation.pauseMovement(); BotInventory.hold(); }
+                if (stop) { FleetBedSpawn.cancel(); LocalFormation.pauseMovement(); BotInventory.hold(); }
                 else { ProjectWorker.stop(client); MiningTask.stop(); BotInventory.resume(); }
                 BotEvents.add("info", "control", stop ? "Paused bot tasks" : "Resumed formation orders");
             });

@@ -246,6 +246,10 @@ SSH sessions running while the fleet is in use. The back channel on port 8764
 lets remote bots renew project jobs and coordinate mining. It does not carry
 Minecraft traffic.
 
+### Fleet Command dashboard
+
+Use [Fleet Command](fleet-dashboard/README.md) to supervise workers across several hosts, inspect positions, chat and inventories, and run saved professions. Host the hub on an always-on machine so that it stays available when the desktop is offline.
+
 ### Legacy Dashboard: Flask
 
 1. **Install Python Dependencies**:

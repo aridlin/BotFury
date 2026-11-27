@@ -18,6 +18,40 @@ class ProjectQueueTest {
     @TempDir Path directory;
     private static final String WORLD = "test|overworld";
 
+    @Test void expiredPrivateGatherResumesFromIncreasingRecoveredInputs() throws Exception {
+        var path = directory.resolve("recovered-inventory-gather.json");
+        var queue = new ProjectQueue(path);
+        var gather = job("logs", GATHER, List.of()).withPayload("""
+                {"resource":"block:minecraft:oak_log","variant":"both","item":"minecraft:oak_log","count":4}
+                """);
+        var craft = new ProjectQueue.Work("planks", CRAFT,
+                "{\"recipe\":\"minecraft:oak_planks\",\"count\":16,\"inventory\":true}",
+                List.of("logs"), Set.of(), "logs");
+        queue.submitSupplied("house", WORLD, List.of(gather, craft), "block:3,64,0");
+        long now = 1;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            var work = queue.claim(WORLD, "lost", Set.of(GATHER), "house", now).job();
+            now = work.expiresAt() + 1;
+        }
+        assertEquals(ProjectQueue.State.FAILED, queue.snapshot(now).get(0).jobs().get(0).state());
+        assertNull(queue.claim(WORLD, "helper", Set.of(GATHER), "house", now,
+                null, material -> false, (worker, item) -> 2, null));
+        var recovered = queue.claim(WORLD, "helper", Set.of(GATHER), "house", now + 1,
+                null, material -> false, (worker, item) -> 3, null).job();
+        assertEquals("helper", recovered.worker());
+        assertNull(recovered.resourceSite());
+        now = recovered.expiresAt() + 1;
+        assertEquals(ProjectQueue.State.FAILED, queue.snapshot(now).get(0).jobs().get(0).state());
+
+        var restored = new ProjectQueue(path);
+        assertNull(restored.claim(WORLD, "helper", Set.of(GATHER), "house", now,
+                null, material -> false, (worker, item) -> 3, null));
+        var complete = restored.claim(WORLD, "helper", Set.of(GATHER), "house", now + 1,
+                null, material -> false, (worker, item) -> 4, null).job();
+        assertTrue(restored.finish("house", "logs", complete.lease(), true, "Observed four logs", now + 2));
+        assertEquals("planks", restored.claim(WORLD, "helper", Set.of(CRAFT), "house", now + 3).job().work().id());
+    }
+
     @Test void reopeningPreparationReleasesAnAlreadyCompletedFurnacesReservation() throws Exception {
         var file = directory.resolve("rebuilt-furnace.json");
         String key = "block:0,64,0";

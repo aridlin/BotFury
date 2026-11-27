@@ -1670,6 +1670,10 @@ final class ProjectQueue {
             if (deposit != null) return deposit;
         }
         if (kinds.contains(Kind.GATHER)) {
+            if (heldCount != null) {
+                var recovered = offerGatherWithRecoveredInputs(world, worker, projectId, now, heldCount, carried);
+                if (recovered != null) return recovered;
+            }
             if (toolUses != null) {
                 var mining = offerEquippedMiner(world, worker, projectId, toolUses, now, position, true, false);
                 if (mining != null) return mining;
@@ -4824,16 +4828,48 @@ final class ProjectQueue {
                 && project.supplyRecoveries.containsKey("stalled-stock-gather:" + gather.work.id);
         if (gather.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) return false;
         boolean expiredLease = LEASE_EXPIRED.equals(gather.evidence);
-        if ((GATHER_STALLED.equals(gather.evidence) || expiredLease) && gather.work.locks.isEmpty()) {
-            var consumer = onlyInventoryCraftConsumer(project, gather);
-            var recipe = consumer == null ? null : JSON.fromJson(consumer.work.payload, InventoryRecipe.class);
-            // The next stage follows whoever gathers the inputs, so no completed recipe is lost.
-            if (recipe != null && recipe.inventory) return true;
-        }
+        if ((GATHER_STALLED.equals(gather.evidence) || expiredLease) && feedsPrivateInventoryCraft(project, gather)) return true;
         if (!exhaustedRoute && !expiredLease) return false;
         var deposit = contributionDeposit(project, gather);
         return deposit != null && deposit.work.locks.contains(project.supplyChest)
                 && depositPrerequisitesReady(project, gather, deposit);
+    }
+
+    private static boolean feedsPrivateInventoryCraft(Project project, Job gather) {
+        if (!gather.work.locks.isEmpty()) return false;
+        var consumer = onlyInventoryCraftConsumer(project, gather);
+        var recipe = consumer == null ? null : JSON.fromJson(consumer.work.payload, InventoryRecipe.class);
+        // The craft follows the gatherer, so reassigning the inputs does not undo completed work.
+        return recipe != null && recipe.inventory;
+    }
+
+    private Assignment offerGatherWithRecoveredInputs(String world, String worker, String projectId, long now,
+                                                      java.util.function.ToIntBiFunction<String, String> heldCount,
+                                                      Set<String> reservedMaterials) throws IOException {
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || project.supplyChest == null || project.repeat != null
+                    || projectId != null && !projectId.equals(project.id)) continue;
+            for (var gather : project.jobs) {
+                if (gather.state != State.FAILED || gather.work.kind != Kind.GATHER || gather.work.sameWorkerAs != null
+                        || !LEASE_EXPIRED.equals(gather.evidence) || !feedsPrivateInventoryCraft(project, gather)
+                        || gather.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) continue;
+                var source = gatherSource(gather.work.payload);
+                var inputs = JSON.fromJson(gather.work.payload, GatherQuantity.class);
+                if (source == null || inputs.count == null || inputs.count < 1 || reservedMaterials.contains(source.item)
+                        || hasPendingDepositOf(world, worker, source.item)) continue;
+                int held = Math.min(inputs.count, heldCount.applyAsInt(worker, source.item));
+                String key = "carried-gather-recovery:" + gather.work.id;
+                if (held < inputs.count - inputs.count / 4 || held <= project.supplyRecoveries.getOrDefault(key, 0)) continue;
+                var lease = new Job(gather.work, State.LEASED, MAX_ATTEMPTS, worker, UUID.randomUUID(), now + LEASE_MS,
+                        null, gather.chest);
+                var counts = new HashMap<>(project.supplyRecoveries);
+                counts.put(key, held);
+                commit(project.withRecovery(project.jobs.stream().map(job -> job == gather ? lease : job).toList(), counts));
+                markAssignmentSeen(project, worker, now);
+                return assignment(project, lease);
+            }
+        }
+        return null;
     }
 
     private static Job stalledSurfacePreparationSupplier(Project project, Job gather, long now) {

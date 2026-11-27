@@ -3666,10 +3666,11 @@ final class ProjectQueue {
         String cargo = contributionCargo(deposit, worker);
         int earlierCount = project.supplyRecoveries.getOrDefault(cargo, 0);
         var origin = project.contributionOrigins.get(cargo);
-        var station = position == null ? null : JSON.fromJson(deposit.work.payload, StationTarget.class).target;
+        var station = JSON.fromJson(deposit.work.payload, StationTarget.class).target;
         // A newer uphill return method gets one chance with retained cargo, even at the same origin.
         boolean upgradedReturn = interrupted && CONTRIBUTION_SETTLED.equals(deposit.evidence)
-                && earlierCount > 0 && origin != null && station != null && station.y() - position.y >= 5
+                && earlierCount > 0 && origin != null && station != null && position != null
+                && station.y() - position.y >= 5
                 && returnRevision > project.supplyRecoveries.getOrDefault(cargo + ":route", 0);
         if (project.repeat != null || project.supplyChest == null
                 || !additionalCargo && !upgradedReturn && (deposit.chest != null
@@ -3689,8 +3690,7 @@ final class ProjectQueue {
                     && !differentContributionApproach(deposit, origin, position)) return null;
         }
         int goal = payload.get("count").getAsInt();
-        boolean travel = interrupted && returnRevision >= STAGED_STOCK_RETURN_REVISION
-                && station != null && distance(position, station) > STOCK_CONTACT_RADIUS;
+        boolean travel = interrupted && returnRevision >= STAGED_STOCK_RETURN_REVISION && station != null;
         if (!interrupted && carriedTotal < goal || ownChestContributionBlocked(project, gather, deposit, travel)) return null;
         int attempts = !rebuiltStorageRetry && (retry || additionalCargo || upgradedReturn) ? 1 : 0;
         var assigned = new Job(deposit.work, State.LEASED, attempts, worker,

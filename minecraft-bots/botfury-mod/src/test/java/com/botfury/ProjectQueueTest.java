@@ -2,6 +2,9 @@ package com.botfury;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -2445,8 +2448,11 @@ class ProjectQueueTest {
                 .getAsJsonObject().get("count").getAsInt());
     }
 
-    @Test void returningMinerAcquiresBothChestLocksOnlyAfterArriving() throws Exception {
-        var path = directory.resolve("staged-mining-return.json");
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(ints = {64, -54})
+    void returningMinerAcquiresBothChestLocksOnlyAfterArriving(Integer claimHeight) throws Exception {
+        var path = directory.resolve("staged-mining-return-" + claimHeight + ".json");
         var queue = new ProjectQueue(path);
         var cave = new ProjectQueue.ResourceSite(12, -54, 23);
         var near = new ProjectQueue.ResourceSite(3, 64, 2);
@@ -2467,7 +2473,9 @@ class ProjectQueueTest {
         var mining = queue.claim(WORLD, "miner", Set.of(GATHER), 1).job();
         assertTrue(queue.finish("stock", "dig", mining.lease(), false, ProjectQueue.CARGO_CHECKPOINT, null, cave, 2));
         int revision = ProjectQueue.STAGED_STOCK_RETURN_REVISION;
-        var inbound = queue.offerUrgentMiningDeposit(WORLD, "miner", null, 3, cave, (name, material) -> 1, revision).job();
+        var claimPosition = claimHeight == null ? null : new ProjectQueue.ResourceSite(3, claimHeight, 2);
+        var inbound = queue.offerUrgentMiningDeposit(WORLD, "miner", null, 3, claimPosition,
+                (name, material) -> 1, revision).job();
         assertTrue(ProjectQueue.travelingContribution(inbound));
         var check = queue.claim(WORLD, "keeper", Set.of(TRANSFER), "other", 4).job();
 
@@ -2483,6 +2491,7 @@ class ProjectQueueTest {
                 true, "Unreserved deposit", receipt, 7));
         assertTrue(restored.finish("other", "verify", check.lease(), true, "Verified stock",
                 new ProjectQueue.ChestReport(partner, java.util.Map.of("minecraft:dirt", 1)), 8));
+        assertTrue(ProjectQueue.travelingContribution(restored.renew("stock", "bank", inbound.lease(), 9)));
         assertTrue(ProjectQueue.travelingContribution(restored.renew("stock", "bank", inbound.lease(),
                 null, 9, false, false, name -> cave)));
         var authorized = restored.renew("stock", "bank", inbound.lease(), null, 10, false, false, name -> near);

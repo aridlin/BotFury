@@ -2371,8 +2371,11 @@ final class ProjectQueue {
                 .findFirst().orElse(null);
         boolean canCraftPickaxe = routeCraftTarget >= 1 && routeCraftTarget <= 36;
         if (spare == null && !canCraftPickaxe && !canSupplyBench && !fromStock) return null;
-        boolean reservedWood = pendingBuildMaterials(world, worker).stream().anyMatch(item ->
+        var materials = pendingBuildMaterials(world, worker);
+        boolean reservedWood = materials.stream().anyMatch(item ->
                 item.endsWith("_planks") || ResourceCatalog.blocks("any_logs", "both").contains(item));
+        boolean reservedBench = materials.contains("minecraft:crafting_table")
+                || hasPendingDepositOf(world, worker, "minecraft:crafting_table");
         RouteBenchStock benchStock = null;
         boolean checkedStock = false;
         for (var project : projects.values()) {
@@ -2382,7 +2385,7 @@ final class ProjectQueue {
                 if (deposit.state != State.LEASED || deposit.expiresAt <= now || !routeToolRequests.containsKey(deposit.lease)
                         || worker.equalsIgnoreCase(deposit.worker)) continue;
                 boolean stationBench = productionWork(deposit.work);
-                boolean requestBench = !reservedWood && routeToolRequests.get(deposit.lease)
+                boolean requestBench = !reservedBench && !reservedWood && routeToolRequests.get(deposit.lease)
                         && (stationBench || spare == null && !canCraftPickaxe);
                 if (!requestBench && (stationBench || spare == null && !canCraftPickaxe)) continue;
                 String id = "route-tool-" + deposit.lease;
@@ -2432,10 +2435,16 @@ final class ProjectQueue {
         if (candidate == null || held.applyAsInt(worker, "minecraft:crafting_table") != 0) return null;
         var observations = chestStock(world);
         var claimed = leasedKeys(world, now);
+        var logs = Set.copyOf(ResourceCatalog.blocks("any_logs", "both"));
         RouteBenchStock best = null;
         double bestDistance = STOCK_RECOVERY_RADIUS;
         for (var source : projects.values()) {
-            if (!world.equals(source.world) || cancelled(source) || source.repeat != null || source.supplyChest == null) continue;
+            if (!world.equals(source.world) || cancelled(source) || source.repeat != null || source.supplyChest == null
+                    || projects.values().stream().anyMatch(other -> other != source && world.equals(other.world)
+                            && (source.supplyChest.equals(other.supplyChest)
+                                || source.supplyChest.equals(reservedStorage(other))))
+                    || source.jobs.stream().anyMatch(job -> job.work.locks.contains(source.supplyChest)
+                            && usesGroupedStock(job))) continue;
             var observed = observations.get(source.supplyChest);
             if (observed == null) continue;
             var storage = source.jobs.stream().filter(job -> job.state == State.DONE && job.work.constructionMaterial != null
@@ -2445,16 +2454,21 @@ final class ProjectQueue {
             if (location == null || location.y() - candidate.y > CONSTRUCTION_PICKUP_RETRY_CLIMB) continue;
             double distance = distance(candidate, location);
             if (distance >= bestDistance) continue;
-            for (var item : new TreeSet<>(observed.report.items.keySet())) {
-                if (!item.startsWith("minecraft:") || !item.endsWith("_planks")) continue;
+            var options = observed.report.items.keySet().stream().sorted(
+                    Comparator.comparing((String item) -> !item.equals("minecraft:crafting_table"))
+                            .thenComparing(Comparator.naturalOrder())).toList();
+            for (var item : options) {
+                int target = item.equals("minecraft:crafting_table") || logs.contains(item) ? 1
+                        : item.startsWith("minecraft:") && item.endsWith("_planks") ? 4 : 0;
+                if (target == 0 || hasPendingDepositOf(world, worker, item)) continue;
                 int carried = held.applyAsInt(worker, item);
-                if (carried < 0 || carried >= 4) continue;
-                int reserve = constructionStockReserve(source, item);
-                if (observed.report.items.get(item) - reserve < 4 - carried) continue;
+                if (carried < 0 || carried >= target) continue;
+                int reserve = protectedStockReserve(source, item);
+                if (observed.report.items.get(item) - reserve < target - carried) continue;
                 var payload = JSON.fromJson(storage.work.payload, com.google.gson.JsonObject.class);
                 payload.addProperty("direction", "TAKE");
                 payload.addProperty("item", item);
-                payload.addProperty("stock", 4);
+                payload.addProperty("stock", target);
                 best = new RouteBenchStock(payload.toString(), source.supplyChest, reserve, storage.work.locks);
                 bestDistance = distance;
                 break;
@@ -2490,6 +2504,15 @@ final class ProjectQueue {
         int remaining = (int)project.jobs.stream().filter(job -> job.state != State.DONE && job.work.kind == Kind.BUILD
                 && job.work.sameWorkerAs != null && pickups.contains(job.work.sameWorkerAs)).count();
         return verifyStock + otherStock + remaining;
+    }
+
+    private static int protectedStockReserve(Project project, String item) {
+        int outputFloor = project.jobs.stream().filter(job -> job.work.kind == Kind.TRANSFER
+                && job.work.locks.contains(project.supplyChest) && !settledConstructionDeposit(project, job))
+                .map(ProjectQueue::transferTarget)
+                .filter(target -> target != null && "DEPOSIT".equals(target.direction) && item.equals(target.item))
+                .mapToInt(PickupTarget::stock).max().orElse(0);
+        return Math.max(outputFloor, constructionStockReserve(project, item));
     }
 
     synchronized Assignment offerEquippedMiner(String world, String worker, String projectId,
@@ -3756,12 +3779,7 @@ final class ProjectQueue {
             if (station == null || !Collections.disjoint(station.work.locks, busy)
                     || projects.values().stream().anyMatch(other -> other != supplier && project.world.equals(other.world)
                             && supplier.supplyChest.equals(reservedStorage(other)))) continue;
-            int outputFloor = supplier.jobs.stream().filter(job -> job.work.kind == Kind.TRANSFER
-                    && job.work.locks.contains(supplier.supplyChest) && !settledConstructionDeposit(supplier, job))
-                    .map(ProjectQueue::transferTarget)
-                    .filter(target -> target != null && "DEPOSIT".equals(target.direction) && source.item.equals(target.item))
-                    .mapToInt(PickupTarget::stock).max().orElse(0);
-            int reserve = Math.max(outputFloor, constructionStockReserve(supplier, source.item));
+            int reserve = protectedStockReserve(supplier, source.item);
             if (stockCount(stock.report, source.item) - reserve < quantity.count - held
                     || supplier.jobs.stream().anyMatch(job -> job.work.kind == Kind.TRANSFER
                     && job.work.locks.contains(supplier.supplyChest) && usesGroupedStock(job))) continue;

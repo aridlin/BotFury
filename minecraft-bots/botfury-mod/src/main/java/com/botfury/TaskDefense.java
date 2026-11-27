@@ -254,9 +254,7 @@ final class TaskDefense {
                             && !(other instanceof net.minecraft.entity.mob.CreeperEntity || other instanceof WardenEntity));
             if (target != null) {
                 stopEating(client);
-                if (equipWeapon(client) && client.player.getAttackCooldownProgress(.5f) >= .95f) {
-                    LocalFormation.punch(client, target);
-                }
+                attackThreat(client, target);
                 return true;
             }
             if (eatWhenNeeded(client)) return true;
@@ -280,9 +278,7 @@ final class TaskDefense {
             prey = animal;
             BotEvents.add("info", "defense", "Foraging for food: " + animal.getName().getString());
         }
-        if (equipWeapon(client) && player.getAttackCooldownProgress(.5f) >= .95f) {
-            LocalFormation.punch(client, animal);
-        }
+        attackThreat(client, animal);
         return true;
     }
 
@@ -303,21 +299,28 @@ final class TaskDefense {
         pathPaused = false;
     }
 
-    static boolean equipWeapon(MinecraftClient client) {
+    static void attackThreat(MinecraftClient client, net.minecraft.entity.LivingEntity target) {
+        var defense = config;
+        String owner = defense == null ? client.player.getGameProfile().getName() : defense.owner;
+        LocalFormation.attack(client, target, owner, defense == null ? List.of() : defense.protectedNames, true);
+    }
+
+    static boolean equipWeapon(MinecraftClient client, boolean avoidSword) {
         var inventory = client.player.getInventory();
         int slot = -1;
         double best = 0;
         for (int i = 0; i < 36; i++) {
             var stack = inventory.getStack(i);
             var item = stack.getItem();
+            if (avoidSword && item instanceof SwordItem) continue;
             double score = item instanceof SwordItem sword ? sword.getAttackDamage() * 1.6
-                    : item instanceof AxeItem axe ? axe.getAttackDamage() : 0;
+                    : item instanceof AxeItem axe ? axe.getAttackDamage() : avoidSword ? 1 : 0;
             if (score > best || score == best && score > 0 && i == inventory.selectedSlot) {
                 slot = i;
                 best = score;
             }
         }
-        return slot < 0 || select(client, slot);
+        return slot < 0 ? !avoidSword : select(client, slot);
     }
 
     private static boolean eatWhenNeeded(MinecraftClient client) {

@@ -7,6 +7,8 @@ import net.minecraft.client.network.ServerInfo;
 import net.minecraft.text.Text;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.item.SwordItem;
 import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import net.minecraft.util.Hand;
 import java.util.UUID;
@@ -486,9 +488,8 @@ final class LocalFormation {
                 }
                 if (strikeGoal != null) teleportToward(client, strikeGoal);
             }
-            if (client.player.squaredDistanceTo(target) <= 9 && client.player.canSee(target)
-                    && client.player.getAttackCooldownProgress(0.5f) >= 0.95f) {
-                punch(client, target);
+            if (client.player.squaredDistanceTo(target) <= 9 && client.player.canSee(target)) {
+                attack(client, target, order.owner, order.protectedNames, false);
             }
             return;
         }
@@ -554,11 +555,7 @@ final class LocalFormation {
     static boolean defend(MinecraftClient client, String owner, java.util.Collection<String> protectedNames,
                           java.util.function.Predicate<LivingEntity> threat) {
         var target = defenseTarget(client, owner, protectedNames, threat);
-        if (target != null && client.player.getAttackCooldownProgress(0.5f) >= 0.95f) {
-            punch(client, target);
-            return true;
-        }
-        return false;
+        return target != null && attack(client, target, owner, protectedNames, false);
     }
 
     static LivingEntity defenseTarget(MinecraftClient client, String owner, java.util.Collection<String> protectedNames,
@@ -577,13 +574,31 @@ final class LocalFormation {
                 .min(java.util.Comparator.comparingDouble(client.player::squaredDistanceTo)).orElse(null);
     }
 
-    static void punch(MinecraftClient client, LivingEntity target) {
-        if (client.interactionManager == null) return;
+    static boolean attack(MinecraftClient client, LivingEntity target, String owner,
+                          java.util.Collection<String> protectedNames, boolean chooseWeapon) {
+        if (client.interactionManager == null) return false;
+        var friends = BotFriends.names();
+        if (!BotFriends.reliable()) return false;
+        boolean avoidSword = (chooseWeapon || client.player.getMainHandStack().getItem() instanceof SwordItem)
+                && !client.world.getEntitiesByClass(PlayerEntity.class, target.getBoundingBox().expand(1.25, .5, 1.25),
+                player -> player != client.player && player != target && player.isAlive() && !player.isSpectator()
+                        && (player.isTeammate(client.player) || protectedPlayer(player, owner, protectedNames, friends))).isEmpty();
+        // Vanilla applies a charged sword sweep around the victim without checking our fleet or friend lists.
+        if ((chooseWeapon || avoidSword) && !TaskDefense.equipWeapon(client, avoidSword)
+                || client.player.getAttackCooldownProgress(.5f) < .95f) return false;
         client.player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, target.getEyePos());
         client.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.LookAndOnGround(
                 client.player.getYaw(), client.player.getPitch(), client.player.isOnGround()));
         client.interactionManager.attackEntity(client.player, target);
         client.player.swingHand(Hand.MAIN_HAND);
+        return true;
+    }
+
+    private static boolean protectedPlayer(PlayerEntity player, String owner,
+                                           java.util.Collection<String> protectedNames, List<String> friends) {
+        String name = player.getGameProfile().getName();
+        return BotFriends.protectedName(name, owner, protectedNames)
+                || friends.stream().anyMatch(name::equalsIgnoreCase) || BotCollisionPolicy.known(name);
     }
 
     private static void travel(MinecraftClient client, Vec3d destination) {

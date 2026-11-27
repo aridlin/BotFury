@@ -49,6 +49,10 @@ Use at least 32 random characters for every token and restrict read access to co
 
 The console currently uses the managed Java worker's `/status` and `/command` API. Agents can show separately launched workers listening on their configured ports. Start and Stop instances apply to supervised processes. Different slot selections can connect to different Minecraft servers at the same time. Select a server and dimension on the map to see its workers. Map positions, active Baritone routes, inventories and chat are reported by the clients.
 
+The map draws sampled terrain from chunks loaded by managed workers. Zoomed-out chunks use four dithered terrain-color quadrants. Zoom in to see dithered pixels from the worker's installed block textures, with Minecraft map colors as a fallback for surfaces without a top texture. The hub keeps observed chunks per server and dimension, so maps remain visible after the workers disconnect.
+
+A preview deployment can set `"readOnly": true` and use a separate state directory. It reads the same worker agents and rejects all fleet actions and profession edits.
+
 ## Professions
 
 Save a server and an ordered list of existing, finite BotFury project IDs. Select workers, open the saved profession and choose **Dispatch to selected**. The hub starts idle slots, connects them, and attaches them to each project in turn. It advances when the coordinator reports that every job in the current project finished. It tracks progress across dashboard restarts. The coordinator and the participating agents need to remain available for work to continue when the desktop is off. Independent servers can run their own professions concurrently.
@@ -75,5 +79,5 @@ The Java client sends each configured command at most once per connection. The h
 - Keep the Java master compatible with mixed-host fleets of up to 100 workers, and put the latest-release JVM-free worker on the same supervisor and telemetry contract. Prove five native workers on the ProLiant before a wider rollout.
 - Measure time between confirmed actions and remove avoidable waits while preserving shared claims, inventory evidence and task recovery.
 - Make professions self-contained. The survival acceptance run starts from empty inventories and finds a safe base about 300 blocks from spawn, remembers it, builds a hut and farm, supplies shared chests with wood, iron and diamonds, and crafts and places beds. Verify each worker's respawn and the completed farm in Minecraft while the desktop is offline.
-- Add Minecraft-style terrain tiles from chunks workers actually receive, with persisted exploration per server/dimension and freshness per tile. In the Dither Press interface, draw paths, claims, buildings, stockpiles and squad orders above the terrain. A server-owner Dynmap feed can supply an optional terrain layer.
+- Extend the persisted terrain map with native-worker observations and a last-seen layer. Draw claims, buildings, communal stockpiles and squad orders above the Dither Press terrain. Add an optional Dynmap feed for servers whose owners already publish tiles.
 - Build the RTS view in stages. First prove box selection, squads, waypoints, rally, hold and retreat. Then show server-tracked mobs and players as contacts, with last-seen markers. Add direct in-game attack orders for servers where fleet play is permitted.

@@ -10,14 +10,17 @@ import os
 from pathlib import Path
 import re
 import signal
+import sqlite3
 import subprocess
 import threading
 from time import monotonic
 import urllib.parse
 import urllib.request
 
-from flask import Flask, abort, jsonify, request, send_from_directory
+from flask import Flask, Response, abort, jsonify, request, send_from_directory
 from professions import ProfessionRuns, normalized_server, open_database, project_ids
+
+from terrain import MAX_CHUNK, TerrainStore
 
 MAX_RESPONSE = 12 * 1024 * 1024
 
@@ -100,7 +103,7 @@ class Agent:
             "connected", "ready", "player", "server", "serverAddress", "dimension", "x", "y", "z",
             "health", "maxHealth", "alive", "items", "inventorySlots", "taskKind",
             "projectTask", "miningTask", "inventoryTask", "formation", "movementState",
-            "chat", "runtimeId", "build", "mapRoute", "bedTask",
+            "chat", "runtimeId", "build", "mapRoute", "bedTask", "mapTiles",
         ) if k in status}
         return {"id": slot["id"], "name": slot["name"], "running": running,
                 "reachable": isinstance(bot, dict), "status": status, "projectServers": list(self.project_ports)}
@@ -190,6 +193,7 @@ def make_app(config, state):
     app = Flask(__name__, static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = 48 * 1024
     role = config.get("role", "hub")
+    read_only = config.get("readOnly", False)
 
     @app.after_request
     def response_headers(response):
@@ -249,10 +253,16 @@ def make_app(config, state):
     pool = ThreadPoolExecutor(max_workers=16)
     state.mkdir(parents=True, exist_ok=True)
     database = state / "fleet.sqlite3"
+    terrain = TerrainStore(database)
+    snapshot_lock = threading.Lock()
+    cached_hosts = []
+    snapshot_until = 0
     with open_database(database) as db:
         db.execute("CREATE TABLE IF NOT EXISTS professions (name TEXT PRIMARY KEY, server TEXT NOT NULL, steps TEXT NOT NULL)")
 
     def json_post():
+        if read_only:
+            abort(403, "Fleet preview is read-only.")
         if request.headers.get("X-BotFury") != "fleet" or not request.is_json:
             abort(403, "Use the fleet dashboard to send this action.")
         data = request.get_json()
@@ -266,7 +276,23 @@ def make_app(config, state):
                 "slots": slots if isinstance(slots, list) else []}
 
     def host_snapshots():
-        return list(pool.map(host_snapshot, hosts.values()))
+        nonlocal cached_hosts, snapshot_until
+        with snapshot_lock:
+            if monotonic() >= snapshot_until:
+                snapshots = list(pool.map(host_snapshot, hosts.values()))
+                terrain.observe(snapshots)
+                cached_hosts = snapshots
+                snapshot_until = monotonic() + 1.1
+            return cached_hosts
+
+    def collect_terrain():
+        pulse = threading.Event()
+        while True:
+            try:
+                host_snapshots()
+            except (OSError, ValueError, sqlite3.Error):
+                app.logger.exception("Could not refresh terrain.")
+            pulse.wait(2.5)
 
     def invoke(host_id, slot, action, server=None, project=None, bed=None):
         host = hosts[host_id]
@@ -281,6 +307,8 @@ def make_app(config, state):
         return board if isinstance(board, list) else None
 
     runs = ProfessionRuns(database, coordinators, get_board, host_snapshots, invoke, app.logger)
+    if hosts:
+        threading.Thread(target=collect_terrain, name="terrain-poll", daemon=True).start()
 
     @app.get("/")
     def page():
@@ -292,8 +320,32 @@ def make_app(config, state):
 
     @app.get("/api/fleet")
     def fleet():
-        return jsonify(hosts=host_snapshots(),
+        return jsonify(hosts=host_snapshots(), readOnly=read_only, worlds=terrain.worlds(),
                        sampled=datetime.now(timezone.utc).isoformat())
+
+    def terrain_world():
+        world = request.args.get("server", ""), request.args.get("dimension", "")
+        if not world[0] or len(world[0]) > 255 or not world[1] or len(world[1]) > 160:
+            abort(400, "Missing server or dimension.")
+        return world
+
+    def terrain_axis(name):
+        axis = request.args.get(name, type=int)
+        if axis is None or abs(axis) > MAX_CHUNK:
+            abort(400, "Invalid terrain coordinate.")
+        return axis
+
+    @app.get("/api/terrain")
+    def terrain_index():
+        return jsonify(tiles=terrain.list(*terrain_world(), terrain_axis("minX"), terrain_axis("minZ"),
+                                          terrain_axis("maxX"), terrain_axis("maxZ")))
+
+    @app.get("/api/terrain/tile")
+    def terrain_tile():
+        png = terrain.png(*terrain_world(), terrain_axis("x"), terrain_axis("z"))
+        if png is None:
+            abort(404, "Terrain tile has not been observed.")
+        return Response(png, mimetype="image/png")
 
     @app.post("/api/action")
     def fleet_action():

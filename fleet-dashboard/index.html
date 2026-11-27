@@ -5,12 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BotFury Fleet Command</title>
   <link rel="stylesheet" href="static/press.css">
+  <script src="static/terrain.js" defer></script>
   <script src="static/fleet.js" defer></script>
 </head>
 <body>
 <main>
   <header class="masthead">
-    <div class="wordmark"><span class="seal" aria-hidden="true"></span><h1>BotFury<span> / </span>Fleet Command</h1></div>
+    <div class="wordmark"><span class="seal" aria-hidden="true"></span><h1>BotFury<span> / </span><b id="page-title">Fleet Command</b></h1></div>
     <p id="summary" aria-live="polite">Connecting to fleet…</p>
     <button id="open-professions">Professions</button>
   </header>
@@ -36,7 +37,7 @@
     </aside>
     <section class="plate mission">
       <div class="plate-head map-head">
-        <h2>Position map</h2>
+        <h2>World map</h2>
         <label><span class="sr-only">Server and dimension</span><select id="world"></select></label>
         <button id="fit">Fit</button>
         <button id="zoom-out" aria-label="Zoom out">−</button>

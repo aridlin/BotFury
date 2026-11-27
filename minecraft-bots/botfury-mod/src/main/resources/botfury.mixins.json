@@ -10,7 +10,8 @@
     "ProtectedBlockMixin",
     "BotTransparencyMixin",
     "ProjectileGroundAccess",
-    "FurnaceProgressAccess"
+    "FurnaceProgressAccess",
+    "SpriteImageAccess"
   ],
   "injectors": {
     "defaultRequire": 1

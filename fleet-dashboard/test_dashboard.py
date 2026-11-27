@@ -1,3 +1,4 @@
+from base64 import b64encode
 import json
 import logging
 from pathlib import Path
@@ -6,6 +7,7 @@ import unittest
 
 from dashboard import make_app, server_address
 from professions import ProfessionRuns, project_ids
+from terrain import TerrainStore
 
 
 class FleetDashboardTest(unittest.TestCase):
@@ -20,6 +22,31 @@ class FleetDashboardTest(unittest.TestCase):
                 self.assertEqual(accepted.status_code, 200)
             with make_app(config, Path(folder)).test_client() as browser:
                 self.assertEqual(browser.get("/api/professions").get_json()["professions"], [body])
+
+    def test_preview_refuses_writes_and_retains_separate_terrain_worlds(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            app = make_app({"hosts": [], "readOnly": True}, folder)
+            store = TerrainStore(folder / "fleet.sqlite3")
+            # An IHDR prefix is sufficient for storage validation. Paper integration verifies full PNG decoding.
+            png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x01\x00\x00\x00\x01\x00"
+            tile = {"x": -1, "z": 2, "seen": 1000, "quarters": [1, 2, 3, 4],
+                    "png": b64encode(png).decode()}
+            status = {"connected": True, "serverAddress": "world.test", "dimension": "minecraft:overworld",
+                      "mapTiles": [tile]}
+            store.observe([{"slots": [{"status": status}]}])
+            with app.test_client() as browser:
+                fleet = browser.get("/api/fleet").get_json()
+                self.assertTrue(fleet["readOnly"])
+                self.assertEqual(fleet["worlds"][0]["bounds"], [-16, 32, 0, 48])
+                self.assertNotIn("mapTiles", status)
+                self.assertEqual(browser.post("/api/action", json={}, headers={"X-BotFury": "fleet"}).status_code, 403)
+                query = {"server": "world.test", "dimension": "minecraft:overworld",
+                         "minX": -1, "maxX": -1, "minZ": 2, "maxZ": 2}
+                self.assertEqual(browser.get("/api/terrain", query_string=query).get_json()["tiles"][0]["quarters"],
+                                 [1, 2, 3, 4])
+                query["server"] = "other.test"
+                self.assertEqual(browser.get("/api/terrain", query_string=query).get_json()["tiles"], [])
 
     def test_agent_authenticates_before_reading_slots(self):
         with tempfile.TemporaryDirectory() as folder:

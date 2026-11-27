@@ -637,15 +637,11 @@ impl Job<'_> {
             if !self.game.baritone || self.baritone_stand(&[[pos.x, pos.y, pos.z]])?.is_some() {
                 self.move_to(pos)?;
             }
-            let mut collected = false;
-            for _ in 0..8 {
-                if item.count(&self.game.inventory()?.counts()) > old_count {
-                    collected = true;
-                    break;
-                }
-                thread::sleep(Duration::from_millis(125));
-            }
-            if !collected {
+            if !self.wait_for_item(&item, old_count)?
+                && (!self.game.baritone
+                    || !self.approach_loose_drop(pos, exclude)?
+                    || !self.wait_for_item(&item, old_count)?)
+            {
                 return Ok(Outcome {
                     success: false,
                     evidence: "Mined block but did not collect the drop".into(),
@@ -654,6 +650,62 @@ impl Job<'_> {
             }
         }
         Ok(observed(format!("Observed {} {}", work.count, work.item)))
+    }
+
+    fn wait_for_item(&mut self, item: &ProjectItem<'_>, previous: u32) -> Result<bool, String> {
+        for _ in 0..8 {
+            if item.count(&self.game.inventory()?.counts()) > previous {
+                return Ok(true);
+            }
+            thread::sleep(Duration::from_millis(125));
+        }
+        Ok(false)
+    }
+
+    fn approach_loose_drop(
+        &mut self,
+        target: Pos,
+        exclude: Option<&Bounds>,
+    ) -> Result<bool, String> {
+        let view = self
+            .game
+            .call("entities", json!({"type":"item","radius":5,"limit":12}))?;
+        let entities = view["entities"]
+            .as_array()
+            .ok_or("Missing nearby drop observations")?;
+        let status = self.game.call("status", json!({}))?;
+        let position: [f64; 3] = serde_json::from_value(status["position"].clone())
+            .map_err(|error| error.to_string())?;
+        let current = position.map(|axis| axis.floor() as i32);
+        let mut stands = Vec::new();
+        for item in entities.iter().filter(|entity| entity["type"] == "item") {
+            let Ok(drop) = serde_json::from_value::<[f64; 3]>(item["pos"].clone()) else {
+                continue;
+            };
+            if target.distance_squared(drop) > 9.0 {
+                continue;
+            }
+            let [x, y, z] = drop.map(|axis| axis.floor() as i32);
+            for dy in [0, -1] {
+                for [dx, dz] in [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]] {
+                    let stand = [x + dx, y + dy, z + dz];
+                    let pos = Pos::from(stand);
+                    if stand != current
+                        && !exclude.is_some_and(|area| pos.contains(area.min, area.max))
+                        && pos.distance_squared(drop) <= 2.25
+                        && !stands.contains(&stand)
+                        && stands.len() < 96
+                    {
+                        stands.push(stand);
+                    }
+                }
+            }
+        }
+        let Some(stand) = self.baritone_stand(&stands)? else {
+            return Ok(false);
+        };
+        self.move_to(stand.into())?;
+        Ok(true)
     }
 
     fn click(&mut self, slot: usize, button: u8, mode: &str) -> Result<(), String> {

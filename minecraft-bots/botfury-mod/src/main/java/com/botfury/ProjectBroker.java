@@ -821,10 +821,10 @@ final class ProjectBroker {
                     int returnRevision = Math.max(0, Math.min(request.returnRouteRevision, SubsurfaceAccess.RETURN_ROUTE_REVISION));
                     var assignment = request.kinds.contains(ProjectQueue.Kind.TRANSFER)
                             ? board.offerUrgentMiningDeposit(world, request.worker, request.project, now,
-                                position, ProjectBroker::heldCount, returnRevision) : null;
+                                position, claimStock, returnRevision) : null;
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.TRANSFER)
-                            && board.awaitingContributionRetry(world, request.worker, request.project, now,
-                                    ProjectBroker::heldCount)) {
+                            && (board.awaitingContributionRetry(world, request.worker, request.project, now, claimStock)
+                                || board.awaitingMiningCheckpoint(world, request.worker, request.project, now, claimStock))) {
                         reply(exchange, 200, null);
                         break;
                     }

@@ -2425,6 +2425,13 @@ class ProjectQueueTest {
         assertEquals(0, paused.attempts());
         assertNull(restored.claim(WORLD, "replacement", Set.of(GATHER), 3));
         long nearExpiry = paused.expiresAt() - 1;
+        var held = (java.util.function.ToIntBiFunction<String, String>) (worker, material) ->
+                worker.equals("miner") && material.equals(item) ? 4 : 0;
+        assertTrue(restored.awaitingMiningCheckpoint(WORLD, "miner", null, nearExpiry, held));
+        assertFalse(restored.awaitingMiningCheckpoint(WORLD, "replacement", null, nearExpiry, (worker, material) -> 4));
+        assertFalse(restored.awaitingMiningCheckpoint(WORLD, "miner", "another-project", nearExpiry, held));
+        assertFalse(restored.awaitingMiningCheckpoint(WORLD, "miner", null, nearExpiry, (worker, material) -> 0));
+        assertFalse(restored.awaitingMiningCheckpoint(WORLD, "miner", null, paused.expiresAt(), held));
         var carrier = restored.offerCheckpointDeposit(WORLD, "miner", null, nearExpiry, cave, (name, material) -> 4).job();
         assertEquals("deposit", carrier.work().id());
         assertNull(restored.claim(WORLD, "replacement", Set.of(GATHER), nearExpiry + 2));

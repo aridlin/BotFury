@@ -12,7 +12,9 @@
 
 ---
 
-## 📌 About
+<a name="-about"></a>
+
+## <img src="artwork/botfury/readme/headings/about.png" alt="About">
 **BotFury** is a Fabric mod that allows you to remotely control multiple **Minecraft bot instances**, automate tasks like mining with **Baritone**, and toggle rendering for better performance.  
 This mod integrates seamlessly with a **Flask-powered web dashboard**, letting you command your bot army via an intuitive HTTP-based control center.  
 
@@ -25,7 +27,9 @@ This mod integrates seamlessly with a **Flask-powered web dashboard**, letting y
 
 ---
 
-## 🚀 Features
+<a name="-features"></a>
+
+## <img src="artwork/botfury/readme/headings/features.png" alt="Features">
 ✅ **Control Bots Remotely** – Send commands through the web dashboard.  
 ✅ **Bot Swarm Management** – Launch, stop, and control multiple bot instances.  
 ✅ **Baritone Integration** – Automate mining, pathfinding, and movement via chat commands (`#mine`, `#goto`, `#stop`).  
@@ -37,8 +41,12 @@ This mod integrates seamlessly with a **Flask-powered web dashboard**, letting y
 
 <a name="setup"></a>
 
-## 🛠️ Installation & Setup
-### 📌 Prerequisites
+<a name="️-installation--setup"></a>
+
+## <img src="artwork/botfury/readme/headings/installation-setup.png" alt="Installation &amp; Setup">
+<a name="-prerequisites"></a>
+
+### <img src="artwork/botfury/readme/headings/prerequisites.png" alt="Prerequisites">
 Ensure you have the following installed:
 - **Java 17** for Minecraft, plus **JDK 21 or 25** to run the Gradle build
 - **Minecraft 1.20.1 + Fabric Loader**
@@ -49,13 +57,17 @@ Ensure you have the following installed:
 
 **Note**: Gradle is automatically downloaded via the build wrapper, so you don't need to install it separately.
 
-### 📥 Clone the Repository
+<a name="-clone-the-repository"></a>
+
+### <img src="artwork/botfury/readme/headings/clone-the-repository.png" alt="Clone the Repository">
 ```bash
 git clone https://github.com/aridlin/BotFury.git
 cd BotFury
 ```
 
-### 📦 Building the Fabric Mod
+<a name="-building-the-fabric-mod"></a>
+
+### <img src="artwork/botfury/readme/headings/building-the-fabric-mod.png" alt="Building the Fabric Mod">
 
 1. **Install Required Mods in Minecraft**  
    Before building, ensure your Minecraft instance has:
@@ -88,7 +100,9 @@ cd BotFury
    
    You can also install the versioned JAR from the release bundle. Keep the controller and every bot on the same build.
 
-### Primary Dashboard: FT
+<a name="primary-dashboard-ft"></a>
+
+### <img src="artwork/botfury/readme/headings/primary-dashboard-ft.png" alt="Primary Dashboard: FT">
 
 Use the [FT dashboard](ft-dashboard/README.md) to start, stop, kill, and
 restart individual instances. On Linux, its Podman backend can provision
@@ -96,7 +110,9 @@ one container checkpoint per bot at the Minecraft title screen and restore
 it on subsequent launches. The dashboard can also start Minecraft directly
 with Java and tile local game or viewer windows.
 
-### In-game controls (Fabric 1.20.1)
+<a name="in-game-controls-fabric-1201"></a>
+
+### <img src="artwork/botfury/readme/headings/in-game-controls-fabric-1-20-1.png" alt="In-game controls (Fabric 1.20.1)">
 
 Install the same BotFury 0.3.3 build and Fabric API on the controller and every bot.
 The current local formations work on Paper and vanilla multiplayer without a
@@ -209,7 +225,9 @@ version; mismatched clients appear as needing an update and receive no formation
 orders. Orders carry sequence numbers so delayed movement cannot override a newer
 Stop. Connection/world changes clear active movement and restore owned settings.
 
-### Running the Java fleet on several machines
+<a name="running-the-java-fleet-on-several-machines"></a>
+
+### <img src="artwork/botfury/readme/headings/running-the-java-fleet-on-several-machines.png" alt="Running the Java fleet on several machines">
 
 The master can discover up to 100 bots. Set these JVM options on the master
 when you want the full range:
@@ -257,11 +275,15 @@ SSH sessions running while the fleet is in use. The back channel on port 8764
 lets remote bots renew project jobs and coordinate mining. It does not carry
 Minecraft traffic.
 
-### Fleet Command dashboard
+<a name="fleet-command-dashboard"></a>
+
+### <img src="artwork/botfury/readme/headings/fleet-command-dashboard.png" alt="Fleet Command dashboard">
 
 Use [Fleet Command](fleet-dashboard/README.md) to supervise workers across several hosts, inspect positions, chat and inventories, and run saved professions. Host the hub on an always-on machine so that it stays available when the desktop is offline.
 
-### Legacy Dashboard: Flask
+<a name="legacy-dashboard-flask"></a>
+
+### <img src="artwork/botfury/readme/headings/legacy-dashboard-flask.png" alt="Legacy Dashboard: Flask">
 
 1. **Install Python Dependencies**:
    ```bash
@@ -285,19 +307,27 @@ Use [Fleet Command](fleet-dashboard/README.md) to supervise workers across sever
 
 ---
 
-## 🔧 Quick Start Guide
+<a name="-quick-start-guide"></a>
 
-### Step 1: Launch Your Bots
+## <img src="artwork/botfury/readme/headings/quick-start-guide.png" alt="Quick Start Guide">
+
+<a name="step-1-launch-your-bots"></a>
+
+### <img src="artwork/botfury/readme/headings/step-1-launch-your-bots.png" alt="Step 1: Launch Your Bots">
 1. Start your Minecraft instances with the BotFury Fabric mod installed.
 2. Each bot will start an HTTP server on ports `8765`, `8766`, `8767`, etc.
 3. The bots will attempt to connect to the Minecraft server specified in the configuration.
 
-### Step 2: Start the Dashboard
+<a name="step-2-start-the-dashboard"></a>
+
+### <img src="artwork/botfury/readme/headings/step-2-start-the-dashboard.png" alt="Step 2: Start the Dashboard">
 1. Navigate to the `flask-dashboard/` directory.
 2. Run `python3 dashboard.py`.
 3. Open `http://localhost:5000` in your web browser.
 
-### Step 3: Control Your Bots
+<a name="step-3-control-your-bots"></a>
+
+### <img src="artwork/botfury/readme/headings/step-3-control-your-bots.png" alt="Step 3: Control Your Bots">
 The dashboard allows you to:
 - **View Bot Status**: See which bots are online and their current state.
 - **Send Commands**: Issue Baritone commands to all connected bots:
@@ -307,7 +337,9 @@ The dashboard allows you to:
 - **Toggle Rendering**: Click the "Disable GPU" button to reduce performance load.
 - **Connect to Servers**: Select a Minecraft server IP and connect all bots.
 
-### Step 4: Manual API Usage (Optional)
+<a name="step-4-manual-api-usage-optional"></a>
+
+### <img src="artwork/botfury/readme/headings/step-4-manual-api-usage-optional.png" alt="Step 4: Manual API Usage (Optional)">
 If you want to send commands directly via HTTP:
 
 ```bash
@@ -327,7 +359,9 @@ curl http://localhost:8765/status
 
 ---
 
-## 🛠️ Configuration
+<a name="️-configuration"></a>
+
+## <img src="artwork/botfury/readme/headings/configuration.png" alt="Configuration">
 
 The mod reads configuration from `config/botfury.json` (created on first launch). You can customize:
 
@@ -353,53 +387,73 @@ The mod reads configuration from `config/botfury.json` (created on first launch)
 
 ---
 
-## 🔍 Troubleshooting
+<a name="-troubleshooting"></a>
 
-### **Dashboard won't start**
+## <img src="artwork/botfury/readme/headings/troubleshooting.png" alt="Troubleshooting">
+
+<a name="dashboard-wont-start"></a>
+
+### <img src="artwork/botfury/readme/headings/dashboard-won-t-start.png" alt="Dashboard won&#x27;t start">
 - Ensure Python 3.8+ is installed: `python3 --version`
 - Verify Flask and requests are installed: `pip list`
 - Check if port 5000 is available: `lsof -i :5000` (Linux/macOS)
 - Try a different port: Edit `config/botfury.json` and restart
 
-### **Bots won't connect to the dashboard**
+<a name="bots-wont-connect-to-the-dashboard"></a>
+
+### <img src="artwork/botfury/readme/headings/bots-won-t-connect-to-the-dashboard.png" alt="Bots won&#x27;t connect to the dashboard">
 - Verify the mod JAR is in your Minecraft `mods/` folder
 - Check that Fabric API and Baritone are installed
 - Ensure the bot instances are running Minecraft with the mod loaded
 - Check the Minecraft log file for errors
 
-### **Commands don't reach the bots**
+<a name="commands-dont-reach-the-bots"></a>
+
+### <img src="artwork/botfury/readme/headings/commands-don-t-reach-the-bots.png" alt="Commands don&#x27;t reach the bots">
 - Verify the bot HTTP server is running (check Minecraft chat: `/botfury status`)
 - Ensure the port numbers are correct (default: 8765, 8766, etc.)
 - Check if a firewall is blocking the ports
 - Confirm Baritone is installed and enabled
 
-### **Gradle build fails**
+<a name="gradle-build-fails"></a>
+
+### <img src="artwork/botfury/readme/headings/gradle-build-fails.png" alt="Gradle build fails">
 - Ensure Java 17+ is installed: `java -version`
 - Delete the cache: `rm -rf minecraft-bots/botfury-mod/.gradle`
 - Try again: `./build_mod.sh`
 - If still failing, check the detailed error message in the build output
 
-### **Performance issues**
+<a name="performance-issues"></a>
+
+### <img src="artwork/botfury/readme/headings/performance-issues.png" alt="Performance issues">
 - Use the dashboard to toggle rendering off: Click "Disable GPU"
 - Reduce the number of concurrent bot instances
 - Check if other applications are consuming resources
 
-### **Port already in use**
+<a name="port-already-in-use"></a>
+
+### <img src="artwork/botfury/readme/headings/port-already-in-use.png" alt="Port already in use">
 - Find the process using the port: `lsof -i :8765` (Linux/macOS)
 - Kill the process if necessary: `kill -9 <PID>`
 - Or configure bots to use different port ranges in `config/botfury.json`
 
 ---
 
-## 🛣️ Roadmap
-### ✅ Current Features
+<a name="️-roadmap"></a>
+
+## <img src="artwork/botfury/readme/headings/roadmap.png" alt="Roadmap">
+<a name="-current-features"></a>
+
+### <img src="artwork/botfury/readme/headings/current-features.png" alt="Current Features">
 - ✅ Multi-bot HTTP control system
 - ✅ Flask web dashboard
 - ✅ Baritone integration (chat command prefix)
 - ✅ Server connection management
 - ✅ GPU rendering toggle
 
-### 🔜 Planned Features
+<a name="-planned-features"></a>
+
+### <img src="artwork/botfury/readme/headings/planned-features.png" alt="Planned Features">
 - **Advanced Baritone Automation** – Custom task queues and scheduling
 - **Discord Bot Integration** – Control bots via Discord commands
 - **Persistent Profiles** – Save and load bot configurations
@@ -411,9 +465,13 @@ The mod reads configuration from `config/botfury.json` (created on first launch)
 
 ---
 
-## 🏗️ Development & Building from Source
+<a name="️-development--building-from-source"></a>
 
-### Project Structure
+## <img src="artwork/botfury/readme/headings/development-building-from-source.png" alt="Development &amp; Building from Source">
+
+<a name="project-structure"></a>
+
+### <img src="artwork/botfury/readme/headings/project-structure.png" alt="Project Structure">
 ```
 BotFury/
 ├── minecraft-bots/botfury-mod/       # Fabric mod source code
@@ -432,12 +490,16 @@ BotFury/
 └── README.md                         # This file
 ```
 
-### Development Dependencies
+<a name="development-dependencies"></a>
+
+### <img src="artwork/botfury/readme/headings/development-dependencies.png" alt="Development Dependencies">
 - **Java 17+** (Gradle will auto-download via foojay-resolver)
 - **Python 3.8+** with pip
 - **Git**
 
-### Building the Project
+<a name="building-the-project"></a>
+
+### <img src="artwork/botfury/readme/headings/building-the-project.png" alt="Building the Project">
 ```bash
 # Build the Fabric mod
 ./build_mod.sh
@@ -452,7 +514,9 @@ pip install -r requirements.txt
 python3 dashboard.py
 ```
 
-### Understanding the Code
+<a name="understanding-the-code"></a>
+
+### <img src="artwork/botfury/readme/headings/understanding-the-code.png" alt="Understanding the Code">
 
 **Fabric Mod** (`minecraft-bots/botfury-mod/src/main/java/com/botfury/`):
 - `BotFuryMod.java` – Main mod entry point, initializes HTTP server
@@ -467,7 +531,9 @@ python3 dashboard.py
 
 ---
 
-## 👨‍💻 Contributing
+<a name="‍-contributing"></a>
+
+## <img src="artwork/botfury/readme/headings/contributing.png" alt="Contributing">
 Contributions are welcome! If you'd like to improve **BotFury**, feel free to:
 1. **Fork** the repository.
 2. Create a **feature branch**: `git checkout -b feature/my-feature`
@@ -476,7 +542,9 @@ Contributions are welcome! If you'd like to improve **BotFury**, feel free to:
 5. **Push to your fork**: `git push origin feature/my-feature`
 6. **Submit a pull request** with a description of your changes.
 
-### Areas We're Looking For Help
+<a name="areas-were-looking-for-help"></a>
+
+### <img src="artwork/botfury/readme/headings/areas-we-re-looking-for-help.png" alt="Areas We&#x27;re Looking For Help">
 - Improving the web dashboard UI/UX
 - Adding more Baritone command support
 - Optimizing bot performance
@@ -485,12 +553,16 @@ Contributions are welcome! If you'd like to improve **BotFury**, feel free to:
 
 ---
 
-## 📜 License
+<a name="-license"></a>
+
+## <img src="artwork/botfury/readme/headings/license.png" alt="License">
 This project is licensed under the **MIT License**. See `LICENSE` for details.
 
 ---
 
-## 📢 Support & Contact
+<a name="-support--contact"></a>
+
+## <img src="artwork/botfury/readme/headings/support-contact.png" alt="Support &amp; Contact">
 For questions, bugs, or feature requests:
 - **Open an Issue** on GitHub
 - **Check existing discussions** before posting
@@ -499,7 +571,9 @@ For questions, bugs, or feature requests:
 
 ---
 
-## 🙏 Acknowledgments
+<a name="-acknowledgments"></a>
+
+## <img src="artwork/botfury/readme/headings/acknowledgments.png" alt="Acknowledgments">
 - **Baritone** – Pathfinding and automation mod
 - **Fabric** – Lightweight mod loader
 - **Flask** – Web framework for the dashboard
@@ -551,7 +625,9 @@ fleet bots, the check can trigger after six seconds. The bot looks for
 clear nearby ground, moves without breaking or placing blocks during
 the detour, and returns to its assigned route. Stop cancels the detour.
 
-### Project workers and structure builds
+<a name="project-workers-and-structure-builds"></a>
+
+### <img src="artwork/botfury/readme/headings/project-workers-and-structure-builds.png" alt="Project workers and structure builds">
 
 Use `/bf project workers` on the controller to enable project work on the
 selected bots. Enrollment survives a disconnect or bot restart and resumes

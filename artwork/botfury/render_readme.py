@@ -1,6 +1,8 @@
 """Render the README artwork with Pillow, Roboto Black and DejaVu Sans Mono."""
 
+from html import unescape
 from math import cos, pi, sin
+import re
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -126,6 +128,66 @@ def sticker(name, text, width, left_tone):
     return image
 
 
+def chapter_heading(title, name):
+    width, height = 600, 62
+    image = Image.new("RGB", (width, height), INK)
+    pixels = image.load()
+    variant = sum(ord(char) for char in name)
+    pattern = (RISING, FALLING, HORIZONTAL)[variant % 3]
+    for y in range(3, height - 3):
+        seam = 510 - y * 0.68
+        for x in range(3, width - 3):
+            run = x - seam
+            if run < -6:
+                pixels[x, y] = PAPER
+            elif run < 0:
+                pixels[x, y] = ORANGE
+            elif run > 2:
+                band = ((x + (variant % 23) + y * (1 if variant % 2 else -1)) // 21) % 4
+                tone = (0.43, 0.84, 1.50, 1.16)[band]
+                pixels[x, y] = screen(tone, pattern, x, y)
+
+    font = ImageFont.truetype("Roboto-Black.ttf", 28)
+    text_width = font.getlength(title)
+    if text_width > 437:
+        font = font.font_variant(size=int(28 * 437 / text_width))
+    pen = ImageDraw.Draw(image)
+    pen.text((18, height / 2), title, font=font, fill=INK, anchor="lm")
+    pen.line((19, 50, 55, 50), fill=RUST, width=2)
+    return image
+
+
+def subsection_heading(title):
+    font = ImageFont.truetype("Roboto-Black.ttf", 17)
+    width, height = round(font.getlength(title)) + 46, 32
+    image = Image.new("RGBA", (width, height))
+    pen = ImageDraw.Draw(image)
+    pen.polygon([(0, 0), (width - 9, 0), (width - 1, 8), (width - 1, height - 1),
+                 (0, height - 1)], fill=INK)
+    pen.polygon([(2, 2), (width - 10, 2), (width - 3, 9), (width - 3, height - 3),
+                 (2, height - 3)], fill=PAPER)
+    pixels = image.load()
+    for y in range(2, height - 2):
+        for x in range(2, 16):
+            pixels[x, y] = (*screen(0.91 + 0.93 * (height - y) / height, RISING, x, y), 255)
+    pen.text((25, height / 2), title, font=font, fill=INK, anchor="lm")
+    return image
+
+
+def readme_headings():
+    readme = (HERE.parents[1] / "README.md").read_text(encoding="utf-8")
+    headings = re.findall(
+        r'^(##|###) <img src="artwork/botfury/readme/headings/([a-z0-9-]+)\.png" alt="([^"]+)">',
+        readme, re.MULTILINE,
+    )
+    (OUTPUT / "headings").mkdir(exist_ok=True)
+    for level, name, title in headings:
+        title = unescape(title)
+        image = chapter_heading(title, name) if level == "##" else subsection_heading(title)
+        # Save at native display size to keep heading images in their natural type hierarchy.
+        image.save(OUTPUT / "headings" / f"{name}.png", optimize=True)
+
+
 if __name__ == "__main__":
     OUTPUT.mkdir(exist_ok=True)
     export(banner(), "banner")
@@ -135,3 +197,4 @@ if __name__ == "__main__":
     export(sticker("fabric", "FABRIC 1.20.1", 134, 1.43), "sticker-fabric")
     export(sticker("baritone", "BARITONE", 107, 1.26), "sticker-baritone")
     export(sticker("fleet", "FLEET COMMAND", 135, 1.6), "sticker-fleet")
+    readme_headings()

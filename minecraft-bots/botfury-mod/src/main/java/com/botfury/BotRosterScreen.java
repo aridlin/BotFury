@@ -49,7 +49,10 @@ final class BotRosterScreen extends FleetPanel {
         Row(String key, String title, String subtitle, int color) { this(key, title, subtitle, color, null); }
     }
     private static final int ACCENT = BotUiTheme.ACCENT, TEXT = BotUiTheme.TEXT, MUTED = BotUiTheme.MUTED, RED = BotUiTheme.DANGER;
+    private static final int PRESS_PAPER = 0xFFF4EDDA, PRESS_INK = 0xFF191815, PRESS_RED = 0xFF943823,
+            PRESS_MUTED = 0xFF654136, PRESS_ORANGE = 0xFFEE653C;
     private static final int MARGIN = 14, ROW_TOP = 69, ROW_HEIGHT = 30;
+    private static final int PROJECT_STEP_LIMIT = 8;
     private final Screen parent;
     private final Map<Tab, String> selection = new EnumMap<>(Tab.class);
     private Tab tab = Tab.FLEET;
@@ -61,6 +64,8 @@ final class BotRosterScreen extends FleetPanel {
     private BotUiButton assign, stopOrder;
     private int offset, detailOffset, detailLimit;
     private GuideStep guide;
+    private ProjectQueue.Project diagnosticsProject;
+    private List<ProjectDiagnostics.Entry> projectSteps = List.of();
 
     BotRosterScreen(Screen parent) {
         this(parent, false);
@@ -450,7 +455,9 @@ final class BotRosterScreen extends FleetPanel {
         int detailBottom = height - (guide != null ? 34 : tab == Tab.FLEET ? 120 : tab == Tab.PROJECTS ? 70 : 34);
         int w = width - x - MARGIN;
         var lines = new ArrayList<String>();
+        var projectLines = new ArrayList<Text>();
         Map<String, Integer> items = Map.of();
+        boolean projectSheet = tab == Tab.PROJECTS && selected != null;
         String heading = selected == null ? switch (tab) {
             case FLEET -> BotTracker.targetLabel();
             case PROJECTS -> "Select a project";
@@ -472,7 +479,7 @@ final class BotRosterScreen extends FleetPanel {
                     ? "Select a bot to control it individually." : BotTracker.targets().size() + " tracked squad members");
         } else if (selected != null) {
             switch (tab) {
-                case PROJECTS -> projectDetails(lines, selected.key);
+                case PROJECTS -> projectDetails(projectLines, selected.key);
                 case CHESTS -> {
                     var observation = overview.stock().get(selected.key);
                     if (observation != null) {
@@ -486,16 +493,28 @@ final class BotRosterScreen extends FleetPanel {
                 default -> {}
             }
         }
-        if (selected != null) {
+        if (projectSheet) {
+            draw.fill(x - 5, y - 5, x + w, detailBottom, PRESS_PAPER);
+            draw.fill(x - 5, y - 5, x + w, y + 12, PRESS_ORANGE);
+            for (int dy = 0; dy < 8; dy += 2) {
+                for (int dx = 0; dx < 9; dx += 2) {
+                    int dot = x + w - 13 + dx + (dy / 2 & 1);
+                    draw.fill(dot, y + dy, dot + 1, y + dy + 1, PRESS_INK);
+                }
+            }
+        } else if (selected != null) {
             draw.fill(x, y + 2, x + 5, y + 4, BotUiTheme.SIGNAL);
             draw.fill(x + 3, y + 4, x + 5, y + 7, BotUiTheme.SIGNAL);
         }
-        int titleInset = selected == null ? 0 : 9;
-        line(draw, heading, x + titleInset, y, w - titleInset, ACCENT);
+        int titleInset = selected == null || projectSheet ? 0 : 9;
+        line(draw, heading, x + titleInset, y, w - (projectSheet ? 16 : titleInset), projectSheet ? PRESS_INK : ACCENT);
         y += 17;
         var wrapped = new ArrayList<net.minecraft.text.OrderedText>();
         for (String detail : lines) {
             wrapped.addAll(textRenderer.wrapLines(Text.literal(detail), Math.max(1, w)));
+        }
+        for (var detail : projectLines) {
+            wrapped.addAll(textRenderer.wrapLines(detail, Math.max(1, w - 5)));
         }
         var stock = items.entrySet().stream().sorted(Map.Entry.comparingByKey()).toList();
         int columns = Math.max(1, w / 44);
@@ -543,19 +562,37 @@ final class BotRosterScreen extends FleetPanel {
         return project.jobs().stream().filter(job -> job.state() == ProjectQueue.State.DONE).count();
     }
 
-    private void projectDetails(List<String> lines, String id) {
+    private void projectDetails(List<Text> lines, String id) {
         var project = overview.projects().stream().filter(value -> value.id().equals(id)).findFirst().orElse(null);
         if (project == null) return;
-        lines.add(completed(project) + " / " + project.jobs().size() + " jobs complete");
-        if (project.repeat() != null) lines.add(project.repeat().cancelled() ? "Output order cancelled"
-                : project.repeat().completed() + " batches deposited");
+        String progress = project.repeat() == null ? completed(project) + " / " + project.jobs().size() + " jobs complete"
+                : project.repeat().cancelled() ? "Output order cancelled" : project.repeat().completed() + " batches deposited";
         String chest = project.repeat() == null ? project.supplyChest() : project.repeat().chest();
-        if (chest != null) lines.add("Chest · " + location(chest));
-        if (needsWorkers(project)) lines.add("Assign bots · " + BotTracker.targetLabel());
-        project.jobs().stream().filter(job -> job.state() == ProjectQueue.State.FAILED).limit(3)
-                .forEach(job -> lines.add(job.work().id() + " · " + job.evidence()));
-        project.jobs().stream().filter(job -> job.state() == ProjectQueue.State.LEASED).limit(5)
-                .forEach(job -> lines.add(job.worker() + " · " + job.work().id()));
+        lines.add(pressText(chest == null ? progress : progress + "  ·  Chest " + location(chest), PRESS_MUTED));
+        if (diagnosticsProject != project) {
+            diagnosticsProject = project;
+            projectSteps = ProjectDiagnostics.steps(project, PROJECT_STEP_LIMIT + 1);
+        }
+        for (var step : projectSteps.stream().limit(PROJECT_STEP_LIMIT).toList()) {
+            var job = step.job();
+            String state = switch (job.state()) {
+                case FAILED -> "Blocked";
+                case LEASED -> "Working";
+                case WAITING -> "Ready";
+                case DONE -> "Complete";
+            };
+            lines.add(pressText(state + "  /  " + step.requirement(),
+                    job.state() == ProjectQueue.State.FAILED ? PRESS_RED : PRESS_INK));
+            var worker = pressText(step.worker() == null ? "Unassigned" : step.worker(), PRESS_MUTED);
+            if (job.evidence() != null) worker.append("  ·  " + job.evidence());
+            lines.add(worker);
+            lines.add(pressText(step.next(), PRESS_INK));
+        }
+        if (projectSteps.size() > PROJECT_STEP_LIMIT) lines.add(pressText("More steps remain in this order.", PRESS_MUTED));
+    }
+
+    private static net.minecraft.text.MutableText pressText(String text, int color) {
+        return Text.literal(text).styled(style -> style.withColor(color & 0xFFFFFF));
     }
 
     private void meter(DrawContext draw, Meter meter, int x, int y, int w) {

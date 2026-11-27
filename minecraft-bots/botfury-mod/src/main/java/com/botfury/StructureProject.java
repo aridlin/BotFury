@@ -299,19 +299,24 @@ final class StructureProject {
         while (!obstructing.isEmpty()) {
             var wave = new ArrayList<String>();
             var clearedThisWave = new ArrayList<BlockPos>();
-            for (var iterator = obstructing.entrySet().iterator(); iterator.hasNext(); ) {
-                var entry = iterator.next();
-                var cell = entry.getValue();
-                var stand = findPlacementStand(client, cell.pos, null, pos ->
-                        !removed.contains(pos.down()) && safeStand(client, pos, cleared)
-                                && canRemoveBlock(client, pos, cell.pos, cleared));
-                if (stand == null) continue;
-                String id = "clear-" + entry.getKey();
-                jobs.add(work(id, ProjectQueue.Kind.EXCAVATE, cell.pos, cell.observed, stand, Direction.UP, excavationFrontier));
-                wave.add(id);
-                clearedThisWave.add(cell.pos);
-                area = StructureSupply.union(area, new ProjectBlock(cell.pos, stand, AIR));
-                iterator.remove();
+            for (boolean allowTemporaryFooting : new boolean[]{false, true}) {
+                // A fallback wave contains one cut, so its footing cannot be removed concurrently.
+                if (!wave.isEmpty()) break;
+                for (var iterator = obstructing.entrySet().iterator(); iterator.hasNext(); ) {
+                    var entry = iterator.next();
+                    var cell = entry.getValue();
+                    var stand = findStand(client, cell.pos, null, true, new int[]{0, 1, -1, 2, -2, 3, -3}, pos ->
+                            !pos.down().equals(cell.pos) && (allowTemporaryFooting || !removed.contains(pos.down()))
+                                    && safeStand(client, pos, cleared) && canRemoveBlock(client, pos, cell.pos, cleared));
+                    if (stand == null) continue;
+                    String id = "clear-" + entry.getKey();
+                    jobs.add(work(id, ProjectQueue.Kind.EXCAVATE, cell.pos, cell.observed, stand, Direction.UP, excavationFrontier));
+                    wave.add(id);
+                    clearedThisWave.add(cell.pos);
+                    area = StructureSupply.union(area, new ProjectBlock(cell.pos, stand, AIR));
+                    iterator.remove();
+                    if (allowTemporaryFooting) break;
+                }
             }
             if (wave.isEmpty()) {
                 var blocked = obstructing.values().iterator().next();

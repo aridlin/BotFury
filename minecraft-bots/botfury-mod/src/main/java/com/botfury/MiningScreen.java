@@ -87,8 +87,9 @@ final class MiningScreen extends FleetPanel {
         }
     }
 
+    @Override protected DitherPress.Surface frameSurface() { return DitherPress.Surface.DIALOG; }
+
     @Override protected void renderPanel(DrawContext draw, int x, int y, float delta) {
-        draw.fillGradient(0, 0, width, height, BotUiTheme.PANEL_BOTTOM, BotUiTheme.PANEL_TOP);
         draw.drawCenteredTextWithShadow(textRenderer, title, width / 2, 16, BotUiTheme.TEXT);
         draw.drawCenteredTextWithShadow(textRenderer, error.isEmpty() ? BotTracker.targetLabel() : error,
                 width / 2, 32, error.isEmpty() ? BotUiTheme.MUTED : BotUiTheme.ACCENT);

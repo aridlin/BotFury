@@ -49,8 +49,7 @@ final class BotRosterScreen extends FleetPanel {
         Row(String key, String title, String subtitle, int color) { this(key, title, subtitle, color, null); }
     }
     private static final int ACCENT = BotUiTheme.ACCENT, TEXT = BotUiTheme.TEXT, MUTED = BotUiTheme.MUTED, RED = BotUiTheme.DANGER;
-    private static final int PRESS_PAPER = 0xFFF4EDDA, PRESS_INK = 0xFF191815, PRESS_RED = 0xFF943823,
-            PRESS_MUTED = 0xFF654136, PRESS_ORANGE = 0xFFEE653C;
+    private static final int PRESS_INK = DitherPress.INK, PRESS_RED = DitherPress.RUST, PRESS_MUTED = 0xFF654136;
     private static final int MARGIN = 14, ROW_TOP = 69, ROW_HEIGHT = 30;
     private static final int PROJECT_STEP_LIMIT = 8;
     private final Screen parent;
@@ -95,7 +94,7 @@ final class BotRosterScreen extends FleetPanel {
             button(label, MARGIN + i * (cell + 4), 14, cell, () -> changeTab(value)).highlight(tab == value);
         }
 
-        search = new TextFieldWidget(textRenderer, MARGIN, 42, listWidth(), 20, Text.literal("Filter"));
+        search = new BotUiField(textRenderer, MARGIN, 42, listWidth(), 20, Text.literal("Filter"));
         search.setPlaceholder(Text.literal(switch (tab) {
             case FLEET -> "Search bot names";
             case PROJECTS -> "Find a project";
@@ -152,7 +151,7 @@ final class BotRosterScreen extends FleetPanel {
                 stopOrder = button("Stop order", detailLeft() + half + 5, height - 63, w - half - 5, this::stopOutput);
             }
             case ACTIVITY -> {
-                command = addDrawableChild(new TextFieldWidget(textRenderer, MARGIN, y, width - 2 * MARGIN - 144,
+                command = addDrawableChild(new BotUiField(textRenderer, MARGIN, y, width - 2 * MARGIN - 144,
                         21, Text.literal("Baritone command")));
                 command.setPlaceholder(Text.literal("Baritone command…"));
                 command.setMaxLength(160);
@@ -365,7 +364,6 @@ final class BotRosterScreen extends FleetPanel {
     private int visibleRows() { return Math.max(1, (height - ROW_TOP - 36) / ROW_HEIGHT); }
 
     @Override protected void renderPanel(DrawContext draw, int mouseX, int mouseY, float delta) {
-        draw.fillGradient(0, 0, width, height, BotUiTheme.PANEL_TOP, BotUiTheme.PANEL_BOTTOM);
         var rows = rows();
         offset = Math.min(offset, Math.max(0, rows.size() - visibleRows()));
         String active = selection.get(tab);
@@ -414,7 +412,7 @@ final class BotRosterScreen extends FleetPanel {
         var heading = textRenderer.wrapLines(Text.literal(guide.heading), textWidth);
         var detail = textRenderer.wrapLines(Text.literal(guide.detail), textWidth);
         int bottom = Math.min(height - 35, y + 46 + 11 * (heading.size() + detail.size()));
-        draw.fill(x, y, right, bottom, BotUiTheme.CARD);
+        BotUiTheme.row(draw, x, y, right, bottom, false, false);
         line(draw, guide == GuideStep.DONE ? "Fleet guide complete"
                         : "Fleet guide · " + (guide.ordinal() + 1) + " / " + GuideStep.DONE.ordinal(),
                 x + 8, y + 8, right - x - 16, ACCENT);
@@ -494,14 +492,7 @@ final class BotRosterScreen extends FleetPanel {
             }
         }
         if (projectSheet) {
-            draw.fill(x - 5, y - 5, x + w, detailBottom, PRESS_PAPER);
-            draw.fill(x - 5, y - 5, x + w, y + 12, PRESS_ORANGE);
-            for (int dy = 0; dy < 8; dy += 2) {
-                for (int dx = 0; dx < 9; dx += 2) {
-                    int dot = x + w - 13 + dx + (dy / 2 & 1);
-                    draw.fill(dot, y + dy, dot + 1, y + dy + 1, PRESS_INK);
-                }
-            }
+            DitherPress.draw(draw, DitherPress.Surface.SHEET, x - 5, y - 5, x + w, detailBottom);
         } else if (selected != null) {
             draw.fill(x, y + 2, x + 5, y + 4, BotUiTheme.SIGNAL);
             draw.fill(x + 3, y + 4, x + 5, y + 7, BotUiTheme.SIGNAL);

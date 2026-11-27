@@ -80,7 +80,7 @@ final class SchematicQueueScreen extends FleetPanel {
     }
 
     private TextFieldWidget field(String label, int x, int y, int w, String text) {
-        var field = new TextFieldWidget(textRenderer, x, y, w, 20, Text.literal(label));
+        var field = new BotUiField(textRenderer, x, y, w, 20, Text.literal(label));
         field.setMaxLength(64);
         field.setPlaceholder(Text.literal(label));
         field.setText(text);
@@ -111,7 +111,6 @@ final class SchematicQueueScreen extends FleetPanel {
     }
 
     @Override protected void renderPanel(DrawContext draw, int mouseX, int mouseY, float delta) {
-        draw.fillGradient(0, 0, width, height, BotUiTheme.PANEL_TOP, BotUiTheme.PANEL_BOTTOM);
         draw.drawCenteredTextWithShadow(textRenderer, title, width / 2, 20, BotUiTheme.ACCENT);
         var files = matches();
         offset = Math.min(offset, Math.max(0, files.size() - visibleRows()));

@@ -24,11 +24,16 @@ abstract class BotHalftone extends RenderLayer {
     private static boolean hasTerrainDepth;
     private static net.minecraft.client.gl.ShaderProgram shader;
     private static final ShaderProgram PROGRAM = new ShaderProgram(() -> shader);
-    private static int previousDepthSampler;
+    private static int previousDepthSampler, previousAtlasSampler;
     private static final Texturing TERRAIN_SAMPLER = new Texturing("botfury_terrain_depth", () -> {
         previousDepthSampler = RenderSystem.getShaderTexture(3);
+        previousAtlasSampler = RenderSystem.getShaderTexture(4);
         RenderSystem.setShaderTexture(3, terrainDepth.getDepthAttachment());
-    }, () -> RenderSystem.setShaderTexture(3, previousDepthSampler));
+        RenderSystem.setShaderTexture(4, DitherPress.ATLAS);
+    }, () -> {
+        RenderSystem.setShaderTexture(3, previousDepthSampler);
+        RenderSystem.setShaderTexture(4, previousAtlasSampler);
+    });
 
     private BotHalftone() {
         super("botfury_halftone", VertexFormats.POSITION_COLOR_TEXTURE_OVERLAY_LIGHT_NORMAL, VertexFormat.DrawMode.QUADS,

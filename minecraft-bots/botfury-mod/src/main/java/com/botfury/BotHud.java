@@ -35,9 +35,7 @@ final class BotHud {
         int x = 8, y = 8, w = Math.min(202, (int)(window.getScaledWidth() / scale) - 16);
         int h = 62 + (tracked.isEmpty() ? 0 : 12 + ((tracked.size() + 2) / 3) * 22);
         var font = client.textRenderer;
-        draw.fillGradient(x + 3, y, x + w - 3, y + h, BotUiTheme.PANEL_BOTTOM, BotUiTheme.PANEL_TOP);
-        draw.fill(x, y + 3, x + 3, y + h - 3, BotUiTheme.PANEL_BOTTOM);
-        draw.fill(x + w - 3, y + 3, x + w, y + h - 3, BotUiTheme.PANEL_BOTTOM);
+        DitherPress.draw(draw, DitherPress.Surface.HUD, x, y, x + w, y + h);
         BotGeometry.circle(draw, x + 15, y + 13, 5.5f, lightning ? accent : BotUiTheme.SIGNAL);
         BotGeometry.circle(draw, x + 15, y + 13, 2f, BotUiTheme.PANEL_TOP);
         draw.drawText(font, mode, x + 25, y + 9, accent, false);

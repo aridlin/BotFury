@@ -2,7 +2,6 @@ package com.botfury;
 
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.registry.Registries;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
@@ -19,27 +18,27 @@ final class ItemTrackingScreen extends FleetPanel {
         int x = width / 2 - 120;
         for (int index = 0; index < BotUiConfig.trackedItems.size(); index++) {
             String id = BotUiConfig.trackedItems.get(index);
-            var remove = ButtonWidget.builder(Text.literal("Remove"), button -> {
+            var remove = new BotUiButton("Remove", x + 181, FIRST_ROW + index * ROW_HEIGHT, 59, 19, button -> {
                 BotUiConfig.trackedItems.remove(id);
                 BotUiConfig.save();
                 clearAndInit();
-            }).dimensions(x + 181, FIRST_ROW + index * ROW_HEIGHT, 59, 19).build();
+            }, true);
             addDrawableChild(remove);
         }
         int row = FIRST_ROW + Math.max(1, BotUiConfig.trackedItems.size()) * ROW_HEIGHT + 8;
-        var add = ButtonWidget.builder(Text.literal("Add item…"), button ->
+        var add = new BotUiButton("Add item…", x, row, 116, 20, button ->
                 client.setScreen(new ItemPickerScreen(this, false, id -> {
                     if (BotUiConfig.addTracked(id)) BotUiConfig.save();
                     client.setScreen(this);
-                }))).dimensions(x, row, 116, 20).build();
+                })), true);
         add.active = BotUiConfig.trackedItems.size() < BotUiConfig.TRACK_LIMIT;
         addDrawableChild(add);
-        addDrawableChild(ButtonWidget.builder(Text.literal("Back"), button -> close())
-                .dimensions(x + 124, row, 116, 20).build());
+        addDrawableChild(new BotUiButton("Back", x + 124, row, 116, 20, button -> close(), true));
     }
 
+    @Override protected DitherPress.Surface frameSurface() { return DitherPress.Surface.DIALOG; }
+
     @Override protected void renderPanel(DrawContext draw, int x, int y, float delta) {
-        draw.fill(0, 0, width, height, BotUiTheme.PANEL_TOP);
         draw.drawCenteredTextWithShadow(textRenderer, title, width / 2, 19, BotUiTheme.ACCENT);
         if (BotUiConfig.trackedItems.isEmpty()) {
             draw.drawCenteredTextWithShadow(textRenderer, "No items tracked", width / 2, FIRST_ROW + 5, BotUiTheme.MUTED);

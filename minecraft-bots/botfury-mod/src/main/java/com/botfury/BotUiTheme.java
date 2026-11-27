@@ -1,21 +1,44 @@
 package com.botfury;
 
+import net.minecraft.client.font.TextRenderer;
+import net.minecraft.client.gui.DrawContext;
+import net.minecraft.text.Text;
+
 final class BotUiTheme {
-    static final int ACCENT = 0xFFFFE08A;
+    static final int ACCENT = DitherPress.PAPER;
     static final int ACCENT_RGB = ACCENT & 0xFFFFFF;
-    static final int TEXT = 0xFFF9F1EB;
-    static final int MUTED = 0xFFC5B7BB;
-    static final int DANGER = 0xFFFF9B91;
-    static final int PANEL_TOP = 0xF9140F12;
-    static final int PANEL_BOTTOM = 0xF91E1419;
-    static final int CARD = 0xFF35242A;
-    static final int CARD_HOVER = 0xFF4D2A32;
-    static final int SELECTED = 0xFF642C34;
-    static final int EDGE = 0xFF66424A;
-    static final int SIGNAL = 0xFFEF5148;
-    static final int WHEEL_TILE = 0xE53A1C23;
-    static final int WHEEL_HOVER = 0xF489343B;
-    static final int WHEEL_DISABLED = 0x701E1419;
+    static final int TEXT = DitherPress.PAPER;
+    static final int MUTED = 0xFFD8C8AD;
+    static final int DANGER = 0xFFF48361;
+    static final int PANEL_TOP = DitherPress.INK;
+    static final int EDGE = DitherPress.RUST;
+    static final int SIGNAL = DitherPress.ORANGE;
+
+    static void panel(DrawContext draw, int x, int y, int right, int bottom) {
+        DitherPress.draw(draw, DitherPress.Surface.PANEL, x, y, right, bottom);
+    }
+
+    static void row(DrawContext draw, int x, int y, int right, int bottom, boolean selected, boolean hovered) {
+        var treatment = selected ? DitherPress.Surface.SELECTED : hovered ? DitherPress.Surface.HOVERED : DitherPress.Surface.CARD;
+        DitherPress.draw(draw, treatment, x, y, right, bottom);
+    }
+
+    static void label(DrawContext draw, int x, int y, int right, int bottom) {
+        DitherPress.draw(draw, DitherPress.Surface.LABEL, x, y, right, bottom);
+    }
+
+    static void tooltip(DrawContext draw, TextRenderer text, Text name, int mouseX, int mouseY, int width, int height) {
+        var lines = text.wrapLines(name, width - 20);
+        int w = lines.stream().mapToInt(text::getWidth).max().orElse(0) + 12;
+        int h = lines.size() * 10 + 8;
+        int x = Math.max(4, Math.min(width - w - 4, mouseX + 10));
+        int y = Math.max(4, Math.min(height - h - 4, mouseY + 10));
+        label(draw, x, y, x + w, y + h);
+        for (var line : lines) {
+            draw.drawText(text, line, x + 5, y + 4, TEXT, false);
+            y += 10;
+        }
+    }
 
     private BotUiTheme() {}
 }

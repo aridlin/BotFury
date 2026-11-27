@@ -62,7 +62,7 @@ final class BotInventoryPreview extends FleetPanel {
         int panelTop = (height - panelHeight) / 2;
         int listTop = panelTop + HEADER;
         int bottom = listTop + visible;
-        draw.fillGradient(0, panelTop, width, panelTop + panelHeight, BotUiTheme.PANEL_TOP, BotUiTheme.PANEL_BOTTOM);
+        BotUiTheme.panel(draw, 0, panelTop, width, panelTop + panelHeight);
         draw.drawText(textRenderer, getTitle(), MARGIN, panelTop + 13, BotUiTheme.ACCENT, false);
         String count = bots.size() + (bots.size() == 1 ? " bot" : " bots");
         draw.drawText(textRenderer, count, width - MARGIN - textRenderer.getWidth(count), panelTop + 13, BotUiTheme.MUTED, false);
@@ -95,12 +95,12 @@ final class BotInventoryPreview extends FleetPanel {
             draw.fill(width - MARGIN - 2, listTop, width - MARGIN, bottom, BotUiTheme.EDGE);
             draw.fill(width - MARGIN - 2, top, width - MARGIN, top + thumb, BotUiTheme.ACCENT);
         }
-        if (tooltip != null) draw.drawTooltip(textRenderer, tooltip, mouseX, mouseY);
+        if (tooltip != null) BotUiTheme.tooltip(draw, textRenderer, tooltip, mouseX, mouseY, width, height);
     }
 
     private Text renderCard(DrawContext draw, BotTracker.Bot bot, List<Map.Entry<String, Integer>> items,
                             int x, int y, int w, int h, int columns, int mouseX, int mouseY) {
-        draw.fill(x, y, x + w, y + h, BotUiTheme.CARD);
+        BotUiTheme.row(draw, x, y, x + w, y + h, false, false);
         draw.drawText(textRenderer, textRenderer.trimToWidth(bot.name(), w - 16), x + 8, y + 6, BotUiTheme.TEXT, false);
         if (items.isEmpty()) {
             String status = !bot.fresh() ? "Offline" : !bot.connected() ? "At title screen"
@@ -113,7 +113,7 @@ final class BotInventoryPreview extends FleetPanel {
             var item = items.get(i);
             int left = x + 6 + i % columns * SLOT;
             int top = y + 18 + i / columns * SLOT;
-            draw.fill(left, top, left + SLOT - 2, top + SLOT - 2, BotUiTheme.PANEL_BOTTOM);
+            draw.fill(left, top, left + SLOT - 2, top + SLOT - 2, DitherPress.INK);
             ItemStack stack = Registries.ITEM.get(new Identifier(item.getKey())).getDefaultStack();
             draw.drawItem(stack, left + 2, top + 1);
             if (item.getValue() > 1) {

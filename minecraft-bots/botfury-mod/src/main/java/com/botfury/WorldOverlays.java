@@ -19,12 +19,11 @@ import java.util.Map;
 
 /** Renders local planning information against the terrain's depth buffer. */
 final class WorldOverlays {
-    static final int IDLE_COLOR = 0xC9AEBC;
+    static final int IDLE_COLOR = DitherPress.PAPER & 0xffffff;
     private static final int RANGE = 112;
-    private static final RenderLayer FILLS = RenderLayer.getDebugQuads();
     private static final RenderLayer LINES = RenderLayer.getLines();
     private static final VertexConsumerProvider.Immediate buffers = VertexConsumerProvider.immediate(
-            Map.of(FILLS, new BufferBuilder(128 * 1024), LINES, new BufferBuilder(256 * 1024)), new BufferBuilder(256));
+            Map.of(LINES, new BufferBuilder(256 * 1024)), new BufferBuilder(128 * 1024));
     private record Preview(ClientWorld world, Map<BlockPos, BlockState> original, Map<BlockPos, BlockState> cells, BlockPos origin) {}
     private static Preview preview;
 
@@ -63,7 +62,9 @@ final class WorldOverlays {
                 double length = previous.squaredDistanceTo(next);
                 if (length > .001 && length < 36 && (camera.squaredDistanceTo(previous) < RANGE * RANGE
                         || camera.squaredDistanceTo(next) < RANGE * RANGE)) {
-                    line(lines, matrices.peek(), previous.subtract(camera), next.subtract(camera), color, alpha);
+                    boolean accent = DitherPress.marked(DitherPress.FALLING, 3, block.getX() + block.getY(), block.getZ());
+                    line(lines, matrices.peek(), previous.subtract(camera), next.subtract(camera),
+                            color, accent ? alpha : alpha * .78f);
                 }
                 previous = next;
             }
@@ -101,7 +102,8 @@ final class WorldOverlays {
 
     private static void drawPreview(MinecraftClient client, MatrixStack matrices, Vec3d camera, Frustum frustum, Preview ghost) {
         var lines = buffers.getBuffer(LINES);
-        var fills = buffers.getBuffer(FILLS);
+        var ink = WorldInk.layer();
+        var fills = buffers.getBuffer(ink);
         var world = client.world;
         for (var entry : ghost.cells.entrySet()) {
             var state = entry.getValue();
@@ -113,8 +115,8 @@ final class WorldOverlays {
                     || frustum != null && !frustum.isVisible(new Box(pos))) continue;
             if (state.isFullCube(world, pos) && covered(ghost, world, relative, pos)) continue;
             var shape = state.getOutlineShape(world, pos);
-            int tint = !observed.isAir() ? 0xFF797F
-                    : state.equals(ghost.original.get(relative)) ? 0xF6D590 : 0xFFF2CE;
+            int tint = !observed.isAir() ? DitherPress.RUST
+                    : state.equals(ghost.original.get(relative)) ? DitherPress.ORANGE : DitherPress.PAPER;
             if (shape.isEmpty()) {
                 ghostBox(matrices, lines, fills, new Box(pos).offset(-camera.x, -camera.y, -camera.z), tint);
             } else {
@@ -123,7 +125,7 @@ final class WorldOverlays {
                 }
             }
         }
-        buffers.draw(FILLS);
+        buffers.draw(ink);
         buffers.draw(LINES);
     }
 
@@ -151,10 +153,10 @@ final class WorldOverlays {
     private static void face(VertexConsumer buffer, org.joml.Matrix4f matrix, int tint,
                              float x, float y, float z, float ux, float uy, float uz, float vx, float vy, float vz) {
         float r = channel(tint, 16), g = channel(tint, 8), b = channel(tint, 0);
-        buffer.vertex(matrix, x, y, z).color(r, g, b, .13f).next();
-        buffer.vertex(matrix, x + ux, y + uy, z + uz).color(r, g, b, .13f).next();
-        buffer.vertex(matrix, x + ux + vx, y + uy + vy, z + uz + vz).color(r, g, b, .13f).next();
-        buffer.vertex(matrix, x + vx, y + vy, z + vz).color(r, g, b, .13f).next();
+        buffer.vertex(matrix, x, y, z).texture(0, 0).color(r, g, b, .24f).next();
+        buffer.vertex(matrix, x + ux, y + uy, z + uz).texture(1, 0).color(r, g, b, .24f).next();
+        buffer.vertex(matrix, x + ux + vx, y + uy + vy, z + uz + vz).texture(1, 1).color(r, g, b, .24f).next();
+        buffer.vertex(matrix, x + vx, y + vy, z + vz).texture(0, 1).color(r, g, b, .24f).next();
     }
 
     private static float channel(int color, int shift) { return ((color >> shift) & 255) / 255f; }

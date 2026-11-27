@@ -127,7 +127,10 @@ final class CommandWheel extends FleetPanel {
             case 4 -> "Output chest";
             default -> "BotFury";
         };
-        draw.drawCenteredTextWithShadow(textRenderer, heading, cx, Math.max(6, (int)(cy - baseRadius - 31)), BotUiTheme.TEXT);
+        int headingY = Math.max(6, (int) (cy - baseRadius - 31));
+        int headingWidth = textRenderer.getWidth(heading) + 18;
+        BotUiTheme.label(draw, cx - headingWidth / 2, headingY - 4, cx + (headingWidth + 1) / 2, headingY + 12);
+        draw.drawCenteredTextWithShadow(textRenderer, heading, cx, headingY, BotUiTheme.TEXT);
 
         for (int index = 0; index < 8; ++index) {
             boolean enabled = !LABELS[page][index].isEmpty();
@@ -138,13 +141,12 @@ final class CommandWheel extends FleetPanel {
             float highlight = Math.max(0, Math.min(1, hover));
             double direction = -Math.PI / 2 + index * Math.PI / 4;
             var mesh = bodies[index];
-            int body = enabled
-                    ? mix(BotUiTheme.WHEEL_TILE, BotUiTheme.WHEEL_HOVER, highlight)
-                    : BotUiTheme.WHEEL_DISABLED;
-            wedge(draw, cx, cy, baseRadius, index, body, mesh, false);
+            int body = enabled ? DitherPress.PAPER : 0x76191815;
+            wedge(draw, cx, cy, baseRadius, index, body, mesh, false,
+                    DitherPress.wedge(enabled, highlight > .37f, index));
             if (highlight > .03f) {
                 int stroke = (Math.round(highlight * 255) << 24) | BotUiTheme.ACCENT_RGB;
-                wedge(draw, cx, cy, baseRadius, index, stroke, mesh, true);
+                wedge(draw, cx, cy, baseRadius, index, stroke, mesh, true, null);
             }
             if (!enabled) continue;
             int middle = WheelSoftBody.POINTS / 2;
@@ -155,7 +157,10 @@ final class CommandWheel extends FleetPanel {
             int iy = cy + (int)Math.round(Math.sin(angle) * labelRadius);
             draw.drawItem(ICONS[page][index].getDefaultStack(), ix - 8, iy - 12);
             String label = page == 1 && index == 4 && !quantityChosen ? "Drop all" : LABELS[page][index];
-            draw.drawCenteredTextWithShadow(textRenderer, label, ix, iy + 8, mix(BotUiTheme.MUTED, BotUiTheme.TEXT, highlight));
+            int halfLabel = (textRenderer.getWidth(label) + 1) / 2;
+            draw.fill(ix - halfLabel - 2, iy + 6, ix + halfLabel + 2, iy + 17, DitherPress.INK);
+            draw.drawCenteredTextWithShadow(textRenderer, label, ix, iy + 8,
+                    mix(BotUiTheme.MUTED, BotUiTheme.TEXT, highlight));
         }
 
         String center = switch (page) {
@@ -163,6 +168,8 @@ final class CommandWheel extends FleetPanel {
             case 4 -> "×" + outputBatch;
             default -> BotTracker.targetLabel();
         };
+        BotGeometry.circle(draw, cx, cy, baseRadius * .27f, DitherPress.RUST);
+        BotGeometry.circle(draw, cx, cy, baseRadius * .26f, DitherPress.INK);
         draw.drawCenteredTextWithShadow(textRenderer, textRenderer.trimToWidth(center, (int) (baseRadius * .68f)), cx, cy - 4, BotUiTheme.ACCENT);
         String hint;
         if (page == 1 || page == 4) hint = net.minecraft.registry.Registries.ITEM.get(new net.minecraft.util.Identifier(item))
@@ -178,7 +185,7 @@ final class CommandWheel extends FleetPanel {
         int panelWidth = textRenderer.getWidth(hint);
         for (var line : lines) panelWidth = Math.max(panelWidth, textRenderer.getWidth(line));
         int y = height - 17 - lines.size() * 10;
-        draw.fill(cx - panelWidth / 2 - 6, y - 4, cx + (panelWidth + 1) / 2 + 6, height - 3, BotUiTheme.PANEL_BOTTOM);
+        BotUiTheme.label(draw, cx - panelWidth / 2 - 6, y - 4, cx + (panelWidth + 1) / 2 + 6, height - 3);
         for (var line : lines) {
             draw.drawCenteredTextWithShadow(textRenderer, line, cx, y, BotUiTheme.TEXT);
             y += 10;
@@ -223,14 +230,19 @@ final class CommandWheel extends FleetPanel {
     }
 
     private static void wedge(DrawContext draw, float cx, float cy, float baseRadius,
-                              int sector, int color, WheelSoftBody mesh, boolean rim) {
+                              int sector, int color, WheelSoftBody mesh, boolean rim, net.minecraft.util.Identifier texture) {
         draw.draw();
         RenderSystem.enableBlend();
         RenderSystem.defaultBlendFunc();
-        RenderSystem.setShader(GameRenderer::getPositionColorProgram);
+        if (rim) {
+            RenderSystem.setShader(GameRenderer::getPositionColorProgram);
+        } else {
+            RenderSystem.setShader(GameRenderer::getPositionTexColorProgram);
+            RenderSystem.setShaderTexture(0, texture);
+        }
         var matrix = draw.getMatrices().peek().getPositionMatrix();
         var buffer = Tessellator.getInstance().getBuffer();
-        buffer.begin(VertexFormat.DrawMode.TRIANGLE_STRIP, VertexFormats.POSITION_COLOR);
+        buffer.begin(VertexFormat.DrawMode.TRIANGLE_STRIP, rim ? VertexFormats.POSITION_COLOR : VertexFormats.POSITION_TEXTURE_COLOR);
         double start = -Math.PI / 2 + sector * Math.PI / 4 - Math.PI / 8 + .015;
         for (int point = 0; point < WheelSoftBody.POINTS; point++) {
             double angle = start + (Math.PI / 4 - .03) * point / (WheelSoftBody.POINTS - 1);
@@ -238,8 +250,11 @@ final class CommandWheel extends FleetPanel {
                 int shape = rim ? WheelSoftBody.OUTER : ring;
                 double bent = angle + mesh.angle(shape, point);
                 float radius = baseRadius * mesh.radius(shape, point) - (rim && ring == WheelSoftBody.INNER ? 2 : 0);
-                buffer.vertex(matrix, cx + (float)Math.cos(bent) * radius,
-                        cy + (float)Math.sin(bent) * radius, 0).color(color).next();
+                var vertex = buffer.vertex(matrix, cx + (float)Math.cos(bent) * radius,
+                        cy + (float)Math.sin(bent) * radius, 0);
+                if (rim) vertex.color(color).next();
+                else vertex.texture(point / (float) (WheelSoftBody.POINTS - 1), ring == WheelSoftBody.OUTER ? 1 : 0)
+                        .color(255, 255, 255, color >>> 24).next();
             }
         }
         BufferRenderer.drawWithGlobalProgram(buffer.end());

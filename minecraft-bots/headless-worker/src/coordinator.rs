@@ -35,6 +35,7 @@ impl BrokerError {
 pub enum Kind {
     Gather,
     Craft,
+    Smelt,
     Transfer,
     Build,
     Verify,

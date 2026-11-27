@@ -37,6 +37,7 @@ fn run() -> Result<(), String> {
     let kinds = [
         Kind::Gather,
         Kind::Craft,
+        Kind::Smelt,
         Kind::Transfer,
         Kind::Build,
         Kind::Verify,

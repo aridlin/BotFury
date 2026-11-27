@@ -53,6 +53,16 @@ final class ProjectDiagnostics {
             if (job.state() == ProjectQueue.State.WAITING) return "An available headless bot can finish this furnace batch.";
             if (job.state() == ProjectQueue.State.LEASED) return "Let " + worker + " collect the full batch from the furnace.";
         }
+        if ((job.state() == ProjectQueue.State.WAITING || job.state() == ProjectQueue.State.FAILED)
+                && job.evidence() != null) {
+            var evidence = job.evidence();
+            if (evidence.startsWith("No reachable ") && evidence.contains(" while scouting loaded terrain")) {
+                return "Move an available bot to a reachable source for this item.";
+            }
+            if (evidence.startsWith("Need ") && evidence.contains(" pickaxe or better to gather ")) {
+                return "Equip an available bot with the required pickaxe.";
+            }
+        }
         return switch (job.state()) {
             case DONE -> "";
             case LEASED -> "Let " + worker + " finish this step.";

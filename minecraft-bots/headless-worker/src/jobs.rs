@@ -6,6 +6,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
+    f64::consts::{FRAC_PI_4, TAU},
+    hash::{DefaultHasher, Hash, Hasher},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -283,7 +285,7 @@ impl Job<'_> {
         )?;
         if result["result"] != "arrived" {
             return Err(format!(
-                "Could not reach the work position: {}",
+                "Could not reach {x}, {y}, {z}: {}",
                 result["result"]
             ));
         }
@@ -368,7 +370,7 @@ impl Job<'_> {
         search_name: &str,
         blocks: &[&str],
         exclude: Option<&Bounds>,
-    ) -> Result<Pos, String> {
+    ) -> Result<Option<Pos>, String> {
         let radius = if self.game.baritone { 12 } else { 4 };
         let filters = if !self.game.baritone && search_name.is_empty() {
             blocks
@@ -399,51 +401,146 @@ impl Job<'_> {
                     .is_some_and(|name| blocks.contains(&name))
             })
             .filter_map(|candidate| {
-                serde_json::from_value::<[i32; 3]>(candidate["pos"].clone()).ok()
+                let pos: Pos = serde_json::from_value::<[i32; 3]>(candidate["pos"].clone())
+                    .ok()?
+                    .into();
+                Some((pos, &candidate["stands"]))
             })
-            .map(Pos::from)
-            .filter(|&pos| usable(pos));
+            .filter(|&(pos, _)| usable(pos));
         if !self.game.baritone {
-            let target = targets
-                .next()
-                .ok_or("No matching block within local reach")?;
+            let Some((target, _)) = targets.next() else {
+                return Ok(None);
+            };
             self.approach_pickup(target, exclude)?;
-            return Ok(target);
+            return Ok(Some(target));
         }
 
         let others = self.nearby_players()?;
         let mut stands = BTreeMap::new();
-        for target in targets
-            .filter(|target| {
-                !others
-                    .iter()
-                    .any(|other| target.distance_squared(*other) < 1.4_f64.powi(2))
-            })
-            .take(24)
-        {
-            for stand in Self::pickup_stands(target)
-                .into_iter()
-                .filter(|&pos| usable(pos))
-            {
+        for (target, exposure) in targets.filter(|(target, _)| {
+            !others
+                .iter()
+                .any(|other| target.distance_squared(*other) < 1.4_f64.powi(2))
+        }) {
+            let positions = if exposure.is_null() {
+                Self::pickup_stands(target).to_vec()
+            } else {
+                serde_json::from_value::<Vec<[i32; 3]>>(exposure.clone())
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .map(Pos::from)
+                    .collect()
+            };
+            for stand in positions.into_iter().filter(|&pos| usable(pos)) {
+                if stands.len() >= 96 {
+                    break;
+                }
                 stands.entry([stand.x, stand.y, stand.z]).or_insert(target);
             }
+            if stands.len() >= 96 {
+                break;
+            }
         }
-        if stands.is_empty() {
-            return Err("No matching block with an available approach in loaded terrain".into());
-        }
-        let choices: Vec<_> = stands.keys().collect();
-        let response = self
-            .game
-            .call("baritone_approach", json!({"stands":choices}))?;
-        let stand = serde_json::from_value::<Option<[i32; 3]>>(response["stand"].clone())
-            .map_err(|error| error.to_string())?
-            .ok_or("Baritone found no safe route to a matching block")?;
+        let choices: Vec<_> = stands.keys().copied().collect();
+        let Some(stand) = self.baritone_stand(&choices)? else {
+            return Ok(None);
+        };
         let target = *stands
             .get(&stand)
             .ok_or("Baritone returned an unknown stand")?;
         self.move_to(stand.into())?;
         self.wait_for_pickup_clearance(target)?;
-        Ok(target)
+        Ok(Some(target))
+    }
+
+    fn baritone_stand(&mut self, choices: &[[i32; 3]]) -> Result<Option<[i32; 3]>, String> {
+        if choices.is_empty() {
+            return Ok(None);
+        }
+        let response = self
+            .game
+            .call("baritone_approach", json!({"stands":choices}))?;
+        let chosen: Option<[i32; 3]> =
+            serde_json::from_value(response["stand"].clone()).map_err(|error| error.to_string())?;
+        if chosen.is_some_and(|stand| !choices.contains(&stand)) {
+            return Err("Baritone returned an unknown stand".into());
+        }
+        Ok(chosen)
+    }
+
+    fn scout(
+        &mut self,
+        search: &str,
+        blocks: &[&str],
+        exclude: Option<&Bounds>,
+        visited: &mut Vec<[i32; 3]>,
+    ) -> Result<bool, String> {
+        let status = self.game.call("status", json!({}))?;
+        let position: [f64; 3] = serde_json::from_value(status["position"].clone())
+            .map_err(|error| error.to_string())?;
+        let [x, y, z] = position.map(|value| value.floor() as i32);
+        let seen = self.game.call(
+            "find_blocks",
+            json!({
+                "name":search, "exposed_names":blocks, "radius":64, "limit":64
+            }),
+        )?;
+        let found = seen["found"]
+            .as_array()
+            .ok_or("Missing block search results")?;
+        let far_target = found
+            .iter()
+            .filter_map(|block| serde_json::from_value::<[i32; 3]>(block["pos"].clone()).ok())
+            .find(|&[tx, ty, tz]| {
+                ((i64::from(tx) - i64::from(x)).pow(2) + (i64::from(tz) - i64::from(z)).pow(2))
+                    > 12 * 12
+                    && !exclude
+                        .is_some_and(|area| Pos::from([tx, ty, tz]).contains(area.min, area.max))
+            });
+        let direction = if let Some([tx, _, tz]) = far_target {
+            f64::from(tz - z).atan2(f64::from(tx - x))
+        } else {
+            let mut hash = DefaultHasher::new();
+            self.assignment.job.worker.hash(&mut hash);
+            TAU * (hash.finish() % 16) as f64 / 16.0
+        };
+        // Try progress toward the observed resource before allowing lateral detours.
+        for (radius, shifts) in [
+            (9.0, &[0, 1, -1][..]),
+            (5.0, &[0, 1, -1][..]),
+            (9.0, &[2, -2, 3, -3, 4][..]),
+            (5.0, &[2, -2, 3, -3, 4][..]),
+        ] {
+            let mut stands = Vec::new();
+            for &shift in shifts {
+                let angle = direction + f64::from(shift) * FRAC_PI_4;
+                let sx = x + (angle.cos() * radius).round() as i32;
+                let sz = z + (angle.sin() * radius).round() as i32;
+                if visited.iter().any(|&[vx, _, vz]| {
+                    (i64::from(sx) - i64::from(vx)).pow(2) + (i64::from(sz) - i64::from(vz)).pow(2)
+                        < 25
+                }) {
+                    continue;
+                }
+                if !(-29_999_983..=29_999_983).contains(&sx)
+                    || !(-29_999_983..=29_999_983).contains(&sz)
+                {
+                    continue;
+                }
+                stands.extend((-7..=7).map(|dy| [sx, y + dy, sz]).filter(|&stand| {
+                    !exclude.is_some_and(|area| Pos::from(stand).contains(area.min, area.max))
+                }));
+            }
+            if let Some(stand) = self.baritone_stand(&stands)? {
+                if visited.len() >= 32 {
+                    visited.remove(0);
+                }
+                visited.push([x, y, z]);
+                self.move_to(stand.into())?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn gather(&mut self, work: Gather) -> Result<Outcome, String> {
@@ -484,9 +581,12 @@ impl Job<'_> {
         if !(1..=576).contains(&work.count) {
             return Err("Invalid gather count".into());
         }
+        let mut scout_hops = 0;
+        let mut visited = Vec::new();
         loop {
             let inventory = self.game.inventory()?;
-            if item.count(&inventory.counts()) >= work.count {
+            let carried = item.count(&inventory.counts());
+            if carried >= work.count {
                 break;
             }
             if tier > 0 {
@@ -496,15 +596,29 @@ impl Job<'_> {
                     .filter(|slot| (9..45).contains(&slot.slot) && pickaxe_tier(&slot.item) >= tier)
                     .max_by_key(|slot| pickaxe_tier(&slot.item))
                     .ok_or_else(|| {
-                        let minimum = ["", "wooden", "stone", "iron"][usize::from(tier)];
+                        let minimum = ["", "a wooden", "a stone", "an iron"][usize::from(tier)];
                         format!(
-                            "Need a {minimum} pickaxe or better to gather {}",
+                            "Need {minimum} pickaxe or better to gather {}",
                             work.resource
                         )
                     })?;
                 self.select_item(&inventory, pickaxe.slot, &pickaxe.item)?;
             }
-            let pos = self.gather_approach(search, blocks, work.exclude.as_ref())?;
+            let exclude = work.exclude.as_ref();
+            let Some(pos) = self.gather_approach(search, blocks, exclude)? else {
+                if self.game.baritone
+                    && scout_hops < 10
+                    && self.scout(search, blocks, exclude, &mut visited)?
+                {
+                    scout_hops += 1;
+                    continue;
+                }
+                return Err(format!(
+                    "No reachable {} found while scouting loaded terrain ({carried}/{} carried)",
+                    work.item, work.count
+                ));
+            };
+            scout_hops = 0;
             let actual = self.block_at(pos)?;
             let block = actual["block"]
                 .as_str()
@@ -515,16 +629,19 @@ impl Job<'_> {
             if broken["broken"] != true || broken["before"] != block || broken["after"] != "air" {
                 return Err("Server did not confirm the expected block was mined".into());
             }
-            self.move_to(pos)?;
-            let mut collected = false;
-            for _ in 0..8 {
-                if item.count(&self.game.inventory()?.counts()) > old_count {
-                    collected = true;
-                    break;
-                }
-                thread::sleep(Duration::from_millis(125));
+            if item.count(&self.game.inventory()?.counts()) > old_count {
+                continue;
             }
-            if !collected {
+            // On a natural trunk the block above the cut can still obstruct the space.
+            // Stay at the safe mining stand if a body cannot fit at the drop's position.
+            if !self.game.baritone || self.baritone_stand(&[[pos.x, pos.y, pos.z]])?.is_some() {
+                self.move_to(pos)?;
+            }
+            if !self.wait_for_item(&item, old_count)?
+                && (!self.game.baritone
+                    || !self.approach_loose_drop(pos, exclude)?
+                    || !self.wait_for_item(&item, old_count)?)
+            {
                 return Ok(Outcome {
                     success: false,
                     evidence: "Mined block but did not collect the drop".into(),
@@ -533,6 +650,62 @@ impl Job<'_> {
             }
         }
         Ok(observed(format!("Observed {} {}", work.count, work.item)))
+    }
+
+    fn wait_for_item(&mut self, item: &ProjectItem<'_>, previous: u32) -> Result<bool, String> {
+        for _ in 0..8 {
+            if item.count(&self.game.inventory()?.counts()) > previous {
+                return Ok(true);
+            }
+            thread::sleep(Duration::from_millis(125));
+        }
+        Ok(false)
+    }
+
+    fn approach_loose_drop(
+        &mut self,
+        target: Pos,
+        exclude: Option<&Bounds>,
+    ) -> Result<bool, String> {
+        let view = self
+            .game
+            .call("entities", json!({"type":"item","radius":5,"limit":12}))?;
+        let entities = view["entities"]
+            .as_array()
+            .ok_or("Missing nearby drop observations")?;
+        let status = self.game.call("status", json!({}))?;
+        let position: [f64; 3] = serde_json::from_value(status["position"].clone())
+            .map_err(|error| error.to_string())?;
+        let current = position.map(|axis| axis.floor() as i32);
+        let mut stands = Vec::new();
+        for item in entities.iter().filter(|entity| entity["type"] == "item") {
+            let Ok(drop) = serde_json::from_value::<[f64; 3]>(item["pos"].clone()) else {
+                continue;
+            };
+            if target.distance_squared(drop) > 9.0 {
+                continue;
+            }
+            let [x, y, z] = drop.map(|axis| axis.floor() as i32);
+            for dy in [0, -1] {
+                for [dx, dz] in [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]] {
+                    let stand = [x + dx, y + dy, z + dz];
+                    let pos = Pos::from(stand);
+                    if stand != current
+                        && !exclude.is_some_and(|area| pos.contains(area.min, area.max))
+                        && pos.distance_squared(drop) <= 2.25
+                        && !stands.contains(&stand)
+                        && stands.len() < 96
+                    {
+                        stands.push(stand);
+                    }
+                }
+            }
+        }
+        let Some(stand) = self.baritone_stand(&stands)? else {
+            return Ok(false);
+        };
+        self.move_to(stand.into())?;
+        Ok(true)
     }
 
     fn click(&mut self, slot: usize, button: u8, mode: &str) -> Result<(), String> {

@@ -4,6 +4,8 @@ use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Write},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 pub struct Game {
@@ -75,6 +77,18 @@ impl Game {
         let status = game.call("status", json!({}))?;
         if status["version"] != "26.3 (protocol 777)" || status["gamemode"] != "survival" {
             return Err("Expected a Minecraft 26.3 survival connection".into());
+        }
+        let ready_by = Instant::now() + Duration::from_secs(4);
+        let mut status = status;
+        while status["chunks_loaded"].as_u64() == Some(0) {
+            if Instant::now() >= ready_by {
+                return Err("Minecraft did not send terrain after login".into());
+            }
+            thread::sleep(Duration::from_millis(50));
+            status = game.call("status", json!({}))?;
+            if status["in_game"] != true {
+                return Err("Worker disconnected while waiting for terrain".into());
+            }
         }
         game.baritone = game.request("tools/list", json!({}))?["tools"]
             .as_array()

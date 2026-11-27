@@ -106,7 +106,7 @@
              }
              "close_menu" => self.act(Cmd::CloseMenu, args, 200),
              "drop_item" => self.act(Cmd::Drop { all: arg_bool(args, "all") }, args, 300),
-@@ -379,11 +398,46 @@
+@@ -379,11 +398,52 @@
                  let bot = self.bot()?;
                  let g = bot.game();
                  let center = [g.pos[0].floor() as i32, g.pos[1].floor() as i32, g.pos[2].floor() as i32];
@@ -121,7 +121,13 @@
 +                } else {
 +                    g.world.find_blocks(&name, center, radius, limit)
 +                };
-+                let found: Vec<Value> = matches.into_iter().map(|(p, s)| block_json(&g, p, s)).collect();
++                let found: Vec<Value> = matches.into_iter().map(|(p, s)| {
++                    let mut block = block_json(&g, p, s);
++                    if args.get("exposed_names").is_some() {
++                        block["stands"] = json!(crate::native_baritone::exposed_stands(&g.world, p));
++                    }
++                    block
++                }).collect();
                  Ok(json!({"center": center, "found": found, "chunks_loaded": g.world.loaded_chunks()}))
              }
              other => Err(format!("unknown tool {other}")),
@@ -154,7 +160,7 @@
      }
 
      fn walk_to(&mut self, args: &Value) -> Result<Value, String> {
-@@ -555,6 +609,10 @@
+@@ -555,6 +615,10 @@
          End::Left(m) => format!("disconnected: {m}"),
      })
  }
@@ -165,7 +171,7 @@
  fn menu_signature(g: &Game) -> Option<(i32, i32)> {
      g.menu.as_ref().map(|m| (m.id, m.state_id))
  }
-@@ -682,6 +740,8 @@
+@@ -682,6 +746,8 @@
              json!({"yaw": {"type": "number"}, "pitch": {"type": "number"}, "x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"}}), &[]),
          tool("walk_to", "Walk (path-finding around obstacles, jumping up blocks) to x/z (and y if given). Blocks until arrived, stuck or timeout. Note: `command` with tp is faster if allowed.",
              json!({"x": {"type": "number"}, "z": {"type": "number"}, "y": {"type": "number", "description": "Feet height; omit for any height."}, "relative": {"type": "boolean", "description": "x/y/z are offsets from the current position."}, "sprint": {"type": "boolean"}, "timeout_s": {"type": "number", "description": "Default 60."}}), &["x", "z"]),
@@ -174,7 +180,7 @@
          tool("stop", "Stop walking.", json!({}), &[]),
          tool("jump", "Jump once (or rise when flying).", json!({}), &[]),
          tool("sneak", "Start (on=true) or stop sneaking.", json!({"on": {"type": "boolean"}}), &[]),
-@@ -695,7 +755,7 @@
+@@ -695,7 +761,7 @@
          tool("inventory", "The player's inventory (non-empty slots, with names/lore/enchantments), held slot and cursor item.", json!({}), &[]),
          tool("menu", "The open container/GUI menu: title, type and items in its slots.", json!({}), &[]),
          tool("click_slot", "Click a slot of the open menu (or of the inventory when none is open). mode: pickup (button 0 left / 1 right), quick_move (shift-click), swap (button = hotbar 0-8 or 40 offhand), clone, throw, pickup_all. Returns chat and the updated menu.",
@@ -183,7 +189,7 @@
          tool("close_menu", "Close the open menu.", json!({}), &[]),
          tool("drop_item", "Drop the held item (one, or the stack with all=true).", json!({"all": {"type": "boolean"}}), &[]),
          tool("swap_hands", "Swap the main-hand and offhand items.", json!({}), &[]),
-@@ -706,6 +766,6 @@
+@@ -706,6 +772,6 @@
          tool("players", "Players in the tab list with game mode and ping.", json!({}), &[]),
          tool("block_at", "The block at x/y/z (name and properties), if its chunk is loaded.", xyz("Block"), &["x", "y", "z"]),
          tool("find_blocks", "Find blocks whose name contains `name` (e.g. chest, sign, diamond_ore) around the bot, nearest first.",

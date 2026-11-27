@@ -68,6 +68,22 @@ def audit_house(connection, cells, site):
     ]
 
 
+def describe_work(project):
+    jobs = project["jobs"]
+    return {
+        "states": dict(Counter(job["state"] for job in jobs)),
+        "active": [
+            {"job": job["work"]["id"], "kind": job["work"]["kind"],
+             "worker": job.get("worker"), "attempts": job["attempts"]}
+            for job in jobs if job["state"] == "LEASED"
+        ],
+        "failures": [
+            {"job": job["work"]["id"], "attempts": job["attempts"], "evidence": job.get("evidence")}
+            for job in jobs if job["state"] == "FAILED"
+        ],
+    }
+
+
 def observe(connect, out, journal, house_id, manifest_id, cells, site, minutes):
     deadline = time.monotonic() + 60 * minutes
     next_audit = 0
@@ -87,8 +103,7 @@ def observe(connect, out, journal, house_id, manifest_id, cells, site, minutes):
                     name, count = found.groups()
                     stock["logs" if name.endswith("_log") else name] += int(count)
             row = {"time": time.time(), "chest": coords, "stock": {k: stock[k] for k in TARGETS},
-                   "house": dict(Counter(job["state"] for job in house["jobs"])),
-                   "manifest": dict(Counter(job["state"] for job in manifest["jobs"]))}
+                   "house": describe_work(house), "manifest": describe_work(manifest)}
             stock_ready = all(stock[item] >= count for item, count in TARGETS.items())
             if time.monotonic() >= next_audit or stock_ready:
                 checks = audit_house(connection, cells, site)
@@ -101,7 +116,10 @@ def observe(connect, out, journal, house_id, manifest_id, cells, site, minutes):
                     return
         finally:
             connection.close()
-        print(json.dumps(row), flush=True)
+        print(json.dumps({
+            "stock": row["stock"], "houseCellsMatched": row.get("houseCellsMatched"),
+            "houseJobs": row["house"]["states"], "manifestJobs": row["manifest"]["states"],
+        }), flush=True)
         with (out / "progress.jsonl").open("a") as trace:
             trace.write(json.dumps(row) + "\n")
         time.sleep(30)

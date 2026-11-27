@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BotFury Fleet Command</title>
+  <link rel="stylesheet" href="static/press.css">
+  <script src="static/fleet.js" defer></script>
+</head>
+<body>
+<main>
+  <header class="masthead">
+    <div class="wordmark"><span class="seal" aria-hidden="true"></span><h1>BotFury<span> / </span>Fleet Command</h1></div>
+    <p id="summary" aria-live="polite">Connecting to fleet…</p>
+    <button id="open-professions">Professions</button>
+  </header>
+  <section class="order-bar" aria-label="Fleet orders">
+    <span id="selection-count">0 selected</span>
+    <button id="select-visible" title="Select all bots visible in the roster">Select visible</button>
+    <button data-order="start">Start</button>
+    <label class="server-label"><span class="sr-only">Minecraft server</span><input id="target" placeholder="Minecraft server[:port]" spellcheck="false"></label>
+    <button data-order="connect" class="primary">Connect</button>
+    <button id="open-bed" disabled>Set bed spawn</button>
+    <button data-order="halt">Halt task</button>
+    <button data-order="stop">Stop instances</button>
+    <span id="order-result" role="status"></span>
+  </section>
+  <section id="runs" class="plate run-board" hidden>
+    <div class="plate-head"><h2>Profession runs</h2></div>
+    <ol id="run-list"></ol>
+  </section>
+  <div class="workspace">
+    <aside class="plate roster" aria-label="Fleet roster">
+      <div class="plate-head"><h2>Fleet</h2><input id="find" aria-label="Find bots" placeholder="Find bot…" type="search"></div>
+      <div id="hosts"></div>
+    </aside>
+    <section class="plate mission">
+      <div class="plate-head map-head">
+        <h2>Position map</h2>
+        <label><span class="sr-only">Server and dimension</span><select id="world"></select></label>
+        <button id="fit">Fit</button>
+        <button id="zoom-out" aria-label="Zoom out">−</button>
+        <button id="zoom-in" aria-label="Zoom in">+</button>
+      </div>
+      <div class="map">
+        <canvas id="map" tabindex="0" aria-label="Bot positions. Use arrows to pan and plus or minus to zoom."></canvas>
+        <span id="coords" class="map-key">X → &nbsp; Z ↓</span>
+        <span id="map-empty">Waiting for bot positions</span>
+      </div>
+      <div class="chat-zone">
+        <div class="plate-head"><h2>Server chat</h2><span id="chat-source"></span></div>
+        <ol id="world-chat" class="chat"></ol>
+      </div>
+    </section>
+    <aside class="plate inspector">
+      <div class="plate-head"><h2 id="inspect-heading">Inventories</h2></div>
+      <div class="inspection">
+        <p id="inspect-info">Choose a bot to inspect its status and chat.</p>
+        <div id="health" hidden><meter id="health-meter" min="0" max="20" value="0"></meter><span></span></div>
+        <h3 id="inventory-heading">Fleet totals</h3>
+        <div id="inventory"></div>
+        <details id="bot-chat-panel" hidden>
+          <summary>Bot chat</summary>
+          <ol id="bot-chat" class="chat"></ol>
+        </details>
+      </div>
+    </aside>
+  </div>
+</main>
+<dialog id="bed-dialog">
+  <div class="plate-head"><h2>Set bed spawn</h2><button id="close-bed">Close</button></div>
+  <div class="profession-form">
+    <label>Existing bed · X Y Z<input id="bed-coords" placeholder="128 64 -90" spellcheck="false"></label>
+    <button id="send-bed" class="primary">Send selected bots to bed</button>
+    <p id="bed-result" role="status"></p>
+  </div>
+</dialog>
+<dialog id="professions">
+  <div class="plate-head"><h2>Professions</h2><button id="close-professions">Close</button></div>
+  <div class="profession-form">
+    <label>Saved professions<select id="saved-profession"><option value="">New profession</option></select></label>
+    <label>Name<input id="profession-name" maxlength="80"></label>
+    <label>Minecraft server<input id="profession-server" maxlength="255" spellcheck="false"></label>
+    <label>Ordered projects<textarea id="profession-steps" rows="7" maxlength="12000" placeholder="One BotFury project ID per line"></textarea></label>
+    <div class="profession-actions"><button id="save-profession" class="primary">Save plan</button><button id="dispatch-profession" disabled>Dispatch to selected</button><button id="use-server">Use server</button></div>
+    <p id="profession-result" role="status"></p>
+  </div>
+</dialog>
+</body>
+</html>

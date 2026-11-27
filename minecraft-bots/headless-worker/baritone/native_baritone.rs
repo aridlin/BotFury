@@ -59,7 +59,11 @@ impl<'a> LoadedWorld<'a> {
                     .map(move |(dx, dz)| [x + dx, y + dy, z + dz])
             })
             .filter(move |&stand| {
-                self.standable(stand) && self.can_see_mining_target(stand, target)
+                // A drop below the player's feet needs a supported landing for pickup.
+                // Do not mine a floor with empty space underneath from an upper ledge.
+                let supported_drop = stand[1] <= y
+                    || (self.get0(x, y - 1, z).sturdy_top && self.get0(x, y + 1, z).is_air());
+                supported_drop && self.standable(stand) && self.can_see_mining_target(stand, target)
             })
     }
 

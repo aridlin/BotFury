@@ -1621,6 +1621,36 @@ class ProjectQueueTest {
         assertEquals(observed, queue.chestStock(WORLD).get(storage).report());
     }
 
+    @Test void emergencyWorkbenchUsesAnUnreservedTableOrLogFromObservedStock() throws Exception {
+        String storage = "block:1,64,0";
+        String log = "minecraft:oak_log";
+        String table = "minecraft:crafting_table";
+        for (var item : List.of(log, table)) {
+            var queue = new ProjectQueue(directory.resolve(item.substring("minecraft:".length()) + "-resupply.json"));
+            var pickup = new ProjectQueue.Work("pickup", TRANSFER,
+                    "{\"target\":{\"x\":1,\"y\":64,\"z\":0},\"direction\":\"TAKE\",\"item\":\"" + item + "\",\"stock\":2}",
+                    List.of("ready"), Set.of(storage), null, null, item);
+            queue.submitSupplied("house", WORLD, List.of(job("ready", ProjectQueue.Kind.BARRIER, List.of()), pickup,
+                    new ProjectQueue.Work("place-0", BUILD, "{}", List.of("pickup"), Set.of("wall"), "pickup")), storage);
+            var materialClaim = queue.claim(WORLD, "builder", Set.of(TRANSFER), "house", 1).job();
+            var stock = new ProjectQueue.ChestReport(storage, java.util.Map.of(item, 2));
+            assertTrue(queue.finish("house", "pickup", materialClaim.lease(), true, "Stock observed", stock, 2));
+            queue.submit("tools", WORLD, List.of(job("craft", CRAFT, List.of())));
+            var receiver = queue.claim(WORLD, "crafter", Set.of(CRAFT), "tools", 3).job();
+            assertNotNull(queue.renew("tools", "craft", receiver.lease(), null, 4, false, true));
+            var position = new ProjectQueue.ResourceSite(0, 63, 0);
+            var supply = queue.offerRouteTool(WORLD, "courier", "tools", 5, null, 0, false,
+                    name -> position, (bot, key) -> 0, true).job();
+            var spec = queue.routeToolDelivery("tools", supply.work().id(), supply.lease(), 6);
+            assertEquals(table, spec.item());
+            assertEquals(1, spec.benchStock().reserve());
+            var payload = com.google.gson.JsonParser.parseString(spec.benchStock().payload()).getAsJsonObject();
+            assertEquals(item, payload.get("item").getAsString());
+            assertEquals(1, payload.get("stock").getAsInt());
+            assertTrue(supply.work().locks().contains(storage));
+        }
+    }
+
     @Test void anotherHelperCanTakeOverFailedPreparationAfterRestart() throws Exception {
         var journal = directory.resolve("route-supply-handoff.json");
         var queue = new ProjectQueue(journal);

@@ -825,7 +825,7 @@ final class StructureProject {
 
     static ProjectQueue.Work repairPlacementPose(MinecraftClient client, ProjectQueue.Work work,
                                                 Set<String> temporaryFooting) {
-        return repairPlacementPose(client, work, temporaryFooting, null);
+        return repairPlacementPose(client, work, temporaryFooting, null, false);
     }
 
     static BlockPos groundedScaffoldCleanup(MinecraftClient client, ProjectBlock block,
@@ -851,11 +851,12 @@ final class StructureProject {
     }
 
     static ProjectQueue.Work groundedPlacementPose(MinecraftClient client, ProjectQueue.Work work,
-                                                  Set<String> temporaryFooting, ProjectQueue.ResourceSite worker) {
+                                                  Set<String> temporaryFooting, ProjectQueue.ResourceSite worker,
+                                                  boolean allowExistingPose) {
         var start = new BlockPos(worker.x(), worker.y(), worker.z());
         if (!start.isWithinDistance(ProjectBlock.parse(work.payload()).target(), 10)) return null;
         var reachable = locallyReachableStands(client, start);
-        return reachable.isEmpty() ? null : repairPlacementPose(client, work, temporaryFooting, reachable);
+        return reachable.isEmpty() ? null : repairPlacementPose(client, work, temporaryFooting, reachable, allowExistingPose);
     }
 
     static boolean betterPlacementFooting(MinecraftClient client, BlockPos target,
@@ -869,7 +870,8 @@ final class StructureProject {
     }
 
     private static ProjectQueue.Work repairPlacementPose(MinecraftClient client, ProjectQueue.Work work,
-                                                         Set<String> temporaryFooting, Set<BlockPos> reachable) {
+                                                         Set<String> temporaryFooting, Set<BlockPos> reachable,
+                                                         boolean allowExistingPose) {
         var original = ProjectBlock.parse(work.payload());
         var target = original.target();
         var desired = original.desired();
@@ -878,21 +880,21 @@ final class StructureProject {
         ProjectBlock best = null;
         double bestScore = Double.POSITIVE_INFINITY;
         for (var face : ProjectPlacement.faces(desired)) {
-            if (reachable == null && face == original.face()) continue;
             var support = target.offset(face.getOpposite());
             if (!loaded(client, support) || temporaryFooting.contains(ProjectBlock.key(support))
                     || !ProjectPlacement.support(client.world.getBlockState(support), desired, face, client.world, support)) continue;
-            for (var candidate : BlockPos.iterateOutwards(target, 4, 4, 4)) {
+            for (var candidate : BlockPos.iterateOutwards(target, 4, 6, 4)) {
                 var stand = candidate.toImmutable();
-                if (reachable != null && !reachable.contains(stand) || target.getSquaredDistance(stand) > 16
-                        || target.equals(stand) || target.equals(stand.up())
-                        || target.equals(stand.down()) || stand.equals(support.up()) && face.getAxis().isHorizontal()
+                if (reachable != null && !reachable.contains(stand) || !ProjectBlock.validActionStand(target, stand)
+                        || !allowExistingPose && stand.equals(original.stand()) && face == original.face()
+                        || stand.equals(support.up()) && face.getAxis().isHorizontal()
                         || !loaded(client, stand.up()) || temporaryFooting.contains(ProjectBlock.key(stand.down()))
                         || !safeStand(client, stand, Map.of())) continue;
                 var pose = new ProjectBlock(target, stand, original.block(), original.properties(), face);
                 var eye = Vec3d.ofBottomCenter(stand).add(0, 1.62, 0);
                 boolean jump = !clearBuildFace(client, eye, pose, Map.of());
-                if (jump && (ProjectWater.source(desired) || !client.world.isAir(stand.up(2))
+                if (jump && (ProjectWater.source(desired) || Vec3d.ofBottomCenter(stand).squaredDistanceTo(Vec3d.ofCenter(target)) > 25
+                        || !loaded(client, stand.up(2)) || target.equals(stand.up(2)) || !client.world.isAir(stand.up(2))
                         || !clearBuildFace(client, eye.add(0, 1.15, 0), pose, Map.of()))) continue;
                 int approaches = 0;
                 for (var direction : Direction.Type.HORIZONTAL) {

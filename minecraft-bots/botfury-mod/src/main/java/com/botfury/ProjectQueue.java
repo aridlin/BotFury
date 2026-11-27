@@ -751,7 +751,7 @@ final class ProjectQueue {
         var jobs = new ArrayList<>(project.jobs);
         jobs.set(jobs.indexOf(pickup), freshPickup);
         jobs.set(jobs.indexOf(waiting), new Job(replacement, State.WAITING, 0, null, null, 0,
-                "Retrying placement from a newly observed support face", waiting.chest, waiting.resourceSite));
+                "Retrying placement from a newly observed approach", waiting.chest, waiting.resourceSite));
         var recoveries = new HashMap<>(project.supplyRecoveries);
         recoveries.put("pose:" + waiting.work.id, 1);
         commit(project.withRecovery(jobs, recoveries));

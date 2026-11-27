@@ -238,6 +238,7 @@ def run(args):
     display = ":178"
     environment = dict(os.environ, DISPLAY=display, ALSOFT_DRIVERS="null", LP_NUM_THREADS="1")
     java = (RUNTIME / "java-path.txt").read_text().strip()
+    journal = out / MASTER / "config/botfury-projects.json"
     processes = []
     connection = None
     captured = None
@@ -417,8 +418,16 @@ def run(args):
             "house": house_id, "manifest": manifest_id, "schematicSha256": reference["sha256"],
         }, indent=2) + "\n")
         assign_shared_workers(manifest_id)
-        observe(connect, out, out / MASTER / "config/botfury-projects.json",
-                house_id, manifest_id, cells, site, args.minutes)
+        observe(connect, out, journal, house_id, manifest_id, cells, site, args.minutes)
+    except Exception:
+        # Preserve the coordinator's last atomic journal before stopping the fleet.
+        try:
+            shutil.copyfile(journal, out / "failed-project-journal.json")
+        except FileNotFoundError:
+            pass  # Startup can fail before the master accepts a project.
+        except OSError as error:
+            print(f"Could not preserve the failed project journal: {error}", flush=True)
+        raise
     finally:
         if captured and captured.poll() is None:
             captured.send_signal(signal.SIGINT)

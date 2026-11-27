@@ -76,6 +76,7 @@ def launch(index):
         structures = profile / "config/botfury-structures"
         structures.mkdir()
         shutil.copy2(fixture / "foundation.nbt", structures)
+        shutil.copy2(fixture / "foundation.nbt", structures / "snow-cover.nbt")
         shutil.copy2(fixture / "manifest.json", profile / "config/botfury-projects.json")
     flags = {
         "port": 20045 + index, "offlineUsername": name, "managedHttp": str(index != 0).lower(),
@@ -146,7 +147,7 @@ try:
     time.sleep(1)
     for command in ('gamerule doMobSpawning false','time set noon',
         'fill 17299 141 17299 17324 141 17313 bedrock','setblock 17308 141 17305 dirt',
-        'setblock 17308 142 17305 minecraft:snow[layers=1]', 'setblock 17303 142 17305 dirt','setblock 17312 142 17305 chest[facing=west]'):
+        'setblock 17303 142 17305 dirt','setblock 17312 142 17305 chest[facing=west]'):
         cmd(command)
     start('display',['Xvfb',display,'-screen','0','1280x720x24','-nolisten','tcp'],out)
     time.sleep(.5)
@@ -194,15 +195,31 @@ try:
     # Set up the same obstruction as the original replay before leasing the builder.
     cmd('tp FuryGroundMiner 17308.25 142 17305.5')
     time.sleep(.5)
-    assert cmd('execute at FuryGroundMiner if block ~ ~ ~ minecraft:snow[layers=1]') == 'Test passed'
+    assert cmd('execute at FuryGroundMiner if block ~ ~ ~ minecraft:air') == 'Test passed'
     enroll(2,zone['name'])
     built = wait(lambda: completed(zone['name']))
-    assert any(job["work"]["kind"] == "EXCAVATE" and job["state"] == "DONE" for job in built["jobs"])
-    print("Paper verified excavation of the thin snow layer before placement.", flush=True)
     assert cmd('execute if block 17308 142 17305 oak_planks')=='Test passed'
     assert "Clearing active placement at 17308, 142, 17305" in miner_log.read_text()
     assert cmd('execute if block 17308 141 17305 dirt')=='Test passed'
     print("Paper verified the idle miner yielded and the owner built without intervention after enrollment.", flush=True)
+    cmd("setblock 17320 142 17305 minecraft:snow[layers=1]")
+    assert cmd("execute if block 17320 142 17305 minecraft:snow[layers=1]") == "Test passed"
+    cmd("tp FuryFloorBuilder 17320.5 142 17303.5 0 25")
+    cmd("give FuryFloorBuilder oak_planks 1")
+    cmd("tp FuryFootingLead 17321.5 146 17308.5 145 30")
+    time.sleep(1)
+    send_chat(win, "bf project build snow-cover.nbt 17320 142 17305")
+    snow_id = wait(lambda: next((key for key in projects() if key.startswith("snow-cover-")), None), 30)
+    enroll(2, snow_id)
+    try:
+        snow_case = wait(lambda: completed(snow_id), 100)
+    except RuntimeError:
+        print(http(2, "status").decode(), flush=True)
+        print(projects()[snow_id], flush=True)
+        raise
+    assert any(job["work"]["kind"] == "EXCAVATE" and job["state"] == "DONE" for job in snow_case["jobs"])
+    assert cmd("execute if block 17320 142 17305 minecraft:oak_planks") == "Test passed"
+    print("Paper verified excavation of the thin snow layer before placement.", flush=True)
     cmd("tp FuryFootingLead 17316.5 142 17309.5 0 0")
     time.sleep(2)
     first_storage = automatic_storage(win, 1)
@@ -212,7 +229,7 @@ try:
     print(f"Two requests from the same spot reserved separate chests: {first_storage}, {second_storage}", flush=True)
     (out / "verified.json").write_text(json.dumps(
         dict(zone=zone, stock=stock, manifest=mined, build=built, reconnectedWorker=clients[1],
-             storage=[first_storage, second_storage]), indent=2
+             snow=snow_case, storage=[first_storage, second_storage]), indent=2
     ) + "\n")
     time.sleep(3)
 finally:

@@ -896,7 +896,8 @@ final class ProjectWorker {
             fieldStoneUntil = nextWorkstationSearch = 0;
         }
         if (fieldWorkstation == null && now >= nextWorkstationSearch
-                && FieldWorkstation.shouldUseFieldStation(block.target(), client.player.getBlockPos())) {
+                && FieldWorkstation.shouldUseFieldStation(block.target(), client.player.getBlockPos())
+                && !tryPlannedSurfaceStationFirst(client, now)) {
             nextWorkstationSearch = now + seconds(8);
             var nearby = FieldWorkstation.find(client, now, kind, production, rejectedFieldWorkbenches);
             needsProductionBench = nearby == null && production.canUsePortableWorkbench(client);
@@ -930,6 +931,16 @@ final class ProjectWorker {
         fieldWorkstation = null;
         nextWorkstationSearch = now + seconds(15);
         return false;
+    }
+
+    private static boolean tryPlannedSurfaceStationFirst(MinecraftClient client, long now) {
+        var target = block.target();
+        var feet = client.player.getBlockPos();
+        return (approach == null || now < retryApproach)
+                && target.isWithinDistance(feet, 32) && Math.abs(target.getY() - feet.getY()) <= 3
+                && client.world.isSkyVisible(feet.up())
+                && client.world.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
+                && block.matches(client.world.getBlockState(target));
     }
 
     private static boolean startFieldStoneGather(MinecraftClient client, long now) {

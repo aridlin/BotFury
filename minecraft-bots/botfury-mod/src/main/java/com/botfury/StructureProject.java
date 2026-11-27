@@ -598,7 +598,7 @@ final class StructureProject {
                                                  Map<BlockPos, BlockState> layout, Map<BlockPos, BlockState> cleared,
                                                  Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed,
                                                  Set<BlockPos> deferredWater, List<String> prerequisites, String suffix) {
-        if (!ProjectBlock.validStand(target, stand) || !loaded(client, stand.up())
+        if (!ProjectBlock.validExcavationStand(target, stand) || !loaded(client, stand.up())
                 || !openExcavationSpace(client, stand, cleared)
                 || !openExcavationSpace(client, stand.up(), cleared)
                 || !canRemoveBlock(client, stand, target, cleared)) return null;
@@ -1370,10 +1370,12 @@ final class StructureProject {
     private static BlockPos findExcavationStand(MinecraftClient client, BlockPos target, Predicate<BlockPos> suitable) {
         var side = findStand(client, target, null, true, new int[]{0, 1, -1, 2, -2, 3, -3}, suitable);
         if (side != null) return side;
-        // The block above the worker's headroom can be excavated from directly underneath.
-        for (int depth = 2; depth <= 4; depth++) {
-            var stand = target.down(depth);
-            if (loaded(client, stand.down()) && suitable.test(stand)) return stand;
+        // A standing worker can reach higher from eye level than from feet level.
+        for (var candidate : BlockPos.iterateOutwards(target, 4, 6, 4)) {
+            if (target.getY() - candidate.getY() < 2 || !ProjectBlock.validExcavationStand(target, candidate)
+                    || !loaded(client, candidate.down())) continue;
+            var stand = candidate.toImmutable();
+            if (suitable.test(stand)) return stand;
         }
         return null;
     }

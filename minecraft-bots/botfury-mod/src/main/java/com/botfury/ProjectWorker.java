@@ -2123,7 +2123,7 @@ final class ProjectWorker {
                         inspection = ProjectInspection.parse(work.payload());
                         BlockPos target = inspection.expected().keySet().iterator().next();
                         block = new ProjectBlock(target, inspection.stand(), Identifier.of("minecraft", "air"));
-                    } else block = ProjectBlock.parse(work.payload());
+                    } else block = ProjectBlock.parse(work);
                     status = assignment.project() + "/" + assignment.job().work().id();
                 } else {
                     var renewed = JSON.fromJson(reply.body(), ProjectQueue.Job.class);

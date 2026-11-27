@@ -463,12 +463,15 @@ final class StructureProject {
                     allowTemporarySupport = true;
                     continue;
                 }
-                var cell = pending.values().iterator().next();
+                // A deferred gate cannot be the reason the current placement pass stalled.
+                boolean entriesReady = entryBarrier != null;
+                var eligible = pending.values().stream().filter(cell -> entriesReady || !closesEntry(cell)).toList();
+                var cell = eligible.get(0);
                 int cleanupJobs = scaffolds.stream().mapToInt(entry -> entry.blocks.size()).sum() + cleanup.size();
                 int cleanupGates = cleanup.isEmpty() ? 1 : 2;
                 int room = ProjectQueue.MAX_JOBS - jobs.size() - cleanupJobs - pending.size()
                         - verificationJobs - wetJobs - cleanupGates;
-                var scaffold = scaffold(client, cell, pending.values(), layout, cleared, ready, placed, deferredWater,
+                var scaffold = scaffold(client, cell, eligible, layout, cleared, ready, placed, deferredWater,
                         List.copyOf(changes.subList(scaffoldFrontier, changes.size())),
                         excavationScaffolds.size() + scaffolds.size(), room);
                 if (scaffold != null) {

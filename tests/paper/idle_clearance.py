@@ -3,6 +3,7 @@ from urllib.request import urlopen
 from urllib.parse import urlencode
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -99,12 +100,42 @@ def enroll(index, project_id):
     assert http(index, f"command?{query}") == b"Project worker enabled"
 
 
-def completed(project_id):
+def projects():
     journal = out / clients[0] / "config/botfury-projects.json"
-    project = json.loads(journal.read_text())["projects"].get(project_id)
+    return json.loads(journal.read_text())["projects"]
+
+
+def completed(project_id):
+    project = projects().get(project_id)
     if project and all(job["state"] == "DONE" for job in project["jobs"]):
         return project
     return None
+
+
+def send_chat(window, text):
+    x("windowfocus", "--sync", window)
+    x("key", "slash")
+    time.sleep(0.6)
+    x("type", "--clearmodifiers", "--delay", "20", text)
+    time.sleep(0.4)
+    x("key", "Return")
+
+
+def automatic_storage(window, quantity):
+    log = out / clients[0] / "logs/latest.log"
+    offset = log.stat().st_size
+    send_chat(window, f"bf output manifest minecraft:dirt={quantity}")
+
+    def submitted():
+        with log.open() as stream:
+            stream.seek(offset)
+            message = stream.read()
+        if "Could not queue output manifest" in message:
+            raise RuntimeError(message)
+        return re.search(r"Queued (manifest-[a-f0-9]{8})", message)
+
+    identity = wait(submitted, 30).group(1)
+    return wait(lambda: projects().get(identity), 10)["supplyChest"]
 
 
 try:
@@ -125,11 +156,7 @@ try:
     cmd('tp FuryFootingLead 17309.5 147 17309.5 140 31')
     win=arrange(leader,0,0)
     time.sleep(1)
-    x('windowfocus','--sync',win)
-    x('key','slash')
-    time.sleep(.6)
-    x('type','--clearmodifiers','--delay','20','bf project build foundation.nbt 17308 142 17305')
-    x('key','Return')
+    send_chat(win, "bf project build foundation.nbt 17308 142 17305")
     def getzone():
         a=out/'botfury-exclusion-zones.json'
         if a.exists(): return next((z for z in json.loads(a.read_text()) if z['name'].startswith('foundation-')),None)
@@ -163,8 +190,17 @@ try:
     miner_log=(out/clients[1]/'logs/latest.log').read_text()
     assert 'Clearing active placement at 17308, 142, 17305' in miner_log
     assert cmd('execute if block 17308 141 17305 dirt')=='Test passed'
-    (out/'verified.json').write_text(json.dumps(dict(zone=zone,stock=stock,manifest=mined,build=built),indent=2)+'\n')
-    print('Paper verified the idle miner yielded and the owner built without intervention after enrollment.',flush=True)
+    print("Paper verified the idle miner yielded and the owner built without intervention after enrollment.", flush=True)
+    cmd("tp FuryFootingLead 17316.5 142 17309.5 0 0")
+    time.sleep(2)
+    first_storage = automatic_storage(win, 1)
+    time.sleep(1)
+    second_storage = automatic_storage(win, 2)
+    assert second_storage != first_storage, (first_storage, second_storage)
+    print(f"Two requests from the same spot reserved separate chests: {first_storage}, {second_storage}", flush=True)
+    (out / "verified.json").write_text(json.dumps(
+        dict(zone=zone, stock=stock, manifest=mined, build=built, storage=[first_storage, second_storage]), indent=2
+    ) + "\n")
     time.sleep(3)
 finally:
     if capture and capture.poll() is None:

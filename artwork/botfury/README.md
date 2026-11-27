@@ -11,5 +11,6 @@ atlas from [Signal Geometry](https://github.com/aridlin/signal-geometry).
 The small frames use simplified shading to keep the lightning cutout readable.
 
 Run `python artwork/botfury/render_readme.py` with Pillow, Roboto Black and
-DejaVu Sans Mono Bold installed to regenerate the banner, buttons and stickers
-under [readme/](readme/).
+DejaVu Sans Mono Bold installed to regenerate the banner, buttons, stickers,
+and README heading graphics under [readme/](readme/). Heading titles come
+from the alt text in the root README.

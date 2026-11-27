@@ -14,6 +14,8 @@ cargo build --locked --release
 target/release/botfury-headless-worker /path/to/mcclient/target/release/mcclient SERVER:PORT NAME COORDINATOR_PORT PROJECT JOB_COUNT
 ```
 
+Use a job count of `0` to keep a worker available for the project until it has found no eligible work for 12 seconds. This lets a worker finish its own tasks and then pick up work released by a peer.
+
 The coordinator port is on loopback. The lease must name the same server and dimension as the worker. For a 26.3 server, launch the BotFury master with `-Dbotfury.autoJoin=false` and `-Dbotfury.projectWorld=SERVER:PORT|minecraft:overworld` as a single JVM argument. Use `local` as the server in that argument when the worker joins via localhost or 127.0.0.1. Submit jobs through the broker at `POST /projects`.
 
 The world setting applies while the master is at the title screen. When the master joins a game, its connected world takes precedence. The project editor and in-world HUD currently use the master’s game connection. The project HTTP endpoint continues to require a loopback client.

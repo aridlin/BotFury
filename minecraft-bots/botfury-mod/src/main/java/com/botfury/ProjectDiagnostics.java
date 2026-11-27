@@ -73,6 +73,7 @@ final class ProjectDiagnostics {
             return "Check that the worker still has the required ingredients.";
         }
         if (evidence.startsWith("Delivery is short by")) return "Check the counted stock in Chests and the bot’s cargo.";
+        if (ProjectQueue.GATHER_PICKUP_MISSED.equals(evidence)) return "Keep any bot carrying the drop available for this order.";
         if (evidence.equals("Worker lease expired")) return "Check Fleet for a disconnected, paused, or respawning bot.";
         return "Check Activity for details before changing the order.";
     }

@@ -262,6 +262,7 @@ final class ProjectQueue {
     static final String TARGET_TIMEOUT = "Timed out approaching or changing the target";
     static final String PLACEMENT_REJECTED = "Placement was rejected at ";
     static final String GATHER_STALLED = "Gathering stalled without item or route progress";
+    static final String GATHER_PICKUP_MISSED = "Mined block but did not collect the drop";
     static final String EXCAVATION_TOOL_NEEDED = "No suitable tool in inventory for ";
     static final String GATHER_TOOLS_NEEDED = "Gathering needs renewed tools";
     private static final String EXHAUSTED_TOOLS = GATHER_TOOLS_NEEDED + " after " + MAX_SUPPLY_RECOVERIES
@@ -4398,6 +4399,9 @@ final class ProjectQueue {
         Job result;
         if (success) {
             result = new Job(job.work, State.DONE, job.attempts, job.worker, job.lease, 0, evidence, observation, location);
+        } else if (job.work.kind == Kind.GATHER && job.work.sameWorkerAs == null
+                && GATHER_PICKUP_MISSED.equals(evidence) && feedsPrivateInventoryCraft(project, job)) {
+            result = new Job(job.work, State.FAILED, job.attempts, job.worker, null, 0, evidence, observation, location);
         } else if (job.work.kind == Kind.RESUPPLY && evidence.startsWith(ROUTE_PREPARATION_FAILED)
                 && !ROUTE_BENCH_RECEIVED.equals(job.evidence)) {
             result = new Job(job.work, State.FAILED, job.attempts, job.worker, null, 0, evidence, observation);
@@ -4847,11 +4851,13 @@ final class ProjectQueue {
                                                       java.util.function.ToIntBiFunction<String, String> heldCount,
                                                       Set<String> reservedMaterials) throws IOException {
         for (var project : projects.values()) {
-            if (!world.equals(project.world) || project.supplyChest == null || project.repeat != null
+            if (!world.equals(project.world) || project.repeat != null
                     || projectId != null && !projectId.equals(project.id)) continue;
             for (var gather : project.jobs) {
+                boolean missedPickup = GATHER_PICKUP_MISSED.equals(gather.evidence);
                 if (gather.state != State.FAILED || gather.work.kind != Kind.GATHER || gather.work.sameWorkerAs != null
-                        || !LEASE_EXPIRED.equals(gather.evidence) || !feedsPrivateInventoryCraft(project, gather)
+                        || !missedPickup && (project.supplyChest == null || !LEASE_EXPIRED.equals(gather.evidence))
+                        || !feedsPrivateInventoryCraft(project, gather)
                         || gather.work.needs.stream().anyMatch(id -> find(project, id).state != State.DONE)) continue;
                 var source = gatherSource(gather.work.payload);
                 var inputs = JSON.fromJson(gather.work.payload, GatherQuantity.class);
@@ -4859,8 +4865,11 @@ final class ProjectQueue {
                         || hasPendingDepositOf(world, worker, source.item)) continue;
                 int held = Math.min(inputs.count, heldCount.applyAsInt(worker, source.item));
                 String key = "carried-gather-recovery:" + gather.work.id;
-                if (held < inputs.count - inputs.count / 4 || held <= project.supplyRecoveries.getOrDefault(key, 0)) continue;
-                var lease = new Job(gather.work, State.LEASED, MAX_ATTEMPTS, worker, UUID.randomUUID(), now + LEASE_MS,
+                int minimum = missedPickup ? inputs.count : inputs.count - inputs.count / 4;
+                if (held < minimum || held <= project.supplyRecoveries.getOrDefault(key, 0)) continue;
+                if (missedPickup && carriedForPendingCraft(world, worker, source.item)) continue;
+                int attempts = missedPickup ? gather.attempts + 1 : MAX_ATTEMPTS;
+                var lease = new Job(gather.work, State.LEASED, attempts, worker, UUID.randomUUID(), now + LEASE_MS,
                         null, gather.chest);
                 var counts = new HashMap<>(project.supplyRecoveries);
                 counts.put(key, held);
@@ -4870,6 +4879,21 @@ final class ProjectQueue {
             }
         }
         return null;
+    }
+
+    private boolean carriedForPendingCraft(String world, String worker, String item) {
+        for (var project : projects.values()) {
+            if (!world.equals(project.world) || cancelled(project)) continue;
+            for (var craft : project.jobs) {
+                if (craft.state != State.WAITING || craft.work.kind != Kind.CRAFT || craft.work.sameWorkerAs == null) continue;
+                var prior = find(project, craft.work.sameWorkerAs);
+                if (prior == null || prior.state != State.DONE || prior.work.kind != Kind.GATHER
+                        || !worker.equalsIgnoreCase(prior.worker)) continue;
+                var source = gatherSource(prior.work.payload);
+                if (source != null && item.equals(source.item)) return true;
+            }
+        }
+        return false;
     }
 
     private static Job stalledSurfacePreparationSupplier(Project project, Job gather, long now) {

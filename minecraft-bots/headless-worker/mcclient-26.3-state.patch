@@ -61,6 +61,36 @@
          if self.goal.is_some() && self.position_seen {
              self.corrections.push_back(self.tick);
          }
+@@ -1879,14 +1900,24 @@
+             }
+             Cmd::Swing => self.swing()?,
+             Cmd::Click { slot, button, mode } => {
+-                let (container, state) = {
++                let (container, state, carried) = {
+                     let g = self.game();
+-                    g.menu.as_ref().map_or((0, g.inventory_state), |m| (m.id, m.state_id))
++                    let (container, state) = g.menu.as_ref().map_or((0, g.inventory_state), |m| (m.id, m.state_id));
++                    let carried = g.cursor.as_ref().and_then(|item| {
++                        self.regs.item.iter().position(|&name| name == item.item)
++                            .map(|id| (id as i32, item.count))
++                    });
++                    (container, state, carried)
+                 };
+-                // No changed-slot predictions and no carried item: the server does the click and
+-                // sends back what really changed.
++                // Report the last observed cursor, so the server sends a correction even when
++                // the click empties it. Omitted component hashes may cause an extra correction.
+                 let mut w = Writer::new();
+-                w.varint(container).varint(state).i16(slot).i8(button).varint(mode).varint(0).bool(false);
++                w.varint(container).varint(state).i16(slot).i8(button).varint(mode).varint(0);
++                if let Some((item, count)) = carried {
++                    w.bool(true).varint(item).varint(count).varint(0).varint(0);
++                } else {
++                    w.bool(false);
++                }
+                 self.send(pl.sb_container_click, &w.data)?;
+             }
+             Cmd::CloseMenu => {
 --- a/tests/mcp.rs
 +++ b/tests/mcp.rs
 @@ -132,6 +132,8 @@
@@ -72,15 +102,40 @@
      // Tab list: Alex. Entities: Alex (player) and a villager NPC named Shopkeeper.
      let alex = 0xA1E7_u128;
      m.send(cb.cb_player_info_update, &w().u8(1 | 4 | 8).varint(1).uuid(alex).string("Alex").varint(0).varint(0).bool(true).data);
-@@ -177,6 +179,7 @@
+@@ -177,8 +179,23 @@
          } else if id == sb.sb_container_click {
              let (container, state, clicked) = (r.varint().unwrap(), r.varint().unwrap(), r.i16().unwrap());
              notes.push(format!("click container {container} state {state} slot {clicked}"));
-+            m.send(cb.cb_container_set_slot, &w().varint(1).varint(6).i16(54).u8(0).data);
-             m.system("You bought an emerald");
-             m.send(cb.cb_container_close, &w().varint(1).data);
+-            m.system("You bought an emerald");
+-            m.send(cb.cb_container_close, &w().varint(1).data);
++            if clicked == 0 {
++                m.send(cb.cb_set_cursor_item, &slot(emerald, 1));
++            } else if clicked == 1 {
++                assert_eq!(r.u8().unwrap(), 0, "left click");
++                assert_eq!(r.varint().unwrap(), 0, "pickup mode");
++                assert_eq!(r.varint().unwrap(), 0, "no predicted slot changes");
++                assert!(r.bool().unwrap(), "report the previously observed held stack");
++                assert_eq!(r.varint().unwrap(), emerald);
++                assert_eq!(r.varint().unwrap(), 1);
++                assert_eq!(r.varint().unwrap(), 0, "no added component hashes");
++                assert_eq!(r.varint().unwrap(), 0, "no removed components");
++                m.send(cb.cb_set_cursor_item, &[0]);
++            } else {
++                m.send(cb.cb_container_set_slot, &w().varint(1).varint(6).i16(54).u8(0).data);
++                m.system("You bought an emerald");
++                m.send(cb.cb_container_close, &w().varint(1).data);
++            }
          } else if id == sb.sb_chat {
-@@ -302,6 +305,9 @@
+             let message = r.string().unwrap();
+             notes.push(format!("chat {message}"));
+@@ -299,9 +316,16 @@
+     assert_eq!(button["custom_name"], "Buy Emerald", "formatting codes stripped: {shop}");
+     assert_eq!(button["lore"], json!(["Price: 5 coins"]), "{shop}");
+     assert_eq!(shop["menu"]["items"].as_array().unwrap().len(), 27, "every container slot holds an item: {shop}");
++    mcp.call("click_slot", json!({"slot": 0, "mode": "pickup"}));
++    assert_eq!(mcp.call("inventory", json!({}))["cursor"]["item"], "emerald");
++    mcp.call("click_slot", json!({"slot": 1, "mode": "pickup"}));
++    assert!(mcp.call("inventory", json!({}))["cursor"].is_null());
      let bought = mcp.call("click_slot", json!({"slot": 13, "mode": "pickup"}));
      assert_eq!(bought["chat"][0], "You bought an emerald", "{bought}");
      assert_eq!(bought["menu"]["open"], false, "the server closed the menu: {bought}");

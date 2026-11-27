@@ -59,14 +59,24 @@ struct Craft {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Transfer {
     block: String,
-    direction: String,
+    direction: TransferDirection,
     item: String,
     stock: u32,
     target: Pos,
     stand: Pos,
     partner: Option<Pos>,
+    stock_reserve: Option<u32>,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum TransferDirection {
+    Deposit,
+    Take,
+    VerifyStock,
 }
 
 #[derive(Clone, Copy, Deserialize, serde::Serialize)]
@@ -556,47 +566,88 @@ impl Job<'_> {
 
     fn transfer(&mut self, work: Transfer) -> Result<Outcome, String> {
         let item = vanilla(&work.item)?;
-        if work.block != "minecraft:chest"
-            || work.direction != "DEPOSIT"
-            || work.partner.is_some()
-            || work.stock > 1728
-        {
-            return Err("Expected a single-chest deposit".into());
+        let chest_slots = if work.partner.is_some() { 54 } else { 27 };
+        if work.block != "minecraft:chest" || work.stock > (chest_slots * 64) as u32 {
+            return Err("Invalid chest transfer".into());
         }
         self.move_to(work.stand)?;
-        let Pos { x, y, z } = work.target;
-        let target = self.game.call("block_at", json!({"x":x,"y":y,"z":z}))?;
-        if target["block"] != "chest" {
+        if self.block_at(work.target)?["block"] != "chest" {
             return Err("Expected chest is missing".into());
         }
+        if let Some(partner) = work.partner
+            && self.block_at(partner)?["block"] != "chest"
+        {
+            return Err("Expected double-chest partner is missing".into());
+        }
+        let Pos { x, y, z } = work.target;
         self.act("use_block", json!({"x":x,"y":y,"z":z}))?;
-        let mut previous_stock = None;
+
+        let deposit = matches!(work.direction, TransferDirection::Deposit);
+        let mut previous: Option<(u32, u32, u32)> = None;
         loop {
             let menu = self.game.call("menu", json!({}))?;
-            if menu["type"] != "generic_9x3"
-                || menu["container_slots"] != 27
-                || menu["total_slots"] != 63
+            let expected_type = if chest_slots == 54 {
+                "generic_9x6"
+            } else {
+                "generic_9x3"
+            };
+            if menu["type"] != expected_type
+                || menu["container_slots"] != chest_slots
+                || menu["total_slots"] != chest_slots + 36
             {
-                return Err("Did not open the expected single chest".into());
+                return Err("Did not open the expected chest".into());
             }
-            let stacks: Vec<Stack> =
+            let chest: Vec<Stack> =
                 serde_json::from_value(menu["items"].clone()).map_err(|error| error.to_string())?;
             let mut items = ItemCounts::new();
-            for stack in &stacks {
+            for stack in &chest {
                 *items
                     .entry(format!("minecraft:{}", stack.item))
                     .or_default() += stack.count;
             }
-            let current = items.get(&work.item).copied().unwrap_or(0);
-            if previous_stock.is_some_and(|stock| current <= stock) {
-                return Err("Server did not confirm the chest transfer".into());
+            let stored = items.get(&work.item).copied().unwrap_or(0);
+            let inventory = self.game.inventory()?;
+            let carried = inventory.counts().get(&work.item).copied().unwrap_or(0);
+            if let Some((prior_stored, prior_carried, maximum)) = previous {
+                let (chest_delta, cargo_delta) = if deposit {
+                    (
+                        stored.checked_sub(prior_stored),
+                        prior_carried.checked_sub(carried),
+                    )
+                } else {
+                    (
+                        prior_stored.checked_sub(stored),
+                        carried.checked_sub(prior_carried),
+                    )
+                };
+                if chest_delta != cargo_delta
+                    || !chest_delta.is_some_and(|delta| (1..=maximum).contains(&delta))
+                {
+                    return Err(
+                        "Server did not confirm the matching chest and cargo changes".into(),
+                    );
+                }
             }
-            if current >= work.stock {
+            let measured = if matches!(work.direction, TransferDirection::Take) {
+                carried
+            } else {
+                stored
+            };
+            let remaining = work.stock.saturating_sub(measured);
+            if remaining == 0 || matches!(work.direction, TransferDirection::VerifyStock) {
                 self.act("close_menu", json!({}))?;
                 self.game.inventory()?;
+                let location = if matches!(work.direction, TransferDirection::Take) {
+                    "in worker inventory"
+                } else {
+                    "in storage"
+                };
                 return Ok(Outcome {
-                    success: true,
-                    evidence: format!("Observed {current} {} in storage", work.item),
+                    success: remaining == 0,
+                    evidence: format!(
+                        "Observed {measured}/{} {} {location}",
+                        work.stock, work.item
+                    ),
                     chest: Some(ChestReport {
                         location: format!("block:{x},{y},{z}"),
                         items,
@@ -604,15 +655,57 @@ impl Job<'_> {
                     }),
                 });
             }
-            let inventory = self.game.inventory()?;
-            let stack = inventory
+            if !deposit
+                && stored
+                    .checked_sub(remaining)
+                    .is_none_or(|left| left < work.stock_reserve.unwrap_or(0))
+            {
+                return Err(format!(
+                    "Chest cannot supply {remaining} {} while preserving its reserve",
+                    work.item
+                ));
+            }
+            let personal: Vec<_> = inventory
                 .slots
                 .iter()
-                .filter(|s| (9..45).contains(&s.slot) && s.item == item)
-                .find(|s| s.count <= work.stock - current)
-                .ok_or("No carried stack fits the remaining deposit")?;
-            self.click(27 + stack.slot - 9, 0, "quick_move")?;
-            previous_stock = Some(current);
+                .filter(|s| (9..45).contains(&s.slot))
+                .collect();
+            let sources: Vec<_> = if deposit {
+                personal.clone()
+            } else {
+                chest.iter().collect()
+            };
+            let source = sources
+                .iter()
+                .filter(|s| s.item == item)
+                .max_by_key(|s| s.count.min(remaining))
+                .ok_or("No matching item is available for transfer")?;
+            let from = if deposit {
+                chest_slots + source.slot - 9
+            } else {
+                source.slot
+            };
+            let maximum = if source.count <= remaining {
+                self.click(from, 0, "quick_move")?;
+                source.count
+            } else {
+                let to = if deposit {
+                    (0..chest_slots).find(|i| chest.iter().all(|stack| stack.slot != *i))
+                } else {
+                    (9..45)
+                        .find(|i| personal.iter().all(|stack| stack.slot != *i))
+                        .map(|i| chest_slots + i - 9)
+                }
+                .ok_or("An empty destination slot is required to split the stack")?;
+                let split = remaining.min(8);
+                self.click(from, 0, "pickup")?;
+                for _ in 0..split {
+                    self.click(to, 1, "pickup")?;
+                }
+                self.click(from, 0, "pickup")?;
+                split
+            };
+            previous = Some((stored, carried, maximum));
         }
     }
 }

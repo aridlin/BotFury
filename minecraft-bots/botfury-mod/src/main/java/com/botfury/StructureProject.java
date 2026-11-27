@@ -323,22 +323,16 @@ final class StructureProject {
             }
             if (wave.isEmpty()) {
                 var blocked = obstructing.values().iterator().next();
-                var access = excavationScaffold(client, blocked.pos, layout, cleared, ready, placed, deferredWater,
-                        excavationFrontier, scaffolds.size());
+                // A casing or canopy can block the first cell while another exposes access to it.
+                var candidates = obstructing.values().stream().sorted(Comparator.comparing(cell ->
+                        cell.observed.getCollisionShape(client.world, cell.pos).isEmpty())).toList();
+                Scaffold access = null;
+                for (var candidate : candidates) {
+                    access = excavationScaffold(client, candidate.pos, layout, cleared, ready, placed, deferredWater,
+                            excavationFrontier, scaffolds.size());
+                    if (access != null) break;
+                }
                 if (access == null) {
-                    var resolved = new ArrayList<String>();
-                    for (int y = -6; y <= 2; y++) {
-                        for (int x = -3; x <= 3; x++) for (int z = -3; z <= 3; z++) {
-                            var pos = blocked.pos.add(x, y, z);
-                            var actual = client.world.getBlockState(pos);
-                            var planned = cleared.getOrDefault(pos, actual);
-                            if (!actual.isAir() || !planned.isAir()) {
-                                resolved.add(x + "," + y + "," + z + "=" + actual
-                                        + (actual.equals(planned) ? "" : "->" + planned));
-                            }
-                        }
-                    }
-                    System.out.println("[BotFury] Excavation geometry " + blocked.pos.toShortString() + " " + resolved);
                     throw new IllegalArgumentException("No reachable excavation face for "
                             + Registries.BLOCK.getId(blocked.observed.getBlock()) + " at " + blocked.pos.toShortString());
                 }

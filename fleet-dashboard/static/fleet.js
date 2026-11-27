@@ -3,11 +3,13 @@
 const $ = id => document.getElementById(id);
 const canvas = $("map");
 const ctx = canvas.getContext("2d");
+const terrainView = new FleetTerrainView(() => paint());
 const attach = (id, event, callback) => $(id).addEventListener(event, callback);
 const selections = new Set();
 const view = {x: 0, z: 0, scale: 2, width: 0, height: 0, fitted: false};
 const tones = {ink: "#191815", rust: "#943823", paper: "#f4edda", wash: "#e8ddc2", yellow: "#f6cd73"};
 let hosts = [], bots = [], visible = [], inspecting = "", hovered = "", chatSource = "";
+let terrainWorlds = new Map();
 let drag = null, polling = false, ordering = false, saved = [], rosterSignature = "", runSignature = "";
 const itemName = id => id.replace(/^minecraft:/, "").replaceAll("_", " ");
 const serverName = bot => bot.status.serverAddress || bot.status.server || "";
@@ -107,6 +109,9 @@ function updateWorld() {
     const key = scope(bot);
     const label = (serverName(bot) || "Local world") + " · " + dimension(bot).replace(/^minecraft:/, "");
     worlds.set(key, label);
+  }
+  for (const [key, explored] of terrainWorlds) {
+    if (!worlds.has(key)) worlds.set(key, explored.server + " · " + explored.dimension.replace(/^minecraft:/, ""));
   }
   const select = $("world");
   const old = select.value;
@@ -227,10 +232,11 @@ function mapBox() {
 
 function fit(redraw = true) {
   const current = currentMapBots();
-  if (!current.length) return;
+  const bounds = terrainWorlds.get($("world").value)?.bounds;
+  if (!current.length && !bounds) return;
   const xs = current.map(b => b.status.x), zs = current.map(b => b.status.z);
-  const minX = Math.min(...xs), maxX = Math.max(...xs);
-  const minZ = Math.min(...zs), maxZ = Math.max(...zs);
+  const [minX, minZ, maxX, maxZ] = current.length
+    ? [Math.min(...xs), Math.min(...zs), Math.max(...xs), Math.max(...zs)] : bounds;
   view.x = (minX + maxX) / 2;
   view.z = (minZ + maxZ) / 2;
   view.scale = Math.max(.00001, Math.min(12, (view.width - 95) / Math.max(16, maxX - minX),
@@ -254,9 +260,11 @@ function paint() {
   ctx.fillStyle = tones.wash;
   ctx.fillRect(0, 0, width, height);
   const current = currentMapBots();
-  $("map-empty").hidden = current.length !== 0;
+  $("map-empty").hidden = current.length !== 0 || terrainWorlds.has($("world").value);
   const [left, top] = unproject(0, 0);
   const [right, bottom] = unproject(width, height);
+  terrainView.update($("world").value, [left, top, right, bottom]);
+  terrainView.paint(ctx, project, scale, width, height);
   const spacing = 2 ** Math.ceil(Math.log2(34 / scale));
   const startX = Math.floor(left / spacing) * spacing;
   const startZ = Math.floor(top / spacing) * spacing;
@@ -586,6 +594,12 @@ async function refresh() {
   polling = true;
   try {
     const [result] = await Promise.all([api("fleet"), refreshRuns()]);
+    if (result.readOnly) {
+      document.body.classList.add("read-only");
+      $("page-title").textContent = "Fleet Preview";
+      document.title = "BotFury Fleet Preview";
+    }
+    terrainWorlds = new Map((result.worlds || []).map(world => [JSON.stringify([world.server, world.dimension]), world]));
     const previous = new Map(hosts.map(host => [host.id, host.slots]));
     hosts = result.hosts.map(host => ({...host, slots: host.online ? host.slots : previous.get(host.id) || []}));
     bots = hosts.flatMap(host => host.slots.map(bot => ({...bot, host: host.id, hostName: host.name,

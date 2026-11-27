@@ -50,7 +50,10 @@ public class BotFuryMod implements ClientModInitializer {
         FormationClient.register();
         if (Boolean.parseBoolean(System.getProperty("botfury.httpEnabled", "true"))) startHttp();
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            if (MANAGED_HTTP) FleetBedSpawn.tick(client);
+            if (MANAGED_HTTP) {
+                FleetBedSpawn.tick(client);
+                FleetTerrain.tick(client);
+            }
             if (++snapshotTicks % 5 == 0) updateStatus(client);
             if (client.getOverlay() != null) return;
             if (MANAGED_HTTP && client.currentScreen instanceof AccessibilityOnboardingScreen) {
@@ -220,6 +223,7 @@ public class BotFuryMod implements ClientModInitializer {
         if (MANAGED_HTTP) {
             status.put("chat", DASHBOARD_CHAT);
             status.put("bedTask", FleetBedSpawn.status());
+            status.put("mapTiles", FleetTerrain.snapshot());
         }
         if (client.getCurrentServerEntry() != null) {
             status.put("serverAddress", client.getCurrentServerEntry().address);

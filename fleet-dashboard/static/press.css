@@ -126,3 +126,8 @@ dialog::backdrop { background: #191815ab; }
 .run-board #run-list { list-style: none; padding: 0; max-height: 12rem; overflow: auto; }
 .run { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .45rem .65rem; }
 .run + .run { border-top: 1px solid var(--line); }
+
+.read-only .order-bar, .read-only #open-professions, .read-only .bot-row input { display: none; }
+.read-only .workspace { margin-top: 1rem; }
+.read-only .bot-row { display: block; padding-left: .25rem; }
+.read-only .bot-row button { width: 100%; }

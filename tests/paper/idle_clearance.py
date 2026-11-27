@@ -180,6 +180,17 @@ try:
     assert cmd('execute if block 17303 142 17305 air')=='Test passed'
     assert cmd('execute if block 17308 141 17305 dirt')=='Test passed'
     print('The independent gatherer deposited external dirt. The support survived.',flush=True)
+    miner_log = out / clients[1] / "logs/latest.log"
+    before_disconnect = miner_log.stat().st_size
+    cmd(f"kick {clients[1]} BotFury replay disconnect")
+
+    def restored_worker():
+        with miner_log.open() as stream:
+            stream.seek(before_disconnect)
+            return "Restored project worker enrollment" in stream.read() and ready(1)
+
+    wait(restored_worker, 60)
+    print("The worker reconnected and restored its saved enrollment without a new command.", flush=True)
     # Set up the same obstruction as the original replay before leasing the builder.
     cmd('tp FuryGroundMiner 17308.25 142 17305.5')
     time.sleep(.5)
@@ -187,8 +198,7 @@ try:
     enroll(2,zone['name'])
     built = wait(lambda: completed(zone['name']))
     assert cmd('execute if block 17308 142 17305 oak_planks')=='Test passed'
-    miner_log=(out/clients[1]/'logs/latest.log').read_text()
-    assert 'Clearing active placement at 17308, 142, 17305' in miner_log
+    assert "Clearing active placement at 17308, 142, 17305" in miner_log.read_text()
     assert cmd('execute if block 17308 141 17305 dirt')=='Test passed'
     print("Paper verified the idle miner yielded and the owner built without intervention after enrollment.", flush=True)
     cmd("tp FuryFootingLead 17316.5 142 17309.5 0 0")
@@ -199,7 +209,8 @@ try:
     assert second_storage != first_storage, (first_storage, second_storage)
     print(f"Two requests from the same spot reserved separate chests: {first_storage}, {second_storage}", flush=True)
     (out / "verified.json").write_text(json.dumps(
-        dict(zone=zone, stock=stock, manifest=mined, build=built, storage=[first_storage, second_storage]), indent=2
+        dict(zone=zone, stock=stock, manifest=mined, build=built, reconnectedWorker=clients[1],
+             storage=[first_storage, second_storage]), indent=2
     ) + "\n")
     time.sleep(3)
 finally:

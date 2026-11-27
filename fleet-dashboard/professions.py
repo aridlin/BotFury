@@ -146,15 +146,12 @@ class ProfessionRuns:
                     running += 1
                     continue
                 action = "project"
-            elif bot["reachable"] and status.get("ready"):
-                identity = None
-                action = "connect"
-            elif not bot["running"] and not bot["reachable"]:
-                identity = None
-                action = "start"
-            else:
+            elif bot.get("joinPending") or bot.get("joinStatus"):
                 waiting += 1
                 continue
+            else:
+                identity = None
+                action = "join"
             now = time()
             if now < progress.get("retryAt", 0) and progress.get("action") == action and progress.get("project") == project_id:
                 waiting += 1

@@ -3,6 +3,7 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from dataclasses import dataclass
 import hmac
 import ipaddress
 import json
@@ -74,6 +75,14 @@ def rpc(port, path, *, token="", data=None, timeout=1.5, as_json=True):
         return None
 
 
+@dataclass
+class JoinRequest:
+    server: str
+    deadline: float
+    retry_at: float = 0.0
+    phase: str = "Starting client"
+
+
 class Agent:
     def __init__(self, config, state):
         self.slots = {slot["id"]: slot for slot in config["slots"]}
@@ -92,12 +101,19 @@ class Agent:
         self.refresh_lock = threading.Lock()
         self.snapshot = []
         self.snapshot_until = 0
+        self.joins = {}
+        self.join_errors = {}
+        self.join_wake = threading.Event()
+        self.closing = threading.Event()
+        self.join_poller = None
 
     def read_slot(self, slot):
         bot = rpc(slot["port"], "/status", timeout=0.4)
         with self.lock:
             process = self.processes.get(slot["id"])
             running = process is not None and process.poll() is None
+            pending = self.joins.get(slot["id"])
+            join_status = pending.phase if pending else self.join_errors.get(slot["id"], "")
         status = bot if isinstance(bot, dict) else {}
         status = {k: status[k] for k in (
             "connected", "ready", "player", "server", "serverAddress", "dimension", "x", "y", "z",
@@ -106,7 +122,8 @@ class Agent:
             "chat", "runtimeId", "build", "mapRoute", "bedTask", "mapTiles",
         ) if k in status}
         return {"id": slot["id"], "name": slot["name"], "running": running,
-                "reachable": isinstance(bot, dict), "status": status, "projectServers": list(self.project_ports)}
+                "reachable": isinstance(bot, dict), "status": status, "projectServers": list(self.project_ports),
+                "joinPending": pending is not None, "joinStatus": join_status}
 
     def snapshots(self):
         with self.refresh_lock:
@@ -115,33 +132,119 @@ class Agent:
                 self.snapshot_until = monotonic() + 0.8
             return self.snapshot
 
+    def launch(self, slot):
+        slot_id = slot["id"]
+        env = os.environ.copy()
+        if slot.get("authFile"):
+            env["BOTFURY_SERVER_AUTH_FILE"] = slot["authFile"]
+        try:
+            with (self.state / f"{slot_id}.log").open("ab") as log:
+                self.processes[slot_id] = subprocess.Popen(
+                    slot["argv"], cwd=slot.get("cwd"), env=env, stdin=subprocess.DEVNULL,
+                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+                )
+        except OSError as error:
+            return {"ok": False, "message": f"Launch failed ({error.strerror})."}
+        return {"ok": True, "message": "Starting."}
+
+    def join(self, slot, target):
+        slot_id = slot["id"]
+        observed = rpc(slot["port"], "/status", timeout=0.4)
+        with self.lock:
+            pending = self.joins.get(slot_id)
+            if pending:
+                same = normalized_server(pending.server) == normalized_server(target)
+                return {"ok": same, "message": "Join already queued." if same else "Another server join is queued."}
+            if isinstance(observed, dict) and observed.get("connected"):
+                same = normalized_server(observed.get("serverAddress", "")) == normalized_server(target)
+                return {"ok": same, "message": "Already in this server." if same else "Bot is connected to another server."}
+            process = self.processes.get(slot_id)
+            if observed is None and (process is None or process.poll() is not None):
+                result = self.launch(slot)
+                if not result["ok"]:
+                    return result
+            self.join_errors.pop(slot_id, None)
+            self.joins[slot_id] = JoinRequest(target, monotonic() + 180)
+            if self.join_poller is None:
+                self.join_poller = threading.Thread(target=self.poll_joins, name="joins", daemon=True)
+                self.join_poller.start()
+            self.join_wake.set()
+        return {"ok": True, "message": "Join queued."}
+
+    def finish_join(self, slot_id, order, error=""):
+        if self.joins.get(slot_id) is not order:
+            return
+        self.joins.pop(slot_id)
+        if error:
+            self.join_errors[slot_id] = error
+
+    def poll_join(self, entry):
+        slot_id, order = entry
+        slot = self.slots[slot_id]
+        status = rpc(slot["port"], "/status", timeout=0.4)
+        now = monotonic()
+        with self.lock:
+            if self.joins.get(slot_id) is not order:
+                return
+            if isinstance(status, dict) and status.get("connected"):
+                wrong = normalized_server(status.get("serverAddress", "")) != normalized_server(order.server)
+                self.finish_join(slot_id, order, "Client joined a different server." if wrong else "")
+                return
+            process = self.processes.get(slot_id)
+            if status is None and process is not None and process.poll() is not None:
+                self.finish_join(slot_id, order, "Client exited before joining. Check the instance log.")
+                return
+            if now >= order.deadline:
+                self.finish_join(slot_id, order, "Client did not join before the timeout.")
+                return
+            if not isinstance(status, dict) or not status.get("ready") or now < order.retry_at:
+                return
+            order.retry_at = now + 12
+            order.phase = "Connecting to " + order.server
+        self.send_bot(slot, "connect:" + order.server)
+
+    def poll_joins(self):
+        while True:
+            self.join_wake.wait()
+            if self.closing.is_set():
+                return
+            with self.lock:
+                pending = list(self.joins.items())
+                if not pending:
+                    self.join_wake.clear()
+                    continue
+            list(self.pool.map(self.poll_join, pending))
+            # Even with no dashboard clients, startup continues as the game becomes ready.
+            self.closing.wait(0.8)
+
+    @staticmethod
+    def send_bot(slot, command):
+        reply = rpc(slot["port"], "/command?" + urllib.parse.urlencode({"cmd": command}),
+                    timeout=2, as_json=False)
+        return {"ok": reply is not None, "message": reply or "Bot rejected the request or is unreachable."}
+
     def action(self, slot_id, verb, target, project=None, bed=None):
         slot = self.slots.get(slot_id)
         if slot is None:
             return {"ok": False, "message": "Unknown slot."}
+        if verb == "join":
+            return self.join(slot, server_address(target))
         if verb in ("start", "stop"):
             with self.lock:
                 process = self.processes.get(slot_id)
                 running = process is not None and process.poll() is None
                 if verb == "stop":
+                    pending = self.joins.pop(slot_id, None)
+                    self.join_errors.pop(slot_id, None)
                     if not running:
-                        return {"ok": False, "message": "No process owned by this agent."}
+                        return {"ok": pending is not None,
+                                "message": "Join cancelled." if pending else "No process owned by this agent."}
                     terminate_process(process)
                     return {"ok": True, "message": "Stopping."}
                 if running or rpc(slot["port"], "/status", timeout=0.25) is not None:
                     return {"ok": False, "message": "Slot is already active."}
-                env = os.environ.copy()
-                if slot.get("authFile"):
-                    env["BOTFURY_SERVER_AUTH_FILE"] = slot["authFile"]
-                try:
-                    with (self.state / f"{slot_id}.log").open("ab") as log:
-                        self.processes[slot_id] = subprocess.Popen(
-                            slot["argv"], cwd=slot.get("cwd"), env=env, stdin=subprocess.DEVNULL,
-                            stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
-                        )
-                except OSError as error:
-                    return {"ok": False, "message": f"Launch failed ({error.strerror})."}
-                return {"ok": True, "message": "Starting."}
+                self.join_errors.pop(slot_id, None)
+                return self.launch(slot)
         if verb == "connect":
             command = "connect:" + server_address(target)
         elif verb == "halt":
@@ -168,12 +271,13 @@ class Agent:
             command = f"project:worker {port} {project}"
         else:
             return {"ok": False, "message": "Unknown action."}
-        reply = rpc(slot["port"], "/command?" + urllib.parse.urlencode({"cmd": command}),
-                    timeout=2, as_json=False)
-        return {"ok": reply is not None, "message": reply or "Bot rejected the request or is unreachable."}
+        return self.send_bot(slot, command)
 
     def shutdown(self):
+        self.closing.set()
+        self.join_wake.set()
         with self.lock:
+            self.joins.clear()
             for process in self.processes.values():
                 if process.poll() is None:
                     terminate_process(process)
@@ -351,10 +455,10 @@ def make_app(config, state):
     def fleet_action():
         data = json_post()
         action = data.get("action")
-        if action not in ("start", "stop", "connect", "halt", "bed"):
+        if action not in ("start", "stop", "connect", "join", "halt", "bed"):
             abort(400, "Unknown action.")
         server = None
-        if action in ("connect", "bed"):
+        if action in ("connect", "join", "bed"):
             try:
                 server = server_address(data.get("server"))
             except ValueError as error:

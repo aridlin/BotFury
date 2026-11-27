@@ -361,7 +361,7 @@ final class ProjectBroker {
     private static void confirmLocalScaffoldClearance(net.minecraft.client.MinecraftClient client, ProjectQueue board,
                                                        String world) throws IOException {
         for (var check : board.scaffoldClearances(world)) {
-            var block = ProjectBlock.parse(check.job());
+            var block = ProjectBlock.parse(check.job().payload());
             var target = block.target();
             if (!client.world.getChunkManager().isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
                     || !client.world.isInBuildLimit(target) || !client.world.getWorldBorder().contains(target)
@@ -785,7 +785,7 @@ final class ProjectBroker {
                             var station = ProjectProduction.parse(item.payload(), item.kind()).station();
                             return station == null ? item : station.reserve(item);
                         }
-                        return ProjectWorker.supports(item.kind()) ? ProjectBlock.parse(item).reserve(item) : item;
+                        return ProjectWorker.supports(item.kind()) ? ProjectBlock.parse(item.payload()).reserve(item) : item;
                     }).toList();
                     board.submit(request.project, world, work);
                     reply(exchange, 201, request.project);

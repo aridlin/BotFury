@@ -630,7 +630,7 @@ final class StructureProject {
                                                  Map<BlockPos, BlockState> cleared,
                                                  Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed,
                                                  Set<BlockPos> deferredWater, List<String> prerequisites, String suffix) {
-        if (!ProjectBlock.validExcavationStand(target, stand) || !loaded(client, stand.up())
+        if (!ProjectBlock.validActionStand(target, stand) || !loaded(client, stand.up())
                 || !openExcavationSpace(client, stand, cleared)
                 || !openExcavationSpace(client, stand.up(), cleared)
                 || !canRemoveBlock(client, stand, target, cleared)) return null;
@@ -1126,9 +1126,9 @@ final class StructureProject {
             }
             var built = current;
             stand = findPlacementStand(client, cell.pos, face, pos ->
-                    safeStand(client, pos, cleared) && safeStand(client, pos, desired)
+                    safeStand(client, pos, cleared) && safeStand(client, pos, built)
                             && clearBuildFace(client, pos, cell.pos, support, face, built, placement, avoidCorners));
-            // Later placements wait until a face that will be covered has been used.
+            // Later placements wait until a face or stand that will be covered has been used.
             if (stand != null) return new BuildPose(stand, face, support, true);
             for (boolean exposed : new boolean[]{false, true}) {
                 var visibleLayout = exposed ? built : desired;
@@ -1177,15 +1177,17 @@ final class StructureProject {
         // Minecraft measures placement reach from the eyes, which can reach upward from lower floors.
         int[] heights = {0, 1, -1, -2, -3};
         var stand = findStand(client, target, face, true, heights, suitable);
-        if (stand != null || face == null || !face.getAxis().isHorizontal()) return stand;
-        // The target cell is already on the exposed side of the supporting face.
-        var side = face.rotateYClockwise();
-        for (int dy : heights) for (int lateral : new int[]{1, -1, 2, -2, 3, -3}) {
-            var beside = target.offset(side, lateral).up(dy);
-            if (beside.getSquaredDistance(target) <= 16 && loaded(client, beside) && loaded(client, beside.up())
-                    && loaded(client, beside.down()) && suitable.test(beside)) return beside;
+        if (stand != null) return stand;
+        if (face != null && face.getAxis().isHorizontal()) {
+            // The target cell is already on the exposed side of the supporting face.
+            var side = face.rotateYClockwise();
+            for (int dy : heights) for (int lateral : new int[]{1, -1, 2, -2, 3, -3}) {
+                var beside = target.offset(side, lateral).up(dy);
+                if (beside.getSquaredDistance(target) <= 16 && loaded(client, beside) && loaded(client, beside.up())
+                        && loaded(client, beside.down()) && suitable.test(beside)) return beside;
+            }
         }
-        return null;
+        return findLowerActionStand(client, target, suitable);
     }
 
     private static BuildAccess builtAccess(MinecraftClient client, BlockPos stand, BlockPos target,
@@ -1401,11 +1403,14 @@ final class StructureProject {
 
     private static BlockPos findExcavationStand(MinecraftClient client, BlockPos target, Predicate<BlockPos> suitable) {
         var side = findStand(client, target, null, true, new int[]{0, 1, -1, 2, -2, 3, -3},
-                stand -> ProjectBlock.validExcavationStand(target, stand) && suitable.test(stand));
-        if (side != null) return side;
+                stand -> ProjectBlock.validActionStand(target, stand) && suitable.test(stand));
+        return side != null ? side : findLowerActionStand(client, target, suitable);
+    }
+
+    private static BlockPos findLowerActionStand(MinecraftClient client, BlockPos target, Predicate<BlockPos> suitable) {
         // A standing worker can reach higher from eye level than from feet level.
         for (var candidate : BlockPos.iterateOutwards(target, 4, 6, 4)) {
-            if (target.getY() - candidate.getY() < 2 || !ProjectBlock.validExcavationStand(target, candidate)
+            if (target.getY() - candidate.getY() < 2 || !ProjectBlock.validActionStand(target, candidate)
                     || !loaded(client, candidate.down())) continue;
             var stand = candidate.toImmutable();
             if (suitable.test(stand)) return stand;

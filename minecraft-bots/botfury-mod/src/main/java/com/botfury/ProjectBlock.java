@@ -73,14 +73,6 @@ record ProjectBlock(BlockPos target, BlockPos stand, Identifier block, Map<Strin
     }
 
     static ProjectBlock parse(String json) {
-        return parse(json, false);
-    }
-
-    static ProjectBlock parse(ProjectQueue.Work work) {
-        return parse(work.payload(), work.kind() == ProjectQueue.Kind.EXCAVATE);
-    }
-
-    private static ProjectBlock parse(String json, boolean excavation) {
         Payload data = new Gson().fromJson(json, Payload.class);
         if (data == null || data.target == null || data.stand == null || data.block == null) {
             throw new IllegalArgumentException("Provide target, stand and block");
@@ -88,8 +80,7 @@ record ProjectBlock(BlockPos target, BlockPos stand, Identifier block, Map<Strin
         var target = data.target.checked();
         var stand = data.stand.checked();
         var block = Identifier.tryParse(data.block);
-        if (block == null || !Registries.BLOCK.containsId(block)
-                || !(excavation ? validExcavationStand(target, stand) : validStand(target, stand))) {
+        if (block == null || !Registries.BLOCK.containsId(block) || !validActionStand(target, stand)) {
             throw new IllegalArgumentException("Invalid project block or standing position");
         }
         var properties = data.properties == null ? Map.<String, String>of() : data.properties;
@@ -104,7 +95,7 @@ record ProjectBlock(BlockPos target, BlockPos stand, Identifier block, Map<Strin
                 && target.getSquaredDistance(stand) <= 16;
     }
 
-    static boolean validExcavationStand(BlockPos target, BlockPos stand) {
+    static boolean validActionStand(BlockPos target, BlockPos stand) {
         if (validStand(target, stand)) return true;
         int height = target.getY() - stand.getY();
         if (height < 2 || height > 6) return false;

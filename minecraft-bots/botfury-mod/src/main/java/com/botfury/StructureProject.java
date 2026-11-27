@@ -7,6 +7,7 @@ import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.ChestBlock;
 import net.minecraft.block.FallingBlock;
+import net.minecraft.block.FenceGateBlock;
 import net.minecraft.block.SlabBlock;
 import net.minecraft.block.TrapdoorBlock;
 import net.minecraft.block.enums.ChestType;
@@ -295,52 +296,128 @@ final class StructureProject {
         int wetJobs = waterSources.size() + (waterSources.isEmpty() ? 0 : 1);
         requireJobBudget(obstructing.size() + pending.size() + verificationJobs + wetJobs);
         var cleared = new HashMap<BlockPos, BlockState>();
+        var scaffolds = new ArrayList<Scaffold>();
+        var excavationScaffolds = new ArrayList<Scaffold>();
         List<String> excavationFrontier = List.of();
         while (!obstructing.isEmpty()) {
             var wave = new ArrayList<String>();
             var clearedThisWave = new ArrayList<BlockPos>();
-            for (var iterator = obstructing.entrySet().iterator(); iterator.hasNext(); ) {
-                var entry = iterator.next();
-                var cell = entry.getValue();
-                var stand = findPlacementStand(client, cell.pos, null, pos ->
-                        !removed.contains(pos.down()) && safeStand(client, pos, cleared)
-                                && canRemoveBlock(client, pos, cell.pos, cleared));
-                if (stand == null) continue;
-                String id = "clear-" + entry.getKey();
-                jobs.add(work(id, ProjectQueue.Kind.EXCAVATE, cell.pos, cell.observed, stand, Direction.UP, excavationFrontier));
-                wave.add(id);
-                clearedThisWave.add(cell.pos);
-                area = StructureSupply.union(area, new ProjectBlock(cell.pos, stand, AIR));
-                iterator.remove();
+            for (boolean allowTemporaryFooting : new boolean[]{false, true}) {
+                // A fallback wave contains one cut, so its footing cannot be removed concurrently.
+                if (!wave.isEmpty()) break;
+                for (var iterator = obstructing.entrySet().iterator(); iterator.hasNext(); ) {
+                    var entry = iterator.next();
+                    var cell = entry.getValue();
+                    var stand = findExcavationStand(client, cell.pos, pos ->
+                            (allowTemporaryFooting || !removed.contains(pos.down()) || cleared.get(pos.down()) == SCAFFOLD)
+                                    && safeStand(client, pos, cleared)
+                                    && canRemoveBlock(client, pos, cell.pos, cleared));
+                    if (stand == null) continue;
+                    String id = "clear-" + entry.getKey();
+                    jobs.add(work(id, ProjectQueue.Kind.EXCAVATE, cell.pos, cell.observed, stand, Direction.UP, excavationFrontier));
+                    wave.add(id);
+                    clearedThisWave.add(cell.pos);
+                    area = StructureSupply.union(area, new ProjectBlock(cell.pos, stand, AIR));
+                    iterator.remove();
+                    if (allowTemporaryFooting) break;
+                }
             }
             if (wave.isEmpty()) {
                 var blocked = obstructing.values().iterator().next();
-                throw new IllegalArgumentException("No reachable excavation face for "
-                        + Registries.BLOCK.getId(blocked.observed.getBlock()) + " at " + blocked.pos.toShortString());
+                // A casing or canopy can block the first cell while another exposes access to it.
+                var candidates = obstructing.values().stream().sorted(Comparator.comparing(cell ->
+                        cell.observed.getCollisionShape(client.world, cell.pos).isEmpty())).toList();
+                Scaffold access = null;
+                for (var candidate : candidates) {
+                    access = excavationScaffold(client, candidate.pos, cleared, ready, placed, deferredWater,
+                            excavationFrontier, excavationScaffolds.size());
+                    if (access != null) break;
+                }
+                if (access == null) {
+                    throw new IllegalArgumentException("No reachable excavation face for "
+                            + Registries.BLOCK.getId(blocked.observed.getBlock()) + " at " + blocked.pos.toShortString());
+                }
+                excavationScaffolds.add(access);
+                jobs.addAll(access.jobs);
+                cleared.putAll(access.layout);
+                ready.putAll(access.layout);
+                placed.putAll(access.placed);
+                excavationFrontier = List.of(access.lastPlacement());
+                changes.add(access.lastPlacement());
+                materials.merge(Registries.ITEM.getId(Blocks.COBBLESTONE.asItem()), access.blocks.size(), Integer::sum);
+                area = includeScaffoldArea(area, access);
+                requireJobBudget(jobs.size() + obstructing.size() + pending.size() + verificationJobs + wetJobs);
+                continue;
             }
             for (var pos : clearedThisWave) cleared.put(pos, Blocks.AIR.getDefaultState());
             changes.addAll(wave);
             excavationFrontier = List.copyOf(wave);
         }
 
+        if (!excavationScaffolds.isEmpty()) {
+            String gate = "before-excavation-access-cleanup";
+            jobs.add(new ProjectQueue.Work(gate, ProjectQueue.Kind.SETTLEMENT_BARRIER, "",
+                    List.copyOf(changes), Set.of()));
+            String previous = gate;
+            for (int i = excavationScaffolds.size() - 1; i >= 0; i--) {
+                var access = excavationScaffolds.get(i);
+                var steps = new ArrayList<>(access.blocks);
+                for (int j = steps.size() - 1; j >= 0; j--) {
+                    var step = steps.get(j);
+                    var stand = findExcavationStand(client, step.block,
+                            feet -> safeStand(client, feet, cleared)
+                                    && canRemoveBlock(client, feet, step.block, cleared));
+                    if (stand == null) throw new IllegalArgumentException("No reachable excavation scaffold cleanup face at "
+                            + step.block.toShortString());
+                    steps.set(j, new ScaffoldStep(step.block, step.placement, stand));
+                    area = StructureSupply.union(area, new ProjectBlock(step.block, stand, AIR));
+                    cleared.put(step.block, Blocks.AIR.getDefaultState());
+                    ready.remove(step.block);
+                    placed.remove(step.block);
+                }
+                previous = appendScaffoldCleanup(jobs, new Scaffold(access.jobs, steps, access.layout, access.placed),
+                        gate, previous);
+            }
+            changes.add(previous);
+            // Cleanup may proceed after a failed cut; permanent placement requires every cut to succeed.
+            String complete = "after-excavation";
+            jobs.add(new ProjectQueue.Work(complete, ProjectQueue.Kind.BARRIER, "", List.copyOf(changes), Set.of()));
+            excavationFrontier = List.of(complete);
+        }
+
         String lastExposedPlacement = null;
         int scaffoldFrontier = 0;
-        var scaffolds = new ArrayList<Scaffold>();
         boolean allowTemporarySupport = false;
+        boolean allowJumpPlacement = false;
+        long entryClosures = pending.values().stream().filter(StructureProject::closesEntry).count();
+        String entryBarrier = null;
         while (!pending.isEmpty()) {
+            // Leave usable entrances open until the workers finish the rest of the dry structure.
+            if (entryBarrier == null && pending.size() == entryClosures) {
+                entryBarrier = "before-sealing-entries";
+                jobs.add(new ProjectQueue.Work(entryBarrier, ProjectQueue.Kind.BARRIER, "", List.copyOf(changes), Set.of()));
+            }
             int before = pending.size();
             for (var iterator = pending.entrySet().iterator(); iterator.hasNext(); ) {
                 var entry = iterator.next();
                 var cell = entry.getValue();
+                if (entryBarrier == null && closesEntry(cell)) continue;
                 var placementState = placementState(cell, ready);
                 if (placementState == null) continue;
                 var pose = buildPose(client, cell, layout, ready, cleared, placed, !scaffolds.isEmpty());
+                if (pose == null && allowJumpPlacement) {
+                    var current = new HashMap<>(cleared);
+                    current.putAll(ready);
+                    pose = jumpBuildPose(client, cell, placementState, cleared, current, placed, !scaffolds.isEmpty());
+                    if (pose != null) allowJumpPlacement = false;
+                }
                 var temporary = pose == null && allowTemporarySupport
                         ? temporarySupport(client, new Cell(cell.pos, placementState, cell.observed), layout, cleared) : null;
                 if (temporary != null && deferredWater.contains(temporary.pillar.support)) temporary = null;
                 if (temporary != null) pose = temporary.pillar;
                 if (pose == null) continue;
                 var approachNeeds = new ArrayList<>(excavationFrontier);
+                if (entryBarrier != null) approachNeeds.add(entryBarrier);
                 // Each exposed placement already depends on the previous one.
                 if (lastExposedPlacement != null) approachNeeds.add(lastExposedPlacement);
                 if (!scaffolds.isEmpty()) approachNeeds.add(scaffolds.get(scaffolds.size() - 1).lastPlacement());
@@ -393,13 +470,21 @@ final class StructureProject {
                     allowTemporarySupport = true;
                     continue;
                 }
-                var cell = pending.values().iterator().next();
+                if (!allowJumpPlacement) {
+                    allowJumpPlacement = true;
+                    continue;
+                }
+                // A deferred gate cannot be the reason the current placement pass stalled.
+                boolean entriesReady = entryBarrier != null;
+                var eligible = pending.values().stream().filter(cell -> entriesReady || !closesEntry(cell)).toList();
+                var cell = eligible.get(0);
                 int cleanupJobs = scaffolds.stream().mapToInt(entry -> entry.blocks.size()).sum() + cleanup.size();
                 int cleanupGates = cleanup.isEmpty() ? 1 : 2;
                 int room = ProjectQueue.MAX_JOBS - jobs.size() - cleanupJobs - pending.size()
                         - verificationJobs - wetJobs - cleanupGates;
-                var scaffold = scaffold(client, cell, pending.values(), layout, cleared, ready, placed, deferredWater,
-                        List.copyOf(changes.subList(scaffoldFrontier, changes.size())), scaffolds.size(), room);
+                var scaffold = scaffold(client, cell, eligible, layout, cleared, ready, placed, deferredWater,
+                        List.copyOf(changes.subList(scaffoldFrontier, changes.size())),
+                        excavationScaffolds.size() + scaffolds.size(), room);
                 if (scaffold != null) {
                     scaffolds.add(scaffold);
                     jobs.addAll(scaffold.jobs);
@@ -410,12 +495,9 @@ final class StructureProject {
                     scaffoldFrontier = changes.size();
                     changes.add(scaffold.lastPlacement());
                     materials.merge(Registries.ITEM.getId(Blocks.COBBLESTONE.asItem()), scaffold.blocks.size(), Integer::sum);
-                    for (var step : scaffold.blocks) {
-                        var stand = ProjectBlock.parse(step.placement.payload()).stand();
-                        area = StructureSupply.union(area, new ProjectBlock(step.block, stand, AIR),
-                                new ProjectBlock(step.block, step.removalStand, AIR));
-                    }
+                    area = includeScaffoldArea(area, scaffold);
                     allowTemporarySupport = false;
+                    allowJumpPlacement = false;
                     continue;
                 }
                 throw new IllegalArgumentException("No reachable support face for " + cell.desired + " at " + cell.pos.toShortString());
@@ -518,6 +600,10 @@ final class StructureProject {
         }
     }
 
+    private static boolean closesEntry(Cell cell) {
+        return cell.desired.getBlock() instanceof FenceGateBlock && !cell.desired.get(FenceGateBlock.OPEN);
+    }
+
     /** Reserve future water cells while allowing dry work to cross channels that have no water yet. */
     private static Set<BlockPos> dryWaterCells(List<Cell> cells) {
         var dry = new HashSet<BlockPos>();
@@ -538,6 +624,59 @@ final class StructureProject {
         return dry;
     }
 
+    private static ProjectGather.Area includeScaffoldArea(ProjectGather.Area area, Scaffold scaffold) {
+        for (var step : scaffold.blocks) {
+            var stand = ProjectBlock.parse(step.placement.payload()).stand();
+            area = StructureSupply.union(area, new ProjectBlock(step.block, stand, AIR),
+                    new ProjectBlock(step.block, step.removalStand, AIR));
+        }
+        return area;
+    }
+
+    private static Scaffold excavationScaffold(MinecraftClient client, BlockPos target,
+                                               Map<BlockPos, BlockState> cleared,
+                                               Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed,
+                                               Set<BlockPos> deferredWater, List<String> prerequisites, int index) {
+        String suffix = index == 0 ? "" : index + "-";
+        // Scaffold footing must cover the same elevated reach as natural footing.
+        for (int depth = 2; depth <= 6; depth++) {
+            var access = excavationScaffoldAt(client, target, target.down(depth), cleared, ready, placed,
+                    deferredWater, prerequisites, suffix);
+            if (access != null) return access;
+        }
+        for (int dy : new int[]{-2, -1, -3, -4, -5, -6, 0, 1}) for (int distance : new int[]{2, 3, 1}) {
+            for (var side : Direction.Type.HORIZONTAL) for (int lateral : new int[]{0, 1, -1, 2, -2}) {
+                var stand = target.offset(side, distance).offset(side.rotateYClockwise(), lateral).up(dy);
+                var access = excavationScaffoldAt(client, target, stand, cleared, ready, placed,
+                        deferredWater, prerequisites, suffix);
+                if (access != null) return access;
+            }
+        }
+        return null;
+    }
+
+    private static Scaffold excavationScaffoldAt(MinecraftClient client, BlockPos target, BlockPos stand,
+                                                 Map<BlockPos, BlockState> cleared,
+                                                 Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed,
+                                                 Set<BlockPos> deferredWater, List<String> prerequisites, String suffix) {
+        if (!ProjectBlock.validActionStand(target, stand) || !loaded(client, stand.up())
+                || !clearStandingSpace(client, stand, cleared)
+                || !clearStandingSpace(client, stand.up(), cleared)
+                || !canRemoveBlock(client, stand, target, cleared)) return null;
+        for (int rise = 1; rise <= 5; rise++) {
+            for (var ascent : Direction.Type.HORIZONTAL) {
+                var access = planScaffold(client, stand.down(), ascent, rise, cleared, cleared, cleared,
+                        ready, placed, deferredWater, prerequisites, suffix);
+                if (access == null) continue;
+                var physical = new HashMap<>(cleared);
+                physical.putAll(access.layout);
+                if (safeStand(client, stand, physical)
+                        && canRemoveBlock(client, stand, target, physical)) return access;
+            }
+        }
+        return null;
+    }
+
     private static Scaffold scaffold(MinecraftClient client, Cell first, Collection<Cell> pending,
                                      Map<BlockPos, BlockState> layout, Map<BlockPos, BlockState> cleared,
                                      Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed, Set<BlockPos> deferredWater,
@@ -556,8 +695,7 @@ final class StructureProject {
         var current = new HashMap<>(cleared);
         current.putAll(ready);
         var stairs = new HashSet<List<BlockPos>>();
-        Scaffold best = null;
-        int fewestRemaining = nearby.size();
+        Scaffold alternative = null;
         for (var target : new LinkedHashSet<>(List.of(first.pos, highTarget))) {
             for (int rise = 1; rise <= 5 && 3 * rise * (rise + 1) / 2 <= room; rise++) {
                 for (int yOffset : new int[]{-2, -1, 0, 1, 2}) {
@@ -570,19 +708,19 @@ final class StructureProject {
                                 if (!stairs.add(List.of(bottom, top))) continue;
                                 var trial = planScaffold(client, top, ascent, rise, layout, cleared, current,
                                         ready, placed, deferredWater, prerequisites, suffix);
-                                if (trial == null) continue;
+                                if (trial == null || trial.blocks.size() * 3 > room) continue;
                                 var expanded = new HashMap<>(layout);
                                 expanded.putAll(trial.layout);
                                 var expandedReady = new HashMap<>(ready);
                                 expandedReady.putAll(trial.layout);
                                 var expandedPlaced = new HashMap<>(placed);
                                 expandedPlaced.putAll(trial.placed);
-                                int remaining = unsupportedWithScaffold(client, nearby, expanded, cleared,
-                                        expandedReady, expandedPlaced);
-                                if (remaining == 0) return trial;
-                                if (remaining < fewestRemaining) {
-                                    best = trial;
-                                    fewestRemaining = remaining;
+                                if (buildPose(client, first, expanded, expandedReady, cleared, expandedPlaced, true) != null) {
+                                    return trial;
+                                }
+                                if (alternative == null && nearby.stream().filter(cell -> cell != first).anyMatch(cell ->
+                                        buildPose(client, cell, expanded, expandedReady, cleared, expandedPlaced, true) != null)) {
+                                    alternative = trial;
                                 }
                             }
                         }
@@ -590,7 +728,7 @@ final class StructureProject {
                 }
             }
         }
-        return best;
+        return alternative;
     }
 
     private static Scaffold scaffoldAnchor(MinecraftClient client, Cell first, Collection<Cell> nearby,
@@ -652,24 +790,6 @@ final class StructureProject {
         return (long) dx * dx + (long) dz * dz;
     }
 
-    private static int unsupportedWithScaffold(MinecraftClient client, Collection<Cell> pending,
-                                                Map<BlockPos, BlockState> layout, Map<BlockPos, BlockState> cleared,
-                                                Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed) {
-        var remaining = new ArrayList<>(pending);
-        while (!remaining.isEmpty()) {
-            int before = remaining.size();
-            for (var it = remaining.iterator(); it.hasNext(); ) {
-                var cell = it.next();
-                if (buildPose(client, cell, layout, ready, cleared, placed, true) == null) continue;
-                ready.put(cell.pos, cell.desired);
-                placed.put(cell.pos, "simulated-placement");
-                it.remove();
-            }
-            if (remaining.size() == before) break;
-        }
-        return remaining.size();
-    }
-
     private static Scaffold planScaffold(MinecraftClient client, BlockPos top, Direction ascent, int rise,
                                          Map<BlockPos, BlockState> layout, Map<BlockPos, BlockState> cleared,
                                          Map<BlockPos, BlockState> current, Map<BlockPos, BlockState> ready,
@@ -678,21 +798,34 @@ final class StructureProject {
         var scaffold = new LinkedHashMap<BlockPos, BlockState>();
         int baseY = top.getY() - rise + 1;
         for (int height = 1; height <= rise; height++) {
-            var column = new BlockPos(top.getX(), baseY, top.getZ()).offset(ascent.getOpposite(), rise - height);
-            if (!safeStand(client, column, current) || !safeStand(client, column, layout)) return null;
-            for (int layer = 0; layer < height; layer++) {
-                var pos = column.up(layer);
+            var step = top.down(rise - height).offset(ascent.getOpposite(), rise - height);
+            if (!loaded(client, step.up(2)) || !clearStandingSpace(client, step.up(), current)
+                    || !clearStandingSpace(client, step.up(2), current)
+                    || !clearStandingSpace(client, step.up(), layout)
+                    || !clearStandingSpace(client, step.up(2), layout)) return null;
+            // Each step can reuse its own natural foundation on a slope.
+            var foundation = step;
+            while (foundation.getY() >= baseY - 2 && loaded(client, foundation)
+                    && airAt(client, foundation, current) && airAt(client, foundation, layout)) {
+                foundation = foundation.down();
+            }
+            if (!loaded(client, foundation) || !ProjectPlacement.flushFloor(
+                    current.getOrDefault(foundation, client.world.getBlockState(foundation)), client.world, foundation)
+                    || !ProjectPlacement.flushFloor(
+                    layout.getOrDefault(foundation, client.world.getBlockState(foundation)), client.world, foundation)) return null;
+            for (var pos = foundation.up(); pos.getY() <= step.getY(); pos = pos.up()) {
                 if (!loaded(client, pos) || deferredWater.contains(pos) || BuildProtection.blocked(pos)
                         || !airAt(client, pos, layout) || !airAt(client, pos, current)) return null;
                 scaffold.put(pos, SCAFFOLD);
             }
         }
-        return planScaffoldBlocks(client, scaffold, layout, cleared, ready, placed, prerequisites, suffix);
+        return scaffold.isEmpty() ? null : planScaffoldBlocks(client, scaffold, layout, cleared,
+                ready, placed, prerequisites, suffix);
     }
 
     static ProjectQueue.Work repairPlacementPose(MinecraftClient client, ProjectQueue.Work work,
                                                 Set<String> temporaryFooting) {
-        return repairPlacementPose(client, work, temporaryFooting, null);
+        return repairPlacementPose(client, work, temporaryFooting, null, false);
     }
 
     static BlockPos groundedScaffoldCleanup(MinecraftClient client, ProjectBlock block,
@@ -718,11 +851,12 @@ final class StructureProject {
     }
 
     static ProjectQueue.Work groundedPlacementPose(MinecraftClient client, ProjectQueue.Work work,
-                                                  Set<String> temporaryFooting, ProjectQueue.ResourceSite worker) {
+                                                  Set<String> temporaryFooting, ProjectQueue.ResourceSite worker,
+                                                  boolean allowExistingPose) {
         var start = new BlockPos(worker.x(), worker.y(), worker.z());
         if (!start.isWithinDistance(ProjectBlock.parse(work.payload()).target(), 10)) return null;
         var reachable = locallyReachableStands(client, start);
-        return reachable.isEmpty() ? null : repairPlacementPose(client, work, temporaryFooting, reachable);
+        return reachable.isEmpty() ? null : repairPlacementPose(client, work, temporaryFooting, reachable, allowExistingPose);
     }
 
     static boolean betterPlacementFooting(MinecraftClient client, BlockPos target,
@@ -736,7 +870,8 @@ final class StructureProject {
     }
 
     private static ProjectQueue.Work repairPlacementPose(MinecraftClient client, ProjectQueue.Work work,
-                                                         Set<String> temporaryFooting, Set<BlockPos> reachable) {
+                                                         Set<String> temporaryFooting, Set<BlockPos> reachable,
+                                                         boolean allowExistingPose) {
         var original = ProjectBlock.parse(work.payload());
         var target = original.target();
         var desired = original.desired();
@@ -745,21 +880,21 @@ final class StructureProject {
         ProjectBlock best = null;
         double bestScore = Double.POSITIVE_INFINITY;
         for (var face : ProjectPlacement.faces(desired)) {
-            if (reachable == null && face == original.face()) continue;
             var support = target.offset(face.getOpposite());
             if (!loaded(client, support) || temporaryFooting.contains(ProjectBlock.key(support))
                     || !ProjectPlacement.support(client.world.getBlockState(support), desired, face, client.world, support)) continue;
-            for (var candidate : BlockPos.iterateOutwards(target, 4, 4, 4)) {
+            for (var candidate : BlockPos.iterateOutwards(target, 4, 6, 4)) {
                 var stand = candidate.toImmutable();
-                if (reachable != null && !reachable.contains(stand) || target.getSquaredDistance(stand) > 16
-                        || target.equals(stand) || target.equals(stand.up())
-                        || target.equals(stand.down()) || stand.equals(support.up()) && face.getAxis().isHorizontal()
+                if (reachable != null && !reachable.contains(stand) || !ProjectBlock.validActionStand(target, stand)
+                        || !allowExistingPose && stand.equals(original.stand()) && face == original.face()
+                        || stand.equals(support.up()) && face.getAxis().isHorizontal()
                         || !loaded(client, stand.up()) || temporaryFooting.contains(ProjectBlock.key(stand.down()))
                         || !safeStand(client, stand, Map.of())) continue;
                 var pose = new ProjectBlock(target, stand, original.block(), original.properties(), face);
                 var eye = Vec3d.ofBottomCenter(stand).add(0, 1.62, 0);
                 boolean jump = !clearBuildFace(client, eye, pose, Map.of());
-                if (jump && (ProjectWater.source(desired) || !client.world.isAir(stand.up(2))
+                if (jump && (ProjectWater.source(desired) || Vec3d.ofBottomCenter(stand).squaredDistanceTo(Vec3d.ofCenter(target)) > 25
+                        || !loaded(client, stand.up(2)) || target.equals(stand.up(2)) || !client.world.isAir(stand.up(2))
                         || !clearBuildFace(client, eye.add(0, 1.15, 0), pose, Map.of()))) continue;
                 int approaches = 0;
                 for (var direction : Direction.Type.HORIZONTAL) {
@@ -1016,9 +1151,9 @@ final class StructureProject {
             }
             var built = current;
             stand = findPlacementStand(client, cell.pos, face, pos ->
-                    safeStand(client, pos, cleared) && safeStand(client, pos, desired)
+                    safeStand(client, pos, cleared) && safeStand(client, pos, built)
                             && clearBuildFace(client, pos, cell.pos, support, face, built, placement, avoidCorners));
-            // Later placements wait until a face that will be covered has been used.
+            // Later placements wait until a face or stand that will be covered has been used.
             if (stand != null) return new BuildPose(stand, face, support, true);
             for (boolean exposed : new boolean[]{false, true}) {
                 var visibleLayout = exposed ? built : desired;
@@ -1062,20 +1197,50 @@ final class StructureProject {
         return null;
     }
 
+    private static BuildPose jumpBuildPose(MinecraftClient client, Cell cell, BlockState placement,
+                                          Map<BlockPos, BlockState> cleared, Map<BlockPos, BlockState> current,
+                                          Map<BlockPos, String> placed, boolean avoidCorners) {
+        if (ProjectWater.source(placement)) return null;
+        for (var face : ProjectPlacement.faces(placement)) {
+            var support = cell.pos.offset(face.getOpposite());
+            if (!loaded(client, support)) continue;
+            var floor = current.getOrDefault(support, client.world.getBlockState(support));
+            if (!ProjectPlacement.support(floor, placement, face, client.world, support)) continue;
+            var routes = new HashMap<BlockPos, BuildAccess>();
+            var stand = findPlacementStand(client, cell.pos, face, feet -> {
+                if (!ProjectBlock.validActionStand(cell.pos, feet)
+                        || Vec3d.ofBottomCenter(feet).squaredDistanceTo(Vec3d.ofCenter(cell.pos)) > 25
+                        || face.getAxis().isHorizontal() && feet.equals(support.up())
+                        || !loaded(client, feet.up(2)) || feet.up(2).equals(cell.pos)
+                        || !safeStand(client, feet, current) || !clearStandingSpace(client, feet.up(2), current)) return false;
+                var eye = Vec3d.ofBottomCenter(feet).add(0, 2.62, 0);
+                if (!clearBuildFace(client, eye, cell.pos, support, face, current, placement, avoidCorners)) return false;
+                var route = builtAccess(client, feet, cell.pos, cleared, current, current, placed);
+                if (route == null) return false;
+                routes.put(feet, route);
+                return true;
+            });
+            if (stand != null) return new BuildPose(stand, face, support, true, routes.get(stand));
+        }
+        return null;
+    }
+
     private static BlockPos findPlacementStand(MinecraftClient client, BlockPos target, Direction face,
                                                 Predicate<BlockPos> suitable) {
         // Minecraft measures placement reach from the eyes, which can reach upward from lower floors.
         int[] heights = {0, 1, -1, -2, -3};
         var stand = findStand(client, target, face, true, heights, suitable);
-        if (stand != null || face == null || !face.getAxis().isHorizontal()) return stand;
-        // The target cell is already on the exposed side of the supporting face.
-        var side = face.rotateYClockwise();
-        for (int dy : heights) for (int lateral : new int[]{1, -1, 2, -2, 3, -3}) {
-            var beside = target.offset(side, lateral).up(dy);
-            if (beside.getSquaredDistance(target) <= 16 && loaded(client, beside) && loaded(client, beside.up())
-                    && loaded(client, beside.down()) && suitable.test(beside)) return beside;
+        if (stand != null) return stand;
+        if (face != null && face.getAxis().isHorizontal()) {
+            // The target cell is already on the exposed side of the supporting face.
+            var side = face.rotateYClockwise();
+            for (int dy : heights) for (int lateral : new int[]{1, -1, 2, -2, 3, -3}) {
+                var beside = target.offset(side, lateral).up(dy);
+                if (beside.getSquaredDistance(target) <= 16 && loaded(client, beside) && loaded(client, beside.up())
+                        && loaded(client, beside.down()) && suitable.test(beside)) return beside;
+            }
         }
-        return null;
+        return findLowerActionStand(client, target, suitable);
     }
 
     private static BuildAccess builtAccess(MinecraftClient client, BlockPos stand, BlockPos target,
@@ -1282,13 +1447,37 @@ final class StructureProject {
         return null;
     }
 
+    private static BlockPos findExcavationStand(MinecraftClient client, BlockPos target, Predicate<BlockPos> suitable) {
+        var side = findStand(client, target, null, true, new int[]{0, 1, -1, 2, -2, 3, -3},
+                stand -> ProjectBlock.validActionStand(target, stand) && suitable.test(stand));
+        return side != null ? side : findLowerActionStand(client, target, suitable);
+    }
+
+    private static BlockPos findLowerActionStand(MinecraftClient client, BlockPos target, Predicate<BlockPos> suitable) {
+        // A standing worker can reach higher from eye level than from feet level.
+        for (var candidate : BlockPos.iterateOutwards(target, 4, 6, 4)) {
+            if (target.getY() - candidate.getY() < 2 || !ProjectBlock.validActionStand(target, candidate)
+                    || !loaded(client, candidate.down())) continue;
+            var stand = candidate.toImmutable();
+            if (suitable.test(stand)) return stand;
+        }
+        return null;
+    }
+
+    private static boolean clearStandingSpace(MinecraftClient client, BlockPos pos, Map<BlockPos, BlockState> layout) {
+        var state = layout.getOrDefault(pos, client.world.getBlockState(pos));
+        return state.getFluidState().isEmpty() && !(state.getBlock() instanceof net.minecraft.block.AbstractFireBlock)
+                && !state.isOf(Blocks.POWDER_SNOW) && !state.isOf(Blocks.SWEET_BERRY_BUSH) && !state.isOf(Blocks.WITHER_ROSE)
+                && state.getCollisionShape(client.world, pos).isEmpty();
+    }
+
     private static boolean safeStand(MinecraftClient client, BlockPos stand, Map<BlockPos, BlockState> layout) {
         var world = client.world;
         var below = stand.down();
         var above = stand.up();
         var floor = layout.getOrDefault(below, world.getBlockState(below));
         return ProjectPlacement.flushFloor(floor, world, below)
-                && airAt(client, stand, layout) && airAt(client, above, layout);
+                && clearStandingSpace(client, stand, layout) && clearStandingSpace(client, above, layout);
     }
 
     private static boolean loaded(MinecraftClient client, BlockPos pos) {

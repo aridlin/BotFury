@@ -519,11 +519,14 @@ final class ProjectBroker {
         for (var request : board.blockedPlacementPoses(world)) {
             var placement = ProjectBlock.parse(request.job().payload());
             if (BuildProtection.blocked(world, placement.target(), request.project())) continue;
-            var pose = StructureProject.repairPlacementPose(client, request.job(), board.temporaryFooting(request.project()));
+            var temporary = board.temporaryFooting(request.project());
+            var worker = workerPosition(request.builder());
+            var pose = worker == null ? null : StructureProject.groundedPlacementPose(client, request.job(), temporary, worker, false);
+            if (pose == null) pose = StructureProject.repairPlacementPose(client, request.job(), temporary);
             if (pose != null && board.installPlacementPose(world, request, pose,
                     heldCount(request.builder(), Registries.ITEM.getId(ProjectPlacement.material(placement.desired())).toString()),
                     System.currentTimeMillis())) {
-                BotEvents.add("info", "projects", "Found another support face for " + request.job().id());
+                BotEvents.add("info", "projects", "Found another placement approach for " + request.job().id());
                 return;
             }
         }
@@ -538,7 +541,7 @@ final class ProjectBroker {
                 if (request.builder().equalsIgnoreCase(bot.name())) continue;
                 var position = workerPosition(bot.name());
                 if (position == null) continue;
-                var pose = StructureProject.groundedPlacementPose(client, request.job(), temporary, position);
+                var pose = StructureProject.groundedPlacementPose(client, request.job(), temporary, position, true);
                 if (pose != null && board.installLocalHandoff(world, request, pose, bot.name(),
                         heldCount(bot.name(), material), System.currentTimeMillis())) {
                     BotEvents.add("info", "projects", "Assigned " + request.job().id() + " to " + bot.name()

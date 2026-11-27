@@ -9,6 +9,14 @@ on:
           - idle-clearance
           - ten-worker-survival
         default: idle-clearance
+      seed:
+        type: string
+        description: Optional numeric Minecraft seed to replay
+        default: ''
+      site:
+        type: string
+        description: Optional coordinates to replay an observed house site
+        default: ''
       regression_seed:
         type: boolean
         description: Replay the previously surveyed survival seed
@@ -66,10 +74,20 @@ jobs:
         if: inputs.scenario == 'ten-worker-survival'
         env:
           REPLAY_SURVEYED_SEED: ${{ inputs.regression_seed }}
+          TEST_SEED: ${{ inputs.seed }}
+          TEST_SITE: ${{ inputs.site }}
         run: |
           args=()
           if [[ "$REPLAY_SURVEYED_SEED" == true ]]; then
             args+=(--seed -3640241710023986336 --site 32 65 6)
+          elif [[ -n "$TEST_SEED" ]]; then
+            [[ "$TEST_SEED" =~ ^-?[0-9]+$ ]]
+            args+=(--seed "$TEST_SEED")
+          fi
+          if [[ -n "$TEST_SITE" && "$REPLAY_SURVEYED_SEED" != true ]]; then
+            read -r site_x site_y site_z extra <<< "$TEST_SITE"
+            [[ "$site_x" =~ ^-?[0-9]+$ && "$site_y" =~ ^-?[0-9]+$ && "$site_z" =~ ^-?[0-9]+$ && -z "$extra" ]]
+            args+=(--site "$site_x" "$site_y" "$site_z")
           fi
           nohup bash -c '
             python3 tests/paper/survival_benchmark.py "$@"

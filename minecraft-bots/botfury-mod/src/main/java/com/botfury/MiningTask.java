@@ -136,6 +136,7 @@ final class MiningTask {
     private static final Map<BlockPos,Integer> rejected=new HashMap<>();
     private static final Map<BlockPos,Integer> rejectedStands = new HashMap<>();
     private static int approachProgress;
+    private static BlockPos approachStart;
     private static double approachDistance;
     private static boolean localApproachTried;
     private static BlockPos localApproachFrom;
@@ -604,7 +605,8 @@ final class MiningTask {
                                         boolean prospecting, boolean distant) {
         rejectedStands.put(failedStand, age + 600);
         if (projectMining && ResourceCatalog.isOre(job.resource)) {
-            oreRoutes.defer(world, job.resource, target, feet, System.nanoTime());
+            // A failed cave route may end far from the place where it was first selected.
+            oreRoutes.defer(world, job.resource, target, approachStart == null ? feet : approachStart, feet, System.nanoTime());
             BotEvents.add("info", "mining", (distant ? "Could not reach a distant vein near "
                     : "Trying a different vein after blocked approaches near ") + target.toShortString());
         } else rejected.put(target, age + 1200);
@@ -1536,6 +1538,7 @@ final class MiningTask {
                         BotEvents.add("info", "mining", "Reserved another stand at " + BlockPos.ofFloored(place).toShortString()
                                 + " for " + ore.toShortString());
                     } else {
+                        approachStart = client.player.getBlockPos();
                         if (drop == null && MiningViewDistance.active()
                                 && !ore.isWithinDistance(client.player.getBlockPos(), NEARBY_SITE_RADIUS)) {
                             BotEvents.add("info", "mining", "Wider search reserved " + job.resource + " at "
@@ -1570,6 +1573,7 @@ final class MiningTask {
         reservedDrop = null;
         target = null;
         stand = null;
+        approachStart = null;
     }
 
     private static void release(Job current,String token){

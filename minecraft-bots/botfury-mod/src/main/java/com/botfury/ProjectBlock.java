@@ -80,7 +80,7 @@ record ProjectBlock(BlockPos target, BlockPos stand, Identifier block, Map<Strin
         var target = data.target.checked();
         var stand = data.stand.checked();
         var block = Identifier.tryParse(data.block);
-        if (block == null || !Registries.BLOCK.containsId(block) || !validStand(target, stand)) {
+        if (block == null || !Registries.BLOCK.containsId(block) || !validActionStand(target, stand)) {
             throw new IllegalArgumentException("Invalid project block or standing position");
         }
         var properties = data.properties == null ? Map.<String, String>of() : data.properties;
@@ -93,6 +93,16 @@ record ProjectBlock(BlockPos target, BlockPos stand, Identifier block, Map<Strin
     static boolean validStand(BlockPos target, BlockPos stand) {
         return !target.equals(stand) && !target.equals(stand.up()) && !target.equals(stand.down())
                 && target.getSquaredDistance(stand) <= 16;
+    }
+
+    static boolean validActionStand(BlockPos target, BlockPos stand) {
+        if (validStand(target, stand)) return true;
+        int height = target.getY() - stand.getY();
+        if (height < 2 || height > 6) return false;
+        double dx = Math.max(0, Math.abs(target.getX() - stand.getX()) - .5);
+        double dz = Math.max(0, Math.abs(target.getZ() - stand.getZ()) - .5);
+        double dy = height - 1.62;
+        return dx * dx + dy * dy + dz * dz <= 4.4 * 4.4;
     }
 
     ProjectQueue.Work reserve(ProjectQueue.Work work) {

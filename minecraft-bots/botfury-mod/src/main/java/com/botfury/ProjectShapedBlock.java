@@ -41,6 +41,9 @@ final class ProjectShapedBlock {
 
     static List<Direction> faces(BlockState state) {
         if (state.getBlock() instanceof LadderBlock) return List.of(state.get(LadderBlock.FACING));
+        if (state.getBlock() instanceof FenceGateBlock) {
+            return List.of(Direction.UP, Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST, Direction.DOWN);
+        }
         if (state.getBlock() instanceof TrapdoorBlock) return List.of(state.get(TrapdoorBlock.FACING),
                 state.get(TrapdoorBlock.HALF) == BlockHalf.TOP ? Direction.DOWN : Direction.UP);
         if (state.getBlock() instanceof SlabBlock) {

@@ -146,7 +146,7 @@ try:
     time.sleep(1)
     for command in ('gamerule doMobSpawning false','time set noon',
         'fill 17299 141 17299 17324 141 17313 bedrock','setblock 17308 141 17305 dirt',
-        'setblock 17303 142 17305 dirt','setblock 17312 142 17305 chest[facing=west]'):
+        'setblock 17308 142 17305 minecraft:snow[layers=1]', 'setblock 17303 142 17305 dirt','setblock 17312 142 17305 chest[facing=west]'):
         cmd(command)
     start('display',['Xvfb',display,'-screen','0','1280x720x24','-nolisten','tcp'],out)
     time.sleep(.5)
@@ -194,9 +194,11 @@ try:
     # Set up the same obstruction as the original replay before leasing the builder.
     cmd('tp FuryGroundMiner 17308.25 142 17305.5')
     time.sleep(.5)
-    assert cmd('execute at FuryGroundMiner if block ~ ~ ~ minecraft:air') == 'Test passed'
+    assert cmd('execute at FuryGroundMiner if block ~ ~ ~ minecraft:snow[layers=1]') == 'Test passed'
     enroll(2,zone['name'])
     built = wait(lambda: completed(zone['name']))
+    assert any(job["work"]["kind"] == "EXCAVATE" and job["state"] == "DONE" for job in built["jobs"])
+    print("Paper verified excavation of the thin snow layer before placement.", flush=True)
     assert cmd('execute if block 17308 142 17305 oak_planks')=='Test passed'
     assert "Clearing active placement at 17308, 142, 17305" in miner_log.read_text()
     assert cmd('execute if block 17308 141 17305 dirt')=='Test passed'

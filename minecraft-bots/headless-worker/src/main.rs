@@ -34,7 +34,13 @@ fn run() -> Result<(), String> {
     };
     let coordinator = Coordinator::new(port, name.clone());
     let mut game = Game::connect(&engine, &server, &name)?;
-    let kinds = [Kind::Gather, Kind::Craft, Kind::Transfer];
+    let kinds = [
+        Kind::Gather,
+        Kind::Craft,
+        Kind::Transfer,
+        Kind::Build,
+        Kind::Verify,
+    ];
     let mut completed = 0;
     while count == 0 || completed < count {
         let items = game.inventory()?.counts();

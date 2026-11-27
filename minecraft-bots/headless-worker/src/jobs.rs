@@ -5,6 +5,7 @@ use botfury_headless_worker::coordinator::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -68,6 +69,70 @@ struct Transfer {
     partner: Option<Pos>,
 }
 
+#[derive(Clone, Copy, Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Face {
+    Down,
+    Up,
+    North,
+    South,
+    West,
+    East,
+}
+
+impl Face {
+    fn support(self, Pos { x, y, z }: Pos) -> Pos {
+        let (dx, dy, dz) = match self {
+            Self::Down => (0, 1, 0),
+            Self::Up => (0, -1, 0),
+            Self::North => (0, 0, 1),
+            Self::South => (0, 0, -1),
+            Self::West => (1, 0, 0),
+            Self::East => (-1, 0, 0),
+        };
+        Pos {
+            x: x + dx,
+            y: y + dy,
+            z: z + dz,
+        }
+    }
+
+    fn axis(self) -> &'static str {
+        match self {
+            Self::Down | Self::Up => "y",
+            Self::North | Self::South => "z",
+            Self::West | Self::East => "x",
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct Placement {
+    target: Pos,
+    stand: Pos,
+    block: String,
+    properties: Option<BTreeMap<String, String>>,
+    face: Option<Face>,
+}
+
+impl Placement {
+    fn matches(&self, actual: &Value) -> Result<bool, String> {
+        let expected = vanilla(&self.block)?;
+        let name = actual["block"]
+            .as_str()
+            .ok_or("Target block is outside loaded chunks")?;
+        if expected == "air" {
+            return Ok(is_air(name));
+        }
+        Ok(name == expected
+            && self.properties.as_ref().is_none_or(|properties| {
+                properties
+                    .iter()
+                    .all(|(key, value)| actual["properties"][key] == value.as_str())
+            }))
+    }
+}
+
 pub struct Outcome {
     pub success: bool,
     pub evidence: String,
@@ -89,6 +154,8 @@ pub fn execute(
         Kind::Gather => job.gather(parse(payload)?),
         Kind::Craft => job.craft(parse(payload)?),
         Kind::Transfer => job.transfer(parse(payload)?),
+        Kind::Build => job.place(parse(payload)?),
+        Kind::Verify => job.verify(parse(payload)?),
     }
 }
 
@@ -298,6 +365,91 @@ impl Job<'_> {
         Ok(())
     }
 
+    fn block_at(&mut self, Pos { x, y, z }: Pos) -> Result<Value, String> {
+        self.game.call("block_at", json!({"x": x, "y": y, "z": z}))
+    }
+
+    fn place(&mut self, work: Placement) -> Result<Outcome, String> {
+        let actual = self.block_at(work.target)?;
+        if work.matches(&actual)? {
+            return Ok(observed(format!("Observed existing {}", work.block)));
+        }
+        if !actual["block"].as_str().is_some_and(is_air) {
+            return Err(format!(
+                "Placement target already contains {}",
+                actual["block"]
+            ));
+        }
+        let face = work.face.unwrap_or(Face::Up);
+        if let Some(properties) = &work.properties
+            && !properties.is_empty()
+            && (properties.len() != 1
+                || properties
+                    .get("axis")
+                    .is_none_or(|axis| axis != face.axis()))
+        {
+            return Err(
+                "Requested block properties are unsupported by this placement action".into(),
+            );
+        }
+
+        self.move_to(work.stand)?;
+        let support = face.support(work.target);
+        if self.block_at(support)?["block"].as_str().is_none_or(is_air) {
+            return Err("Placement support is missing".into());
+        }
+        let item = vanilla(&work.block)?;
+        let inventory = self.game.inventory()?;
+        let slot = inventory
+            .slots
+            .iter()
+            .filter(|stack| (9..45).contains(&stack.slot) && stack.item == item)
+            .max_by_key(|stack| stack.slot)
+            .ok_or_else(|| format!("Missing material {}", work.block))?
+            .slot;
+        let hotbar = if slot >= 36 {
+            slot - 36
+        } else {
+            self.click(slot, 0, "swap")?;
+            0
+        };
+        self.act("select_slot", json!({"slot": hotbar}))?;
+        if !self
+            .game
+            .inventory()?
+            .slots
+            .iter()
+            .any(|stack| stack.slot == 36 + hotbar && stack.item == item)
+        {
+            return Err("Server did not confirm the selected building material".into());
+        }
+        let current = self.block_at(work.target)?;
+        if work.matches(&current)? {
+            return Ok(observed(format!("Observed existing {}", work.block)));
+        }
+        if !current["block"].as_str().is_some_and(is_air) {
+            return Err("Placement target changed while the worker was approaching".into());
+        }
+        let Pos { x, y, z } = support;
+        self.act("use_block", json!({"x": x, "y": y, "z": z, "face": face}))?;
+        self.verify(work)
+    }
+
+    fn verify(&mut self, work: Placement) -> Result<Outcome, String> {
+        let actual = self.block_at(work.target)?;
+        if !work.matches(&actual)? {
+            return Err(format!(
+                "Server block does not match {}: {actual}",
+                work.block
+            ));
+        }
+        let Pos { x, y, z } = work.target;
+        Ok(observed(format!(
+            "Observed {} at {x}, {y}, {z}",
+            work.block
+        )))
+    }
+
     fn craft(&mut self, work: Craft) -> Result<Outcome, String> {
         let recipe = vanilla(&work.recipe)?;
         let wood = recipe
@@ -417,6 +569,10 @@ impl Job<'_> {
 fn vanilla(item: &str) -> Result<&str, String> {
     item.strip_prefix("minecraft:")
         .ok_or_else(|| format!("Expected an exact vanilla item: {item}"))
+}
+
+fn is_air(block: &str) -> bool {
+    matches!(block, "air" | "cave_air" | "void_air")
 }
 
 fn parse<T: serde::de::DeserializeOwned>(payload: &str) -> Result<T, String> {

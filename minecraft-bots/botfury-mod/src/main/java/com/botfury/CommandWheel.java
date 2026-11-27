@@ -330,7 +330,12 @@ final class CommandWheel extends FleetPanel {
     @Override public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         if (FormationClient.wheel.matchesKey(keyCode, scanCode)) { beginGesture(); return true; }
         if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE && page != 0) { back(); return true; }
-        if (FormationClient.quick.matchesKey(keyCode, scanCode)) { close(); FormationClient.quick(client); return true; }
+        if (FormationClient.quick.matchesKey(keyCode, scanCode)) {
+            if (hasShiftDown()) return true;
+            close();
+            FormationClient.quick(client);
+            return true;
+        }
         return super.keyPressed(keyCode, scanCode, modifiers);
     }
 

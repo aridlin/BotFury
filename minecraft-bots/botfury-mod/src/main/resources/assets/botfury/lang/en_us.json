@@ -1,6 +1,6 @@
 {
   "category.botfury": "BotFury",
   "key.botfury.wheel": "Command wheel",
-  "key.botfury.quick": "Lightning / return / stop",
+  "key.botfury.quick": "Lightning / stop · Shift + hold for inventory",
   "botfury.formation.aim": "Aim at a living target."
 }

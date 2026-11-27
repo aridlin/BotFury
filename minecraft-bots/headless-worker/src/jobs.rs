@@ -4,7 +4,10 @@ use botfury_headless_worker::coordinator::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{thread, time::Duration};
+use std::{
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 #[derive(Clone, Copy, Deserialize)]
 struct Pos {
@@ -96,7 +99,18 @@ impl Job<'_> {
             .renew(self.assignment)
             .map_err(|error| format!("Renew failed: {error:?}"))?
         {
-            Renewed::Active(_) => self.game.call(name, params),
+            Renewed::Active(lease) => {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| "Worker clock is before the Unix epoch")?;
+                // Bound the action by the observed lease, even if a slow reply ate into its time.
+                if u128::from(lease.expires_at) <= now.as_millis() + 8_000 {
+                    return Err(
+                        "The renewed lease is too short to safely start a game action".into(),
+                    );
+                }
+                self.game.call(name, params)
+            }
             Renewed::Lost => Err("Job lease is no longer active".into()),
         }
     }

@@ -173,7 +173,7 @@ def run(args):
         profile = out / name
         config = profile / "config"
         config.mkdir(parents=True)
-        (profile / "options.txt").write_text("pauseOnLostFocus:false\nrenderDistance:6\nsimulationDistance:4\n")
+        (profile / "options.txt").write_text("pauseOnLostFocus:false\nrenderDistance:6\nsimulationDistance:5\nmaxFps:10\n")
         (config / "botfury-ui.json").write_text('{"fleetGuideSeen":true}')
         if index == 0:
             structures = config / "botfury-structures"
@@ -184,11 +184,11 @@ def run(args):
             "port": CONTROL_PORT + index, "offlineUsername": name, "managedHttp": str(index != 0).lower(),
             "strictPort": "true", "httpBindAddress": "127.0.0.1", "autoJoin": "true",
             "serverIp": "127.0.0.1", "serverPort": SERVER_PORT, "formationBasePort": CONTROL_PORT + 1,
-            "formationPortCount": len(WORKERS), "maxFps": 12 if visible else 6,
+            "formationPortCount": len(WORKERS),
             "disableRendering": str(not visible).lower(), "advancedModulesFile": out / "botfury-advanced.txt",
         }
         return run_process(name, [
-            java, "-Xms128m", "-Xmx720m", "-XX:ActiveProcessorCount=2", "-XX:+UseSerialGC",
+            java, "-Xms128m", "-Xmx720m", "-XX:ActiveProcessorCount=1", "-XX:+UseSerialGC",
             *[f"-Dbotfury.{key}={value}" for key, value in flags.items()], f"@{RUNTIME / 'client.args'}",
             "--username", name, "--width", "480", "--height", "270",
         ], profile)
@@ -198,6 +198,10 @@ def run(args):
         return status.get("connected") and status.get("player") == name
 
     def order(master_window, text, reply):
+        def master_connected():
+            return ready(0, MASTER) and MASTER in connection.command("list")
+
+        wait(master_connected, 120)
         log = out / MASTER / "logs/latest.log"
         position = log.stat().st_size
         x("windowfocus", "--sync", master_window)
@@ -213,7 +217,10 @@ def run(args):
             if "Could not queue" in response:
                 raise RuntimeError(response)
             return re.search(reply, response)
-        return wait(accepted, 45).group(1)
+        try:
+            return wait(accepted, 75).group(1)
+        except RuntimeError as error:
+            raise RuntimeError(f"Could not verify /{text}: {error}") from error
 
     try:
         run_process("paper", [java, "-Xmx2048m", "-XX:ActiveProcessorCount=4", "-jar", "paper.jar", "nogui"], paper)
@@ -226,18 +233,7 @@ def run(args):
         site = tuple(args.site) if args.site else find_site(connection, MASTER, cells)
         command(f"gamemode spectator {MASTER}")
         command(f"tp {MASTER} {site[0]+1.5} {site[1]} {site[2]-3.5} 0 4")
-        handles = []
-        for i, name in enumerate(WORKERS, 1):
-            handles.append(launch(i, name))
-            time.sleep(3)
-        for i, name in enumerate(WORKERS, 1):
-            wait(lambda: ready(i, name), 150)
-        initial = {name: command(f"data get entity {name} Inventory") for name in WORKERS}
-        if not all(value.endswith(" []") for value in initial.values()):
-            raise RuntimeError(f"Expected empty starting inventories, got {initial}")
         master_window = window(master, 0, 0)
-        window(handles[0], 480, 0)
-        window(handles[1], 480, 270)
         captured = run_process("capture", [
             "ffmpeg", "-nostdin", "-loglevel", "error", "-n", "-f", "x11grab", "-draw_mouse", "0",
             "-framerate", "8", "-video_size", "960x540", "-i", display + ".0+0,0",
@@ -249,6 +245,15 @@ def run(args):
             raise RuntimeError("Failed to record the hosted survival benchmark")
         house_id = order(master_window, f"bf project build {SCHEMATIC.name} {' '.join(map(str, site))} supplied",
                          r"Queued (village-homestead-[a-f0-9]{8})")
+        handles = []
+        for i, name in enumerate(WORKERS, 1):
+            handles.append(launch(i, name))
+            wait(lambda: ready(i, name), 150)
+            if i <= 2:
+                window(handles[-1], 480, (i - 1) * 270)
+        initial = {name: command(f"data get entity {name} Inventory") for name in WORKERS}
+        if not all(value.endswith(" []") for value in initial.values()):
+            raise RuntimeError(f"Expected empty starting inventories, got {initial}")
         manifest_id = order(master_window, STOCK_ORDER, r"Queued (manifest-[a-f0-9]{8}) for 10 bots")
         order(master_window, "bf project workers", r"(Project worker requested for 10 bot\(s\))")
         (out / "orders.json").write_text(json.dumps({

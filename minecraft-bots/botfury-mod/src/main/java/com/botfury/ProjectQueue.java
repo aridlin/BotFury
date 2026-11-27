@@ -239,6 +239,7 @@ final class ProjectQueue {
     private static final int MAX_SUPPLY_RECOVERIES = 2;
     private static final int MAX_PROJECTS = 32;
     private static final int MAX_DEPENDENCIES = 250_000;
+    static final String FURNACE_BATCH_STAGED = "Full batch staged at the furnace";
     private static final String LEASE_EXPIRED = "Worker lease expired";
     private static final String COORDINATOR_RESTARTED = "Coordinator restarted during work";
     private static final String GATHER_STOCK_CONFIRMED = "Gathering target confirmed by chest stock";
@@ -1508,6 +1509,16 @@ final class ProjectQueue {
                                   java.util.function.ToIntBiFunction<String, String> heldCount,
                                   Map<String, Integer> toolUses, int returnRevision, boolean supportsPickupReserve,
                                   java.util.function.Function<String, ResourceSite> locate) throws IOException {
+        return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
+                returnRevision, supportsPickupReserve, locate, false);
+    }
+
+    synchronized Assignment claim(String world, String worker, Set<Kind> kinds, String projectId, long now,
+                                  ResourceSite position, java.util.function.Predicate<String> hasExcavationTool,
+                                  java.util.function.ToIntBiFunction<String, String> heldCount,
+                                  Map<String, Integer> toolUses, int returnRevision, boolean supportsPickupReserve,
+                                  java.util.function.Function<String, ResourceSite> locate,
+                                  boolean supportsStagedFurnace) throws IOException {
         if (world == null || !validId(worker) || kinds == null || kinds.isEmpty()
                 || projectId != null && !validId(projectId)) {
             throw new IllegalArgumentException("Invalid worker or world");
@@ -1528,7 +1539,10 @@ final class ProjectQueue {
             if (storage != null) projectReservations.putIfAbsent(storage, project.id);
             var blocked = blockedJobs(project);
             for (Job job : project.jobs) {
-                if (job.state == State.WAITING && !blocked.contains(job.work.id) && resumesLoadedFurnace(job.work)) {
+                if (job.state == State.WAITING && !cancelled(project)
+                        && !blocked.contains(job.work.id) && furnaceBatchStaged(job)) {
+                    job.work.locks.forEach(key -> furnaceReservations.putIfAbsent(key, job.work));
+                } else if (job.state == State.WAITING && !blocked.contains(job.work.id) && resumesLoadedFurnace(job.work)) {
                     var target = JSON.fromJson(job.work.payload, StationTarget.class).target.checked();
                     furnaceReservations.putIfAbsent(ProjectBlock.key(target), job.work);
                 }
@@ -1547,13 +1561,14 @@ final class ProjectQueue {
                     // A claim response can be lost. Normally a repeated claim returns the same assignment.
                     boolean canResume = handoffWorker(job) == null && world.equals(project.world)
                             && kinds.contains(job.work.kind) && !cancelled(project)
+                            && (supportsStagedFurnace || !furnaceBatchStaged(job))
                             && (returnRevision >= STAGED_STOCK_RETURN_REVISION || !travelingContribution(job))
                             && (supportsPickupReserve || !PREPARATION_STOCK_PICKUP.equals(job.evidence))
                             && (projectId == null || projectId.equals(project.id));
                     if (!canResume) return null;
                     if (kinds.contains(Kind.GATHER) && useCarriedGatheringPickaxe(project, job, worker, toolUses)) {
                         return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
-                                returnRevision, supportsPickupReserve, locate);
+                                returnRevision, supportsPickupReserve, locate, supportsStagedFurnace);
                     }
                     return assignment(project, job);
                 }
@@ -1606,7 +1621,7 @@ final class ProjectQueue {
                 if (job.work.kind.coordinatorOnly() || cargoAwaitingHandoff.contains(job.work.sameWorkerAs)
                         || CARGO_CHECKPOINT.equals(job.evidence) && checkpointDepositActive(project, job)
                         || retryDelayedFor(job, worker, now)
-                        || !kinds.contains(job.work.kind)) continue;
+                        || !kinds.contains(job.work.kind) || !supportsStagedFurnace && furnaceBatchStaged(job)) continue;
                 boolean nearbyPickup = canRetryConstructionPickup(job, position);
                 boolean nearbyCleanup = canRetryScaffoldCleanup(job, position, hasExcavationTool);
                 boolean nearbyVerification = canRetryBlockVerification(job, position);
@@ -1633,11 +1648,11 @@ final class ProjectQueue {
                 var missingRaw = missingRebuiltFurnaceInput(job, byId, worker, heldCount);
                 if (missingRaw != null && recoverMissingProduction(project, job, missingRaw)) {
                     return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
-                            returnRevision, supportsPickupReserve, locate);
+                            returnRevision, supportsPickupReserve, locate, supportsStagedFurnace);
                 }
                 if (kinds.contains(Kind.GATHER) && useCarriedGatheringPickaxe(project, job, worker, toolUses)) {
                     return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
-                            returnRevision, supportsPickupReserve, locate);
+                            returnRevision, supportsPickupReserve, locate, supportsStagedFurnace);
                 }
                 boolean usesStation = job.work.kind == Kind.TRANSFER || job.work.kind == Kind.CRAFT || job.work.kind == Kind.SMELT;
                 if (usesStation && !Collections.disjoint(unavailableStations, job.work.locks)) continue;
@@ -1648,6 +1663,7 @@ final class ProjectQueue {
                     waitingWithCargo |= pinned;
                     continue;
                 }
+                if (furnaceBatchStaged(job)) return assign(project, job, worker, now, position);
                 // Finish using inventory already gathered for a chain before starting unrelated work.
                 if (job.work.sameWorkerAs != null || ownedOrder != null || gatherReconnectPending(job, now)
                         || CONSTRUCTION_PICKUP.equals(job.evidence) && job.expiresAt > now) {
@@ -1684,14 +1700,14 @@ final class ProjectQueue {
                     || heldCount != null && (recoverExpiredMiningTools(world, projectId, heldCount)
                         || recoverToolsAfterBanking(world, projectId))) {
                 return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
-                        returnRevision, supportsPickupReserve, locate);
+                        returnRevision, supportsPickupReserve, locate, supportsStagedFurnace);
             }
         }
         // A nearby builder can unlock a stalled structure before leaving on a fresh gathering assignment.
         if (fallbackJob != null && fallbackJob.work.kind == Kind.GATHER && locate != null && heldCount != null
                 && kinds.contains(Kind.BUILD) && offerConstructionHandoff(world, worker, projectId, kinds, now, locate, heldCount)) {
             return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
-                    returnRevision, supportsPickupReserve);
+                    returnRevision, supportsPickupReserve, null, supportsStagedFurnace);
         }
         return fallbackJob == null ? null
                 : assignWithPreparationStock(fallbackProject, fallbackJob, worker, now, position, kinds, supportsPickupReserve ? heldCount : null);
@@ -3890,7 +3906,7 @@ final class ProjectQueue {
     private Assignment assign(Project project, Job job, String worker, long now, ResourceSite position) throws IOException {
         var site = gatheringSite(project, job, position);
         var assigned = new Job(job.work, State.LEASED, job.attempts + 1, worker,
-                UUID.randomUUID(), now + LEASE_MS, null, job.chest, site);
+                UUID.randomUUID(), now + LEASE_MS, furnaceBatchStaged(job) ? FURNACE_BATCH_STAGED : null, job.chest, site);
         replace(project, assigned);
         return assignment(project, assigned);
     }
@@ -4209,6 +4225,13 @@ final class ProjectQueue {
     synchronized Job renew(String projectId, String jobId, UUID token, ResourceSite site, long now,
                            boolean needsRouteTool, boolean needsRouteBench,
                            java.util.function.Function<String, ResourceSite> locate) throws IOException {
+        return renew(projectId, jobId, token, site, now, needsRouteTool, needsRouteBench, locate, null);
+    }
+
+    synchronized Job renew(String projectId, String jobId, UUID token, ResourceSite site, long now,
+                           boolean needsRouteTool, boolean needsRouteBench,
+                           java.util.function.Function<String, ResourceSite> locate,
+                           Boolean furnaceStaged) throws IOException {
         Project project = projects.get(projectId);
         Job job = find(project, jobId);
         if (!owns(job, token, now) || cancelled(project) || BATCH_RESERVED.equals(job.evidence) || handoffWorker(job) != null
@@ -4217,6 +4240,13 @@ final class ProjectQueue {
                 || needsRouteBench && productionWork(job.work)) routeToolRequests.put(token, needsRouteBench);
         else routeToolRequests.remove(token);
         String renewedEvidence = job.evidence;
+        if (furnaceStaged != null) {
+            if (job.work.kind != Kind.SMELT) return null;
+            var target = JSON.fromJson(job.work.payload, StationTarget.class).target;
+            if (target == null || !job.work.locks.contains(ProjectBlock.key(target.checked()))) return null;
+            if (furnaceStaged) renewedEvidence = FURNACE_BATCH_STAGED;
+            else if (furnaceBatchStaged(job)) renewedEvidence = null;
+        }
         if (travelingContribution(job) && locate != null) {
             var position = locate.apply(job.worker);
             var target = JSON.fromJson(job.work.payload, StationTarget.class).target;
@@ -5315,6 +5345,15 @@ final class ProjectQueue {
                     routeToolRequests.remove(job.lease);
                     mealRequests.remove(job.lease);
                     routeStickRequests.remove(job.lease);
+                    if (furnaceBatchStaged(job) && job.attempts < MAX_ATTEMPTS) {
+                        // All inputs and output are still in the leased station. Only the
+                        // inventory affinity is obsolete; the dependencies and locks remain.
+                        var work = job.work;
+                        var staged = new Work(work.id, work.kind, work.payload, work.needs, work.locks);
+                        jobs.set(i, new Job(staged, State.WAITING, job.attempts, null, null, 0,
+                                FURNACE_BATCH_STAGED, job.chest, job.resourceSite));
+                        continue;
+                    }
                     if (job.work.kind == Kind.RESUPPLY) {
                         jobs.set(i, ROUTE_BENCH_RECEIVED.equals(job.evidence) ? completedRouteBench(job)
                                 : new Job(job.work, State.FAILED, job.attempts, job.worker, job.lease, 0,
@@ -5469,6 +5508,10 @@ final class ProjectQueue {
     private static Job retry(Job job, String reason, ChestObservation chest, ResourceSite site) {
         State state = job.work.kind != Kind.RESUPPLY && job.attempts < MAX_ATTEMPTS ? State.WAITING : State.FAILED;
         return new Job(job.work, state, job.attempts, null, null, 0, reason, chest, site);
+    }
+
+    private static boolean furnaceBatchStaged(Job job) {
+        return job.work.kind == Kind.SMELT && FURNACE_BATCH_STAGED.equals(job.evidence);
     }
 
     private static boolean productionWork(Work work) {

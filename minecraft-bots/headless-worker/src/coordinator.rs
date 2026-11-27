@@ -55,6 +55,7 @@ pub struct Lease {
     pub worker: String,
     pub lease: String,
     pub expires_at: u64,
+    pub evidence: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -119,7 +120,8 @@ impl Coordinator {
             "project": project,
             "worker": self.worker,
             "kinds": kinds,
-            "claimItems": items
+            "claimItems": items,
+            "supportsStagedFurnace": true
         });
         retry_transient(|| self.read_claim(project, kinds, &request))
     }
@@ -147,13 +149,18 @@ impl Coordinator {
         }
     }
 
-    pub fn renew(&self, assignment: &Assignment) -> Result<Renewed, BrokerError> {
+    pub fn renew(
+        &self,
+        assignment: &Assignment,
+        furnace_staged: Option<bool>,
+    ) -> Result<Renewed, BrokerError> {
         let request = serde_json::json!({
             "action": "renew",
             "project": assignment.project,
             "worker": self.worker,
             "job": assignment.job.work.id,
-            "token": assignment.job.lease
+            "token": assignment.job.lease,
+            "furnaceStaged": furnace_staged
         });
         retry_transient(|| self.read_renewal(assignment, &request))
     }

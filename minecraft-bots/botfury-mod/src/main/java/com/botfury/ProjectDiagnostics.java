@@ -49,6 +49,10 @@ final class ProjectDiagnostics {
     }
 
     private static String next(ProjectQueue.Job job, String worker) {
+        if (ProjectQueue.FURNACE_BATCH_STAGED.equals(job.evidence())) {
+            if (job.state() == ProjectQueue.State.WAITING) return "An available headless bot can finish this furnace batch.";
+            if (job.state() == ProjectQueue.State.LEASED) return "Let " + worker + " collect the full batch from the furnace.";
+        }
         return switch (job.state()) {
             case DONE -> "";
             case LEASED -> "Let " + worker + " finish this step.";

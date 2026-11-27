@@ -78,6 +78,57 @@ class ProjectQueueTest {
         assertEquals("planks", restored.claim(WORLD, "helper", Set.of(CRAFT), "house", now + 3).job().work().id());
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void onlyReassignsSmeltingWhileTheFullBatchIsAtTheFurnace(boolean withdrawing) throws Exception {
+        var file = directory.resolve("staged-furnace.json");
+        var queue = new ProjectQueue(file);
+        var supply = job("fuel", GATHER, List.of()).withPayload("""
+                {"resource":"coal","variant":"both","item":"minecraft:coal","count":1}
+                """);
+        var payload = """
+                {"target":{"x":2,"y":64,"z":0},"stand":{"x":1,"y":64,"z":0},
+                 "block":"minecraft:furnace","recipe":"minecraft:iron_ingot_from_smelting_raw_iron",
+                 "input":"minecraft:raw_iron","fuel":"minecraft:coal","count":6}
+                """;
+        var locks = Set.of("block:2,64,0", "block:1,64,0");
+        var smelt = new ProjectQueue.Work("smelt", SMELT, payload, List.of("fuel"), locks, "fuel");
+        queue.submit("batch", WORLD, List.of(supply, smelt));
+        var fuel = queue.claim(WORLD, "original", Set.of(GATHER), "batch", 1).job();
+        assertTrue(queue.finish("batch", "fuel", fuel.lease(), true, "Fuel ready", 2));
+        var leased = queue.claim(WORLD, "original", Set.of(SMELT), "batch", 3).job();
+        var staged = queue.renew("batch", "smelt", leased.lease(), null, 4, false, false, null, true);
+        assertEquals(ProjectQueue.FURNACE_BATCH_STAGED, staged.evidence());
+        assertNull(queue.claim(WORLD, "helper", Set.of(SMELT), "batch", 5,
+                null, block -> false, null, null, 0, false, null, true));
+        if (withdrawing) {
+            staged = queue.renew("batch", "smelt", leased.lease(), null, 6, false, false, null, false);
+            assertNull(staged.evidence());
+        }
+
+        long expired = staged.expiresAt() + 1;
+        assertEquals(ProjectQueue.State.WAITING, queue.snapshot(expired).get(0).jobs().get(1).state());
+        var restored = new ProjectQueue(file);
+        assertNull(restored.claim(WORLD, "legacy", Set.of(SMELT), "batch", expired));
+        var helper = restored.claim(WORLD, "helper", Set.of(SMELT), "batch", expired,
+                null, block -> false, null, null, 0, false, null, true);
+        if (withdrawing) {
+            assertNull(helper);
+            assertEquals("original", restored.claim(WORLD, "original", Set.of(SMELT), "batch", expired).job().worker());
+        } else {
+            assertNotNull(helper);
+            assertEquals("helper", helper.job().worker());
+            assertEquals(ProjectQueue.FURNACE_BATCH_STAGED, helper.job().evidence());
+            assertNotEquals(leased.lease(), helper.job().lease());
+            assertNull(helper.job().work().sameWorkerAs());
+            assertEquals(List.of("fuel"), helper.job().work().needs());
+            assertEquals(locks, helper.job().work().locks());
+            assertFalse(restored.finish("batch", "smelt", leased.lease(), true, "Stale receipt", expired + 1));
+            assertTrue(restored.finish("batch", "smelt", helper.job().lease(), true, "Collected six ingots", expired + 2));
+            assertEquals("original", restored.snapshot(expired + 3).get(0).jobs().get(0).worker());
+        }
+    }
+
     @Test void reopeningPreparationReleasesAnAlreadyCompletedFurnacesReservation() throws Exception {
         var file = directory.resolve("rebuilt-furnace.json");
         String key = "block:0,64,0";

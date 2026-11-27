@@ -257,11 +257,13 @@ def run(args):
     def order(master_window, text, reply, allow_chunk_retry=False):
         log = out / MASTER / "logs/latest.log"
 
-        def master_connected():
-            return ready(0, MASTER) and MASTER in connection.command("list")
+        def master_ready_for_input():
+            status = read_status(0)
+            return (status.get("connected") and status.get("player") == MASTER and status.get("gameInputReady")
+                    and MASTER in connection.command("list"))
 
         for attempt in range(3 if allow_chunk_retry else 1):
-            wait(master_connected, 120)
+            wait(master_ready_for_input, 120)
             position = log.stat().st_size
             x("windowfocus", "--sync", master_window)
             x("key", "slash")

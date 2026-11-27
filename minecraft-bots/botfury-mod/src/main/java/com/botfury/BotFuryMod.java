@@ -158,6 +158,7 @@ public class BotFuryMod implements ClientModInitializer {
         var status = new java.util.LinkedHashMap<String, Object>();
         status.put("connected", client.getNetworkHandler() != null && client.world != null);
         status.put("ready", ready);
+        status.put("gameInputReady", client.player != null && client.world != null && client.currentScreen == null);
         status.put("renderEnabled", renderEnabled);
         status.put("projectTask", ProjectWorker.status());
         String task = ProjectWorker.taskKind();

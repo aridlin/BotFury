@@ -2028,6 +2028,18 @@ final class ProjectWorker {
             if (generation != epoch) return;
             pending = false;
             if (action.equals("safety-wait") || error != null || reply.statusCode() >= 500) return;
+            if (reply.statusCode() == 202 && action.equals("finish")) {
+                try {
+                    var renewed = JSON.fromJson(reply.body(), ProjectQueue.Job.class);
+                    if (renewed != null) deadline = deadline(renewed, now);
+                    if (System.nanoTime() >= taskEnd) {
+                        finish(client, false, "Recipient did not confirm pickup of the resupply item");
+                    } else status = "Waiting for the recipient to pick up supplies";
+                } catch (com.google.gson.JsonParseException ignored) {
+                    // Older coordinators send a plain-text receipt response.
+                }
+                return;
+            }
             boolean continuation = action.equals("finish") && reply.statusCode() == 200 && reply.body().startsWith("{");
             if (reply.statusCode() == 409 || action.equals("finish") && reply.statusCode() == 200 && !continuation) {
                 reset(client);

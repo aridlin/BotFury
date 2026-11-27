@@ -183,13 +183,23 @@ final class BotInventory {
                     status = "Approaching " + task.recipient;
                     path(client, recipient.getPos(), projectDelivery == null ? null : recipient); return;
                 }
-                routeRecovery.reset();
-                BaritoneClient.execute("stop");
                 if (task.action.equals("gather")) { finish("Arrived"); return; }
                 if (delivered >= task.count || held == 0) {
                     finish("Dropped " + delivered + " of " + task.count + " near " + task.recipient); return;
                 }
-                client.player.lookAt(EntityAnchorArgumentType.EntityAnchor.EYES, recipient.getEyePos());
+                var aim = recipient.getEyePos();
+                if (projectDelivery != null) {
+                    if (!ProjectWorker.knownTrailFooting(client, client.player.getBlockPos()) || !client.player.isOnGround()) {
+                        status = "Looking for dry footing to hand off supplies";
+                        path(client, recipient.getPos(), recipient);
+                        return;
+                    }
+                    // A forward toss can roll past the recipient and fall off a ledge.
+                    aim = client.player.getPos().add(0, -1, 0);
+                }
+                routeRecovery.reset();
+                BaritoneClient.execute("stop");
+                client.player.lookAt(EntityAnchorArgumentType.EntityAnchor.EYES, aim);
                 client.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.LookAndOnGround(
                         client.player.getYaw(), client.player.getPitch(), client.player.isOnGround()));
                 delivered += projectDelivery != null ? dropProjectItem(client, task.item)

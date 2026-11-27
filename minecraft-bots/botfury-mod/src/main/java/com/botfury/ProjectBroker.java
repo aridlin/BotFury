@@ -929,7 +929,8 @@ final class ProjectBroker {
                     var delivery = board.routeToolDelivery(request.project, request.job, request.token, now);
                     if (request.success && delivery != null
                             && heldCount(delivery.recipient(), delivery.item()) < delivery.previousCount() + delivery.quantity()) {
-                        reply(exchange, 202, "Waiting for the recipient to pick up the resupply item");
+                        var renewed = board.renew(request.project, request.job, request.token, null, now);
+                        reply(exchange, renewed == null ? 409 : 202, renewed);
                         return;
                     }
                     var carriers = request.pickupShortfall && request.chest != null

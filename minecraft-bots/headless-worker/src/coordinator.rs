@@ -36,6 +36,8 @@ pub enum Kind {
     Gather,
     Craft,
     Transfer,
+    Build,
+    Verify,
 }
 
 #[derive(Debug, Deserialize)]

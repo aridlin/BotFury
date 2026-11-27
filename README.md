@@ -198,6 +198,54 @@ version; mismatched clients appear as needing an update and receive no formation
 orders. Orders carry sequence numbers so delayed movement cannot override a newer
 Stop. Connection/world changes clear active movement and restore owned settings.
 
+### Running the Java fleet on several machines
+
+The master can discover up to 100 bots. Set these JVM options on the master
+when you want the full range:
+
+```text
+-Dbotfury.port=8764
+-Dbotfury.strictPort=true
+-Dbotfury.httpBindAddress=127.0.0.1
+-Dbotfury.formationBasePort=8765
+-Dbotfury.formationPortCount=100
+```
+
+Every bot needs a unique control port as seen from the master. An example split
+across four machines:
+
+| Machine | Bot control ports |
+| --- | --- |
+| Master PC | 8765–8789 |
+| ProLiant | 8790–8814 |
+| Laptop | 8815–8839 |
+| Second laptop | 8840–8864 |
+
+On each bot set `-Dbotfury.managedHttp=true`,
+`-Dbotfury.httpBindAddress=127.0.0.1`, `-Dbotfury.strictPort=true`, and
+`-Dbotfury.port` to its assigned port. Use the same Minecraft server address
+and port for the master and all bots. The Minecraft server must have room for
+the master, the bots, and any other players.
+
+For each remote host, run an SSH session from the master PC. Forward each bot
+port back to the master PC and forward the master port to the remote host.
+For example, from a Bash shell on the master PC:
+
+```bash
+first=8790
+last=8814
+args=(-N -o ExitOnForwardFailure=yes -R 127.0.0.1:8764:127.0.0.1:8764)
+for ((port=first; port<=last; port++)); do
+    args+=(-L "127.0.0.1:$port:127.0.0.1:$port")
+done
+ssh "${args[@]}" proliant
+```
+
+Repeat with the appropriate range and SSH hostname for each laptop. Keep the
+SSH sessions running while the fleet is in use. The back channel on port 8764
+lets remote bots renew project jobs and coordinate mining. It does not carry
+Minecraft traffic.
+
 ### Legacy Dashboard: Flask
 
 1. **Install Python Dependencies**:

@@ -35,7 +35,6 @@ public final class FormationServer implements ModInitializer {
     static final int SATURN = 0;
     static final int STRIKE = 1;
     static final int STOP = 2;
-    private static final int MAX_BOTS = 32;
     private static final double MAX_COMMAND_DISTANCE_SQUARED = 32 * 32;
     private final Map<MinecraftServer, Fleet> fleets = new HashMap<>();
 
@@ -100,9 +99,9 @@ public final class FormationServer implements ModInitializer {
     private int changeEnrollment(MinecraftServer server, ServerPlayerEntity bot, boolean enroll,
                                  java.util.function.Consumer<Text> reply) {
         Fleet fleet = fleets.computeIfAbsent(server, ignored -> new Fleet());
-        if (enroll && (bot.hasPermissionLevel(2) || fleet.enrolled.size() >= MAX_BOTS
+        if (enroll && (bot.hasPermissionLevel(2) || fleet.enrolled.size() >= FleetPorts.CAPACITY
                 && !fleet.enrolled.contains(bot.getUuid()))) {
-            reply.accept(Text.literal("Use a non-operator bot account. The roster limit is " + MAX_BOTS + "."));
+            reply.accept(Text.literal("Use a non-operator bot account. The roster limit is " + FleetPorts.CAPACITY + "."));
             return 0;
         }
         if (enroll) fleet.enrolled.add(bot.getUuid());

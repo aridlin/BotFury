@@ -25,7 +25,6 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.IntStream;
 
 final class LocalFormation {
     static final int PROTOCOL = 3;
@@ -47,7 +46,7 @@ final class LocalFormation {
     private static final Map<Integer, Order> pending = new ConcurrentHashMap<>();
     private static final java.util.Set<Integer> sending = ConcurrentHashMap.newKeySet();
     private static final Gson JSON = new Gson();
-    private static final java.util.concurrent.ExecutorService IO = java.util.concurrent.Executors.newFixedThreadPool(2, task -> {
+    private static final java.util.concurrent.ExecutorService IO = java.util.concurrent.Executors.newFixedThreadPool(8, task -> {
         Thread worker = new Thread(task, "BotFury-local-io"); worker.setDaemon(true); return worker;
     });
     private static final HttpClient HTTP = HttpClient.newBuilder().executor(IO)
@@ -61,6 +60,7 @@ final class LocalFormation {
     private static BotTracker.Target formationTarget = new BotTracker.Target(-1, null);
     private static BotTracker.Target saturnTarget;
     private static int tick;
+    private static int lastWideDiscoveryTick = -20;
     private static int castTick;
     private static BlockPos lastGoal;
     private static int lastGoalTick;
@@ -731,10 +731,12 @@ final class LocalFormation {
         Peer origin = local;
         Object originConnection = connection;
         if (origin == null) return;
-        int base = Integer.getInteger("botfury.formationBasePort", 8765);
-        int count = Math.min(32, Integer.getInteger("botfury.formationPortCount", 10));
-        IntStream.range(0, Math.max(0, count)).map(offset -> base + offset)
-                .filter(port -> port >= 1024 && port <= 65535 && discovering.add(port))
+        var ports = FleetPorts.configured();
+        if (ports.batchSize() < ports.count()) {
+            if (tick - lastWideDiscoveryTick < 10 && tick >= lastWideDiscoveryTick) return;
+            lastWideDiscoveryTick = tick;
+        }
+        ports.all().filter(discovering::add)
                 .forEach(port -> HTTP.sendAsync(request(port).GET().build(), HttpResponse.BodyHandlers.ofString())
                         .thenAccept(response -> {
                             try {

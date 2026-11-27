@@ -20,7 +20,7 @@ const hasPosition = bot => bot.online && bot.status.connected
 const botName = bot => bot.status.player && bot.status.player !== "None" ? bot.status.player : bot.name;
 const stateName = bot => !bot.online ? "Host offline" : bot.status.connected
     ? (bot.status.taskKind && bot.status.taskKind !== "none" ? bot.status.taskKind : "In game")
-    : bot.reachable ? "Ready" : bot.running ? "Starting" : "Stopped";
+    : bot.joinStatus || (bot.reachable ? "Ready" : bot.running ? "Starting" : "Stopped");
 
 function node(tag, text, className) {
   const el = document.createElement(tag);
@@ -98,7 +98,8 @@ function updateRoster() {
   for (const button of document.querySelectorAll("[data-order]")) {
     const order = button.dataset.order;
     button.disabled = ordering || !selected.some(bot => order === "start" ? !bot.running && !bot.reachable
-        : order === "stop" ? bot.running : order === "connect" ? bot.reachable && !bot.status.connected : bot.reachable);
+        : order === "stop" ? bot.running || bot.joinPending
+        : order === "join" ? !bot.status.connected && !bot.joinPending : bot.reachable);
   }
 }
 
@@ -456,7 +457,8 @@ for (const button of document.querySelectorAll("[data-order]")) {
     const action = button.dataset.order;
     const selected = bots.filter(bot => bot.online && selections.has(bot.key)
       && (action === "start" ? !bot.running && !bot.reachable
-        : action === "stop" ? bot.running : action === "connect" ? bot.reachable && !bot.status.connected : bot.reachable));
+        : action === "stop" ? bot.running || bot.joinPending
+        : action === "join" ? !bot.status.connected && !bot.joinPending : bot.reachable));
     if (action === "stop" && !window.confirm("Stop " + selected.length + " instance(s)?")) return;
     ordering = true;
     updateRoster();

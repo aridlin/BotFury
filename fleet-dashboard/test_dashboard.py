@@ -4,8 +4,9 @@ import logging
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from dashboard import make_app, server_address
+from dashboard import Agent, make_app, server_address
 from professions import ProfessionRuns, project_ids
 from terrain import TerrainStore
 
@@ -61,6 +62,30 @@ class FleetDashboardTest(unittest.TestCase):
                 self.assertEqual(client.get("/slots").status_code, 403)
                 good = client.get("/slots", headers={"Authorization": "Bearer " + token})
                 self.assertEqual(good.get_json(), [{"name": "Worker"}])
+
+    def test_join_launches_once_and_waits_for_ready_client(self):
+        with tempfile.TemporaryDirectory() as folder:
+            slot = {"id": "worker", "name": "Worker", "port": 18000, "argv": ["unused"]}
+            agent = Agent({"slots": [slot]}, Path(folder))
+            with patch.object(agent, "launch", return_value={"ok": True}) as launch, \
+                    patch("dashboard.threading.Thread.start"), patch("dashboard.rpc", return_value=None) as status, \
+                    patch.object(agent, "send_bot") as send:
+                self.assertTrue(agent.action("worker", "join", "world.test")["ok"])
+                self.assertTrue(agent.action("worker", "join", "world.test:25565")["ok"])
+                self.assertFalse(agent.action("worker", "join", "other.test")["ok"])
+                self.assertEqual(launch.call_count, 1)
+                order = ("worker", agent.joins["worker"])
+                agent.poll_join(order)
+                send.assert_not_called()
+                status.return_value = {"ready": True, "connected": False}
+                agent.poll_join(order)
+                agent.poll_join(order)
+                send.assert_called_once_with(slot, "connect:world.test")
+                status.return_value = {"connected": True, "serverAddress": "world.test:25565"}
+                agent.poll_join(order)
+                self.assertNotIn("worker", agent.joins)
+                self.assertNotIn("worker", agent.join_errors)
+            agent.shutdown()
 
     def test_validation_rejects_non_minecraft_endpoints_and_duplicate_steps(self):
         for value in ("https://localhost", "three..test", "one:65536", "user@host", "[::1]extra"):

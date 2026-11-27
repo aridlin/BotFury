@@ -3,6 +3,7 @@ from argparse import ArgumentParser
 from collections import Counter
 from hashlib import sha256
 from pathlib import Path
+from urllib.parse import urlencode
 from urllib.request import urlopen
 import json
 import math
@@ -197,6 +198,24 @@ def run(args):
         status = read_status(index)
         return status.get("connected") and status.get("player") == name
 
+    def assign_shared_workers(manifest_id):
+        def enrolled(name, project):
+            enrollment = out / name / "config/botfury-worker.json"
+            data = json.loads(enrollment.read_text())
+            return (data.get("name") == name and data.get("port") == CONTROL_PORT
+                    and data.get("project") == project)
+
+        # The in-game order dispatches enrollment asynchronously. Let that finish first.
+        wait(lambda: all(enrolled(name, manifest_id) for name in WORKERS), 90)
+        worker_command = urlencode({"cmd": f"project:worker {CONTROL_PORT}"})
+        for index, name in enumerate(WORKERS, 1):
+            with urlopen(f"http://127.0.0.1:{CONTROL_PORT+index}/command?{worker_command}", timeout=15) as response:
+                if response.read() != b"Project worker enabled":
+                    raise RuntimeError(f"Could not enroll {name} for both projects")
+
+        wait(lambda: all(enrolled(name, None) for name in WORKERS), 90)
+        print("All ten workers saved their shared project enrollment.", flush=True)
+
     def master_at(position):
         status = read_status(0)
         return status.get("connected") and status.get("player") == MASTER and all(
@@ -267,23 +286,26 @@ def run(args):
             raise RuntimeError("Failed to record the hosted survival benchmark")
         house_id = order(master_window, f"bf project build {SCHEMATIC.name} {' '.join(map(str, site))} supplied",
                          r"Queued (village-homestead-[a-f0-9]{8})", allow_chunk_retry=True)
+        print(f"Paper accepted house order {house_id}.", flush=True)
         command(f"gamemode spectator {MASTER}")
         command(f"tp {MASTER} {' '.join(map(str, viewpoint))} 0 4")
         handles = []
         for i, name in enumerate(WORKERS, 1):
             handles.append(launch(i, name))
             wait(lambda: ready(i, name), 150)
+            print(f"{name} joined Paper.", flush=True)
             if i <= 2:
                 window(handles[-1], 480, (i - 1) * 270)
         initial = {name: command(f"data get entity {name} Inventory") for name in WORKERS}
         if not all(value.endswith(" []") for value in initial.values()):
             raise RuntimeError(f"Expected empty starting inventories, got {initial}")
         manifest_id = order(master_window, STOCK_ORDER, r"Queued (manifest-[a-f0-9]{8}) for 10 bots")
-        order(master_window, "bf project workers", r"(Project worker requested for 10 bot\(s\))")
+        print(f"Paper accepted stock order {manifest_id}.", flush=True)
         (out / "orders.json").write_text(json.dumps({
             "seed": command("seed"), "site": site, "inventories": initial,
             "house": house_id, "manifest": manifest_id, "schematicSha256": reference["sha256"],
         }, indent=2) + "\n")
+        assign_shared_workers(manifest_id)
         observe(connect, out, out / MASTER / "config/botfury-projects.json",
                 house_id, manifest_id, cells, site, args.minutes)
     finally:

@@ -76,6 +76,7 @@ def launch(index):
         structures = profile / "config/botfury-structures"
         structures.mkdir()
         shutil.copy2(fixture / "foundation.nbt", structures)
+        shutil.copy2(fixture / "foundation.nbt", structures / "snow-cover.nbt")
         shutil.copy2(fixture / "manifest.json", profile / "config/botfury-projects.json")
     flags = {
         "port": 20045 + index, "offlineUsername": name, "managedHttp": str(index != 0).lower(),
@@ -201,6 +202,24 @@ try:
     assert "Clearing active placement at 17308, 142, 17305" in miner_log.read_text()
     assert cmd('execute if block 17308 141 17305 dirt')=='Test passed'
     print("Paper verified the idle miner yielded and the owner built without intervention after enrollment.", flush=True)
+    cmd("setblock 17320 142 17305 minecraft:snow[layers=1]")
+    assert cmd("execute if block 17320 142 17305 minecraft:snow[layers=1]") == "Test passed"
+    cmd("tp FuryFloorBuilder 17320.5 142 17303.5 0 25")
+    cmd("give FuryFloorBuilder oak_planks 1")
+    cmd("tp FuryFootingLead 17321.5 146 17308.5 145 30")
+    time.sleep(1)
+    send_chat(win, "bf project build snow-cover.nbt 17320 142 17305")
+    snow_id = wait(lambda: next((key for key in projects() if key.startswith("snow-cover-")), None), 30)
+    enroll(2, snow_id)
+    try:
+        snow_case = wait(lambda: completed(snow_id), 100)
+    except RuntimeError:
+        print(http(2, "status").decode(), flush=True)
+        print(projects()[snow_id], flush=True)
+        raise
+    assert any(job["work"]["kind"] == "EXCAVATE" and job["state"] == "DONE" for job in snow_case["jobs"])
+    assert cmd("execute if block 17320 142 17305 minecraft:oak_planks") == "Test passed"
+    print("Paper verified excavation of the thin snow layer before placement.", flush=True)
     cmd("tp FuryFootingLead 17316.5 142 17309.5 0 0")
     time.sleep(2)
     first_storage = automatic_storage(win, 1)
@@ -210,7 +229,7 @@ try:
     print(f"Two requests from the same spot reserved separate chests: {first_storage}, {second_storage}", flush=True)
     (out / "verified.json").write_text(json.dumps(
         dict(zone=zone, stock=stock, manifest=mined, build=built, reconnectedWorker=clients[1],
-             storage=[first_storage, second_storage]), indent=2
+             snow=snow_case, storage=[first_storage, second_storage]), indent=2
     ) + "\n")
     time.sleep(3)
 finally:

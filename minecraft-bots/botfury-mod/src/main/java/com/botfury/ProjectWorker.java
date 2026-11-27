@@ -1301,7 +1301,9 @@ final class ProjectWorker {
             while (slot < 36 && !inventory.getStack(slot).isSuitableFor(state)) slot++;
             boolean temporaryCobblestone = work.cleanup() != null && work.cleanup().site().equals(ProjectBlock.key(target))
                     && state.isOf(Blocks.COBBLESTONE);
-            if (slot == 36) {
+            // Excavation only needs the cell cleared. Vanilla's unsuitable-tool penalty still applies.
+            boolean clearsWithinTwoSeconds = state.calcBlockBreakingDelta(player, client.world, target) >= 1f / 40;
+            if (slot == 36 && !clearsWithinTwoSeconds) {
                 if (!checkedExcavationTool) {
                     checkedExcavationTool = true;
                     var excluded = StructureSupply.union(new ProjectGather.Area(target, target), block);
@@ -1836,24 +1838,8 @@ final class ProjectWorker {
         double reach = client.interactionManager.getReachDistance() - .1;
         if (eye.squaredDistanceTo(Vec3d.ofCenter(target)) > (reach + 1) * (reach + 1)) return null;
         var shape = client.world.getBlockState(target).getOutlineShape(client.world, target);
-        for (var box : shape.getBoundingBoxes()) {
-            var center = box.getCenter().add(target.getX(), target.getY(), target.getZ());
-            var hit = excavationRay(client, eye, center, reach, accepted);
-            if (hit != null) return hit;
-            for (var face : Direction.values()) {
-                var normal = Vec3d.of(face.getVector());
-                double halfSize = switch (face.getAxis()) {
-                    case X -> (box.maxX - box.minX) / 2;
-                    case Y -> (box.maxY - box.minY) / 2;
-                    case Z -> (box.maxZ - box.minZ) / 2;
-                };
-                var point = center.add(normal.multiply(halfSize * .98));
-                if (eye.subtract(point).dotProduct(normal) <= 0) continue;
-                hit = excavationRay(client, eye, point, reach, accepted);
-                if (hit != null) return hit;
-            }
-        }
-        return null;
+        return ProjectPlacement.findExcavationHit(target, eye, shape,
+                point -> excavationRay(client, eye, point, reach, accepted));
     }
 
     private static BlockHitResult excavationRay(MinecraftClient client, Vec3d eye, Vec3d point, double reach,

@@ -578,12 +578,13 @@ final class StructureProject {
                                                Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed,
                                                Set<BlockPos> deferredWater, List<String> prerequisites, int index) {
         String suffix = index == 0 ? "" : index + "-";
-        for (int depth = 2; depth <= 4; depth++) {
+        // Scaffold footing must cover the same elevated reach as natural footing.
+        for (int depth = 2; depth <= 6; depth++) {
             var access = excavationScaffoldAt(client, target, target.down(depth), layout, cleared, ready, placed,
                     deferredWater, prerequisites, suffix);
             if (access != null) return access;
         }
-        for (int dy : new int[]{-2, -1, -3, 0, 1}) for (int distance : new int[]{2, 3, 1}) {
+        for (int dy : new int[]{-2, -1, -3, -4, -5, -6, 0, 1}) for (int distance : new int[]{2, 3, 1}) {
             for (var side : Direction.Type.HORIZONTAL) for (int lateral : new int[]{0, 1, -1, 2, -2}) {
                 var stand = target.offset(side, distance).offset(side.rotateYClockwise(), lateral).up(dy);
                 var access = excavationScaffoldAt(client, target, stand, layout, cleared, ready, placed,

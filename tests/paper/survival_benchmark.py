@@ -100,6 +100,55 @@ def audit_house(connection, cells, site):
     ]
 
 
+def manifest_chests(manifest):
+    primary = tuple(map(int, manifest["supplyChest"].removeprefix("block:").split(",")))
+    chests = {primary}
+    for job in manifest["jobs"]:
+        work = job["work"]
+        if work["kind"] != "TRANSFER" or not work["id"].startswith("verify-stock-"):
+            continue
+        payload = json.loads(work["payload"])
+        if payload.get("partner") is not None:
+            chests.add(tuple(int(payload["partner"][axis]) for axis in "xyz"))
+    return sorted(chests)
+
+
+def audit_chest_stock(connection, chests):
+    stock = Counter()
+    for chest in chests:
+        coords = " ".join(map(str, chest))
+        # Read individual slots to avoid truncated RCON inventory replies.
+        for slot in range(27):
+            item = connection.command(f"data get block {coords} Items[{{Slot:{slot}b}}]")
+            found = re.search(r'id: "minecraft:([a-z_]+)"[^}]*?Count: (\d+)b', item)
+            if found:
+                name, count = found.groups()
+                stock["logs" if name.endswith("_log") else name] += int(count)
+    return {key: stock[key] for key in TARGETS}
+
+
+def audit_temporary_blocks(connection, house, cells, site):
+    wanted = {(site[0] + x, site[1] + y, site[2] + z) for x, y, z, _ in cells}
+    temporary = {
+        tuple(map(int, job["work"]["cleanup"]["site"].removeprefix("block:").split(",")))
+        for job in house["jobs"] if job["work"].get("cleanup")
+    }
+    checks = []
+    for x, y, z in sorted(temporary - wanted):
+        state = "minecraft:air"
+        result = connection.command(f"execute if block {x} {y} {z} {state}")
+        checks.append([x, y, z, state, result])
+    return checks
+
+
+def completed_project(project):
+    # An earlier, failed emergency loan can be superseded by a successful handoff.
+    return bool(project["jobs"]) and all(
+        job["state"] == "DONE" or (job["state"] == "FAILED" and job["work"]["kind"] == "RESUPPLY")
+        for job in project["jobs"]
+    )
+
+
 def describe_work(project):
     jobs = project["jobs"]
     return {
@@ -123,29 +172,37 @@ def observe(connect, out, journal, house_id, manifest_id, cells, site, minutes):
         projects = json.loads(journal.read_text())["projects"]
         house = projects[house_id]
         manifest = projects[manifest_id]
-        coords = manifest["supplyChest"].removeprefix("block:").replace(",", " ")
+        chests = manifest_chests(manifest)
         connection = connect()
         try:
-            stock = Counter()
-            # Read one slot at a time, so RCON cannot truncate multi-packet inventory responses.
-            for slot in range(27):
-                item = connection.command(f"data get block {coords} Items[{{Slot:{slot}b}}]")
-                found = re.search(r'id: "minecraft:([a-z_]+)"[^}]*?Count: (\d+)b', item)
-                if found:
-                    name, count = found.groups()
-                    stock["logs" if name.endswith("_log") else name] += int(count)
-            row = {"time": time.time(), "chest": coords, "stock": {k: stock[k] for k in TARGETS},
+            stock = audit_chest_stock(connection, chests)
+            chest = manifest["supplyChest"].removeprefix("block:").replace(",", " ")
+            row = {"time": time.time(), "chest": chest,
+                   "chestParts": chests, "stock": stock,
                    "house": describe_work(house), "manifest": describe_work(manifest)}
             stock_ready = all(stock[item] >= count for item, count in TARGETS.items())
-            if time.monotonic() >= next_audit or stock_ready:
+            ready_to_verify = stock_ready and completed_project(house) and completed_project(manifest)
+            if time.monotonic() >= next_audit or ready_to_verify:
                 checks = audit_house(connection, cells, site)
+                clearance = audit_temporary_blocks(connection, house, cells, site)
                 row["houseCellsMatched"] = sum(check[-1] == "Test passed" for check in checks)
                 row["houseCellsTotal"] = len(cells)
+                row["temporaryCellsClear"] = sum(check[-1] == "Test passed" for check in clearance)
+                row["temporaryCellsTotal"] = len(clearance)
                 next_audit = time.monotonic() + 120
                 (out / "latest-house-cells.json").write_text(json.dumps(checks, indent=2) + "\n")
-                if stock_ready and row["houseCellsMatched"] == len(cells):
-                    (out / "verified.json").write_text(json.dumps(dict(row, targets=TARGETS), indent=2) + "\n")
-                    return
+                (out / "latest-temporary-cells.json").write_text(json.dumps(clearance, indent=2) + "\n")
+                if ready_to_verify and row["houseCellsMatched"] == len(cells) and row["temporaryCellsClear"] == len(clearance):
+                    final_projects = json.loads(journal.read_text())["projects"]
+                    final_stock = audit_chest_stock(connection, chests)
+                    if final_projects[house_id] == house and final_projects[manifest_id] == manifest and all(
+                        final_stock[item] >= count for item, count in TARGETS.items()
+                    ):
+                        (out / "verified-projects.json").write_text(json.dumps({
+                            house_id: house, manifest_id: manifest,
+                        }, indent=2) + "\n")
+                        (out / "verified.json").write_text(json.dumps(dict(row, stock=final_stock, targets=TARGETS), indent=2) + "\n")
+                        return
         finally:
             connection.close()
         print(json.dumps({

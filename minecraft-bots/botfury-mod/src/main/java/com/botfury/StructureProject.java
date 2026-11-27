@@ -295,6 +295,7 @@ final class StructureProject {
         int wetJobs = waterSources.size() + (waterSources.isEmpty() ? 0 : 1);
         requireJobBudget(obstructing.size() + pending.size() + verificationJobs + wetJobs);
         var cleared = new HashMap<BlockPos, BlockState>();
+        var scaffolds = new ArrayList<Scaffold>();
         List<String> excavationFrontier = List.of();
         while (!obstructing.isEmpty()) {
             var wave = new ArrayList<String>();
@@ -320,8 +321,24 @@ final class StructureProject {
             }
             if (wave.isEmpty()) {
                 var blocked = obstructing.values().iterator().next();
-                throw new IllegalArgumentException("No reachable excavation face for "
-                        + Registries.BLOCK.getId(blocked.observed.getBlock()) + " at " + blocked.pos.toShortString());
+                var access = excavationScaffold(client, blocked.pos, layout, cleared, ready, placed, deferredWater,
+                        excavationFrontier, scaffolds.size());
+                if (access == null) {
+                    throw new IllegalArgumentException("No reachable excavation face for "
+                            + Registries.BLOCK.getId(blocked.observed.getBlock()) + " at " + blocked.pos.toShortString());
+                }
+                scaffolds.add(access);
+                jobs.addAll(access.jobs);
+                layout.putAll(access.layout);
+                cleared.putAll(access.layout);
+                ready.putAll(access.layout);
+                placed.putAll(access.placed);
+                excavationFrontier = List.of(access.lastPlacement());
+                changes.add(access.lastPlacement());
+                materials.merge(Registries.ITEM.getId(Blocks.COBBLESTONE.asItem()), access.blocks.size(), Integer::sum);
+                area = includeScaffoldArea(area, access);
+                requireJobBudget(jobs.size() + obstructing.size() + pending.size() + verificationJobs + wetJobs);
+                continue;
             }
             for (var pos : clearedThisWave) cleared.put(pos, Blocks.AIR.getDefaultState());
             changes.addAll(wave);
@@ -330,7 +347,6 @@ final class StructureProject {
 
         String lastExposedPlacement = null;
         int scaffoldFrontier = 0;
-        var scaffolds = new ArrayList<Scaffold>();
         boolean allowTemporarySupport = false;
         while (!pending.isEmpty()) {
             int before = pending.size();
@@ -415,11 +431,7 @@ final class StructureProject {
                     scaffoldFrontier = changes.size();
                     changes.add(scaffold.lastPlacement());
                     materials.merge(Registries.ITEM.getId(Blocks.COBBLESTONE.asItem()), scaffold.blocks.size(), Integer::sum);
-                    for (var step : scaffold.blocks) {
-                        var stand = ProjectBlock.parse(step.placement.payload()).stand();
-                        area = StructureSupply.union(area, new ProjectBlock(step.block, stand, AIR),
-                                new ProjectBlock(step.block, step.removalStand, AIR));
-                    }
+                    area = includeScaffoldArea(area, scaffold);
                     allowTemporarySupport = false;
                     continue;
                 }
@@ -541,6 +553,42 @@ final class StructureProject {
             }
         }
         return dry;
+    }
+
+    private static ProjectGather.Area includeScaffoldArea(ProjectGather.Area area, Scaffold scaffold) {
+        for (var step : scaffold.blocks) {
+            var stand = ProjectBlock.parse(step.placement.payload()).stand();
+            area = StructureSupply.union(area, new ProjectBlock(step.block, stand, AIR),
+                    new ProjectBlock(step.block, step.removalStand, AIR));
+        }
+        return area;
+    }
+
+    private static Scaffold excavationScaffold(MinecraftClient client, BlockPos target,
+                                               Map<BlockPos, BlockState> layout, Map<BlockPos, BlockState> cleared,
+                                               Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed,
+                                               Set<BlockPos> deferredWater, List<String> prerequisites, int index) {
+        String suffix = index == 0 ? "" : index + "-";
+        for (int dy : new int[]{-2, -1, -3, 0, 1}) for (int distance : new int[]{2, 3, 1}) {
+            for (var side : Direction.Type.HORIZONTAL) for (int lateral : new int[]{0, 1, -1}) {
+                var stand = target.offset(side, distance).offset(side.rotateYClockwise(), lateral).up(dy);
+                var top = stand.down();
+                if (!ProjectBlock.validStand(target, stand) || layout.containsKey(top)
+                        || !loaded(client, stand.up()) || !airAt(client, stand, cleared)
+                        || !airAt(client, stand.up(), cleared) || !canRemoveBlock(client, stand, target, cleared)) continue;
+                for (int rise = 1; rise <= 5; rise++) {
+                    for (var ascent : Direction.Type.HORIZONTAL) {
+                        var access = planScaffold(client, top, ascent, rise, layout, cleared, cleared,
+                                ready, placed, deferredWater, prerequisites, suffix);
+                        if (access == null || access.layout.keySet().stream().anyMatch(layout::containsKey)) continue;
+                        var physical = new HashMap<>(cleared);
+                        physical.putAll(access.layout);
+                        if (safeStand(client, stand, physical) && canRemoveBlock(client, stand, target, physical)) return access;
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     private static Scaffold scaffold(MinecraftClient client, Cell first, Collection<Cell> pending,

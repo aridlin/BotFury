@@ -4,6 +4,7 @@ import net.minecraft.block.Blocks;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
 
 import java.time.Duration;
@@ -111,12 +112,35 @@ final class StallRecovery {
         if (overlapSince == 0) overlapSince = now;
         if (now - overlapSince < IDLE_OVERLAP) return false;
 
-        var step = idleStep(client, blocker);
+        var step = idleStep(client, outward(player, blocker), candidate ->
+                blocker.squaredDistanceTo(Vec3d.ofBottomCenter(candidate)) >= .81);
         if (step == null || !beginDetour(step, now)) {
             retryAt = now + COOLDOWN;
             return false;
         }
         BotEvents.add("info", "movement", "Yielding the work area to fleet bot " + blocker.getGameProfile().getName());
+        return true;
+    }
+
+    boolean readyToClearPlacement(long now) {
+        return detour == null && now >= retryAt;
+    }
+
+    boolean clearPlacement(MinecraftClient client, BlockPos target, long now) {
+        var player = client.player;
+        var blocked = new Box(target);
+        if (player == null || client.world == null || !player.isAlive() || !player.isOnGround()
+                || player.isTouchingWater() || client.currentScreen != null
+                || player.currentScreenHandler != player.playerScreenHandler
+                || !readyToClearPlacement(now) || !blocked.intersects(player.getBoundingBox())) return false;
+        var away = player.getPos().subtract(Vec3d.ofBottomCenter(target)).multiply(1, 0, 1).normalize();
+        var step = idleStep(client, away, candidate -> !blocked.intersects(player.getBoundingBox()
+                .offset(Vec3d.ofBottomCenter(candidate).subtract(player.getPos()))));
+        if (step == null || !beginDetour(step, now)) {
+            retryAt = now + COOLDOWN;
+            return false;
+        }
+        BotEvents.add("info", "movement", "Clearing active placement at " + target.toShortString());
         return true;
     }
 
@@ -143,10 +167,9 @@ final class StallRecovery {
                 .map(PlayerEntity.class::cast).min(java.util.Comparator.comparingDouble(player::squaredDistanceTo)).orElse(null);
     }
 
-    private static BlockPos idleStep(MinecraftClient client, PlayerEntity blocker) {
+    private static BlockPos idleStep(MinecraftClient client, Vec3d away, Predicate<BlockPos> allowed) {
         var player = client.player;
         var origin = player.getBlockPos();
-        var away = outward(player, blocker);
         double bestScore = -Double.MAX_VALUE;
         BlockPos best = null;
         for (var direction : net.minecraft.util.math.Direction.Type.HORIZONTAL) {
@@ -154,7 +177,7 @@ final class StallRecovery {
             for (int height = -1; height <= 1; height++) {
                 var candidate = adjacent.up(height);
                 var point = Vec3d.ofBottomCenter(candidate);
-                if (!walkable(client, candidate, true) || blocker.squaredDistanceTo(point) < .81) continue;
+                if (!allowed.test(candidate) || !walkable(client, candidate, true)) continue;
                 var travel = point.subtract(player.getPos()).multiply(1, 0, 1);
                 if (!ThreatEvasion.walkableStep(client, player.getBoundingBox(), travel, candidate, height)) continue;
                 double score = travel.normalize().dotProduct(away) - Math.abs(height) * .2;

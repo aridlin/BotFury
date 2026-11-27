@@ -1951,6 +1951,14 @@ final class ProjectWorker {
             if (enrollment.project() != null) args.put("project", enrollment.project());
             args.put("kinds", KINDS);
             args.put("claimItems", ProjectInventory.transferableItems(client));
+            if (client.player.isOnGround() && idleRecovery.readyToClearPlacement(now)) {
+                var box = client.player.getBoundingBox();
+                var min = BlockPos.ofFloored(box.minX, box.minY, box.minZ);
+                var max = BlockPos.ofFloored(Math.nextDown(box.maxX), Math.nextDown(box.maxY), Math.nextDown(box.maxZ));
+                var occupied = new ArrayList<ProjectQueue.ResourceSite>();
+                for (var cell : BlockPos.iterate(min, max)) occupied.add(routePoint(cell));
+                args.put("occupiedCells", occupied);
+            }
             args.put("returnRouteRevision", SubsurfaceAccess.RETURN_ROUTE_REVISION);
             args.put("supportsStickResupply", true);
             if (ProjectProduction.canCraft(client, ROUTE_STICKS)) {
@@ -2046,7 +2054,14 @@ final class ProjectWorker {
                 if (action.equals("claim") || continuation) {
                     if (continuation) reset(client);
                     assignment = JSON.fromJson(reply.body(), ProjectQueue.Assignment.class);
-                    if (assignment == null) return;
+                    if (assignment == null) {
+                        var clearance = reply.headers().firstValue(ProjectBroker.CLEAR_PLACEMENT_HEADER).orElse(null);
+                        if (action.equals("claim") && clearance != null && idleRecovery.clearPlacement(
+                                client, BlockPos.fromLong(Long.parseLong(clearance)), System.nanoTime())) {
+                            status = "Clearing a teammate’s placement";
+                        }
+                        return;
+                    }
                     if (enrollment.project() != null && !enrollment.project().equals(assignment.project())) {
                         assignment = null;
                         status = "Coordinator did not honor the selected project";

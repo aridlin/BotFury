@@ -296,6 +296,7 @@ final class StructureProject {
         requireJobBudget(obstructing.size() + pending.size() + verificationJobs + wetJobs);
         var cleared = new HashMap<BlockPos, BlockState>();
         var scaffolds = new ArrayList<Scaffold>();
+        var excavationScaffolds = new ArrayList<Scaffold>();
         List<String> excavationFrontier = List.of();
         while (!obstructing.isEmpty()) {
             var wave = new ArrayList<String>();
@@ -307,8 +308,7 @@ final class StructureProject {
                     var entry = iterator.next();
                     var cell = entry.getValue();
                     var stand = findExcavationStand(client, cell.pos, pos ->
-                            !pos.down().equals(cell.pos)
-                                    && (allowTemporaryFooting || !removed.contains(pos.down()) || cleared.get(pos.down()) == SCAFFOLD)
+                            (allowTemporaryFooting || !removed.contains(pos.down()) || cleared.get(pos.down()) == SCAFFOLD)
                                     && safeExcavationStand(client, pos, cleared)
                                     && canRemoveBlock(client, pos, cell.pos, cleared));
                     if (stand == null) continue;
@@ -328,17 +328,16 @@ final class StructureProject {
                         cell.observed.getCollisionShape(client.world, cell.pos).isEmpty())).toList();
                 Scaffold access = null;
                 for (var candidate : candidates) {
-                    access = excavationScaffold(client, candidate.pos, layout, cleared, ready, placed, deferredWater,
-                            excavationFrontier, scaffolds.size());
+                    access = excavationScaffold(client, candidate.pos, cleared, ready, placed, deferredWater,
+                            excavationFrontier, excavationScaffolds.size());
                     if (access != null) break;
                 }
                 if (access == null) {
                     throw new IllegalArgumentException("No reachable excavation face for "
                             + Registries.BLOCK.getId(blocked.observed.getBlock()) + " at " + blocked.pos.toShortString());
                 }
-                scaffolds.add(access);
+                excavationScaffolds.add(access);
                 jobs.addAll(access.jobs);
-                layout.putAll(access.layout);
                 cleared.putAll(access.layout);
                 ready.putAll(access.layout);
                 placed.putAll(access.placed);
@@ -352,6 +351,37 @@ final class StructureProject {
             for (var pos : clearedThisWave) cleared.put(pos, Blocks.AIR.getDefaultState());
             changes.addAll(wave);
             excavationFrontier = List.copyOf(wave);
+        }
+
+        if (!excavationScaffolds.isEmpty()) {
+            String gate = "before-excavation-access-cleanup";
+            jobs.add(new ProjectQueue.Work(gate, ProjectQueue.Kind.SETTLEMENT_BARRIER, "",
+                    List.copyOf(changes), Set.of()));
+            String previous = gate;
+            for (int i = excavationScaffolds.size() - 1; i >= 0; i--) {
+                var access = excavationScaffolds.get(i);
+                var steps = new ArrayList<>(access.blocks);
+                for (int j = steps.size() - 1; j >= 0; j--) {
+                    var step = steps.get(j);
+                    var stand = findExcavationStand(client, step.block,
+                            feet -> safeExcavationStand(client, feet, cleared)
+                                    && canRemoveBlock(client, feet, step.block, cleared));
+                    if (stand == null) throw new IllegalArgumentException("No reachable excavation scaffold cleanup face at "
+                            + step.block.toShortString());
+                    steps.set(j, new ScaffoldStep(step.block, step.placement, stand));
+                    area = StructureSupply.union(area, new ProjectBlock(step.block, stand, AIR));
+                    cleared.put(step.block, Blocks.AIR.getDefaultState());
+                    ready.remove(step.block);
+                    placed.remove(step.block);
+                }
+                previous = appendScaffoldCleanup(jobs, new Scaffold(access.jobs, steps, access.layout, access.placed),
+                        gate, previous);
+            }
+            changes.add(previous);
+            // Cleanup may proceed after a failed cut; permanent placement requires every cut to succeed.
+            String complete = "after-excavation";
+            jobs.add(new ProjectQueue.Work(complete, ProjectQueue.Kind.BARRIER, "", List.copyOf(changes), Set.of()));
+            excavationFrontier = List.of(complete);
         }
 
         String lastExposedPlacement = null;
@@ -429,7 +459,8 @@ final class StructureProject {
                 int room = ProjectQueue.MAX_JOBS - jobs.size() - cleanupJobs - pending.size()
                         - verificationJobs - wetJobs - cleanupGates;
                 var scaffold = scaffold(client, cell, pending.values(), layout, cleared, ready, placed, deferredWater,
-                        List.copyOf(changes.subList(scaffoldFrontier, changes.size())), scaffolds.size(), room);
+                        List.copyOf(changes.subList(scaffoldFrontier, changes.size())),
+                        excavationScaffolds.size() + scaffolds.size(), room);
                 if (scaffold != null) {
                     scaffolds.add(scaffold);
                     jobs.addAll(scaffold.jobs);
@@ -574,20 +605,20 @@ final class StructureProject {
     }
 
     private static Scaffold excavationScaffold(MinecraftClient client, BlockPos target,
-                                               Map<BlockPos, BlockState> layout, Map<BlockPos, BlockState> cleared,
+                                               Map<BlockPos, BlockState> cleared,
                                                Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed,
                                                Set<BlockPos> deferredWater, List<String> prerequisites, int index) {
         String suffix = index == 0 ? "" : index + "-";
         // Scaffold footing must cover the same elevated reach as natural footing.
         for (int depth = 2; depth <= 6; depth++) {
-            var access = excavationScaffoldAt(client, target, target.down(depth), layout, cleared, ready, placed,
+            var access = excavationScaffoldAt(client, target, target.down(depth), cleared, ready, placed,
                     deferredWater, prerequisites, suffix);
             if (access != null) return access;
         }
         for (int dy : new int[]{-2, -1, -3, -4, -5, -6, 0, 1}) for (int distance : new int[]{2, 3, 1}) {
             for (var side : Direction.Type.HORIZONTAL) for (int lateral : new int[]{0, 1, -1, 2, -2}) {
                 var stand = target.offset(side, distance).offset(side.rotateYClockwise(), lateral).up(dy);
-                var access = excavationScaffoldAt(client, target, stand, layout, cleared, ready, placed,
+                var access = excavationScaffoldAt(client, target, stand, cleared, ready, placed,
                         deferredWater, prerequisites, suffix);
                 if (access != null) return access;
             }
@@ -596,7 +627,7 @@ final class StructureProject {
     }
 
     private static Scaffold excavationScaffoldAt(MinecraftClient client, BlockPos target, BlockPos stand,
-                                                 Map<BlockPos, BlockState> layout, Map<BlockPos, BlockState> cleared,
+                                                 Map<BlockPos, BlockState> cleared,
                                                  Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed,
                                                  Set<BlockPos> deferredWater, List<String> prerequisites, String suffix) {
         if (!ProjectBlock.validExcavationStand(target, stand) || !loaded(client, stand.up())
@@ -605,7 +636,7 @@ final class StructureProject {
                 || !canRemoveBlock(client, stand, target, cleared)) return null;
         for (int rise = 1; rise <= 5; rise++) {
             for (var ascent : Direction.Type.HORIZONTAL) {
-                var access = planScaffold(client, stand.down(), ascent, rise, layout, cleared, cleared,
+                var access = planScaffold(client, stand.down(), ascent, rise, cleared, cleared, cleared,
                         ready, placed, deferredWater, prerequisites, suffix);
                 if (access == null) continue;
                 var physical = new HashMap<>(cleared);
@@ -1369,7 +1400,8 @@ final class StructureProject {
     }
 
     private static BlockPos findExcavationStand(MinecraftClient client, BlockPos target, Predicate<BlockPos> suitable) {
-        var side = findStand(client, target, null, true, new int[]{0, 1, -1, 2, -2, 3, -3}, suitable);
+        var side = findStand(client, target, null, true, new int[]{0, 1, -1, 2, -2, 3, -3},
+                stand -> ProjectBlock.validExcavationStand(target, stand) && suitable.test(stand));
         if (side != null) return side;
         // A standing worker can reach higher from eye level than from feet level.
         for (var candidate : BlockPos.iterateOutwards(target, 4, 6, 4)) {

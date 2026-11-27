@@ -9,7 +9,7 @@ HERE = Path(__file__).resolve().parent
 PALETTE = ((25, 24, 21), (148, 56, 35), (238, 101, 60), (244, 237, 218))
 MOD_ICON = HERE.parents[1] / "minecraft-bots/botfury-mod/src/main/resources/assets/botfury/icon.png"
 SIZES = (16, 20, 24, 32, 40, 48, 64, 96, 128, 256)
-HORIZONTAL, VERTICAL, RISING, FALLING = 1, 2, 3, 4
+HORIZONTAL, RISING, FALLING = 1, 3, 4
 ATLAS = Image.open(HERE / "dumbass-dither-broken-stripes.png").convert("1")
 MARK = ATLAS.getpixel((64, 0))
 
@@ -33,24 +33,19 @@ def render(size, plate, strength):
         pen.polygon([(round(x * source_size / 96), round(y * source_size / 96))
                      for x, y in points], fill=region)
 
-    draw(1, [(6, 28), (40, 8), (90, 24), (90, 68), (56, 88), (6, 72)])
-    draw(2, [(10, 28), (40, 11), (85, 25), (56, 42)])
-    draw(3, [(9, 32), (54, 46), (54, 84), (9, 70)])
-    draw(4, [(58, 45), (87, 28), (87, 66), (58, 83)])
-
-    def face(region, points):
-        draw(region, [(9 + 45 * u, 32 + 14 * u + 38 * v) for u, v in points])
-
-    face(1, [(0.10, 0.17), (0.89, 0.17), (0.89, 0.62), (0.79, 0.72),
-             (0.10, 0.72)])
-    face(5, [(0.19, 0.28), (0.42, 0.37), (0.42, 0.57), (0.19, 0.57)])
-    face(5, [(0.56, 0.37), (0.80, 0.28), (0.80, 0.57), (0.56, 0.57)])
-
-    if size >= 40:
-        draw(6, [(64, 58), (81, 48), (81, 52), (64, 62)])
-        draw(6, [(64, 66), (81, 56), (81, 60), (64, 70)])
-    if size >= 64:
-        draw(5, [(16, 28), (40, 14), (49, 17), (24, 31)])
+    flame = [(48, 5), (72, 25), (69, 41), (79, 33), (90, 49), (92, 65),
+             (84, 80), (71, 89), (52, 93), (32, 90), (16, 81), (7, 67),
+             (7, 55), (22, 35), (25, 47), (39, 28)]
+    draw(1, flame)
+    draw(2, [(48 + (x - 48) * 0.89, 53 + (y - 53) * 0.89) for x, y in flame])
+    if size >= 32:
+        draw(3, [(48, 11), (68, 27), (64, 44), (55, 35), (38, 39), (45, 27)])
+        draw(4, [(11, 57), (25, 46), (31, 55), (35, 69), (57, 82), (75, 81),
+                 (69, 86), (51, 89), (33, 86), (18, 77), (11, 66)])
+    draw(1, [(50, 28), (68, 28), (57, 46), (72, 46), (39, 83), (45, 60),
+             (32, 60)])
+    draw(5, [(52, 32), (61, 32), (50, 50), (63, 50), (47, 69), (51, 56),
+             (39, 56)])
 
     regions = regions.resize((size, size), Image.Resampling.NEAREST)
     result = Image.new("RGBA", (size, size))
@@ -62,36 +57,35 @@ def render(size, plate, strength):
             if region == 0:
                 continue
             if region == 2:
-                tone, row = 3 - strength * (0.25 + 0.68 * u + 0.2 * v), RISING
+                tone, row = 2 - strength * max(0, (v + 0.22 * u - 0.46) * 1.6), RISING
             elif region == 3:
-                depth = v - (32 + 14 * ((96 * u - 9) / 45)) / 96
-                tone, row = 2 - strength * max(0, (depth - 0.22) * 4.5), FALLING
+                tone, row = 2 + strength * (0.84 - 0.85 * v), FALLING
             elif region == 4:
-                tone, row = 1 + strength * (0.68 - 0.65 * v), HORIZONTAL
+                tone, row = 1 - strength * max(0, (v - 0.56) * 1.3), HORIZONTAL
             else:
-                tone, row = {1: (0, VERTICAL), 5: (3, VERTICAL), 6: (0, VERTICAL)}[region]
+                tone, row = (0 if region == 1 else 3), RISING
             colors[x, y] = (*screen(tone, row, x * plate // size, y * plate // size), 255)
     return result
 
 
 def small_icon():
-    # At 16 px the two eye marks need a dedicated one-pixel gap.
+    # Keep a clear, uninterrupted lightning stroke at 16 px.
     pixels = (
         "................",
-        "......##........",
-        "....##oo###.....",
-        "...#ooooooo###..",
-        ".##oooooooooo##.",
-        ".#+###ooooo##r#.",
-        ".#+####o###rrr#.",
-        ".#+#o#####rrrr#.",
-        ".#+#o#oo#+rrrr#.",
-        ".#+###oo#+rrr#..",
-        ".#+++####+rrr#..",
-        ".###+++++#rr#...",
-        "....###++#r#....",
-        ".......###r#....",
-        ".........##.....",
+        "........#.......",
+        ".......#+#......",
+        ".......#++#.....",
+        "......#+++#.....",
+        "...#..#+o+#..#..",
+        "...#.#+o+#..#+#.",
+        "..#+##+o+###++#.",
+        ".#++++ooo++++++#",
+        ".#+++++o+++++++#",
+        ".#+++++o++++++r#",
+        ".#++++o++++++r#.",
+        "..#++r++++rrr#..",
+        "...#rrrrrrrr#...",
+        "....########....",
         "................",
     )
     colors = {".": (0, 0, 0, 0)}

@@ -8,4 +8,4 @@ Run `python artwork/botfury/render.py` from the repository root with Pillow
 installed to regenerate both. The script draws the tonal source and screens it
 with the four Dither Press inks and the original Dumb-ass Dither broken-stripes
 atlas from [Signal Geometry](https://github.com/aridlin/signal-geometry).
-The small frames use simplified shading to keep the visor readable.
+The small frames use simplified shading to keep the lightning cutout readable.

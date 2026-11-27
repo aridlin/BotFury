@@ -11,6 +11,7 @@ pub struct Game {
     input: ChildStdin,
     output: BufReader<ChildStdout>,
     sequence: u64,
+    pub(crate) baritone: bool,
 }
 
 #[derive(Deserialize)]
@@ -66,6 +67,7 @@ impl Game {
             input,
             output,
             sequence: 0,
+            baritone: false,
         };
         game.request("initialize", json!({"protocolVersion":"2024-11-05"}))?;
         game.call("connect", json!({}))?;
@@ -73,6 +75,9 @@ impl Game {
         if status["version"] != "26.3 (protocol 777)" || status["gamemode"] != "survival" {
             return Err("Expected a Minecraft 26.3 survival connection".into());
         }
+        game.baritone = game.request("tools/list", json!({}))?["tools"]
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == "baritone_approach"));
         Ok(game)
     }
 

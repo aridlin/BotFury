@@ -220,11 +220,7 @@ impl Job<'_> {
 
     fn approach_pickup(&mut self, target: Pos, exclude: Option<&Bounds>) -> Result<(), String> {
         let others = self.nearby_players()?;
-        let mut stands = [(1, 0), (-1, 0), (0, 1), (0, -1)].map(|(x, z)| Pos {
-            x: target.x + x,
-            z: target.z + z,
-            ..target
-        });
+        let mut stands = Self::pickup_stands(target);
         let clearance = |stand: &Pos| {
             others
                 .iter()
@@ -253,19 +249,92 @@ impl Job<'_> {
                 continue;
             }
             self.move_to(stand)?;
-            for _ in 0..12 {
-                let crowded = self
-                    .nearby_players()?
-                    .into_iter()
-                    .any(|other| target.distance_squared(other) < 1.4_f64.powi(2));
-                if !crowded {
-                    return Ok(());
-                }
-                thread::sleep(Duration::from_millis(125));
-            }
-            return Err("Another player is within pickup range of the block".into());
+            return self.wait_for_pickup_clearance(target);
         }
         Err("No clear pickup approach beside the block".into())
+    }
+
+    fn pickup_stands(target: Pos) -> [Pos; 4] {
+        [(1, 0), (-1, 0), (0, 1), (0, -1)].map(|(x, z)| Pos {
+            x: target.x + x,
+            z: target.z + z,
+            ..target
+        })
+    }
+
+    fn wait_for_pickup_clearance(&mut self, target: Pos) -> Result<(), String> {
+        for _ in 0..12 {
+            let crowded = self
+                .nearby_players()?
+                .into_iter()
+                .any(|other| target.distance_squared(other) < 1.4_f64.powi(2));
+            if !crowded {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(125));
+        }
+        Err("Another player is within pickup range of the block".into())
+    }
+
+    fn gather_approach(&mut self, block: &str, exclude: Option<&Bounds>) -> Result<Pos, String> {
+        let radius = if self.game.baritone { 12 } else { 4 };
+        let search = self.game.call(
+            "find_blocks",
+            json!({"name": block, "radius":radius, "limit":64}),
+        )?;
+        let found = search["found"]
+            .as_array()
+            .ok_or("Missing block search results")?;
+        let usable = |pos: Pos| !exclude.is_some_and(|area| pos.contains(area.min, area.max));
+        let mut targets = found
+            .iter()
+            .filter(|candidate| candidate["block"] == block)
+            .filter_map(|candidate| {
+                serde_json::from_value::<[i32; 3]>(candidate["pos"].clone()).ok()
+            })
+            .map(Pos::from)
+            .filter(|&pos| usable(pos));
+        if !self.game.baritone {
+            let target = targets
+                .next()
+                .ok_or("No matching block within local reach")?;
+            self.approach_pickup(target, exclude)?;
+            return Ok(target);
+        }
+
+        let others = self.nearby_players()?;
+        let mut stands = BTreeMap::new();
+        for target in targets
+            .filter(|target| {
+                !others
+                    .iter()
+                    .any(|other| target.distance_squared(*other) < 1.4_f64.powi(2))
+            })
+            .take(24)
+        {
+            for stand in Self::pickup_stands(target)
+                .into_iter()
+                .filter(|&pos| usable(pos))
+            {
+                stands.entry([stand.x, stand.y, stand.z]).or_insert(target);
+            }
+        }
+        if stands.is_empty() {
+            return Err("No matching block with an available approach in loaded terrain".into());
+        }
+        let choices: Vec<_> = stands.keys().collect();
+        let response = self
+            .game
+            .call("baritone_approach", json!({"stands":choices}))?;
+        let stand = serde_json::from_value::<Option<[i32; 3]>>(response["stand"].clone())
+            .map_err(|error| error.to_string())?
+            .ok_or("Baritone found no safe route to a matching block")?;
+        let target = *stands
+            .get(&stand)
+            .ok_or("Baritone returned an unknown stand")?;
+        self.move_to(stand.into())?;
+        self.wait_for_pickup_clearance(target)?;
+        Ok(target)
     }
 
     fn gather(&mut self, work: Gather) -> Result<Outcome, String> {
@@ -290,28 +359,10 @@ impl Job<'_> {
             .unwrap_or(0)
             < work.count
         {
-            let search = self.game.call(
-                "find_blocks",
-                json!({"name": block, "radius":4, "limit":64}),
-            )?;
-            let found = search["found"]
-                .as_array()
-                .ok_or("Missing block search results")?;
-            let pos = found
-                .iter()
-                .filter(|candidate| candidate["block"] == block)
-                .filter_map(|candidate| {
-                    serde_json::from_value::<[i32; 3]>(candidate["pos"].clone()).ok()
-                })
-                .map(Pos::from)
-                .find(|pos| {
-                    !work
-                        .exclude
-                        .as_ref()
-                        .is_some_and(|area| pos.contains(area.min, area.max))
-                })
-                .ok_or("No matching block within local reach")?;
-            self.approach_pickup(pos, work.exclude.as_ref())?;
+            let pos = self.gather_approach(block, work.exclude.as_ref())?;
+            if self.block_at(pos)?["block"] != block {
+                return Err("The target block changed while approaching it".into());
+            }
             let old_count = self
                 .game
                 .inventory()?

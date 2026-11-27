@@ -309,7 +309,8 @@ final class StructureProject {
                     var stand = findStand(client, cell.pos, null, true, new int[]{0, 1, -1, 2, -2, 3, -3}, pos ->
                             !pos.down().equals(cell.pos)
                                     && (allowTemporaryFooting || !removed.contains(pos.down()) || cleared.get(pos.down()) == SCAFFOLD)
-                                    && safeStand(client, pos, cleared) && canRemoveBlock(client, pos, cell.pos, cleared));
+                                    && safeExcavationStand(client, pos, cleared)
+                                    && canRemoveBlock(client, pos, cell.pos, cleared));
                     if (stand == null) continue;
                     String id = "clear-" + entry.getKey();
                     jobs.add(work(id, ProjectQueue.Kind.EXCAVATE, cell.pos, cell.observed, stand, Direction.UP, excavationFrontier));
@@ -574,8 +575,10 @@ final class StructureProject {
             for (var side : Direction.Type.HORIZONTAL) for (int lateral : new int[]{0, 1, -1, 2, -2}) {
                 var stand = target.offset(side, distance).offset(side.rotateYClockwise(), lateral).up(dy);
                 var top = stand.down();
-                if (!ProjectBlock.validStand(target, stand) || !loaded(client, stand.up()) || !airAt(client, stand, cleared)
-                        || !airAt(client, stand.up(), cleared) || !canRemoveBlock(client, stand, target, cleared)) continue;
+                if (!ProjectBlock.validStand(target, stand) || !loaded(client, stand.up())
+                        || !openExcavationSpace(client, stand, cleared)
+                        || !openExcavationSpace(client, stand.up(), cleared)
+                        || !canRemoveBlock(client, stand, target, cleared)) continue;
                 for (int rise = 1; rise <= 5; rise++) {
                     for (var ascent : Direction.Type.HORIZONTAL) {
                         var access = planScaffold(client, top, ascent, rise, layout, cleared, cleared,
@@ -583,7 +586,8 @@ final class StructureProject {
                         if (access == null) continue;
                         var physical = new HashMap<>(cleared);
                         physical.putAll(access.layout);
-                        if (safeStand(client, stand, physical) && canRemoveBlock(client, stand, target, physical)) return access;
+                        if (safeExcavationStand(client, stand, physical)
+                                && canRemoveBlock(client, stand, target, physical)) return access;
                     }
                 }
             }
@@ -1333,6 +1337,18 @@ final class StructureProject {
             }
         }
         return null;
+    }
+
+    private static boolean safeExcavationStand(MinecraftClient client, BlockPos stand, Map<BlockPos, BlockState> layout) {
+        var below = stand.down();
+        var floor = layout.getOrDefault(below, client.world.getBlockState(below));
+        return ProjectPlacement.flushFloor(floor, client.world, below)
+                && openExcavationSpace(client, stand, layout) && openExcavationSpace(client, stand.up(), layout);
+    }
+
+    private static boolean openExcavationSpace(MinecraftClient client, BlockPos pos, Map<BlockPos, BlockState> layout) {
+        var state = layout.getOrDefault(pos, client.world.getBlockState(pos));
+        return state.getFluidState().isEmpty() && state.getCollisionShape(client.world, pos).isEmpty();
     }
 
     private static boolean safeStand(MinecraftClient client, BlockPos stand, Map<BlockPos, BlockState> layout) {

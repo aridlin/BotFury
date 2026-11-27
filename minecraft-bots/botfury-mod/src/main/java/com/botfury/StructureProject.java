@@ -306,7 +306,7 @@ final class StructureProject {
                 for (var iterator = obstructing.entrySet().iterator(); iterator.hasNext(); ) {
                     var entry = iterator.next();
                     var cell = entry.getValue();
-                    var stand = findStand(client, cell.pos, null, true, new int[]{0, 1, -1, 2, -2, 3, -3}, pos ->
+                    var stand = findExcavationStand(client, cell.pos, pos ->
                             !pos.down().equals(cell.pos)
                                     && (allowTemporaryFooting || !removed.contains(pos.down()) || cleared.get(pos.down()) == SCAFFOLD)
                                     && safeExcavationStand(client, pos, cleared)
@@ -578,25 +578,39 @@ final class StructureProject {
                                                Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed,
                                                Set<BlockPos> deferredWater, List<String> prerequisites, int index) {
         String suffix = index == 0 ? "" : index + "-";
+        for (int depth = 2; depth <= 4; depth++) {
+            var access = excavationScaffoldAt(client, target, target.down(depth), layout, cleared, ready, placed,
+                    deferredWater, prerequisites, suffix);
+            if (access != null) return access;
+        }
         for (int dy : new int[]{-2, -1, -3, 0, 1}) for (int distance : new int[]{2, 3, 1}) {
             for (var side : Direction.Type.HORIZONTAL) for (int lateral : new int[]{0, 1, -1, 2, -2}) {
                 var stand = target.offset(side, distance).offset(side.rotateYClockwise(), lateral).up(dy);
-                var top = stand.down();
-                if (!ProjectBlock.validStand(target, stand) || !loaded(client, stand.up())
-                        || !openExcavationSpace(client, stand, cleared)
-                        || !openExcavationSpace(client, stand.up(), cleared)
-                        || !canRemoveBlock(client, stand, target, cleared)) continue;
-                for (int rise = 1; rise <= 5; rise++) {
-                    for (var ascent : Direction.Type.HORIZONTAL) {
-                        var access = planScaffold(client, top, ascent, rise, layout, cleared, cleared,
-                                ready, placed, deferredWater, prerequisites, suffix);
-                        if (access == null) continue;
-                        var physical = new HashMap<>(cleared);
-                        physical.putAll(access.layout);
-                        if (safeExcavationStand(client, stand, physical)
-                                && canRemoveBlock(client, stand, target, physical)) return access;
-                    }
-                }
+                var access = excavationScaffoldAt(client, target, stand, layout, cleared, ready, placed,
+                        deferredWater, prerequisites, suffix);
+                if (access != null) return access;
+            }
+        }
+        return null;
+    }
+
+    private static Scaffold excavationScaffoldAt(MinecraftClient client, BlockPos target, BlockPos stand,
+                                                 Map<BlockPos, BlockState> layout, Map<BlockPos, BlockState> cleared,
+                                                 Map<BlockPos, BlockState> ready, Map<BlockPos, String> placed,
+                                                 Set<BlockPos> deferredWater, List<String> prerequisites, String suffix) {
+        if (!ProjectBlock.validStand(target, stand) || !loaded(client, stand.up())
+                || !openExcavationSpace(client, stand, cleared)
+                || !openExcavationSpace(client, stand.up(), cleared)
+                || !canRemoveBlock(client, stand, target, cleared)) return null;
+        for (int rise = 1; rise <= 5; rise++) {
+            for (var ascent : Direction.Type.HORIZONTAL) {
+                var access = planScaffold(client, stand.down(), ascent, rise, layout, cleared, cleared,
+                        ready, placed, deferredWater, prerequisites, suffix);
+                if (access == null) continue;
+                var physical = new HashMap<>(cleared);
+                physical.putAll(access.layout);
+                if (safeExcavationStand(client, stand, physical)
+                        && canRemoveBlock(client, stand, target, physical)) return access;
             }
         }
         return null;
@@ -1351,6 +1365,17 @@ final class StructureProject {
         var floor = layout.getOrDefault(below, client.world.getBlockState(below));
         return ProjectPlacement.flushFloor(floor, client.world, below)
                 && openExcavationSpace(client, stand, layout) && openExcavationSpace(client, stand.up(), layout);
+    }
+
+    private static BlockPos findExcavationStand(MinecraftClient client, BlockPos target, Predicate<BlockPos> suitable) {
+        var side = findStand(client, target, null, true, new int[]{0, 1, -1, 2, -2, 3, -3}, suitable);
+        if (side != null) return side;
+        // The block above the worker's headroom can be excavated from directly underneath.
+        for (int depth = 2; depth <= 4; depth++) {
+            var stand = target.down(depth);
+            if (loaded(client, stand.down()) && suitable.test(stand)) return stand;
+        }
+        return null;
     }
 
     private static boolean openExcavationSpace(MinecraftClient client, BlockPos pos, Map<BlockPos, BlockState> layout) {

@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::{thread, time::Duration};
 use ureq::{Agent, http::Response};
 
 #[derive(Debug)]
@@ -16,6 +16,17 @@ pub enum BrokerError {
 impl From<ureq::Error> for BrokerError {
     fn from(error: ureq::Error) -> Self {
         Self::Request(error)
+    }
+}
+
+impl BrokerError {
+    fn transient(&self) -> bool {
+        matches!(
+            self,
+            Self::Request(
+                ureq::Error::Timeout(_) | ureq::Error::Io(_) | ureq::Error::ConnectionFailed
+            ) | Self::Rejected(502..=504)
+        )
     }
 }
 
@@ -100,13 +111,23 @@ impl Coordinator {
         kinds: &[Kind],
         items: &ItemCounts,
     ) -> Result<Option<Assignment>, BrokerError> {
-        let response = self.send(&serde_json::json!({
+        let request = serde_json::json!({
             "action": "claim",
             "project": project,
             "worker": self.worker,
             "kinds": kinds,
             "claimItems": items
-        }))?;
+        });
+        retry_transient(|| self.read_claim(project, kinds, &request))
+    }
+
+    fn read_claim(
+        &self,
+        project: Option<&str>,
+        kinds: &[Kind],
+        request: &Value,
+    ) -> Result<Option<Assignment>, BrokerError> {
+        let response = self.send(request)?;
         match response.status().as_u16() {
             200 => {
                 let claimed: Option<Assignment> = decode(response)?;
@@ -124,13 +145,22 @@ impl Coordinator {
     }
 
     pub fn renew(&self, assignment: &Assignment) -> Result<Renewed, BrokerError> {
-        let response = self.send(&serde_json::json!({
+        let request = serde_json::json!({
             "action": "renew",
             "project": assignment.project,
             "worker": self.worker,
             "job": assignment.job.work.id,
             "token": assignment.job.lease
-        }))?;
+        });
+        retry_transient(|| self.read_renewal(assignment, &request))
+    }
+
+    fn read_renewal(
+        &self,
+        assignment: &Assignment,
+        request: &Value,
+    ) -> Result<Renewed, BrokerError> {
+        let response = self.send(request)?;
         match response.status().as_u16() {
             200 => self
                 .check_lease(assignment, decode(response)?)
@@ -200,6 +230,17 @@ impl Coordinator {
     }
 }
 
+fn retry_transient<T>(mut send: impl FnMut() -> Result<T, BrokerError>) -> Result<T, BrokerError> {
+    // The broker returns the live lease for the same worker and renews only a matching token.
+    for delay in [150, 350] {
+        match send() {
+            Err(error) if error.transient() => thread::sleep(Duration::from_millis(delay)),
+            result => return result,
+        }
+    }
+    send()
+}
+
 fn decode<T: serde::de::DeserializeOwned>(
     response: Response<ureq::Body>,
 ) -> Result<T, BrokerError> {
@@ -208,4 +249,20 @@ fn decode<T: serde::de::DeserializeOwned>(
         .with_config()
         .limit(1024 * 1024)
         .read_json()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_stops_on_a_definitive_rejection() {
+        let mut attempts = 0;
+        let result = retry_transient(|| {
+            attempts += 1;
+            Err::<(), _>(BrokerError::Rejected(if attempts == 1 { 503 } else { 409 }))
+        });
+        assert!(matches!(result, Err(BrokerError::Rejected(409))));
+        assert_eq!(attempts, 2);
+    }
 }

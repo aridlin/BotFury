@@ -18,6 +18,32 @@ class ProjectQueueTest {
     @TempDir Path directory;
     private static final String WORLD = "test|overworld";
 
+    @Test void anotherWorkerCanResumeCraftingWithTheMissedDrop() throws Exception {
+        var file = directory.resolve("missed-drop.json");
+        var queue = new ProjectQueue(file);
+        var gather = job("oak", GATHER, List.of()).withPayload("""
+                {"resource":"block:minecraft:oak_log","variant":"both","item":"minecraft:oak_log","count":1}
+                """);
+        var craft = new ProjectQueue.Work("planks", CRAFT,
+                "{\"recipe\":\"minecraft:oak_planks\",\"count\":4,\"inventory\":true}",
+                List.of("oak"), Set.of(), "oak");
+        queue.submit("project", WORLD, List.of(gather, craft));
+        var initial = queue.claim(WORLD, "original", Set.of(GATHER), "project", 1).job();
+        assertNull(queue.claim(WORLD, "carrier", Set.of(GATHER), "project", 2,
+                null, block -> false, (worker, item) -> 1, null));
+        assertTrue(queue.finish("project", "oak", initial.lease(), false, ProjectQueue.GATHER_PICKUP_MISSED, 3));
+        queue = new ProjectQueue(file);
+        assertNull(queue.claim(WORLD, "empty", Set.of(GATHER), "project", 4,
+                null, block -> false, (worker, item) -> 0, null));
+        var resumed = queue.claim(WORLD, "carrier", Set.of(GATHER), "project", 5,
+                null, block -> false, (worker, item) -> 1, null).job();
+        assertNotEquals(initial.lease(), resumed.lease());
+        assertFalse(queue.finish("project", "oak", initial.lease(), true, "Stale original", 6));
+        assertTrue(queue.finish("project", "oak", resumed.lease(), true, "Carried the log", 7));
+        assertNull(queue.claim(WORLD, "original", Set.of(CRAFT), "project", 8));
+        assertEquals("planks", queue.claim(WORLD, "carrier", Set.of(CRAFT), "project", 9).job().work().id());
+    }
+
     @Test void expiredPrivateGatherResumesFromIncreasingRecoveredInputs() throws Exception {
         var path = directory.resolve("recovered-inventory-gather.json");
         var queue = new ProjectQueue(path);

@@ -21,8 +21,8 @@ fn run() -> Result<(), String> {
         .map_err(|_| "Usage: botfury-headless-worker ENGINE SERVER:PORT NAME COORDINATOR_PORT PROJECT JOB_COUNT")?;
     let port = port.parse().map_err(|_| "Invalid coordinator port")?;
     let count = count.parse::<usize>().map_err(|_| "Invalid job count")?;
-    if count == 0 || project.is_empty() {
-        return Err("Specify a project and a positive job count".into());
+    if project.is_empty() {
+        return Err("Specify a project".into());
     }
     let (host, server_port) = server.rsplit_once(':').ok_or("Specify SERVER:PORT")?;
     let server_port = server_port
@@ -35,9 +35,10 @@ fn run() -> Result<(), String> {
     let coordinator = Coordinator::new(port, name.clone());
     let mut game = Game::connect(&engine, &server, &name)?;
     let kinds = [Kind::Gather, Kind::Craft, Kind::Transfer];
-    for _ in 0..count {
+    let mut completed = 0;
+    while count == 0 || completed < count {
         let items = game.inventory()?.counts();
-        let assignment = (0..20)
+        let assignment = (0..24)
             .find_map(
                 |_| match coordinator.claim(Some(&project), &kinds, &items) {
                     Ok(None) => {
@@ -49,8 +50,14 @@ fn run() -> Result<(), String> {
             )
             .transpose()
             .map_err(|error| format!("Claim failed: {error:?}"))?
-            .flatten()
-            .ok_or("No job available")?;
+            .flatten();
+        let Some(assignment) = assignment else {
+            return if count == 0 {
+                Ok(())
+            } else {
+                Err("No job available".into())
+            };
+        };
         let world = format!("{host}:{server_port}|{}", game.dimension()?);
         if assignment.world != world {
             return Err(format!(
@@ -60,11 +67,20 @@ fn run() -> Result<(), String> {
         }
         let outcome = jobs::execute(&coordinator, &assignment, &mut game)?;
         match coordinator
-            .finish(&assignment, true, &outcome.evidence, outcome.chest.as_ref())
+            .finish(
+                &assignment,
+                outcome.success,
+                &outcome.evidence,
+                outcome.chest.as_ref(),
+            )
             .map_err(|error| format!("Finish failed: {error:?}"))?
         {
-            Finished::Accepted => {
+            Finished::Accepted if outcome.success => {
+                completed += 1;
                 println!("Completed {}: {}", assignment.job.work.id, outcome.evidence)
+            }
+            Finished::Accepted => {
+                println!("Released {}: {}", assignment.job.work.id, outcome.evidence)
             }
             _ => return Err("The coordinator did not confirm completion".into()),
         }

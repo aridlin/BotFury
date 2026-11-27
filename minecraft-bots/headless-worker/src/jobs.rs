@@ -4,7 +4,10 @@ use botfury_headless_worker::coordinator::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{thread, time::Duration};
+use std::{
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 #[derive(Clone, Copy, Deserialize)]
 struct Pos {
@@ -24,6 +27,12 @@ impl Pos {
         (min.x..=max.x).contains(&self.x)
             && (min.y..=max.y).contains(&self.y)
             && (min.z..=max.z).contains(&self.z)
+    }
+
+    fn distance_squared(self, [x, y, z]: [f64; 3]) -> f64 {
+        (f64::from(self.x) + 0.5 - x).powi(2)
+            + (f64::from(self.y) - y).powi(2)
+            + (f64::from(self.z) + 0.5 - z).powi(2)
     }
 }
 
@@ -60,6 +69,7 @@ struct Transfer {
 }
 
 pub struct Outcome {
+    pub success: bool,
     pub evidence: String,
     pub chest: Option<ChestReport>,
 }
@@ -96,7 +106,18 @@ impl Job<'_> {
             .renew(self.assignment)
             .map_err(|error| format!("Renew failed: {error:?}"))?
         {
-            Renewed::Active(_) => self.game.call(name, params),
+            Renewed::Active(lease) => {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| "Worker clock is before the Unix epoch")?;
+                // Bound the action by the observed lease, even if a slow reply ate into its time.
+                if u128::from(lease.expires_at) <= now.as_millis() + 8_000 {
+                    return Err(
+                        "The renewed lease is too short to safely start a game action".into(),
+                    );
+                }
+                self.game.call(name, params)
+            }
             Renewed::Lost => Err("Job lease is no longer active".into()),
         }
     }
@@ -113,6 +134,71 @@ impl Job<'_> {
             ));
         }
         Ok(())
+    }
+
+    fn nearby_players(&mut self) -> Result<Vec<[f64; 3]>, String> {
+        let view = self
+            .game
+            .call("entities", json!({"type":"player","radius":8,"limit":20}))?;
+        let entities = view["entities"]
+            .as_array()
+            .ok_or("Missing player observations")?;
+        entities
+            .iter()
+            .map(|entity| {
+                serde_json::from_value(entity["pos"].clone()).map_err(|error| error.to_string())
+            })
+            .collect()
+    }
+
+    fn approach_pickup(&mut self, target: Pos, exclude: Option<&Bounds>) -> Result<(), String> {
+        let others = self.nearby_players()?;
+        let mut stands = [(1, 0), (-1, 0), (0, 1), (0, -1)].map(|(x, z)| Pos {
+            x: target.x + x,
+            z: target.z + z,
+            ..target
+        });
+        let clearance = |stand: &Pos| {
+            others
+                .iter()
+                .map(|other| stand.distance_squared(*other))
+                .fold(f64::INFINITY, f64::min)
+        };
+        stands.sort_by(|left, right| clearance(right).total_cmp(&clearance(left)));
+        for stand in stands {
+            if exclude.is_some_and(|area| stand.contains(area.min, area.max)) {
+                continue;
+            }
+            let block = |game: &mut Game, dy| {
+                game.call(
+                    "block_at",
+                    json!({"x":stand.x,"y":stand.y + dy,"z":stand.z}),
+                )
+            };
+            if block(self.game, 0)?["block"] != "air" || block(self.game, 1)?["block"] != "air" {
+                continue;
+            }
+            let floor = block(self.game, -1)?;
+            if matches!(
+                floor["block"].as_str(),
+                None | Some("air" | "lava" | "water")
+            ) {
+                continue;
+            }
+            self.move_to(stand)?;
+            for _ in 0..12 {
+                let crowded = self
+                    .nearby_players()?
+                    .into_iter()
+                    .any(|other| target.distance_squared(other) < 1.4_f64.powi(2));
+                if !crowded {
+                    return Ok(());
+                }
+                thread::sleep(Duration::from_millis(125));
+            }
+            return Err("Another player is within pickup range of the block".into());
+        }
+        Err("No clear pickup approach beside the block".into())
     }
 
     fn gather(&mut self, work: Gather) -> Result<Outcome, String> {
@@ -158,6 +244,7 @@ impl Job<'_> {
                         .is_some_and(|area| pos.contains(area.min, area.max))
                 })
                 .ok_or("No matching block within local reach")?;
+            self.approach_pickup(pos, work.exclude.as_ref())?;
             let old_count = self
                 .game
                 .inventory()?
@@ -193,7 +280,11 @@ impl Job<'_> {
                 .unwrap_or(0)
                 <= old_count
             {
-                return Err("Server did not confirm collection".into());
+                return Ok(Outcome {
+                    success: false,
+                    evidence: "Mined block but did not collect the drop".into(),
+                    chest: None,
+                });
             }
         }
         Ok(observed(format!("Observed {} {}", work.count, work.item)))
@@ -301,6 +392,7 @@ impl Job<'_> {
                 self.act("close_menu", json!({}))?;
                 self.game.inventory()?;
                 return Ok(Outcome {
+                    success: true,
                     evidence: format!("Observed {current} {} in storage", work.item),
                     chest: Some(ChestReport {
                         location: format!("block:{x},{y},{z}"),
@@ -333,6 +425,7 @@ fn parse<T: serde::de::DeserializeOwned>(payload: &str) -> Result<T, String> {
 
 fn observed(evidence: String) -> Outcome {
     Outcome {
+        success: true,
         evidence,
         chest: None,
     }

@@ -302,8 +302,7 @@ final class LocalFormation {
             stage = "Disconnected";
             TaskDefense.evade(client, false);
             if (BotInventory.active()) BotInventory.disconnected();
-            stop();
-            incoming = null;
+            if (!mode.isEmpty() || incoming != null) stop();
             cancelPath();
             return;
         }
@@ -860,7 +859,7 @@ final class LocalFormation {
         BaritoneClient.execute("stop");
         resumeSaturn = false;
         saturnTarget = null;
-        if (mode.isEmpty()) { incoming = null; cancelPath(); BaritoneClient.execute("stop"); stage = "Idle"; return; }
+        if (mode.isEmpty()) { incoming = null; cancelPath(); stage = "Idle"; return; }
         mode = "";
         stage = "Idle";
         BotEvents.add("info", "formation", "Stopped");

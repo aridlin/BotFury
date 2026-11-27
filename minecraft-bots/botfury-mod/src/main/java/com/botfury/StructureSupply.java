@@ -17,6 +17,7 @@ import java.util.*;
 /** Generates material jobs before the build jobs that consume them. */
 final class StructureSupply {
     private static final Gson JSON = new Gson();
+    private static final int FIELD_INPUTS_PER_CHECKPOINT = 8;
     record Supplied(List<ProjectQueue.Work> jobs, String chest) {}
 
     private static final class SupplyLane {
@@ -66,18 +67,8 @@ final class StructureSupply {
                 protectedArea = include(protectedArea, water.target().offset(direction));
             }
         }
-        var lanes = new HashMap<Identifier, SupplyLane>();
         var recipes = new MaterialRecipe(client, true, true);
-        int required = plan.jobs().size();
-        for (var entry : new TreeMap<>(plan.materials()).entrySet()) {
-            Identifier item = entry.getKey();
-            boolean fillWater = item.equals(mc("water_bucket"));
-            // Leave room for tools, fuel and ingredients in the worker's inventory.
-            int capacity = fillWater ? ProjectWater.MAX_BUCKETS : 16 * Registries.ITEM.get(item).getMaxCount();
-            var batches = recipes.batches(fillWater ? mc("bucket") : item, entry.getValue(), capacity);
-            for (var batch : batches) required += batch.plan().size() + (fillWater ? 3 : 2);
-            lanes.put(item, new SupplyLane("supply-" + lanes.size() + "-", batches));
-        }
+        var lanes = lanes(plan, recipes, FIELD_INPUTS_PER_CHECKPOINT);
         var productionPlans = lanes.values().stream().flatMap(lane -> lane.batches.stream())
                 .map(MaterialRecipe.Batch::plan).toList();
         var stations = ProjectWorkstations.prepare(client, chest, protectedArea, table, furnace,
@@ -85,7 +76,17 @@ final class StructureSupply {
                 productionPlans.stream().anyMatch(MaterialRecipe.Plan::needsFurnace));
         var jobs = new ArrayList<>(stations.jobs());
         if (newStorage) jobs.addAll(stations.storageJobs(client, storage));
-        required += jobs.size();
+        int baseline = jobs.size() + plan.jobs().size();
+        int required = jobCount(lanes, baseline);
+        if (required > ProjectQueue.MAX_JOBS) {
+            // Use larger checkpoints when the schematic needs most of the journal for its build jobs.
+            lanes = lanes(plan, recipes, FIELD_INPUTS_PER_CHECKPOINT * 4);
+            required = jobCount(lanes, baseline);
+            if (required > ProjectQueue.MAX_JOBS) {
+                lanes = lanes(plan, recipes, Integer.MAX_VALUE);
+                required = jobCount(lanes, baseline);
+            }
+        }
         if (required > ProjectQueue.MAX_JOBS) {
             throw new IllegalArgumentException("Supplied build needs more than " + ProjectQueue.MAX_JOBS + " jobs");
         }
@@ -139,6 +140,29 @@ final class StructureSupply {
             jobs.add(new ProjectQueue.Work(job.id(), job.kind(), job.payload(), needs, job.locks(), supplier));
         }
         return new Supplied(List.copyOf(jobs), ProjectBlock.key(chest));
+    }
+
+    private static Map<Identifier, SupplyLane> lanes(StructureProject.Plan plan, MaterialRecipe recipes,
+                                                     int fieldBudget) {
+        var lanes = new HashMap<Identifier, SupplyLane>();
+        for (var entry : new TreeMap<>(plan.materials()).entrySet()) {
+            Identifier item = entry.getKey();
+            boolean fillWater = item.equals(mc("water_bucket"));
+            // Leave room for tools, fuel and ingredients in the worker's inventory.
+            int capacity = fillWater ? ProjectWater.MAX_BUCKETS : 16 * Registries.ITEM.get(item).getMaxCount();
+            var batches = recipes.batches(fillWater ? mc("bucket") : item, entry.getValue(), capacity, fieldBudget);
+            lanes.put(item, new SupplyLane("supply-" + lanes.size() + "-", batches));
+        }
+        return lanes;
+    }
+
+    private static int jobCount(Map<Identifier, SupplyLane> lanes, int baseline) {
+        int required = baseline;
+        for (var entry : lanes.entrySet()) {
+            int handoff = entry.getKey().equals(mc("water_bucket")) ? 3 : 2;
+            for (var batch : entry.getValue().batches) required += batch.plan().size() + handoff;
+        }
+        return required;
     }
 
     private static ProjectQueue.Work transfer(String id, ProjectChest.Storage storage, ProjectBlock chest, Identifier item, int count,

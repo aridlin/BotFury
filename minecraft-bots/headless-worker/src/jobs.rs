@@ -1,4 +1,4 @@
-use crate::game::{Game, Stack};
+use crate::game::{Game, Inventory, Stack};
 use botfury_headless_worker::coordinator::{
     Assignment, ChestReport, Coordinator, ItemCounts, Kind, Renewed,
 };
@@ -41,6 +41,61 @@ impl Pos {
 struct Bounds {
     min: Pos,
     max: Pos,
+}
+
+const LOGS: &[&str] = &[
+    "oak_log",
+    "spruce_log",
+    "birch_log",
+    "jungle_log",
+    "acacia_log",
+    "dark_oak_log",
+    "mangrove_log",
+    "cherry_log",
+];
+const FURNACE_STONE_DROPS: &[&str] = &["cobblestone", "cobbled_deepslate", "blackstone"];
+const FURNACE_STONE_BLOCKS: &[&str] = &[
+    "stone",
+    "deepslate",
+    "cobblestone",
+    "cobbled_deepslate",
+    "blackstone",
+];
+
+enum ProjectItem<'a> {
+    Exact([&'a str; 1]),
+    Logs,
+    FurnaceStone,
+}
+
+impl<'a> ProjectItem<'a> {
+    fn parse(key: &'a str) -> Result<Self, String> {
+        Ok(match key {
+            "any_logs" => Self::Logs,
+            "furnace_stone" => Self::FurnaceStone,
+            key => Self::Exact([vanilla(key)?]),
+        })
+    }
+
+    fn names(&self) -> &[&str] {
+        match self {
+            Self::Exact(names) => names,
+            Self::Logs => LOGS,
+            Self::FurnaceStone => FURNACE_STONE_DROPS,
+        }
+    }
+
+    fn count(&self, items: &ItemCounts) -> u32 {
+        self.names()
+            .iter()
+            .map(|name| {
+                items
+                    .get(&format!("minecraft:{name}"))
+                    .copied()
+                    .unwrap_or(0)
+            })
+            .sum()
+    }
 }
 
 #[derive(Deserialize)]
@@ -315,14 +370,26 @@ impl Job<'_> {
         exclude: Option<&Bounds>,
     ) -> Result<Pos, String> {
         let radius = if self.game.baritone { 12 } else { 4 };
-        let mut query = json!({"name": search_name, "radius":radius, "limit":64});
-        if self.game.baritone {
-            query["exposed_names"] = json!(blocks);
+        let filters = if !self.game.baritone && search_name.is_empty() {
+            blocks
+        } else {
+            &[search_name]
+        };
+        let mut found = Vec::new();
+        for &filter in filters {
+            let mut query = json!({"name":filter, "radius":radius, "limit":64});
+            if self.game.baritone {
+                query["exposed_names"] = json!(blocks);
+            }
+            let search = self.game.call("find_blocks", query)?;
+            found.extend(
+                search["found"]
+                    .as_array()
+                    .ok_or("Missing block search results")?
+                    .iter()
+                    .cloned(),
+            );
         }
-        let search = self.game.call("find_blocks", query)?;
-        let found = search["found"]
-            .as_array()
-            .ok_or("Missing block search results")?;
         let usable = |pos: Pos| !exclude.is_some_and(|area| pos.contains(area.min, area.max));
         let mut targets = found
             .iter()
@@ -380,49 +447,49 @@ impl Job<'_> {
     }
 
     fn gather(&mut self, work: Gather) -> Result<Outcome, String> {
-        let item = vanilla(&work.item)?;
+        let item = ProjectItem::parse(&work.item)?;
         let variant = work.variant.as_deref().unwrap_or("both");
-        let (search, blocks, tier): (&str, &[&str], u8) = match (work.resource.as_str(), item) {
-            ("stone", "cobblestone") => ("stone", &["stone"], 1),
-            ("deepslate", "cobbled_deepslate") => ("deepslate", &["deepslate"], 1),
-            ("coal", "coal") => (
+        let (search, blocks, tier): (&str, &[&str], u8) = match (work.resource.as_str(), &item) {
+            ("any_logs", ProjectItem::Logs) => ("_log", LOGS, 0),
+            ("furnace_stone", ProjectItem::FurnaceStone) => ("", FURNACE_STONE_BLOCKS, 1),
+            ("stone", ProjectItem::Exact(["cobblestone"])) => ("stone", &["stone"], 1),
+            ("deepslate", ProjectItem::Exact(["cobbled_deepslate"])) => {
+                ("deepslate", &["deepslate"], 1)
+            }
+            ("coal", ProjectItem::Exact(["coal"])) => (
                 "coal_ore",
                 ore_variants(variant, &["coal_ore", "deepslate_coal_ore"])?,
                 1,
             ),
-            ("iron", "raw_iron") => (
+            ("iron", ProjectItem::Exact(["raw_iron"])) => (
                 "iron_ore",
                 ore_variants(variant, &["iron_ore", "deepslate_iron_ore"])?,
                 2,
             ),
-            ("diamond", "diamond") => (
+            ("diamond", ProjectItem::Exact(["diamond"])) => (
                 "diamond_ore",
                 ore_variants(variant, &["diamond_ore", "deepslate_diamond_ore"])?,
                 3,
             ),
-            ("dirt" | "block:minecraft:dirt", "dirt") => ("dirt", &["dirt"], 0),
-            (resource, item)
-                if resource.strip_prefix("block:minecraft:") == Some(item)
-                    && (item.ends_with("_log") || item.ends_with("_stem")) =>
+            ("dirt", ProjectItem::Exact(["dirt"])) => ("", &["dirt", "grass_block"], 0),
+            ("block:minecraft:dirt", ProjectItem::Exact(["dirt"])) => ("dirt", &["dirt"], 0),
+            (resource, ProjectItem::Exact([name]))
+                if resource.strip_prefix("block:minecraft:") == Some(*name)
+                    && (name.ends_with("_log") || name.ends_with("_stem")) =>
             {
-                (item, &[item], 0)
+                (*name, item.names(), 0)
             }
             _ => return Err("Unsupported gathering resource and output item".into()),
         };
         if !(1..=576).contains(&work.count) {
             return Err("Invalid gather count".into());
         }
-        while self
-            .game
-            .inventory()?
-            .counts()
-            .get(&work.item)
-            .copied()
-            .unwrap_or(0)
-            < work.count
-        {
+        loop {
+            let inventory = self.game.inventory()?;
+            if item.count(&inventory.counts()) >= work.count {
+                break;
+            }
             if tier > 0 {
-                let inventory = self.game.inventory()?;
                 let pickaxe = inventory
                     .slots
                     .iter()
@@ -435,7 +502,7 @@ impl Job<'_> {
                             work.resource
                         )
                     })?;
-                self.select_item(pickaxe.slot, &pickaxe.item)?;
+                self.select_item(&inventory, pickaxe.slot, &pickaxe.item)?;
             }
             let pos = self.gather_approach(search, blocks, work.exclude.as_ref())?;
             let actual = self.block_at(pos)?;
@@ -443,41 +510,21 @@ impl Job<'_> {
                 .as_str()
                 .filter(|name| blocks.contains(name))
                 .ok_or("The target block changed while approaching it")?;
-            let old_count = self
-                .game
-                .inventory()?
-                .counts()
-                .get(&work.item)
-                .copied()
-                .unwrap_or(0);
+            let old_count = item.count(&self.game.inventory()?.counts());
             let broken = self.act("dig", json!({"x":pos.x,"y":pos.y,"z":pos.z,"timeout_s":7}))?;
             if broken["broken"] != true || broken["before"] != block || broken["after"] != "air" {
                 return Err("Server did not confirm the expected block was mined".into());
             }
             self.move_to(pos)?;
+            let mut collected = false;
             for _ in 0..8 {
-                if self
-                    .game
-                    .inventory()?
-                    .counts()
-                    .get(&work.item)
-                    .copied()
-                    .unwrap_or(0)
-                    > old_count
-                {
+                if item.count(&self.game.inventory()?.counts()) > old_count {
+                    collected = true;
                     break;
                 }
                 thread::sleep(Duration::from_millis(125));
             }
-            if self
-                .game
-                .inventory()?
-                .counts()
-                .get(&work.item)
-                .copied()
-                .unwrap_or(0)
-                <= old_count
-            {
+            if !collected {
                 return Ok(Outcome {
                     success: false,
                     evidence: "Mined block but did not collect the drop".into(),
@@ -539,7 +586,7 @@ impl Job<'_> {
             .max_by_key(|stack| stack.slot)
             .ok_or_else(|| format!("Missing material {}", work.block))?
             .slot;
-        self.select_item(slot, item)?;
+        self.select_item(&inventory, slot, item)?;
         let current = self.block_at(work.target)?;
         if work.matches(&current)? {
             return Ok(observed(format!("Observed existing {}", work.block)));
@@ -567,7 +614,15 @@ impl Job<'_> {
         )))
     }
 
-    fn select_item(&mut self, slot: usize, item: &str) -> Result<(), String> {
+    fn select_item(
+        &mut self,
+        inventory: &Inventory,
+        slot: usize,
+        item: &str,
+    ) -> Result<(), String> {
+        if slot == 36 + inventory.held_slot {
+            return Ok(());
+        }
         let hotbar = if slot >= 36 {
             slot - 36
         } else {
@@ -575,12 +630,12 @@ impl Job<'_> {
             0
         };
         self.act("select_slot", json!({"slot": hotbar}))?;
-        if !self
-            .game
-            .inventory()?
-            .slots
-            .iter()
-            .any(|stack| stack.slot == 36 + hotbar && stack.item == item)
+        let selected = self.game.inventory()?;
+        if selected.held_slot != hotbar
+            || !selected
+                .slots
+                .iter()
+                .any(|stack| stack.slot == 36 + hotbar && stack.item == item)
         {
             return Err("Server did not confirm the selected item".into());
         }
@@ -652,7 +707,7 @@ impl Job<'_> {
                                 b'L' => s.item == log || s.item == stem,
                                 b'P' => s.item.ends_with("_planks"),
                                 b'S' => s.item == "stick",
-                                b'C' => s.item == "cobblestone",
+                                b'C' => FURNACE_STONE_DROPS.contains(&s.item.as_str()),
                                 b'I' => s.item == "iron_ingot",
                                 _ => false,
                             }
@@ -877,7 +932,7 @@ impl Job<'_> {
     }
 
     fn transfer(&mut self, work: Transfer) -> Result<Outcome, String> {
-        let item = vanilla(&work.item)?;
+        let item = ProjectItem::parse(&work.item)?;
         let chest_slots = if work.partner.is_some() { 54 } else { 27 };
         if work.block != "minecraft:chest" || work.stock > (chest_slots * 64) as u32 {
             return Err("Invalid chest transfer".into());
@@ -895,7 +950,7 @@ impl Job<'_> {
         self.act("use_block", json!({"x":x,"y":y,"z":z}))?;
 
         let deposit = matches!(work.direction, TransferDirection::Deposit);
-        let mut previous: Option<(u32, u32, u32)> = None;
+        let mut previous: Option<(String, u32, u32, u32)> = None;
         loop {
             let menu = self.game.call("menu", json!({}))?;
             let expected_type = if chest_slots == 54 {
@@ -917,10 +972,13 @@ impl Job<'_> {
                     .entry(format!("minecraft:{}", stack.item))
                     .or_default() += stack.count;
             }
-            let stored = items.get(&work.item).copied().unwrap_or(0);
+            let stored = item.count(&items);
             let inventory = self.game.inventory()?;
-            let carried = inventory.counts().get(&work.item).copied().unwrap_or(0);
-            if let Some((prior_stored, prior_carried, maximum)) = previous {
+            let inventory_counts = inventory.counts();
+            let carried = item.count(&inventory_counts);
+            if let Some((id, prior_stored, prior_carried, maximum)) = previous.take() {
+                let stored = items.get(&id).copied().unwrap_or(0);
+                let carried = inventory_counts.get(&id).copied().unwrap_or(0);
                 let (chest_delta, cargo_delta) = if deposit {
                     (
                         stored.checked_sub(prior_stored),
@@ -989,7 +1047,7 @@ impl Job<'_> {
             };
             let source = sources
                 .iter()
-                .filter(|s| s.item == item)
+                .filter(|s| item.names().contains(&s.item.as_str()))
                 .max_by_key(|s| s.count.min(remaining))
                 .ok_or("No matching item is available for transfer")?;
             let from = if deposit {
@@ -1017,7 +1075,10 @@ impl Job<'_> {
                 self.click(from, 0, "pickup")?;
                 split
             };
-            previous = Some((stored, carried, maximum));
+            let id = format!("minecraft:{}", source.item);
+            let prior_stored = items.get(&id).copied().unwrap_or(0);
+            let prior_carried = inventory_counts.get(&id).copied().unwrap_or(0);
+            previous = Some((id, prior_stored, prior_carried, maximum));
         }
     }
 }

@@ -24,6 +24,7 @@ pub struct Stack {
 #[derive(Deserialize)]
 pub struct Inventory {
     pub slots: Vec<Stack>,
+    pub held_slot: usize,
     item_decode_errors: u64,
     cursor: Option<Value>,
 }

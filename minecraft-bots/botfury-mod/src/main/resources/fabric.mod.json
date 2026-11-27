@@ -6,6 +6,7 @@
   "description": "Remote-controlled Minecraft bot mod.",
   "authors": ["BotFury"],
   "license": "MIT",
+  "icon": "assets/botfury/icon.png",
   "environment": "*",
   "accessWidener": "botfury.accesswidener",
   "entrypoints": {

@@ -1,0 +1,92 @@
+--- a/src/engine.rs
++++ b/src/engine.rs
+@@ -221,6 +221,12 @@
+     /// Slots belonging to the container itself (the rest is the player's inventory).
+     pub fn container_slots(&self) -> usize {
+         self.slots.len().saturating_sub(36)
++    }
++
++    fn chest_inventory_start(&self) -> Option<usize> {
++        let rows = self.kind.strip_prefix("generic_9x")?.parse::<usize>().ok()?;
++        let top = rows * 9;
++        ((1..=6).contains(&rows) && self.slots.len() == top + 36).then_some(top)
+     }
+ }
+
+@@ -1099,6 +1105,10 @@
+                     } else if let Some(menu) = g.menu.as_mut().filter(|m| m.id == container) {
+                         menu.slots = slots;
+                         menu.state_id = state;
++                        if let Some(top) = menu.chest_inventory_start() {
++                            let player_slots = menu.slots[top..].to_vec();
++                            g.inventory[9..45].clone_from_slice(&player_slots);
++                        }
+                     }
+                 }
+                 Err(e) => {
+@@ -1124,13 +1134,19 @@
+                         }
+                         g.inventory_state = state;
+                     } else if let Some(menu) = g.menu.as_mut().filter(|m| m.id == container) {
++                        menu.state_id = state;
+                         if let Ok(s) = usize::try_from(slot) {
++                            let player_slot = menu.chest_inventory_start()
++                                .and_then(|top| s.checked_sub(top)).filter(|&index| index < 36);
+                             if s >= menu.slots.len() {
+                                 menu.slots.resize(s + 1, None);
+                             }
++                            let mirrored_item = player_slot.map(|_| item.clone());
+                             menu.slots[s] = item;
++                            if let (Some(index), Some(item)) = (player_slot, mirrored_item) {
++                                g.inventory[9 + index] = item;
++                            }
+                         }
+-                        menu.state_id = state;
+                     }
+                 }
+                 Err(e) => {
+@@ -1505,8 +1521,13 @@
+             w.f64(self.body.pos[0]).f64(self.body.pos[1]).f64(self.body.pos[2]).f32(self.yaw).f32(self.pitch);
+         }
+         self.send(self.ids.play.sb_accept_teleportation, &w.data)?;
+-        // Vanilla follows the confirmation with its full position.
+-        self.send_position(true)?;
++        if self.ids.protocol >= 777 {
++            // The 26.3 confirmation already carries the full position and rotation.
++            self.last_sent = Some((self.body.pos, self.yaw, self.pitch, 0));
++            self.ticks_since_sent = 0;
++        } else {
++            self.send_position(true)?;
++        }
+         if self.goal.is_some() && self.position_seen {
+             self.corrections.push_back(self.tick);
+         }
+--- a/tests/mcp.rs
++++ b/tests/mcp.rs
+@@ -132,6 +132,8 @@
+     // Spawn on the floor.
+     m.send(cb.cb_player_position, &w().varint(1).f64(0.5).f64(16.0).f64(0.5).f64(0.0).f64(0.0).f64(0.0).f32(0.0).f32(0.0).i32(0).data);
+     m.expect(sb.sb_accept_teleportation);
++    let (next, _) = m.recv(Instant::now() + Duration::from_secs(10)).unwrap();
++    assert_eq!(next, sb.sb_player_loaded, "26.3 already carries position in the teleport confirmation");
+     // Tab list: Alex. Entities: Alex (player) and a villager NPC named Shopkeeper.
+     let alex = 0xA1E7_u128;
+     m.send(cb.cb_player_info_update, &w().u8(1 | 4 | 8).varint(1).uuid(alex).string("Alex").varint(0).varint(0).bool(true).data);
+@@ -177,6 +179,7 @@
+         } else if id == sb.sb_container_click {
+             let (container, state, clicked) = (r.varint().unwrap(), r.varint().unwrap(), r.i16().unwrap());
+             notes.push(format!("click container {container} state {state} slot {clicked}"));
++            m.send(cb.cb_container_set_slot, &w().varint(1).varint(6).i16(54).u8(0).data);
+             m.system("You bought an emerald");
+             m.send(cb.cb_container_close, &w().varint(1).data);
+         } else if id == sb.sb_chat {
+@@ -302,6 +305,9 @@
+     let bought = mcp.call("click_slot", json!({"slot": 13, "mode": "pickup"}));
+     assert_eq!(bought["chat"][0], "You bought an emerald", "{bought}");
+     assert_eq!(bought["menu"]["open"], false, "the server closed the menu: {bought}");
++    let inventory = mcp.call("inventory", json!({}));
++    assert!(inventory["held_item"].is_null(), "{inventory}");
++    assert_eq!(inventory["slots"][0]["item"], "emerald", "{inventory}");
+
+     let echoed = mcp.call("chat", json!({"message": "hello"}));
+     assert_eq!(echoed["chat"][0], "[echo] hello", "{echoed}");

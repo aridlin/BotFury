@@ -197,30 +197,47 @@ def run(args):
         status = read_status(index)
         return status.get("connected") and status.get("player") == name
 
-    def order(master_window, text, reply):
+    def master_at(position):
+        status = read_status(0)
+        return status.get("connected") and status.get("player") == MASTER and all(
+            abs(status.get(axis, math.inf) - expected) < 1
+            for axis, expected in zip("xyz", position)
+        )
+
+    def order(master_window, text, reply, allow_chunk_retry=False):
+        log = out / MASTER / "logs/latest.log"
+
         def master_connected():
             return ready(0, MASTER) and MASTER in connection.command("list")
 
-        wait(master_connected, 120)
-        log = out / MASTER / "logs/latest.log"
-        position = log.stat().st_size
-        x("windowfocus", "--sync", master_window)
-        x("key", "slash")
-        time.sleep(0.65)
-        x("type", "--clearmodifiers", "--delay", "18", text)
-        time.sleep(0.4)
-        x("key", "Return")
-        def accepted():
-            with log.open() as stream:
-                stream.seek(position)
-                response = stream.read()
-            if "Could not queue" in response:
-                raise RuntimeError(response)
-            return re.search(reply, response)
-        try:
-            return wait(accepted, 75).group(1)
-        except RuntimeError as error:
-            raise RuntimeError(f"Could not verify /{text}: {error}") from error
+        for attempt in range(3 if allow_chunk_retry else 1):
+            wait(master_connected, 120)
+            position = log.stat().st_size
+            x("windowfocus", "--sync", master_window)
+            x("key", "slash")
+            time.sleep(0.65)
+            x("type", "--clearmodifiers", "--delay", "18", text)
+            time.sleep(0.4)
+            x("key", "Return")
+
+            def accepted():
+                with log.open() as stream:
+                    stream.seek(position)
+                    response = stream.read()
+                if "Could not queue" in response:
+                    return response
+                return re.search(reply, response)
+
+            try:
+                result = wait(accepted, 75)
+            except RuntimeError as error:
+                raise RuntimeError(f"Could not verify /{text}: {error}") from error
+            if isinstance(result, re.Match):
+                return result.group(1)
+            if not allow_chunk_retry or "Load the entire build site first" not in result or attempt == 2:
+                raise RuntimeError(f"Paper replay order /{text} was rejected: {result}")
+            print("Build site is still loading in the master client, retrying after a short wait.", flush=True)
+            time.sleep(6)
 
     try:
         run_process("paper", [java, "-Xmx2048m", "-XX:ActiveProcessorCount=4", "-jar", "paper.jar", "nogui"], paper)
@@ -232,7 +249,9 @@ def run(args):
         wait(lambda: ready(0, MASTER), 150)
         site = tuple(args.site) if args.site else find_site(connection, MASTER, cells)
         command(f"gamemode spectator {MASTER}")
-        command(f"tp {MASTER} {site[0]+1.5} {site[1]} {site[2]-3.5} 0 4")
+        viewpoint = site[0] + 1.5, site[1], site[2] - 3.5
+        command(f"tp {MASTER} {' '.join(map(str, viewpoint))} 0 4")
+        wait(lambda: master_at(viewpoint), 120)
         master_window = window(master, 0, 0)
         captured = run_process("capture", [
             "ffmpeg", "-nostdin", "-loglevel", "error", "-n", "-f", "x11grab", "-draw_mouse", "0",
@@ -244,7 +263,7 @@ def run(args):
         if captured.poll() is not None:
             raise RuntimeError("Failed to record the hosted survival benchmark")
         house_id = order(master_window, f"bf project build {SCHEMATIC.name} {' '.join(map(str, site))} supplied",
-                         r"Queued (village-homestead-[a-f0-9]{8})")
+                         r"Queued (village-homestead-[a-f0-9]{8})", allow_chunk_retry=True)
         handles = []
         for i, name in enumerate(WORKERS, 1):
             handles.append(launch(i, name))

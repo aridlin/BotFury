@@ -28,6 +28,7 @@ import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.util.shape.VoxelShape;
 import net.minecraft.world.BlockView;
 import net.minecraft.world.RaycastContext;
 
@@ -258,6 +259,28 @@ final class ProjectPlacement {
         }
         if (!result.isAccepted()) return ProjectQueue.PLACEMENT_REJECTED + target.toShortString();
         player.swingHand(Hand.MAIN_HAND);
+        return null;
+    }
+
+    static BlockHitResult findExcavationHit(BlockPos target, Vec3d eye, VoxelShape shape,
+                                            Function<Vec3d, BlockHitResult> raycast) {
+        for (var box : shape.getBoundingBoxes()) {
+            var center = box.getCenter().add(target.getX(), target.getY(), target.getZ());
+            var hit = raycast.apply(center);
+            if (hit != null) return hit;
+            for (var face : Direction.values()) {
+                var normal = Vec3d.of(face.getVector());
+                double halfSize = switch (face.getAxis()) {
+                    case X -> (box.maxX - box.minX) / 2;
+                    case Y -> (box.maxY - box.minY) / 2;
+                    case Z -> (box.maxZ - box.minZ) / 2;
+                };
+                var point = center.add(normal.multiply(halfSize * .98));
+                if (eye.subtract(point).dotProduct(normal) <= 0) continue;
+                hit = raycast.apply(point);
+                if (hit != null) return hit;
+            }
+        }
         return null;
     }
 

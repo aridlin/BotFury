@@ -46,7 +46,7 @@ final class ProjectBroker {
                            FieldForage.Source forageSource, boolean checkpointApproach, Set<String> stickCraftInputs,
                            List<ProjectQueue.ReachableOre> reachableOre, boolean groundedGatherRetry, List<String> localStarterLogs,
                            Map<String, Integer> claimItems, List<ProjectQueue.ResourceSite> occupiedCells,
-                           boolean readyToBank) {}
+                           boolean readyToBank, boolean supportsStagedFurnace, Boolean furnaceStaged) {}
 
     private static synchronized ProjectQueue queue() throws IOException {
         if (queue == null) {
@@ -845,7 +845,7 @@ final class ProjectBroker {
                     if (assignment == null) assignment = board.claim(world, request.worker, request.kinds,
                             request.project, now, position, material -> hasExcavationTool(request.toolUses, material),
                             claimStock, request.toolUses, returnRevision, request.supportsPickupReserve,
-                            ProjectBroker::workerPosition);
+                            ProjectBroker::workerPosition, request.supportsStagedFurnace);
                     if (assignment == null && request.kinds.contains(ProjectQueue.Kind.TRANSFER)) {
                         assignment = board.offerInterruptedDeposit(world, request.worker, request.project, now,
                                 position, ProjectBroker::heldCount, returnRevision);
@@ -933,7 +933,7 @@ final class ProjectBroker {
                     if (request.receivedRouteSticks) board.recordRouteStickReceipt(request.project, request.job, request.token, now);
                     var renewed = board.renew(request.project, request.job, request.token, request.resourceSite, now,
                             request.needsRouteTool, request.needsRouteBench,
-                            request.readyToBank ? worker -> workerPosition(worker, true) : null);
+                            request.readyToBank ? worker -> workerPosition(worker, true) : null, request.furnaceStaged);
                     reply(exchange, renewed == null ? 409 : 200, renewed);
                 }
                 case "recover-furnace" -> {

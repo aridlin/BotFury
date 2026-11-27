@@ -195,14 +195,14 @@ struct Job<'a> {
 impl Job<'_> {
     /// Renew before each bounded gameplay action; fail closed if ownership is no longer confirmed.
     fn act(&mut self, name: &str, params: Value) -> Result<Value, String> {
-        self.renew()?;
+        self.renew(None)?;
         self.game.call(name, params)
     }
 
-    fn renew(&mut self) -> Result<(), String> {
+    fn renew(&mut self, furnace_staged: Option<bool>) -> Result<(), String> {
         match self
             .coordinator
-            .renew(self.assignment)
+            .renew(self.assignment, furnace_staged)
             .map_err(|error| format!("Renew failed: {error:?}"))?
         {
             Renewed::Active(lease) => {
@@ -742,7 +742,10 @@ impl Job<'_> {
         let output_id = format!("minecraft:{output}");
         let count_output = |items: &ItemCounts| items.get(&output_id).copied().unwrap_or(0);
         let carried = self.game.inventory()?.counts();
-        if count_output(&carried) >= work.count {
+        let recovering =
+            self.assignment.job.evidence.as_deref() == Some("Full batch staged at the furnace");
+        let carried_output = count_output(&carried);
+        if !recovering && carried_output >= work.count {
             return Ok(observed(format!("Observed {} {output_id}", work.count)));
         }
         self.move_to(work.stand)?;
@@ -753,8 +756,15 @@ impl Job<'_> {
         self.act("use_block", json!({"x":x,"y":y,"z":z}))?;
 
         let (slots, credited_ticks) = self.furnace_state([input, fuel, output])?;
-        let need = work.count - count_output(&carried);
+        let need = if recovering {
+            work.count
+        } else {
+            work.count - carried_output
+        };
         let queued = slots[0] + slots[2];
+        if recovering && queued != need {
+            return Err("The furnace no longer contains the full staged batch".into());
+        }
         if queued > need {
             return Err("The furnace has more input or output than this job needs".into());
         }
@@ -774,15 +784,23 @@ impl Job<'_> {
 
         self.load_furnace_slot(fuel, 1, fuel_to_load)?;
         self.load_furnace_slot(input, 0, input_to_load)?;
+        let (staged, _) = self.furnace_state([input, fuel, output])?;
+        if staged[0] + staged[2] != need {
+            return Err("Server did not confirm the full batch was staged in the furnace".into());
+        }
+        if carried_output == 0 || recovering {
+            self.renew(Some(true))?;
+        }
         let mut latest_output = Instant::now();
         let mut last_renewal = latest_output;
         let mut seen_output = slots[2];
         loop {
             let (slots, _) = self.furnace_state([input, fuel, output])?;
             if slots[2] == need {
+                self.renew(Some(false))?;
                 self.click(2, 0, "quick_move")?;
                 let after = self.game.inventory()?.counts();
-                if count_output(&after) != work.count {
+                if count_output(&after) != carried_output + need {
                     return Err(
                         "Server did not confirm the full smelted output was collected".into(),
                     );
@@ -798,7 +816,7 @@ impl Job<'_> {
                 return Err(format!("The furnace stopped producing {output_id}"));
             }
             if last_renewal.elapsed() >= Duration::from_secs(5) {
-                self.renew()?;
+                self.renew(None)?;
                 last_renewal = Instant::now();
             }
             thread::sleep(Duration::from_millis(150));

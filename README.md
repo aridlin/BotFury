@@ -1,4 +1,4 @@
-# 🌀 BotFury
+# <img src="minecraft-bots/botfury-mod/src/main/resources/assets/botfury/icon.png" width="48" height="48" alt=""> BotFury
 🚀 *Automate & Control Minecraft Bots with Fabric*
 
 ---

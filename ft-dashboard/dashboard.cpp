@@ -6,6 +6,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <shellapi.h>
+#include "resource.h"
 #else
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -2175,6 +2176,10 @@ int main(int argc, char** argv) {
 
     ft::Config cfg;
     cfg.title = "BotFury Dashboard";
+#ifdef _WIN32
+    cfg.icon = LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_BOTFURY),
+                          IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED);
+#endif
     cfg.mode = ft::Mode::Auto;
     cfg.width = 1180;
     cfg.height = 780;

@@ -1,6 +1,18 @@
 name: Paper runtime replay
 on:
   workflow_dispatch:
+    inputs:
+      scenario:
+        type: choice
+        description: Paper test to run
+        options:
+          - idle-clearance
+          - ten-worker-survival
+        default: idle-clearance
+      regression_seed:
+        type: boolean
+        description: Replay the previously surveyed survival seed
+        default: false
   pull_request:
     paths:
       - '.github/workflows/paper-replay.yml'
@@ -10,9 +22,9 @@ permissions:
   contents: read
 
 jobs:
-  idle-clearance:
+  paper:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: ${{ inputs.scenario == 'ten-worker-survival' && 150 || 15 }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -38,9 +50,10 @@ jobs:
         working-directory: minecraft-bots/botfury-mod
         run: sh ./gradlew --no-daemon --max-workers=2 -Dbotfury.baritoneJar="$RUNNER_TEMP/baritone.jar" prepareBotFuryClient
       - name: Verify the idle worker and owner placement
+        if: inputs.scenario != 'ten-worker-survival'
         run: python3 tests/paper/idle_clearance.py "$RUNNER_TEMP/paper.jar" "$RUNNER_TEMP/paper-replay"
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && inputs.scenario != 'ten-worker-survival'
         with:
           name: idle-clearance-paper
           path: |
@@ -48,3 +61,24 @@ jobs:
             ${{ runner.temp }}/paper-replay/production.mp4
             ${{ runner.temp }}/paper-replay/*.log
             ${{ runner.temp }}/paper-replay/*/logs/latest.log
+
+      - name: Run the ten-worker survival benchmark
+        if: inputs.scenario == 'ten-worker-survival'
+        env:
+          REPLAY_SURVEYED_SEED: ${{ inputs.regression_seed }}
+        run: |
+          args=()
+          if [[ "$REPLAY_SURVEYED_SEED" == true ]]; then
+            args+=(--seed -3640241710023986336 --site 32 65 6)
+          fi
+          python3 tests/paper/survival_benchmark.py "$RUNNER_TEMP/paper.jar" "$RUNNER_TEMP/survival-benchmark" --minutes 120 "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        if: always() && inputs.scenario == 'ten-worker-survival'
+        with:
+          name: ten-worker-survival-paper
+          path: |
+            ${{ runner.temp }}/survival-benchmark/*.json
+            ${{ runner.temp }}/survival-benchmark/*.jsonl
+            ${{ runner.temp }}/survival-benchmark/*.mp4
+            ${{ runner.temp }}/survival-benchmark/*.log
+            ${{ runner.temp }}/survival-benchmark/*/logs/latest.log

@@ -39,12 +39,83 @@ impl<'a> LoadedWorld<'a> {
     }
 
     fn standable(&self, [x, y, z]: [i32; 3]) -> bool {
-        (self.min_y() + 1..self.max_y()).contains(&y)
-            && self.is_loaded(x, z)
-            && self.get0(x, y, z).is_air()
+        if !(self.min_y() + 1..self.max_y()).contains(&y) || !self.is_loaded(x, z) {
+            return false;
+        }
+        let feet = self.get0(x, y, z);
+        let low_snow = feet.is(Class::SnowLayer) && matches!(feet.prop("layers"), Some("1" | "2"));
+        (feet.is_air() || low_snow)
             && self.get0(x, y + 1, z).is_air()
             && self.get0(x, y - 1, z).sturdy_top
     }
+
+    fn mining_stands(&self, target: [i32; 3]) -> impl Iterator<Item = [i32; 3]> + '_ {
+        let [x, y, z] = target;
+        [0, -1, -2, 1]
+            .into_iter()
+            .flat_map(move |dy| {
+                [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                    .into_iter()
+                    .map(move |(dx, dz)| [x + dx, y + dy, z + dz])
+            })
+            .filter(move |&stand| {
+                self.standable(stand) && self.can_see_mining_target(stand, target)
+            })
+    }
+
+    fn can_see_mining_target(&self, stand: [i32; 3], target: [i32; 3]) -> bool {
+        let eye = [
+            f64::from(stand[0]) + 0.5,
+            f64::from(stand[1]) + 1.62,
+            f64::from(stand[2]) + 0.5,
+        ];
+        let center = target.map(|axis| f64::from(axis) + 0.5);
+        let ray = std::array::from_fn::<_, 3, _>(|axis| center[axis] - eye[axis]);
+        let lower: [i32; 3] =
+            std::array::from_fn(|axis| eye[axis].min(center[axis]).floor() as i32);
+        let upper: [i32; 3] =
+            std::array::from_fn(|axis| eye[axis].max(center[axis]).floor() as i32);
+        let mut boxes = Vec::new();
+        for x in lower[0]..=upper[0] {
+            for y in lower[1]..=upper[1] {
+                for z in lower[2]..=upper[2] {
+                    if [x, y, z] == target {
+                        continue;
+                    }
+                    boxes.clear();
+                    self.world.collision_boxes(x, y, z, &mut boxes);
+                    if boxes
+                        .iter()
+                        .any(|b| intersects_segment(eye, ray, b.min, b.max))
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+}
+
+fn intersects_segment(eye: [f64; 3], ray: [f64; 3], min: [f64; 3], max: [f64; 3]) -> bool {
+    let mut entry: f64 = 0.0;
+    let mut exit: f64 = 1.0;
+    for axis in 0..3 {
+        if ray[axis] == 0.0 {
+            if eye[axis] < min[axis] || eye[axis] > max[axis] {
+                return false;
+            }
+            continue;
+        }
+        let first = (min[axis] - eye[axis]) / ray[axis];
+        let second = (max[axis] - eye[axis]) / ray[axis];
+        entry = entry.max(first.min(second));
+        exit = exit.min(first.max(second));
+        if entry > exit {
+            return false;
+        }
+    }
+    true
 }
 
 impl BlockStateInterface for LoadedWorld<'_> {
@@ -65,14 +136,26 @@ impl BlockStateInterface for LoadedWorld<'_> {
             b.min == [f64::from(x), f64::from(y), f64::from(z)]
                 && b.max == [f64::from(x) + 1.0, f64::from(y) + 1.0, f64::from(z) + 1.0]
         });
-        if !air && (!full_cube || self.world.is_fluid(id)) {
+        let snow_props = (name == "snow").then(|| self.world.block_properties(id));
+        if self.world.is_fluid(id) || (!air && !full_cube && snow_props.is_none()) {
             return self.blocked.clone();
         }
         let state = Rc::new(BlockState {
             id,
             name: Arc::from(format!("minecraft:{name}")),
-            classes: if air { Class::Air.bit() } else { 0 },
-            props: Arc::from([]),
+            classes: if air {
+                Class::Air.bit()
+            } else if snow_props.is_some() {
+                Class::SnowLayer.bit()
+            } else {
+                0
+            },
+            props: snow_props
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(key, value)| (Arc::from(key), Arc::from(value)))
+                .collect::<Vec<_>>()
+                .into(),
             fluid: FluidKind::None,
             fluid_amount: 0,
             hardness: -1.0,
@@ -138,14 +221,16 @@ pub fn exposed_blocks(
     limit: usize,
 ) -> Vec<([i32; 3], u32)> {
     let adapter = LoadedWorld::new(world);
-    world.find_blocks_where(filter, center, radius, limit, |[x, y, z], state| {
+    world.find_blocks_where(filter, center, radius, limit, |target, state| {
         world
             .block_name(state)
             .is_some_and(|name| names.iter().any(|wanted| wanted == name))
-            && [(1, 0), (-1, 0), (0, 1), (0, -1)]
-                .into_iter()
-                .any(|(dx, dz)| adapter.standable([x + dx, y, z + dz]))
+            && adapter.mining_stands(target).next().is_some()
     })
+}
+
+pub fn exposed_stands(world: &World, target: [i32; 3]) -> Vec<[i32; 3]> {
+    LoadedWorld::new(world).mining_stands(target).collect()
 }
 
 pub fn find_approach(world: &World, start: [f64; 3], stands: Vec<[i32; 3]>) -> Option<[i32; 3]> {

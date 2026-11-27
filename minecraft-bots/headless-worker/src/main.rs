@@ -72,7 +72,17 @@ fn run() -> Result<(), String> {
                 assignment.world
             ));
         }
-        let outcome = jobs::execute(&coordinator, &assignment, &mut game)?;
+        let outcome = match jobs::execute(&coordinator, &assignment, &mut game) {
+            Ok(outcome) => outcome,
+            Err(reason) => {
+                // Report the unmet requirement before leaving. A stale token cannot
+                // overwrite the outcome of a replacement worker.
+                if let Err(error) = coordinator.finish(&assignment, false, &reason, None) {
+                    eprintln!("Could not report the job failure: {error:?}");
+                }
+                return Err(reason);
+            }
+        };
         match coordinator
             .finish(
                 &assignment,

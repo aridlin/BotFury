@@ -1,4 +1,13 @@
-# <img src="minecraft-bots/botfury-mod/src/main/resources/assets/botfury/icon.png" width="48" height="48" alt=""> BotFury
+# ![BotFury — Minecraft bot control](artwork/botfury/readme/banner.png)
+
+<a href="https://github.com/aridlin/BotFury"><img src="artwork/botfury/readme/button-star.png" alt="Star on GitHub" width="132" height="32"></a>
+<a href="https://github.com/aridlin/BotFury/releases"><img src="artwork/botfury/readme/button-releases.png" alt="Releases" width="94" height="32"></a>
+<a href="#setup"><img src="artwork/botfury/readme/button-setup.png" alt="Setup" width="75" height="32"></a>
+
+<a href="minecraft-bots/botfury-mod"><img src="artwork/botfury/readme/sticker-fabric.png" alt="Fabric 1.20.1" width="134" height="38"></a>
+<a href="minecraft-bots/baritone"><img src="artwork/botfury/readme/sticker-baritone.png" alt="Baritone" width="107" height="38"></a>
+<a href="fleet-dashboard/README.md"><img src="artwork/botfury/readme/sticker-fleet.png" alt="Fleet Command" width="135" height="38"></a>
+
 🚀 *Automate & Control Minecraft Bots with Fabric*
 
 ---
@@ -25,6 +34,8 @@ This mod integrates seamlessly with a **Flask-powered web dashboard**, letting y
 ✅ **HTTP-Based API** – Direct API access for custom automation.  
 
 ---
+
+<a name="setup"></a>
 
 ## 🛠️ Installation & Setup
 ### 📌 Prerequisites

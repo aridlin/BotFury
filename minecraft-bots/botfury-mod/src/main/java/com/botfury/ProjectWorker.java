@@ -450,7 +450,10 @@ final class ProjectWorker {
             if (busy) stopIdleAscent(client);
             else if (!pending && pickupRouteTool(client)) busy = true;
             else if (prepareIdleRouteTool(client, now)) busy = true;
-            else if ((!pending || idleSurfaceGoal != null) && followIdleAscent(client, here, now)) busy = true;
+            else if ((!pending || idleSurfaceGoal != null) && followIdleAscent(client, here, now)) {
+                if (!pending && now >= nextRequest) request(client, here, "claim-return-cargo", now);
+                return;
+            }
             else if (!pending && idleRecovery.yieldWhileIdle(client)) {
                 status = "Yielding the work area";
                 busy = true;
@@ -1932,6 +1935,10 @@ final class ProjectWorker {
         if (action.equals("safety-wait")) {
             args.put("worker", here.name());
             if (enrollment.project() != null) args.put("project", enrollment.project());
+        } else if (action.equals("claim-return-cargo")) {
+            args.put("worker", here.name());
+            if (enrollment.project() != null) args.put("project", enrollment.project());
+            args.put("returnRouteRevision", SubsurfaceAccess.RETURN_ROUTE_REVISION);
         } else if (assignment == null) {
             args.put("worker", here.name());
             if (enrollment.project() != null) args.put("project", enrollment.project());
@@ -2021,7 +2028,7 @@ final class ProjectWorker {
             }
         }
         pending = true;
-        if (!action.equals("safety-wait")) nextRequest = now + seconds(1);
+        if (!action.equals("safety-wait")) nextRequest = now + seconds(action.equals("claim-return-cargo") ? 4 : 1);
         var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/projects"))
                 .timeout(Duration.ofSeconds(2)).POST(HttpRequest.BodyPublishers.ofString(JSON.toJson(args))).build();
         HTTP.sendAsync(request, HttpResponse.BodyHandlers.ofString()).whenComplete((reply, error) -> client.execute(() -> {
@@ -2049,7 +2056,7 @@ final class ProjectWorker {
             }
             if (reply.statusCode() != 200) return;
             try {
-                if (action.equals("claim") || continuation) {
+                if (action.equals("claim") || action.equals("claim-return-cargo") || continuation) {
                     if (continuation) reset(client);
                     assignment = JSON.fromJson(reply.body(), ProjectQueue.Assignment.class);
                     if (assignment == null) {
@@ -2064,6 +2071,11 @@ final class ProjectWorker {
                         assignment = null;
                         status = "Coordinator did not honor the selected project";
                         return;
+                    }
+                    if (action.equals("claim-return-cargo")) {
+                        stopIdleAscent(client);
+                        waitingForSafety = false;
+                        BotEvents.add("info", "projects", "Returning carried cargo to the project chest");
                     }
                     deadline = deadline(assignment.job(), now);
 

@@ -797,6 +797,13 @@ final class ProjectBroker {
                     board.reportSafetyWait(world, request.worker, request.project, now);
                     reply(exchange, 200, true);
                 }
+                case "claim-return-cargo" -> {
+                    int revision = Math.max(0, Math.min(request.returnRouteRevision, SubsurfaceAccess.RETURN_ROUTE_REVISION));
+                    var assignment = board.offerUrgentMiningDeposit(world, request.worker, request.project, now,
+                            workerPosition(request.worker), ProjectBroker::heldCount, revision);
+                    if (assignment == null) board.reportSafetyWait(world, request.worker, request.project, now);
+                    reply(exchange, 200, assignment);
+                }
                 case "claim" -> {
                     var obstruction = board.obstructedPlacement(world, request.worker, request.occupiedCells, now);
                     if (obstruction != null) {

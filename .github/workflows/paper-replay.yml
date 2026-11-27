@@ -71,12 +71,50 @@ jobs:
           if [[ "$REPLAY_SURVEYED_SEED" == true ]]; then
             args+=(--seed -3640241710023986336 --site 32 65 6)
           fi
-          python3 tests/paper/survival_benchmark.py "$RUNNER_TEMP/paper.jar" "$RUNNER_TEMP/survival-benchmark" --minutes 120 "${args[@]}"
+          nohup bash -c '
+            python3 tests/paper/survival_benchmark.py "$@"
+            result=$?
+            printf "%s\n" "$result" > "$RUNNER_TEMP/survival.exit.tmp"
+            mv "$RUNNER_TEMP/survival.exit.tmp" "$RUNNER_TEMP/survival.exit"
+          ' run "$RUNNER_TEMP/paper.jar" "$RUNNER_TEMP/survival-benchmark" --minutes 120 "${args[@]}" \
+            > "$RUNNER_TEMP/survival-runner.log" 2>&1 < /dev/null &
+          echo "$!" > "$RUNNER_TEMP/survival.pid"
+      - name: Wait for the first two minutes of fleet observations
+        if: inputs.scenario == 'ten-worker-survival'
+        run: |
+          for _ in {1..150}; do
+            progress="$RUNNER_TEMP/survival-benchmark/progress.jsonl"
+            if [[ -f "$RUNNER_TEMP/survival.exit" ]] ||
+               [[ -f "$progress" && "$(wc -l < "$progress")" -ge 5 ]]; then
+              break
+            fi
+            sleep 3
+          done
+          tail -n 12 "$RUNNER_TEMP/survival-runner.log"
+      - uses: actions/upload-artifact@v4
+        if: always() && inputs.scenario == 'ten-worker-survival'
+        with:
+          name: ten-worker-survival-checkpoint
+          path: |
+            ${{ runner.temp }}/survival-benchmark/orders.json
+            ${{ runner.temp }}/survival-benchmark/progress.jsonl
+            ${{ runner.temp }}/survival-runner.log
+      - name: Wait for Paper's final verification
+        if: inputs.scenario == 'ten-worker-survival'
+        run: |
+          pid="$(cat "$RUNNER_TEMP/survival.pid")"
+          while [[ ! -f "$RUNNER_TEMP/survival.exit" ]]; do
+            kill -0 "$pid"
+            sleep 5
+          done
+          tail -n 30 "$RUNNER_TEMP/survival-runner.log"
+          exit "$(cat "$RUNNER_TEMP/survival.exit")"
       - uses: actions/upload-artifact@v4
         if: always() && inputs.scenario == 'ten-worker-survival'
         with:
           name: ten-worker-survival-paper
           path: |
+            ${{ runner.temp }}/survival-runner.log
             ${{ runner.temp }}/survival-benchmark/*.json
             ${{ runner.temp }}/survival-benchmark/*.jsonl
             ${{ runner.temp }}/survival-benchmark/*.mp4

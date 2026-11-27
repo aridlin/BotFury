@@ -76,7 +76,7 @@ final class OutputManifest {
     private static List<ProjectQueue.Work> jobs(MinecraftClient client, List<Target> targets,
                                                  ProjectChest.Storage storage, ProjectBlock chest,
                                                  ProjectBlock table, ProjectBlock furnace, ProjectGather.Area area,
-                                                 boolean newStorage) {
+                                                 boolean newStorage) throws IOException {
         var recipes = targets.stream().flatMap(target -> target.batches.stream()).map(MaterialRecipe.Batch::plan).toList();
         var stations = ProjectWorkstations.prepare(client, storage.key(), area, table, furnace,
                 newStorage || recipes.stream().anyMatch(MaterialRecipe.Plan::needsTable),

@@ -10,6 +10,7 @@ import net.minecraft.util.math.Vec3d;
 import net.minecraft.util.shape.VoxelShapes;
 import net.minecraft.world.RaycastContext;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -23,7 +24,7 @@ record ProjectWorkstations(ProjectBlock table, ProjectBlock furnace, ProjectGath
     private static final Identifier FOOTING = Identifier.of("minecraft", "dirt");
 
     static ProjectWorkstations prepare(MinecraftClient client, BlockPos center, ProjectGather.Area area,
-                                       ProjectBlock table, ProjectBlock furnace, boolean needTable, boolean needFurnace) {
+                                       ProjectBlock table, ProjectBlock furnace, boolean needTable, boolean needFurnace) throws IOException {
         boolean placeFurnace = needFurnace && furnace == null;
         boolean placeTable = table == null && (needTable || placeFurnace);
         if (placeTable) {
@@ -68,11 +69,13 @@ record ProjectWorkstations(ProjectBlock table, ProjectBlock furnace, ProjectGath
     }
 
     static ProjectBlock chooseSite(MinecraftClient client, BlockPos center, ProjectGather.Area protectedArea,
-                                   Identifier station) {
+                                   Identifier station) throws IOException {
+        var reservedStorage = ProjectBroker.activeStorageKeys();
         var world = client.world;
         var desired = Registries.BLOCK.get(station).getDefaultState();
         for (var pos : BlockPos.iterateOutwards(center, 8, 2, 8)) {
-            if (protectedArea.contains(pos) || BuildProtection.blocked(pos) || !world.isInBuildLimit(pos)
+            if (protectedArea.contains(pos) || BuildProtection.blocked(pos)
+                    || reservedStorage.contains(ProjectBlock.key(pos)) || !world.isInBuildLimit(pos)
                     || !world.getWorldBorder().contains(pos) || !world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)
                     || !world.getBlockState(pos).isAir() || !world.getBlockState(pos.up()).isAir()
                     || !world.doesNotIntersectEntities(null, VoxelShapes.fullCube().offset(pos.getX(), pos.getY(), pos.getZ()))) continue;
@@ -82,6 +85,7 @@ record ProjectWorkstations(ProjectBlock table, ProjectBlock furnace, ProjectGath
             var click = ProjectPlacement.facePoint(floor, Direction.UP, support, desired);
             var stand = StructureProject.chooseStand(client, pos, Map.of(), Direction.UP, candidate -> {
                 if (protectedArea.contains(candidate) || BuildProtection.blocked(candidate)
+                        || reservedStorage.contains(ProjectBlock.key(candidate))
                         || !world.doesNotIntersectEntities(null, VoxelShapes.fullCube()
                                 .offset(candidate.getX(), candidate.getY(), candidate.getZ()))) return false;
                 var eye = Vec3d.ofBottomCenter(candidate).add(0, 1.62, 0);

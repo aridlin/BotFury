@@ -3,6 +3,7 @@ from argparse import ArgumentParser
 from collections import Counter
 from hashlib import sha256
 from pathlib import Path
+from urllib.parse import urlencode
 from urllib.request import urlopen
 import json
 import math
@@ -68,6 +69,22 @@ def audit_house(connection, cells, site):
     ]
 
 
+def describe_work(project):
+    jobs = project["jobs"]
+    return {
+        "states": dict(Counter(job["state"] for job in jobs)),
+        "active": [
+            {"job": job["work"]["id"], "kind": job["work"]["kind"],
+             "worker": job.get("worker"), "attempts": job["attempts"]}
+            for job in jobs if job["state"] == "LEASED"
+        ],
+        "failures": [
+            {"job": job["work"]["id"], "attempts": job["attempts"], "evidence": job.get("evidence")}
+            for job in jobs if job["state"] == "FAILED"
+        ],
+    }
+
+
 def observe(connect, out, journal, house_id, manifest_id, cells, site, minutes):
     deadline = time.monotonic() + 60 * minutes
     next_audit = 0
@@ -87,8 +104,7 @@ def observe(connect, out, journal, house_id, manifest_id, cells, site, minutes):
                     name, count = found.groups()
                     stock["logs" if name.endswith("_log") else name] += int(count)
             row = {"time": time.time(), "chest": coords, "stock": {k: stock[k] for k in TARGETS},
-                   "house": dict(Counter(job["state"] for job in house["jobs"])),
-                   "manifest": dict(Counter(job["state"] for job in manifest["jobs"]))}
+                   "house": describe_work(house), "manifest": describe_work(manifest)}
             stock_ready = all(stock[item] >= count for item, count in TARGETS.items())
             if time.monotonic() >= next_audit or stock_ready:
                 checks = audit_house(connection, cells, site)
@@ -101,7 +117,10 @@ def observe(connect, out, journal, house_id, manifest_id, cells, site, minutes):
                     return
         finally:
             connection.close()
-        print(json.dumps(row), flush=True)
+        print(json.dumps({
+            "stock": row["stock"], "houseCellsMatched": row.get("houseCellsMatched"),
+            "houseJobs": row["house"]["states"], "manifestJobs": row["manifest"]["states"],
+        }), flush=True)
         with (out / "progress.jsonl").open("a") as trace:
             trace.write(json.dumps(row) + "\n")
         time.sleep(30)
@@ -155,7 +174,7 @@ def run(args):
         profile = out / name
         config = profile / "config"
         config.mkdir(parents=True)
-        (profile / "options.txt").write_text("pauseOnLostFocus:false\nrenderDistance:6\nsimulationDistance:4\n")
+        (profile / "options.txt").write_text("pauseOnLostFocus:false\nrenderDistance:6\nsimulationDistance:5\nmaxFps:10\n")
         (config / "botfury-ui.json").write_text('{"fleetGuideSeen":true}')
         if index == 0:
             structures = config / "botfury-structures"
@@ -166,11 +185,11 @@ def run(args):
             "port": CONTROL_PORT + index, "offlineUsername": name, "managedHttp": str(index != 0).lower(),
             "strictPort": "true", "httpBindAddress": "127.0.0.1", "autoJoin": "true",
             "serverIp": "127.0.0.1", "serverPort": SERVER_PORT, "formationBasePort": CONTROL_PORT + 1,
-            "formationPortCount": len(WORKERS), "maxFps": 12 if visible else 6,
+            "formationPortCount": len(WORKERS),
             "disableRendering": str(not visible).lower(), "advancedModulesFile": out / "botfury-advanced.txt",
         }
         return run_process(name, [
-            java, "-Xms128m", "-Xmx720m", "-XX:ActiveProcessorCount=2", "-XX:+UseSerialGC",
+            java, "-Xms128m", "-Xmx720m", "-XX:ActiveProcessorCount=1", "-XX:+UseSerialGC",
             *[f"-Dbotfury.{key}={value}" for key, value in flags.items()], f"@{RUNTIME / 'client.args'}",
             "--username", name, "--width", "480", "--height", "270",
         ], profile)
@@ -179,23 +198,65 @@ def run(args):
         status = read_status(index)
         return status.get("connected") and status.get("player") == name
 
-    def order(master_window, text, reply):
+    def assign_shared_workers(manifest_id):
+        def enrolled(name, project):
+            enrollment = out / name / "config/botfury-worker.json"
+            data = json.loads(enrollment.read_text())
+            return (data.get("name") == name and data.get("port") == CONTROL_PORT
+                    and data.get("project") == project)
+
+        # The in-game order dispatches enrollment asynchronously. Let that finish first.
+        wait(lambda: all(enrolled(name, manifest_id) for name in WORKERS), 90)
+        worker_command = urlencode({"cmd": f"project:worker {CONTROL_PORT}"})
+        for index, name in enumerate(WORKERS, 1):
+            with urlopen(f"http://127.0.0.1:{CONTROL_PORT+index}/command?{worker_command}", timeout=15) as response:
+                if response.read() != b"Project worker enabled":
+                    raise RuntimeError(f"Could not enroll {name} for both projects")
+
+        wait(lambda: all(enrolled(name, None) for name in WORKERS), 90)
+        print("All ten workers saved their shared project enrollment.", flush=True)
+
+    def master_at(position):
+        status = read_status(0)
+        return status.get("connected") and status.get("player") == MASTER and all(
+            abs(status.get(axis, math.inf) - expected) < 1
+            for axis, expected in zip("xz", (position[0], position[2]))
+        )
+
+    def order(master_window, text, reply, allow_chunk_retry=False):
         log = out / MASTER / "logs/latest.log"
-        position = log.stat().st_size
-        x("windowfocus", "--sync", master_window)
-        x("key", "slash")
-        time.sleep(0.65)
-        x("type", "--clearmodifiers", "--delay", "18", text)
-        time.sleep(0.4)
-        x("key", "Return")
-        def accepted():
-            with log.open() as stream:
-                stream.seek(position)
-                response = stream.read()
-            if "Could not queue" in response:
-                raise RuntimeError(response)
-            return re.search(reply, response)
-        return wait(accepted, 45).group(1)
+
+        def master_connected():
+            return ready(0, MASTER) and MASTER in connection.command("list")
+
+        for attempt in range(3 if allow_chunk_retry else 1):
+            wait(master_connected, 120)
+            position = log.stat().st_size
+            x("windowfocus", "--sync", master_window)
+            x("key", "slash")
+            time.sleep(0.65)
+            x("type", "--clearmodifiers", "--delay", "18", text)
+            time.sleep(0.4)
+            x("key", "Return")
+
+            def accepted():
+                with log.open() as stream:
+                    stream.seek(position)
+                    response = stream.read()
+                if "Could not queue" in response:
+                    return response
+                return re.search(reply, response)
+
+            try:
+                result = wait(accepted, 75)
+            except RuntimeError as error:
+                raise RuntimeError(f"Could not verify /{text}: {error}") from error
+            if isinstance(result, re.Match):
+                return result.group(1)
+            if not allow_chunk_retry or "Load the entire build site first" not in result or attempt == 2:
+                raise RuntimeError(f"Paper replay order /{text} was rejected: {result}")
+            print("Build site is still loading in the master client, retrying after a short wait.", flush=True)
+            time.sleep(6)
 
     try:
         run_process("paper", [java, "-Xmx2048m", "-XX:ActiveProcessorCount=4", "-jar", "paper.jar", "nogui"], paper)
@@ -206,20 +267,14 @@ def run(args):
         master = launch(0, MASTER)
         wait(lambda: ready(0, MASTER), 150)
         site = tuple(args.site) if args.site else find_site(connection, MASTER, cells)
-        command(f"gamemode spectator {MASTER}")
-        command(f"tp {MASTER} {site[0]+1.5} {site[1]} {site[2]-3.5} 0 4")
-        handles = []
-        for i, name in enumerate(WORKERS, 1):
-            handles.append(launch(i, name))
-            time.sleep(3)
-        for i, name in enumerate(WORKERS, 1):
-            wait(lambda: ready(i, name), 150)
-        initial = {name: command(f"data get entity {name} Inventory") for name in WORKERS}
-        if not all(value.endswith(" []") for value in initial.values()):
-            raise RuntimeError(f"Expected empty starting inventories, got {initial}")
+        command(f"gamemode creative {MASTER}")
+        viewpoint = site[0] + 1.5, site[1], site[2] - 3.5
+        command(f"tp {MASTER} {' '.join(map(str, viewpoint))} 0 4")
+        wait(lambda: master_at(viewpoint), 120)
+        site_chunks = sorted({((site[0] + x) // 16, (site[2] + z) // 16) for x, _, z, _ in cells})
+        loaded_conditions = " ".join(f"if loaded {cx * 16} {site[1]} {cz * 16}" for cx, cz in site_chunks)
+        wait(lambda: command(f"execute {loaded_conditions}") == "Test passed", 120)
         master_window = window(master, 0, 0)
-        window(handles[0], 480, 0)
-        window(handles[1], 480, 270)
         captured = run_process("capture", [
             "ffmpeg", "-nostdin", "-loglevel", "error", "-n", "-f", "x11grab", "-draw_mouse", "0",
             "-framerate", "8", "-video_size", "960x540", "-i", display + ".0+0,0",
@@ -230,13 +285,27 @@ def run(args):
         if captured.poll() is not None:
             raise RuntimeError("Failed to record the hosted survival benchmark")
         house_id = order(master_window, f"bf project build {SCHEMATIC.name} {' '.join(map(str, site))} supplied",
-                         r"Queued (village-homestead-[a-f0-9]{8})")
+                         r"Queued (village-homestead-[a-f0-9]{8})", allow_chunk_retry=True)
+        print(f"Paper accepted house order {house_id}.", flush=True)
+        command(f"gamemode spectator {MASTER}")
+        command(f"tp {MASTER} {' '.join(map(str, viewpoint))} 0 4")
+        handles = []
+        for i, name in enumerate(WORKERS, 1):
+            handles.append(launch(i, name))
+            wait(lambda: ready(i, name), 150)
+            print(f"{name} joined Paper.", flush=True)
+            if i <= 2:
+                window(handles[-1], 480, (i - 1) * 270)
+        initial = {name: command(f"data get entity {name} Inventory") for name in WORKERS}
+        if not all(value.endswith(" []") for value in initial.values()):
+            raise RuntimeError(f"Expected empty starting inventories, got {initial}")
         manifest_id = order(master_window, STOCK_ORDER, r"Queued (manifest-[a-f0-9]{8}) for 10 bots")
-        order(master_window, "bf project workers", r"(Project worker requested for 10 bot\(s\))")
+        print(f"Paper accepted stock order {manifest_id}.", flush=True)
         (out / "orders.json").write_text(json.dumps({
             "seed": command("seed"), "site": site, "inventories": initial,
             "house": house_id, "manifest": manifest_id, "schematicSha256": reference["sha256"],
         }, indent=2) + "\n")
+        assign_shared_workers(manifest_id)
         observe(connect, out, out / MASTER / "config/botfury-projects.json",
                 house_id, manifest_id, cells, site, args.minutes)
     finally:

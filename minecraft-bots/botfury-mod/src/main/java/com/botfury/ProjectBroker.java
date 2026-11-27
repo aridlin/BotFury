@@ -54,6 +54,11 @@ final class ProjectBroker {
         return queue;
     }
 
+    static java.util.Set<String> activeStorageKeys() throws IOException {
+        var here = LocalFormation.here();
+        return here == null ? java.util.Set.of() : queue().activeStorageKeys(here.server() + "|" + here.dimension());
+    }
+
     static Overview overview(String world) throws IOException {
         var board = queue();
         var projects = board.snapshot(System.currentTimeMillis()).stream()

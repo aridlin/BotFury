@@ -39,13 +39,14 @@ final class BotTracker {
     }
     private static final ConcurrentMap<Integer,Bot> bots = new ConcurrentHashMap<>();
     private static final Set<Integer> inflight = ConcurrentHashMap.newKeySet();
-    private static final ExecutorService IO = Executors.newFixedThreadPool(4, task -> {var t=new Thread(task,"BotFury-tracker");t.setDaemon(true);return t;});
+    private static final ExecutorService IO = Executors.newFixedThreadPool(8, task -> {var t=new Thread(task,"BotFury-tracker");t.setDaemon(true);return t;});
     private static final HttpClient HTTP = HttpClient.newBuilder().executor(IO).connectTimeout(Duration.ofMillis(300)).build();
     private static final ConcurrentMap<Integer,CompletableFuture<Void>> commands = new ConcurrentHashMap<>();
     private static final AtomicLong sequence = new AtomicLong();
     private static final String SESSION = "tracker-" + UUID.randomUUID();
     private static volatile long nextPoll;
     private static long rosterAt;
+    private static int pollCursor;
     private static int selected = -1;
     private static String squad;
     record Target(int port, Set<String> members) {
@@ -85,9 +86,10 @@ final class BotTracker {
     static void tick() {
         if (Boolean.getBoolean("botfury.managedHttp")) return;
         if (LocalFormation.here()==null || System.currentTimeMillis()<nextPoll) return;
-        nextPoll=System.currentTimeMillis()+500;
-        int base=Integer.getInteger("botfury.formationBasePort",8765), count=Math.min(32,Math.max(0,Integer.getInteger("botfury.formationPortCount",10)));
-        for(int i=0;i<count;i++){int port=base+i;if(port>=1024&&port<=65535&&inflight.add(port))poll(port);}
+        var ports = FleetPorts.configured();
+        nextPoll = System.currentTimeMillis() + (ports.batchSize() == ports.count() ? 500 : 50);
+        ports.batch(pollCursor).filter(inflight::add).forEach(BotTracker::poll);
+        pollCursor = ports.count() == 0 ? 0 : (pollCursor + ports.batchSize()) % ports.count();
         if(System.currentTimeMillis()-rosterAt>3000){
             rosterAt=System.currentTimeMillis();
             sendDefenses();

@@ -41,8 +41,12 @@ final class MiningClaims {
             if(q.x==r.x&&q.y==r.y&&q.z==r.z)return new Reply(false,"Ore is reserved",0);
             if(Math.pow(q.sx-r.sx,2)+Math.pow(q.sy-r.sy,2)+Math.pow(q.sz-r.sz,2)<2.25)return new Reply(false,"Mining stand is reserved",0);
         }
-        if(leases.size()>=64&&!leases.containsKey(r.owner))return new Reply(false,"Mining roster full",0);
-        leases.keySet().removeIf(key->family(key).equals(family(r.owner)));
+        String ownerFamily = family(r.owner);
+        if (leases.size() >= FleetPorts.CAPACITY
+                && leases.keySet().stream().noneMatch(key -> family(key).equals(ownerFamily))) {
+            return new Reply(false, "Mining roster full", 0);
+        }
+        leases.keySet().removeIf(key -> family(key).equals(ownerFamily));
         leases.put(r.owner,new Lease(r,now+12_000));return new Reply(true,"Reserved",12_000);
     }
     private static boolean samePosition(Request a, Request b) {

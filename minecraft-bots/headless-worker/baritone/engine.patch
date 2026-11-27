@@ -1,0 +1,71 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -17,6 +17,7 @@
+ path = "src/main.rs"
+
+ [dependencies]
++horizon-baritone = { path = "../horizon-baritone" }
+ # zlib for the packet compression servers switch on during login (pure-Rust backend).
+ flate2 = "1"
+ # Offline-mode UUID: Java's UUID.nameUUIDFromBytes is an MD5 (version 3) UUID.
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -74,6 +74,10 @@
+ ]
+
+ [[package]]
++name = "horizon-baritone"
++version = "1.1.52"
++
++[[package]]
+ name = "itoa"
+ version = "1.0.19"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -84,6 +88,7 @@
+ version = "0.1.0"
+ dependencies = [
+  "flate2",
++ "horizon-baritone",
+  "md-5",
+  "serde_json",
+ ]
+--- a/src/engine.rs
++++ b/src/engine.rs
+@@ -1619,7 +1619,7 @@
+                         } else {
+                             goal.repathed = true;
+                             goal.last_progress = self.tick;
+-                            if let Some(path) = physics::find_path(&g.world, pos, goal.target, goal.has_y, 6000) {
++                            if let Some(path) = crate::native_baritone::find_path(&g.world, pos, goal.target, goal.has_y, 6000) {
+                                 goal.path = path;
+                                 goal.next = 0;
+                             }
+@@ -1794,10 +1794,18 @@
+             Cmd::WalkTo { id, target, has_y, sprint, timeout } => {
+                 let path = {
+                     let g = self.game();
+-                    physics::find_path(&g.world, self.body.pos, target, has_y, 20_000).unwrap_or_default()
++                    crate::native_baritone::find_path(&g.world, self.body.pos, target, has_y, 20_000)
++                };
++                let Some(path) = path else {
++                    self.finish_goal(Walk::Failed { reason: "replaced by a new walk".into(), at: self.body.pos });
++                    let mut g = self.game();
++                    g.walk_id = id;
++                    g.walk = Walk::Failed { reason: "No loaded Baritone route".into(), at: self.body.pos };
++                    self.shared.changed.notify_all();
++                    return Ok(());
+                 };
+                 self.log.info(format!(
+-                    "walking to {:.1} {:.1} {:.1} ({} waypoints)",
++                    "walking to {:.1} {:.1} {:.1} ({} Baritone waypoints)",
+                     target[0],
+                     target[1],
+                     target[2],
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -19,3 +19,5 @@
+ pub mod registries;
+ pub mod text;
+ pub mod world;
++
++pub mod native_baritone;

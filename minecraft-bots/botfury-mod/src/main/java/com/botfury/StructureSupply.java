@@ -11,6 +11,7 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
+import java.io.IOException;
 import java.util.*;
 
 /** Generates material jobs before the build jobs that consume them. */
@@ -33,7 +34,7 @@ final class StructureSupply {
 
     private StructureSupply() {}
 
-    static Supplied compile(MinecraftClient client, StructureProject.Plan plan) {
+    static Supplied compile(MinecraftClient client, StructureProject.Plan plan) throws IOException {
         var area = plan.area();
         boolean newStorage = !(client.crosshairTarget instanceof BlockHitResult hit)
                 || hit.getType() != HitResult.Type.BLOCK

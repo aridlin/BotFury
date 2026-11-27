@@ -1333,6 +1333,16 @@ final class ProjectQueue {
         }
     }
 
+    synchronized Set<String> activeStorageKeys(String world) {
+        var keys = new HashSet<String>();
+        for (Project project : projects.values()) {
+            if (!project.world.equals(world)) continue;
+            String storage = reservedStorage(project);
+            if (storage != null) keys.add(storage);
+        }
+        return keys;
+    }
+
     private static String reservedStorage(Project project) {
         if (project.repeat != null && !project.repeat.cancelled) return project.repeat.chest;
         if (project.supplyChest == null) return null;

@@ -85,7 +85,7 @@ final class OutputOrder {
     }
 
     private static Plan plan(MinecraftClient client, ProjectChest.Storage storage, ProjectBlock chest, ProjectBlock table, ProjectBlock furnace,
-                             Identifier item, int batch, int stackSize, int workers, MaterialRecipe.Plan steps) {
+                             Identifier item, int batch, int stackSize, int workers, MaterialRecipe.Plan steps) throws IOException {
         int capacity = stackSize * storage.slots();
         var jobs = new ArrayList<ProjectQueue.Work>();
         var protectedArea = StructureSupply.union(storage.include(new ProjectGather.Area(chest.target(), chest.target())), chest, table, furnace);

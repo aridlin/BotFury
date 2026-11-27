@@ -285,7 +285,7 @@ def run(args):
 
     def ready(index, name):
         status = read_status(index)
-        return status.get("connected") and status.get("player") == name
+        return status if status.get("connected") and status.get("player") == name else None
 
     def assign_shared_workers(manifest_id):
         def enrolled(name, project):
@@ -402,10 +402,15 @@ def run(args):
         command(f"gamemode spectator {MASTER}")
         command(f"tp {MASTER} {' '.join(map(str, viewpoint))} 0 4")
         handles = []
+        cooperative = {}
         for i, name in enumerate(WORKERS, 1):
             handles.append(launch(i, name))
-            wait(lambda: ready(i, name), 150)
-            print(f"{name} joined Paper.", flush=True)
+            status = wait(lambda: ready(i, name), 150)
+            cooperative[name] = status.get("scaffoldBatchCapable") is True
+            if args.require_cooperative_baritone and not cooperative[name]:
+                raise RuntimeError(f"{name} did not expose cooperative Baritone capability")
+            routing = "cooperative Baritone" if cooperative[name] else "standard routing"
+            print(f"{name} joined Paper with {routing}.", flush=True)
             if i <= 2:
                 window(handles[-1], 480, (i - 1) * 270)
         initial = {name: command(f"data get entity {name} Inventory") for name in WORKERS}
@@ -416,6 +421,7 @@ def run(args):
         (out / "orders.json").write_text(json.dumps({
             "seed": world_seed, "site": site, "relocatedSpawn": relocated_spawn, "inventories": initial,
             "house": house_id, "manifest": manifest_id, "schematicSha256": reference["sha256"],
+            "cooperativeBaritone": cooperative,
         }, indent=2) + "\n")
         assign_shared_workers(manifest_id)
         observe(connect, out, journal, house_id, manifest_id, cells, site, args.minutes)
@@ -459,4 +465,6 @@ if __name__ == "__main__":
     parser.add_argument("--seed", default="")
     parser.add_argument("--site", type=int, nargs=3)
     parser.add_argument("--minutes", type=int, default=60)
+    parser.add_argument("--require-cooperative-baritone", action="store_true",
+                        help="reject a replay if any worker lacks native cooperative route planning")
     run(parser.parse_args())

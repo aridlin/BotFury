@@ -82,24 +82,54 @@ final class ProjectProduction {
         return spec.kind == ProjectQueue.Kind.SMELT
                 && inventory.contains(Registries.ITEM.get(spec.input).getDefaultStack())
                 && !inventory.contains(net.minecraft.item.Items.FURNACE.getDefaultStack())
-                && canCraft(client, Identifier.of("minecraft", "furnace"));
+                && canPrepareFieldFurnace(client);
     }
 
-    Map<Integer, Integer> reserveCraftingInputs(MinecraftClient client) {
+    boolean canPrepareFieldFurnace(MinecraftClient client) {
+        return canCraft(client, FieldWorkstation.FURNACE)
+                && canCraftFromSurplus(client, FieldWorkstation.FURNACE, reserveProductionInputs(client));
+    }
+
+    Map<Integer, Integer> reserveProductionInputs(MinecraftClient client) {
         var recipe = client.world.getRecipeManager().get(spec.recipe).orElse(null);
-        if (spec.kind != ProjectQueue.Kind.CRAFT || !(recipe instanceof CraftingRecipe crafting)) return Map.of();
-        var output = crafting.getOutput(client.world.getRegistryManager());
+        if (recipe == null) return Map.of();
+        var output = recipe.getOutput(client.world.getRegistryManager());
         if (output.isEmpty()) return Map.of();
         int outstanding = Math.max(0, spec.count - inventoryCount(client, output));
         int yield = output.getCount();
         int crafts = (outstanding + yield - 1) / yield;
+        if (crafts == 0) return Map.of();
+        var reserved = new LinkedHashMap<Integer, Integer>();
+        if (spec.kind == ProjectQueue.Kind.SMELT && recipe instanceof SmeltingRecipe smelting) {
+            reserved.put(RecipeMatcher.getItemId(Registries.ITEM.get(spec.input).getDefaultStack()), crafts);
+            reserveSmeltingFuel(client, reserved, (long) crafts * smelting.getCookTime());
+            return reserved;
+        }
+        if (!(recipe instanceof CraftingRecipe crafting)) return Map.of();
         var matcher = new RecipeMatcher();
         client.player.getInventory().populateRecipeFinder(matcher);
         var ingredients = new IntArrayList();
         int available = matcher.countCrafts(crafting, crafts, ingredients);
-        var reserved = new LinkedHashMap<Integer, Integer>();
         reserveIngredients(reserved, ingredients, available);
         return reserved;
+    }
+
+    private void reserveSmeltingFuel(MinecraftClient client, Map<Integer, Integer> reserved, long ticksLeft) {
+        var carried = new LinkedHashMap<Identifier, Integer>();
+        carried.put(spec.fuel, 0); // Reserve the preferred fuel before considering alternatives.
+        carried.putAll(carriedFuel(client));
+        var burnTimes = net.minecraft.block.entity.AbstractFurnaceBlockEntity.createFuelTimeMap();
+        for (var entry : carried.entrySet()) {
+            if (ticksLeft <= 0) return;
+            var id = entry.getKey();
+            if (id.equals(spec.input) || !allowedFuel(id, spec.fuel, spec.fuelChoices)) continue;
+            var fuel = Registries.ITEM.get(id);
+            int burn = burnTimes.getOrDefault(fuel, 0);
+            if (burn <= 0) continue;
+            int count = (int) Math.min(entry.getValue(), (ticksLeft + burn - 1) / burn);
+            if (count > 0) reserved.put(RecipeMatcher.getItemId(fuel.getDefaultStack()), count);
+            ticksLeft -= (long) count * burn;
+        }
     }
 
     static void reserveIngredients(Map<Integer, Integer> reserved, IntArrayList ingredients, int crafts) {
@@ -191,6 +221,11 @@ final class ProjectProduction {
     static boolean canCraft(MinecraftClient client, Identifier id, ItemStack additional) {
         var recipe = client.world.getRecipeManager().get(id).orElse(null);
         return recipe instanceof CraftingRecipe crafting && matchesInventoryRecipe(client, crafting, additional);
+    }
+
+    static boolean canCraftFromSurplus(MinecraftClient client, Identifier id, Map<Integer, Integer> reserved) {
+        var recipe = client.world.getRecipeManager().get(id).orElse(null);
+        return recipe instanceof CraftingRecipe crafting && surplusMatcher(client, reserved).match(crafting, null);
     }
 
     private static boolean matchesInventoryRecipe(MinecraftClient client, CraftingRecipe recipe, ItemStack additional) {

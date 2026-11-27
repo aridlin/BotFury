@@ -887,7 +887,7 @@ final class ProjectWorker {
         if (fieldStoneUntil != 0) {
             if (now < fieldStoneUntil && production.carryingUnstartedSmeltingInput(client)
                     && MiningTask.active() && !MiningTask.toolShortfall()
-                    && !ProjectProduction.canCraft(client, FieldWorkstation.FURNACE)) {
+                    && !production.canPrepareFieldFurnace(client)) {
                 status = assignment.project() + "/" + assignment.job().work().id() + ": Gathering stone for a field furnace";
                 MiningTask.tick(client);
                 return true;
@@ -937,7 +937,7 @@ final class ProjectWorker {
                 || client.player.getInventory().contains(Items.FURNACE.getDefaultStack())
                 || !SubsurfaceAccess.hasFooting(client) || client.player.isTouchingWater()
                 || client.player.currentScreenHandler != client.player.playerScreenHandler
-                || !SubsurfaceAccess.canDigRoute(client) || ProjectProduction.canCraft(client, FieldWorkstation.FURNACE)) {
+                || !SubsurfaceAccess.canDigRoute(client) || production.canPrepareFieldFurnace(client)) {
             return false;
         }
         nextFieldStoneSearch = now + seconds(90);

@@ -72,7 +72,7 @@ final class FieldWorkstation {
 
     static FieldWorkstation find(MinecraftClient client, long now, ProjectQueue.Kind kind, ProjectProduction production,
                                  Set<BlockPos> rejected) {
-        var reserved = production.reserveCraftingInputs(client);
+        var reserved = production.reserveProductionInputs(client);
         var local = find(client, now, kind == ProjectQueue.Kind.SMELT ? FURNACE : TABLE,
                 null, WORKBENCH_COST, null, reserved);
         if (local != null || kind != ProjectQueue.Kind.CRAFT || !SubsurfaceAccess.hasFooting(client)
@@ -138,7 +138,7 @@ final class FieldWorkstation {
             }
         }
         boolean canPrepare = held || (table ? canCraftTable || plankRecipe != null
-                : ProjectProduction.canCraft(client, FURNACE));
+                : ProjectProduction.canCraftFromSurplus(client, FURNACE, reserved));
         for (var position : BlockPos.iterateOutwards(feet, 3, 2, 3)) {
             if (position.equals(feet) || position.equals(feet.up()) || position.equals(feet.down())
                     || position.equals(reservedSite)
@@ -163,7 +163,7 @@ final class FieldWorkstation {
             recess = client.world.getBlockState(site.target());
         }
         if (site == null) return null;
-        var workbench = table || held ? null : find(client, now, TABLE, site.target(), PLANK_BUDGET, excluded, Map.of());
+        var workbench = table || held ? null : find(client, now, TABLE, site.target(), PLANK_BUDGET, excluded, reserved);
         if (!table && !held && workbench == null) return null;
         return new FieldWorkstation(site, now, plankRecipe, workbench, recess, reserved);
     }

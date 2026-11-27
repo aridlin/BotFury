@@ -1720,6 +1720,32 @@ class ProjectQueueTest {
         }
     }
 
+    @Test void aWorkbenchReceiptCompletesTheCourierJobEvenAfterLeaseExpiryAndRestart() throws Exception {
+        for (boolean expired : new boolean[]{false, true}) {
+            var journal = directory.resolve("workbench-receipt-" + expired + ".json");
+            var queue = new ProjectQueue(journal);
+            queue.submit("tools", WORLD, List.of(job("craft", CRAFT, List.of())));
+            var receiver = queue.claim(WORLD, "crafter", Set.of(CRAFT), 1).job();
+            assertNotNull(queue.renew("tools", "craft", receiver.lease(), null, 2, false, true));
+            var site = new ProjectQueue.ResourceSite(5, 64, 4);
+            var courier = queue.offerRouteTool(WORLD, "courier", "tools", 3, null, 0, true,
+                    name -> site, (name, item) -> 0).job();
+            long now = expired ? courier.expiresAt() : 6;
+            assertNotNull(queue.renew("tools", "craft", receiver.lease(), null, 5, false, true));
+            if (expired) {
+                assertEquals(ProjectQueue.State.FAILED, queue.snapshot(now).get(0).jobs().get(1).state());
+                queue = new ProjectQueue(journal);
+            }
+            queue.recordRouteBenchReceipt("tools", "craft", receiver.lease(), now);
+            queue = new ProjectQueue(journal);
+            var delivery = queue.snapshot(now + 1).get(0).jobs().get(1);
+            assertEquals(ProjectQueue.State.DONE, delivery.state());
+            assertEquals("courier", delivery.worker());
+            assertEquals(courier.lease(), delivery.lease());
+            assertTrue(queue.finish("tools", courier.work().id(), courier.lease(), true, "Delivered workbench", now + 2));
+        }
+    }
+
     @Test void aNewReturnRouteGetsOneRetryWithTheSameCargoAndPosition() throws Exception {
         for (boolean observedStock : new boolean[]{false, true}) {
             var journal = directory.resolve("return-upgrade-" + observedStock + ".json");

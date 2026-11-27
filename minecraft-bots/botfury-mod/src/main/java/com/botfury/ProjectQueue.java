@@ -2140,17 +2140,22 @@ final class ProjectQueue {
     synchronized void recordRouteBenchReceipt(String projectId, String jobId, UUID token, long now) throws IOException {
         var project = projects.get(projectId);
         var receiver = find(project, jobId);
-        if (!owns(receiver, token, now) || !productionWork(receiver.work)
+        if (!owns(receiver, token, now) || cancelled(project) || !productionWork(receiver.work)
                 && (receiver.work.kind != Kind.TRANSFER || !depositTarget(receiver))) return;
         String id = "route-tool-" + token;
         var supply = find(project, id + "-retry");
         if (supply == null) supply = find(project, id);
-        if (supply == null || supply.state != State.LEASED || supply.work.kind != Kind.RESUPPLY
-                || ROUTE_BENCH_RECEIVED.equals(supply.evidence)) return;
+        if (supply == null || supply.work.kind != Kind.RESUPPLY
+                || supply.state != State.LEASED && !(supply.state == State.FAILED && LEASE_EXPIRED.equals(supply.evidence))) return;
         var delivery = JSON.fromJson(supply.work.payload, RouteToolDelivery.class);
         if (!"minecraft:crafting_table".equals(delivery.item) || !receiver.worker.equals(delivery.recipient)) return;
-        replace(project, new Job(supply.work, supply.state, supply.attempts, supply.worker, supply.lease,
-                supply.expiresAt, ROUTE_BENCH_RECEIVED, supply.chest));
+        replace(project, completedRouteBench(supply));
+        restoredLeases.remove(supply.lease);
+    }
+
+    private static Job completedRouteBench(Job supply) {
+        return new Job(supply.work, State.DONE, supply.attempts, supply.worker, supply.lease,
+                0, ROUTE_BENCH_RECEIVED, supply.chest, supply.resourceSite);
     }
 
     synchronized void recordRouteStock(String projectId, String jobId, UUID token, long now, ChestReport stock) throws IOException {
@@ -4204,6 +4209,7 @@ final class ProjectQueue {
         Job job = find(project, jobId);
         if (job != null && job.state == State.DONE) {
             boolean sameEvidence = job.evidence.equals(evidence)
+                    || job.work.kind == Kind.RESUPPLY && ROUTE_BENCH_RECEIVED.equals(job.evidence)
                     || PREPARED_REQUIRED_STICKS.equals(job.evidence) && PREPARED_COMPATIBLE_STICKS.equals(evidence);
             return success && Objects.equals(job.lease, token) && sameEvidence
                     && (job.work.kind == Kind.RESUPPLY && chest == null
@@ -5174,7 +5180,9 @@ final class ProjectQueue {
                     mealRequests.remove(job.lease);
                     routeStickRequests.remove(job.lease);
                     if (job.work.kind == Kind.RESUPPLY) {
-                        jobs.set(i, retry(job, LEASE_EXPIRED, job.chest, null));
+                        jobs.set(i, ROUTE_BENCH_RECEIVED.equals(job.evidence) ? completedRouteBench(job)
+                                : new Job(job.work, State.FAILED, job.attempts, job.worker, job.lease, 0,
+                                        LEASE_EXPIRED, job.chest, job.resourceSite));
                         continue;
                     }
                     if (CONTRIBUTION_ACTIVE.equals(job.evidence)) {

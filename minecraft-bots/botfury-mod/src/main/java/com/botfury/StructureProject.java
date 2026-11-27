@@ -307,7 +307,8 @@ final class StructureProject {
                     var entry = iterator.next();
                     var cell = entry.getValue();
                     var stand = findStand(client, cell.pos, null, true, new int[]{0, 1, -1, 2, -2, 3, -3}, pos ->
-                            !pos.down().equals(cell.pos) && (allowTemporaryFooting || !removed.contains(pos.down()))
+                            !pos.down().equals(cell.pos)
+                                    && (allowTemporaryFooting || !removed.contains(pos.down()) || cleared.get(pos.down()) == SCAFFOLD)
                                     && safeStand(client, pos, cleared) && canRemoveBlock(client, pos, cell.pos, cleared));
                     if (stand == null) continue;
                     String id = "clear-" + entry.getKey();
@@ -570,17 +571,16 @@ final class StructureProject {
                                                Set<BlockPos> deferredWater, List<String> prerequisites, int index) {
         String suffix = index == 0 ? "" : index + "-";
         for (int dy : new int[]{-2, -1, -3, 0, 1}) for (int distance : new int[]{2, 3, 1}) {
-            for (var side : Direction.Type.HORIZONTAL) for (int lateral : new int[]{0, 1, -1}) {
+            for (var side : Direction.Type.HORIZONTAL) for (int lateral : new int[]{0, 1, -1, 2, -2}) {
                 var stand = target.offset(side, distance).offset(side.rotateYClockwise(), lateral).up(dy);
                 var top = stand.down();
-                if (!ProjectBlock.validStand(target, stand) || layout.containsKey(top)
-                        || !loaded(client, stand.up()) || !airAt(client, stand, cleared)
+                if (!ProjectBlock.validStand(target, stand) || !loaded(client, stand.up()) || !airAt(client, stand, cleared)
                         || !airAt(client, stand.up(), cleared) || !canRemoveBlock(client, stand, target, cleared)) continue;
                 for (int rise = 1; rise <= 5; rise++) {
                     for (var ascent : Direction.Type.HORIZONTAL) {
                         var access = planScaffold(client, top, ascent, rise, layout, cleared, cleared,
                                 ready, placed, deferredWater, prerequisites, suffix);
-                        if (access == null || access.layout.keySet().stream().anyMatch(layout::containsKey)) continue;
+                        if (access == null) continue;
                         var physical = new HashMap<>(cleared);
                         physical.putAll(access.layout);
                         if (safeStand(client, stand, physical) && canRemoveBlock(client, stand, target, physical)) return access;

@@ -34,7 +34,7 @@ final class StructureProject {
     private static final int INDIVIDUAL_INSPECTION_LIMIT = 128;
     private static final Identifier AIR = Identifier.of("minecraft", "air");
 
-    record Plan(List<ProjectQueue.Work> jobs, Map<Identifier, Integer> materials, ProjectGather.Area area, ProjectGather.Area footprint) {}
+    record Plan(List<ProjectQueue.Work> jobs, Map<Identifier, Integer> materials, ProjectGather.Area area) {}
     record AccessRepair(ProjectQueue.Work placement, List<ProjectQueue.Work> before, List<ProjectQueue.Work> cleanup,
                         int stone) {}
     private record Cell(BlockPos pos, BlockState desired, BlockState observed) {}
@@ -249,11 +249,9 @@ final class StructureProject {
         for (var pos : deferredWater) layout.put(pos, Blocks.AIR.getDefaultState());
         var origin = cells.get(0).pos;
         var area = new ProjectGather.Area(origin, origin);
-        var footprint = area;
         for (int i = 0; i < cells.size(); i++) {
             var cell = cells.get(i);
             area = StructureSupply.include(StructureSupply.include(area, cell.pos), cell.pos.down());
-            footprint = StructureSupply.include(footprint, cell.pos);
             var partner = ProjectPlacement.chestPartner(cell.pos, cell.desired);
             if (partner != null) {
                 var other = desired.get(partner);
@@ -507,7 +505,10 @@ final class StructureProject {
             }
         }
         requireJobBudget(jobs.size());
-        return new Plan(List.copyOf(jobs), Map.copyOf(materials), area, footprint);
+        // The planning area includes supporting terrain and the team's approved approach stands.
+        var min = area.min().withY(Math.max(client.world.getBottomY(), area.min().getY()));
+        var max = area.max().withY(Math.min(client.world.getTopY() - 1, area.max().getY()));
+        return new Plan(List.copyOf(jobs), Map.copyOf(materials), new ProjectGather.Area(min, max));
     }
 
     private static void requireJobBudget(int jobs) {

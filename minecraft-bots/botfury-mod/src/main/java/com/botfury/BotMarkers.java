@@ -49,17 +49,25 @@ final class BotMarkers {
             if(point==null)continue;
             int x=(int)point.x(),y=(int)point.y();
             if(point.edge()&&Math.abs(x-width/2)<140&&y>height-80)y=height-80;
-            int color=!live?0xFF8995A5:!alive?0xFFFF7777:entity==null&&age>2000?0xFFFFC35C:0xFF000000 | WorldOverlays.pathColor(bot.port());
+            int color=!live?BotUiTheme.MUTED:!alive?BotUiTheme.DANGER:entity==null&&age>2000?BotUiTheme.ACCENT:0xFF000000 | WorldOverlays.pathColor(bot.port());
             if (bot.task().equals("orbit")) {
-                if (!point.edge()) BotGeometry.circle(draw, x, y, Math.max(1.2f, 3.2f * hudScale), color);
+                if (!point.edge()) {
+                    float radius = Math.max(1.2f, 3.2f * hudScale);
+                    BotGeometry.circle(draw, x, y, radius + .8f, DitherPress.INK);
+                    BotGeometry.circle(draw, x, y, radius, color);
+                }
                 continue;
             }
             if (point.edge()) {
                 double angle = Math.atan2(y - height / 2.0, x - width / 2.0);
-                BotGeometry.arrow(draw, x, y, angle, Math.max(4.5f, 10f * hudScale), color);
+                float size = Math.max(4.5f, 10f * hudScale);
+                BotGeometry.arrow(draw, x, y, angle, size + 1.5f, DitherPress.INK);
+                BotGeometry.arrow(draw, x, y, angle, size, color);
                 continue;
             }
-            BotGeometry.circle(draw, x, y, Math.max(1f, 2.5f * hudScale), color);
+            float radius = Math.max(1f, 2.5f * hudScale);
+            BotGeometry.circle(draw, x, y, radius + .9f, DitherPress.INK);
+            BotGeometry.circle(draw, x, y, radius, color);
             String name=bot.name()+" · "+Math.round(position.distanceTo(client.player.getLerpedPos(delta)))+"m";
             String task=bot.mining().isEmpty()?(bot.inventory().isEmpty()?bot.mode():bot.inventory()):bot.mining();
             String info=live?(alive?Math.round(health)+" HP · "+task:"Respawning"):"Last known "+Math.max(0,age/1000)+"s";
@@ -100,19 +108,19 @@ final class BotMarkers {
             matrices.push();
             matrices.translate(labelX, labelY, 0);
             matrices.scale(labelScale, labelScale, 1);
-            draw.fill(0, 0, w, labelHeight, 0xE52D1923);
+            BotUiTheme.label(draw, 0, 0, w, labelHeight);
             for (int i = 0; i < counts.size(); i += ITEMS_PER_ROW) {
                 var row = counts.subList(i, Math.min(counts.size(), i + ITEMS_PER_ROW));
                 int rowX = (w - row.stream().mapToInt(ItemCount::width).sum()) / 2;
                 int rowY = 1 + (i / ITEMS_PER_ROW) * 18;
                 for (var entry : row) {
                     draw.drawItem(entry.item.getDefaultStack(), rowX, rowY);
-                    draw.drawText(client.textRenderer, entry.label, rowX + 18, rowY + 4, color, false);
+                    draw.drawText(client.textRenderer, entry.label, rowX + 18, rowY + 4, BotUiTheme.TEXT, false);
                     rowX += entry.width;
                 }
             }
             BotGeometry.circle(draw, 7, itemHeight + 7, 2f, color);
-            scrollLine(draw, client.textRenderer, name, 13, itemHeight + 3, w - 18, color, labelX, labelY, labelScale);
+            scrollLine(draw, client.textRenderer, name, 13, itemHeight + 3, w - 18, BotUiTheme.TEXT, labelX, labelY, labelScale);
             scrollLine(draw, client.textRenderer, info, 5, itemHeight + 13, w - 10, BotUiTheme.MUTED, labelX, labelY, labelScale);
             matrices.pop();
         }

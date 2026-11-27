@@ -51,7 +51,7 @@ final class ItemPickerScreen extends FleetPanel {
         int tabColumns = panelWidth >= 304 ? 8 : 4;
         listTop = 71 + ((Category.values().length + tabColumns - 1) / tabColumns) * 22;
         int searchWidth = panelWidth - (blocksOnly ? 0 : 76);
-        search = new TextFieldWidget(textRenderer, left, 38, searchWidth, 21, Text.literal("Search items"));
+        search = new BotUiField(textRenderer, left, 38, searchWidth, 21, Text.literal("Search items"));
         search.setPlaceholder(Text.literal("Search name or item ID"));
         search.setMaxLength(128);
         search.setText(query);
@@ -131,7 +131,6 @@ final class ItemPickerScreen extends FleetPanel {
     @Override public boolean shouldPause() { return false; }
 
     @Override protected void renderPanel(DrawContext draw, int mouseX, int mouseY, float delta) {
-        draw.fillGradient(0, 0, width, height, BotUiTheme.PANEL_BOTTOM, BotUiTheme.PANEL_TOP);
         draw.drawTextWithShadow(textRenderer, title, left, 17, BotUiTheme.TEXT);
         String count = filtered.size() + (filtered.size() == 1 ? " item" : " items");
         draw.drawText(textRenderer, count, left + panelWidth - textRenderer.getWidth(count), 17, BotUiTheme.MUTED, false);

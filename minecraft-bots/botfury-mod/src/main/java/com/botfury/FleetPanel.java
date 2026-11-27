@@ -25,6 +25,7 @@ abstract class FleetPanel extends Screen {
 
     protected abstract void initPanel();
     protected boolean framed() { return true; }
+    protected DitherPress.Surface frameSurface() { return DitherPress.Surface.PANEL; }
 
     static float scaleForWindow(Window window) {
         return Math.max(window.getScaledHeight() / 750f, 1.2f / (float) window.getScaleFactor());
@@ -35,7 +36,7 @@ abstract class FleetPanel extends Screen {
         matrices.push();
         matrices.translate(left, top, 0);
         matrices.scale(scale, scale, 1);
-        if (framed()) draw.fill(-1, -1, width + 1, height + 1, BotUiTheme.EDGE);
+        if (framed()) DitherPress.draw(draw, frameSurface(), 0, 0, width, height);
         renderPanel(draw, (int) panelX(mouseX), (int) panelY(mouseY), delta);
         matrices.pop();
     }
@@ -46,12 +47,7 @@ abstract class FleetPanel extends Screen {
 
     protected static void drawListRow(DrawContext draw, int x, int y, int right, int bottom,
                                       boolean selected, boolean hovered) {
-        int fill = selected ? BotUiTheme.SELECTED : hovered ? BotUiTheme.CARD_HOVER : BotUiTheme.CARD;
-        draw.fill(x, y, right, bottom, fill);
-        if (selected) {
-            draw.fill(x, y + 2, x + 2, bottom - 2, BotUiTheme.SIGNAL);
-            draw.fill(x + 2, y + 2, x + 5, y + 4, BotUiTheme.ACCENT);
-        }
+        BotUiTheme.row(draw, x, y, right, bottom, selected, hovered);
     }
 
     protected void clipPanel(DrawContext draw, int x, int y, int right, int bottom) {

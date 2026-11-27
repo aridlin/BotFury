@@ -11,7 +11,8 @@
     "BotTransparencyMixin",
     "ProjectileGroundAccess",
     "FurnaceProgressAccess",
-    "SpriteImageAccess"
+    "SpriteImageAccess",
+    "BotUiFieldBackgroundMixin"
   ],
   "injectors": {
     "defaultRequire": 1

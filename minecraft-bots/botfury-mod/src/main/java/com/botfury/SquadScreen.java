@@ -2,7 +2,6 @@ package com.botfury;
 
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.text.Text;
 
 import java.util.ArrayList;
@@ -59,7 +58,7 @@ final class SquadScreen extends FleetPanel {
             botOffset = 0;
             rebuild();
         });
-        var field = addDrawableChild(new TextFieldWidget(textRenderer, 190, 226, 260, 20, Text.literal("Squad name")));
+        var field = addDrawableChild(new BotUiField(textRenderer, 190, 226, 260, 20, Text.literal("Squad name")));
         field.setMaxLength(24);
         field.setPlaceholder(Text.literal("Squad name"));
         field.setText(name);
@@ -136,7 +135,6 @@ final class SquadScreen extends FleetPanel {
     }
 
     @Override protected void renderPanel(DrawContext draw, int mouseX, int mouseY, float delta) {
-        draw.fillGradient(0, 0, width, height, BotUiTheme.PANEL_TOP, BotUiTheme.PANEL_BOTTOM);
         draw.drawText(textRenderer, "Squads", 16, 22, BotUiTheme.ACCENT, false);
         draw.drawText(textRenderer, "Members · " + members.size(), 190, 22, BotUiTheme.TEXT, false);
         if (!feedback.isBlank()) draw.drawText(textRenderer, feedback, 190, 251, BotUiTheme.DANGER, false);

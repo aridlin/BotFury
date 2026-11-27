@@ -61,7 +61,6 @@ final class SchematicSubstitutionScreen extends FleetPanel {
     private void rebuild() { clearChildren(); initPanel(); }
 
     @Override protected void renderPanel(DrawContext draw, int x, int y, float delta) {
-        draw.fillGradient(0, 0, width, height, BotUiTheme.PANEL_TOP, BotUiTheme.PANEL_BOTTOM);
         draw.drawCenteredTextWithShadow(textRenderer, title, width / 2, 17, BotUiTheme.ACCENT);
         draw.drawText(textRenderer, "Original blocks", 15, 37, BotUiTheme.MUTED, false);
         draw.drawText(textRenderer, "Replace " + source.getName().getString() + " with", width / 2 + 8, 37, BotUiTheme.MUTED, false);

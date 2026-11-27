@@ -920,7 +920,7 @@ final class ProjectBroker {
                     if (request.receivedRouteSticks) board.recordRouteStickReceipt(request.project, request.job, request.token, now);
                     var renewed = board.renew(request.project, request.job, request.token, request.resourceSite, now,
                             request.needsRouteTool, request.needsRouteBench,
-                            request.readyToBank ? ProjectBroker::workerPosition : null);
+                            request.readyToBank ? worker -> workerPosition(worker, true) : null);
                     reply(exchange, renewed == null ? 409 : 200, renewed);
                 }
                 case "recover-furnace" -> {
@@ -990,9 +990,13 @@ final class ProjectBroker {
     }
 
     private static ProjectQueue.ResourceSite workerPosition(String worker) {
+        return workerPosition(worker, false);
+    }
+
+    private static ProjectQueue.ResourceSite workerPosition(String worker, boolean requireRecentPosition) {
         var bot = liveWorker(worker);
-        return bot == null ? null : new ProjectQueue.ResourceSite(
-                (int)Math.floor(bot.x()), (int)Math.floor(bot.y()), (int)Math.floor(bot.z()));
+        return bot == null || (requireRecentPosition && System.currentTimeMillis() - bot.positionAt() >= 3000) ? null
+                : new ProjectQueue.ResourceSite((int)Math.floor(bot.x()), (int)Math.floor(bot.y()), (int)Math.floor(bot.z()));
     }
 
     private static BotTracker.Bot liveWorker(String worker) {

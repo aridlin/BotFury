@@ -14,7 +14,7 @@ pub struct Game {
     pub(crate) baritone: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct Stack {
     pub slot: usize,
     pub item: String,

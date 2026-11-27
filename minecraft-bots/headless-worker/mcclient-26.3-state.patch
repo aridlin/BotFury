@@ -1,36 +1,43 @@
 --- a/src/engine.rs
 +++ b/src/engine.rs
-@@ -221,6 +221,12 @@
+@@ -221,6 +221,19 @@
      /// Slots belonging to the container itself (the rest is the player's inventory).
      pub fn container_slots(&self) -> usize {
          self.slots.len().saturating_sub(36)
 +    }
 +
-+    fn chest_inventory_start(&self) -> Option<usize> {
-+        let rows = self.kind.strip_prefix("generic_9x")?.parse::<usize>().ok()?;
-+        let top = rows * 9;
-+        ((1..=6).contains(&rows) && self.slots.len() == top + 36).then_some(top)
++    fn player_inventory_start(&self) -> Option<usize> {
++        let top = if self.kind == "crafting" {
++            10
++        } else {
++            let rows = self.kind.strip_prefix("generic_9x")?.parse::<usize>().ok()?;
++            if !(1..=6).contains(&rows) {
++                return None;
++            }
++            rows * 9
++        };
++        (self.slots.len() == top + 36).then_some(top)
      }
  }
 
-@@ -1099,6 +1105,10 @@
+@@ -1099,6 +1112,10 @@
                      } else if let Some(menu) = g.menu.as_mut().filter(|m| m.id == container) {
                          menu.slots = slots;
                          menu.state_id = state;
-+                        if let Some(top) = menu.chest_inventory_start() {
++                        if let Some(top) = menu.player_inventory_start() {
 +                            let player_slots = menu.slots[top..].to_vec();
 +                            g.inventory[9..45].clone_from_slice(&player_slots);
 +                        }
                      }
                  }
                  Err(e) => {
-@@ -1124,13 +1134,19 @@
+@@ -1124,13 +1141,19 @@
                          }
                          g.inventory_state = state;
                      } else if let Some(menu) = g.menu.as_mut().filter(|m| m.id == container) {
 +                        menu.state_id = state;
                          if let Ok(s) = usize::try_from(slot) {
-+                            let player_slot = menu.chest_inventory_start()
++                            let player_slot = menu.player_inventory_start()
 +                                .and_then(|top| s.checked_sub(top)).filter(|&index| index < 36);
                              if s >= menu.slots.len() {
                                  menu.slots.resize(s + 1, None);
@@ -45,7 +52,7 @@
                      }
                  }
                  Err(e) => {
-@@ -1505,8 +1521,13 @@
+@@ -1505,8 +1528,13 @@
              w.f64(self.body.pos[0]).f64(self.body.pos[1]).f64(self.body.pos[2]).f32(self.yaw).f32(self.pitch);
          }
          self.send(self.ids.play.sb_accept_teleportation, &w.data)?;
@@ -61,7 +68,7 @@
          if self.goal.is_some() && self.position_seen {
              self.corrections.push_back(self.tick);
          }
-@@ -1879,14 +1900,24 @@
+@@ -1879,14 +1907,24 @@
              }
              Cmd::Swing => self.swing()?,
              Cmd::Click { slot, button, mode } => {

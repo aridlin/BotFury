@@ -31,7 +31,7 @@
  ]
 --- a/src/engine.rs
 +++ b/src/engine.rs
-@@ -1619,7 +1619,7 @@
+@@ -1626,7 +1626,7 @@
                          } else {
                              goal.repathed = true;
                              goal.last_progress = self.tick;
@@ -40,7 +40,7 @@
                                  goal.path = path;
                                  goal.next = 0;
                              }
-@@ -1794,10 +1794,18 @@
+@@ -1801,10 +1801,18 @@
              Cmd::WalkTo { id, target, has_y, sprint, timeout } => {
                  let path = {
                      let g = self.game();
@@ -93,7 +93,79 @@
              "stop" => self.act(Cmd::Stop, args, 50),
              "jump" => self.act(Cmd::Jump, args, 600),
              "sneak" => self.act(Cmd::Sneak(args.get("on").and_then(Value::as_bool).unwrap_or(true)), args, 100),
-@@ -682,6 +697,8 @@
+@@ -306,7 +321,11 @@
+                     m => return Err(format!("unknown mode {m}")),
+                 };
+                 let button = arg_u64(args, "button").unwrap_or(0) as i8;
+-                self.act(Cmd::Click { slot, button, mode }, args, 600)
++                if mode == 0 && arg_bool(args, "await_pickup") {
++                    self.pickup(slot, button)
++                } else {
++                    self.act(Cmd::Click { slot, button, mode }, args, 600)
++                }
+             }
+             "close_menu" => self.act(Cmd::CloseMenu, args, 200),
+             "drop_item" => self.act(Cmd::Drop { all: arg_bool(args, "all") }, args, 300),
+@@ -379,11 +398,46 @@
+                 let bot = self.bot()?;
+                 let g = bot.game();
+                 let center = [g.pos[0].floor() as i32, g.pos[1].floor() as i32, g.pos[2].floor() as i32];
+-                let found: Vec<Value> = g.world.find_blocks(&name, center, radius, limit).into_iter().map(|(p, s)| block_json(&g, p, s)).collect();
++                let matches = if let Some(names) = args.get("exposed_names") {
++                    let names: Vec<String> = serde_json::from_value(names.clone())
++                        .map_err(|error| format!("Invalid exposed names: {error}"))?;
++                    if !(1..=32).contains(&names.len()) {
++                        return Err("Expected 1 to 32 exposed block names".into());
++                    }
++                    crate::native_baritone::exposed_blocks(&g.world, &name, &names, center, radius, limit)
++                } else {
++                    g.world.find_blocks(&name, center, radius, limit)
++                };
++                let found: Vec<Value> = matches.into_iter().map(|(p, s)| block_json(&g, p, s)).collect();
+                 Ok(json!({"center": center, "found": found, "chunks_loaded": g.world.loaded_chunks()}))
+             }
+             other => Err(format!("unknown tool {other}")),
+         }
++    }
++
++    /// Pickup changes both the addressed slot and the carried stack.
++    fn pickup(&mut self, slot: i16, button: i8) -> Result<Value, String> {
++        let index = usize::try_from(slot).map_err(|_| "Invalid pickup slot")?;
++        let bot = self.bot()?;
++        let (seq, menu_before, slot_before, cursor_before) = {
++            let game = bot.game();
++            let slot = container_slots(&game).get(index).ok_or("Invalid pickup slot")?;
++            (game.chat_seq, menu_signature(&game), slot.clone(), game.cursor.clone())
++        };
++        let menu_id = menu_before.map(|(id, _)| id);
++        let confirmed = |game: &Game| {
++            menu_signature(game).map(|(id, _)| id) == menu_id
++                && game.cursor != cursor_before
++                && container_slots(game).get(index).is_some_and(|slot| slot != &slot_before)
++        };
++        bot.send(Cmd::Click { slot, button, mode: 0 })?;
++        let game = bot.wait_until(Duration::from_secs(2), |game| {
++            confirmed(game) || game.ended.is_some() || menu_signature(game).map(|(id, _)| id) != menu_id
++        });
++        if !confirmed(&game) || game.ended.is_some() {
++            return Err(format!("Server did not confirm the pickup at slot {slot}"));
++        }
++        Ok(after(&game, seq, menu_before))
+     }
+
+     fn walk_to(&mut self, args: &Value) -> Result<Value, String> {
+@@ -555,6 +609,10 @@
+         End::Left(m) => format!("disconnected: {m}"),
+     })
+ }
++fn container_slots(g: &Game) -> &[Option<ItemStack>] {
++    g.menu.as_ref().map_or(&g.inventory, |menu| &menu.slots)
++}
++
+ fn menu_signature(g: &Game) -> Option<(i32, i32)> {
+     g.menu.as_ref().map(|m| (m.id, m.state_id))
+ }
+@@ -682,6 +740,8 @@
              json!({"yaw": {"type": "number"}, "pitch": {"type": "number"}, "x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"}}), &[]),
          tool("walk_to", "Walk (path-finding around obstacles, jumping up blocks) to x/z (and y if given). Blocks until arrived, stuck or timeout. Note: `command` with tp is faster if allowed.",
              json!({"x": {"type": "number"}, "z": {"type": "number"}, "y": {"type": "number", "description": "Feet height; omit for any height."}, "relative": {"type": "boolean", "description": "x/y/z are offsets from the current position."}, "sprint": {"type": "boolean"}, "timeout_s": {"type": "number", "description": "Default 60."}}), &["x", "z"]),
@@ -102,3 +174,49 @@
          tool("stop", "Stop walking.", json!({}), &[]),
          tool("jump", "Jump once (or rise when flying).", json!({}), &[]),
          tool("sneak", "Start (on=true) or stop sneaking.", json!({"on": {"type": "boolean"}}), &[]),
+@@ -695,7 +755,7 @@
+         tool("inventory", "The player's inventory (non-empty slots, with names/lore/enchantments), held slot and cursor item.", json!({}), &[]),
+         tool("menu", "The open container/GUI menu: title, type and items in its slots.", json!({}), &[]),
+         tool("click_slot", "Click a slot of the open menu (or of the inventory when none is open). mode: pickup (button 0 left / 1 right), quick_move (shift-click), swap (button = hotbar 0-8 or 40 offhand), clone, throw, pickup_all. Returns chat and the updated menu.",
+-            json!({"slot": {"type": "integer"}, "button": {"type": "integer"}, "mode": {"type": "string", "enum": ["pickup", "quick_move", "swap", "clone", "throw", "pickup_all"]}, "wait_ms": wait}), &["slot"]),
++            json!({"slot": {"type": "integer"}, "button": {"type": "integer"}, "mode": {"type": "string", "enum": ["pickup", "quick_move", "swap", "clone", "throw", "pickup_all"]}, "await_pickup": {"type":"boolean"}, "wait_ms": wait}), &["slot"]),
+         tool("close_menu", "Close the open menu.", json!({}), &[]),
+         tool("drop_item", "Drop the held item (one, or the stack with all=true).", json!({"all": {"type": "boolean"}}), &[]),
+         tool("swap_hands", "Swap the main-hand and offhand items.", json!({}), &[]),
+@@ -706,6 +766,6 @@
+         tool("players", "Players in the tab list with game mode and ping.", json!({}), &[]),
+         tool("block_at", "The block at x/y/z (name and properties), if its chunk is loaded.", xyz("Block"), &["x", "y", "z"]),
+         tool("find_blocks", "Find blocks whose name contains `name` (e.g. chest, sign, diamond_ore) around the bot, nearest first.",
+-            json!({"name": {"type": "string"}, "radius": {"type": "integer", "description": "Default 16, max 64."}, "limit": {"type": "integer"}}), &["name"]),
++            json!({"name": {"type": "string"}, "exposed_names": {"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32}, "radius": {"type": "integer", "description": "Default 16, max 64."}, "limit": {"type": "integer"}}), &["name"]),
+     ]
+ }
+--- a/src/world/mod.rs
++++ b/src/world/mod.rs
+@@ -411,6 +411,17 @@
+         radius: i32,
+         limit: usize,
+     ) -> Vec<([i32; 3], u32)> {
++        self.find_blocks_where(filter, center, radius, limit, |_, _| true)
++    }
++
++    pub(crate) fn find_blocks_where(
++        &self,
++        filter: &str,
++        center: [i32; 3],
++        radius: i32,
++        limit: usize,
++        include: impl Fn([i32; 3], u32) -> bool,
++    ) -> Vec<([i32; 3], u32)> {
+         if radius < 0 || limit == 0 {
+             return Vec::new();
+         }
+@@ -456,7 +467,7 @@
+                                     (wanted(s), s)
+                                 }
+                             };
+-                            if !hit {
++                            if !hit || !include([x as i32, y as i32, z as i32], state) {
+                                 continue;
+                             }
+                             let d2 = (x - cx).pow(2) + (y - cy).pow(2) + (z - cz).pow(2);

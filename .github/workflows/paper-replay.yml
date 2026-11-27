@@ -1,0 +1,50 @@
+name: Paper runtime replay
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/paper-replay.yml'
+      - 'tests/paper/**'
+
+permissions:
+  contents: read
+
+jobs:
+  idle-clearance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install the virtual display and capture tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y xvfb xdotool ffmpeg libgl1-mesa-dri libglx-mesa0
+      - name: Fetch pinned Paper and Baritone releases
+        run: |
+          curl --fail --silent --show-error --location --retry 3 \
+            -A 'BotFury CI (https://github.com/aridlin/BotFury)' \
+            https://fill-data.papermc.io/v1/objects/234a9b32098100c6fc116664d64e36ccdb58b5b649af0f80bcccb08b0255eaea/paper-1.20.1-196.jar \
+            -o "$RUNNER_TEMP/paper.jar"
+          printf '%s  %s\n' 234a9b32098100c6fc116664d64e36ccdb58b5b649af0f80bcccb08b0255eaea "$RUNNER_TEMP/paper.jar" | sha256sum -c -
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/cabaletta/baritone/releases/download/v1.10.1/baritone-api-fabric-1.10.1.jar \
+            -o "$RUNNER_TEMP/baritone.jar"
+          printf '%s  %s\n' 311df64264c7f79d32791ae7a5d79a47ea762a5b74d0687b9c51b42d141b6b95 "$RUNNER_TEMP/baritone.jar" | sha256sum -c -
+      - name: Prepare the Fabric clients
+        working-directory: minecraft-bots/botfury-mod
+        run: sh ./gradlew --no-daemon --max-workers=2 -Dbotfury.baritoneJar="$RUNNER_TEMP/baritone.jar" prepareBotFuryClient
+      - name: Verify the idle worker and owner placement
+        run: python3 tests/paper/idle_clearance.py "$RUNNER_TEMP/paper.jar" "$RUNNER_TEMP/paper-replay"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: idle-clearance-paper
+          path: |
+            ${{ runner.temp }}/paper-replay/verified.json
+            ${{ runner.temp }}/paper-replay/production.mp4
+            ${{ runner.temp }}/paper-replay/*.log
+            ${{ runner.temp }}/paper-replay/*/logs/latest.log

@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "projects": {
+    "manifest-footing": {
+      "id": "manifest-footing",
+      "world": "local:25679|minecraft:overworld",
+      "jobs": [
+        {
+          "work": {
+            "id": "mine",
+            "kind": "GATHER",
+            "payload": "{\"resource\": \"dirt\", \"variant\": \"both\", \"item\": \"minecraft:dirt\", \"count\": 1}",
+            "needs": [],
+            "locks": []
+          },
+          "state": "WAITING",
+          "attempts": 0,
+          "expiresAt": 0
+        },
+        {
+          "work": {
+            "id": "bank",
+            "kind": "TRANSFER",
+            "payload": "{\"target\": {\"x\": 17312, \"y\": 142, \"z\": 17305}, \"stand\": {\"x\": 17310, \"y\": 142, \"z\": 17305}, \"block\": \"minecraft:chest\", \"direction\": \"DEPOSIT\", \"item\": \"minecraft:dirt\", \"stock\": 1}",
+            "needs": [
+              "mine"
+            ],
+            "locks": [
+              "block:17312,142,17305"
+            ],
+            "sameWorkerAs": "mine"
+          },
+          "state": "WAITING",
+          "attempts": 0,
+          "expiresAt": 0
+        }
+      ],
+      "supplyChest": "block:17312,142,17305",
+      "supplyRecoveries": {},
+      "contributionOrigins": {}
+    }
+  }
+}

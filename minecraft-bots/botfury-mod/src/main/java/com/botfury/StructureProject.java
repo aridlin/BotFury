@@ -315,7 +315,8 @@ final class StructureProject {
             }
             if (wave.isEmpty()) {
                 var blocked = obstructing.values().iterator().next();
-                throw new IllegalArgumentException("No reachable excavation face at " + blocked.pos.toShortString());
+                throw new IllegalArgumentException("No reachable excavation face for "
+                        + Registries.BLOCK.getId(blocked.observed.getBlock()) + " at " + blocked.pos.toShortString());
             }
             for (var pos : clearedThisWave) cleared.put(pos, Blocks.AIR.getDefaultState());
             changes.addAll(wave);
@@ -1196,8 +1197,11 @@ final class StructureProject {
     private static boolean canRemoveBlock(MinecraftClient client, BlockPos stand, BlockPos support,
                                             Map<BlockPos, BlockState> layout) {
         var eye = Vec3d.ofBottomCenter(stand).add(0, 1.62, 0);
-        var hit = plannedRay(client, eye, Vec3d.ofCenter(support), layout, null);
-        return hit != null && hit.getBlockPos().equals(support);
+        var state = layout.getOrDefault(support, client.world.getBlockState(support));
+        return ProjectPlacement.findExcavationHit(support, eye, state.getOutlineShape(client.world, support), point -> {
+            var hit = plannedRay(client, eye, point, layout, null);
+            return hit != null && hit.getBlockPos().equals(support) ? hit : null;
+        }) != null;
     }
 
     private static BlockHitResult plannedRay(MinecraftClient client, Vec3d eye, Vec3d point,

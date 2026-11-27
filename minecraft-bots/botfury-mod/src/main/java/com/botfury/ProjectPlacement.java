@@ -102,6 +102,9 @@ final class ProjectPlacement {
         if (ProjectShapedBlock.recognized(state)) return ProjectShapedBlock.faces(state);
         if (!state.contains(PillarBlock.AXIS)) {
             if (state.getBlock() instanceof FallingBlock) return List.of(Direction.UP);
+            if (state.getBlock().getStateManager().getStates().size() == 1) {
+                return List.of(Direction.UP, Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST, Direction.DOWN);
+            }
             return List.of(Direction.UP, Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST);
         }
         return switch (state.get(PillarBlock.AXIS)) {

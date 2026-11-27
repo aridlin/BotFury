@@ -1301,7 +1301,9 @@ final class ProjectWorker {
             while (slot < 36 && !inventory.getStack(slot).isSuitableFor(state)) slot++;
             boolean temporaryCobblestone = work.cleanup() != null && work.cleanup().site().equals(ProjectBlock.key(target))
                     && state.isOf(Blocks.COBBLESTONE);
-            if (slot == 36) {
+            // Excavation only needs the cell cleared. Vanilla's unsuitable-tool penalty still applies.
+            boolean clearsWithinTwoSeconds = state.calcBlockBreakingDelta(player, client.world, target) >= 1f / 40;
+            if (slot == 36 && !clearsWithinTwoSeconds) {
                 if (!checkedExcavationTool) {
                     checkedExcavationTool = true;
                     var excluded = StructureSupply.union(new ProjectGather.Area(target, target), block);

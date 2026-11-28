@@ -154,7 +154,7 @@ final class BotInventory {
         }
         if (followSupplyTrail(client)) return;
         if (spreadGoal != null) {
-            if (client.player.getPos().squaredDistanceTo(spreadGoal) < 2) {
+            if (client.player.getPos().squaredDistanceTo(spreadGoal) < (projectDelivery == null ? 2 : .36)) {
                 finish(completion); return;
             }
             if (++waitTicks > 400) { finish("Could not finish spreading out"); return; }
@@ -194,8 +194,7 @@ final class BotInventory {
                         path(client, recipient.getPos(), recipient);
                         return;
                     }
-                    // A forward toss can roll past the recipient and fall off a ledge.
-                    aim = client.player.getPos().add(0, -1, 0);
+                    aim = projectDropAim(client, recipient);
                 }
                 routeRecovery.reset();
                 BaritoneClient.execute("stop");
@@ -295,6 +294,22 @@ final class BotInventory {
             total += client.player.getInventory().getStack(i).getCount();
         return total;
     }
+    private static Vec3d projectDropAim(MinecraftClient client, PlayerEntity recipient) {
+        var feet = client.player.getPos();
+        var delta = recipient.getPos().subtract(feet).multiply(1, 0, 1);
+        if (recipient.getBlockY() != client.player.getBlockY() || delta.lengthSquared() < 1) {
+            return feet.add(0, -1, 0);
+        }
+
+        // Clear the courier's pickup radius while keeping the toss over supported ground.
+        var direction = delta.normalize();
+        for (double distance = .5; distance <= 2; distance += .5) {
+            var landing = BlockPos.ofFloored(feet.add(direction.multiply(distance)));
+            if (!ProjectWorker.knownTrailFooting(client, landing)) return feet.add(0, -1, 0);
+        }
+        return feet.add(direction.multiply(1.6)).add(0, .1, 0);
+    }
+
     private static int dropProjectItem(MinecraftClient client, Item item) {
         var player = client.player;
         var inventory = player.getInventory();
@@ -351,8 +366,20 @@ final class BotInventory {
         Vec3d away=center==null?Vec3d.ZERO:client.player.getPos().subtract(center).multiply(1,0,1);
         if(away.lengthSquared()<0.01){double angle=(client.player.getUuid().hashCode()&1023)*Math.PI/512;away=new Vec3d(Math.cos(angle),0,Math.sin(angle));}
         away=away.normalize();
-        double lane=((Integer.getInteger("botfury.port",8765)%3)-1)*1.25;
-        spreadGoal=client.player.getPos().add(away.multiply(6)).add(-away.z*lane,0,away.x*lane);
+        if (projectDelivery != null) {
+            // Leave the pickup clear without sending the courier off the ledge or into a wall.
+            Vec3d recipient = center;
+            var step = StallRecovery.safeAdjacentStep(client, away, pos ->
+                    recipient == null || Vec3d.ofBottomCenter(pos).squaredDistanceTo(recipient) >= 1);
+            if (step == null) {
+                finish(completion);
+                return;
+            }
+            spreadGoal = Vec3d.ofBottomCenter(step);
+        } else {
+            double lane=((Integer.getInteger("botfury.port",8765)%3)-1)*1.25;
+            spreadGoal=client.player.getPos().add(away.multiply(6)).add(-away.z*lane,0,away.x*lane);
+        }
         status=completion.equals("Done")?"Moving outward":completion+" · moving outward";
         nextPathAttempt = age;
         path(client, spreadGoal);

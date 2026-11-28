@@ -3164,6 +3164,51 @@ class ProjectQueueTest {
         assertEquals(craft.id(), placement.work().sameWorkerAs());
     }
 
+    @Test void requestsAReceiptFromRebuiltStorageBeforeReopeningMissingStock() throws Exception {
+        var journal = directory.resolve("inspect-rebuilt-chest.json");
+        String chest = "block:3,64,0";
+        String location = """
+                "target":{"x":3,"y":64,"z":0},"stand":{"x":1,"y":64,"z":0},"block":"minecraft:chest"
+                """.strip();
+        var craft = job("craft-chest", CRAFT, List.of()).withPayload("{\"recipe\":\"minecraft:chest\",\"count\":1}");
+        var storage = new ProjectQueue.Work("setup-storage", BUILD, "{" + location + "}",
+                List.of(craft.id()), Set.of(chest), craft.id());
+        var dirt = job("dirt", GATHER, List.of(storage.id()));
+        var stone = job("stone", GATHER, List.of(storage.id()));
+        String transfer = "{" + location + ",\"direction\":\"%s\",\"item\":\"minecraft:%s\",\"stock\":4}";
+        var dirtBank = new ProjectQueue.Work("dirt-bank", TRANSFER, transfer.formatted("DEPOSIT", "dirt"),
+                List.of(dirt.id()), Set.of(chest), dirt.id());
+        var stoneBank = new ProjectQueue.Work("stone-bank", TRANSFER, transfer.formatted("DEPOSIT", "cobblestone"),
+                List.of(stone.id()), Set.of(chest), stone.id());
+        var blocker = job("blocked-tools", CRAFT, List.of());
+        var jobs = new ArrayList<ProjectQueue.Job>();
+        for (var work : List.of(craft, storage, dirt, stone, dirtBank, stoneBank)) {
+            jobs.add(new ProjectQueue.Job(work, ProjectQueue.State.DONE, 1, "old", null, 0, "Observed", null));
+        }
+        jobs.add(new ProjectQueue.Job(blocker, ProjectQueue.State.FAILED, 3, null, null, 0, "Missing ingredients", null));
+        for (String item : List.of("dirt", "cobblestone")) {
+            var verify = new ProjectQueue.Work("verify-" + item, TRANSFER, transfer.formatted("VERIFY_STOCK", item),
+                    List.of(dirtBank.id(), stoneBank.id(), blocker.id()), Set.of(chest));
+            jobs.add(new ProjectQueue.Job(verify, ProjectQueue.State.WAITING, 0, null, null, 0, null, null));
+        }
+        var project = new ProjectQueue.Project("manifest-stock", WORLD, jobs, null, chest,
+                java.util.Map.of("station-repair:setup-storage", 1));
+        Files.writeString(journal, new com.google.gson.Gson().toJson(
+                java.util.Map.of("schema", 1, "projects", java.util.Map.of(project.id(), project))));
+        var queue = new ProjectQueue(journal);
+        assertTrue(queue.reopenLostManifestStock(WORLD, 1));
+        assertFalse(queue.reopenLostManifestStock(WORLD, 2));
+        var inspect = queue.claim(WORLD, "inspector", Set.of(TRANSFER), 3).job();
+        assertTrue(inspect.work().payload().contains("\"direction\":\"INSPECT\""));
+        assertTrue(queue.finish(project.id(), inspect.work().id(), inspect.lease(), true, "Observed chest stock",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of("minecraft:cobblestone", 4)), 4));
+        assertTrue(queue.reopenLostManifestStock(WORLD, 5));
+        assertFalse(queue.reopenLostManifestStock(WORLD, 6));
+        assertEquals(dirt, queue.claim(WORLD, "worker", Set.of(GATHER), 7).job().work());
+        assertNull(queue.claim(WORLD, "other-worker", Set.of(GATHER), 8));
+        assertTrue(queue.snapshot(9).get(0).jobs().contains(jobs.get(5)));
+    }
+
     @Test void repairsALostChestFromAnExhaustedJournalAndForgetsItsOldStock() throws Exception {
         var journal = directory.resolve("lost-chest-attempts.json");
         String chest = "block:3,64,0";

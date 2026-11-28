@@ -261,6 +261,7 @@ final class ProjectQueue {
     static final String PREPARED_COMPATIBLE_STICKS = "Prepared sticks from compatible wood";
     static final String PREPARED_REQUIRED_STICKS = "Prepared the required sticks";
     static final String TARGET_TIMEOUT = "Timed out approaching or changing the target";
+    private static final String REPAIRED_STORAGE_INSPECTION = "inspect-repaired-storage";
     static final String PLACEMENT_REJECTED = "Placement was rejected at ";
     static final String GATHER_STALLED = "Gathering stalled without item or route progress";
     static final String GATHER_PICKUP_MISSED = "Mined block but did not collect the drop";
@@ -1015,23 +1016,47 @@ final class ProjectQueue {
                     || leasedKeys(world, now).contains(project.supplyChest)) continue;
             if (projects.values().stream().anyMatch(other -> other != project && world.equals(other.world)
                     && project.supplyChest.equals(reservedStorage(other)))) continue;
+            var pendingVerifications = project.jobs.stream().filter(verify -> {
+                if (verify.work.kind != Kind.TRANSFER || verify.state != State.WAITING
+                        || !verify.work.locks.contains(project.supplyChest)) return false;
+                var target = transferTarget(verify);
+                return target != null && "VERIFY_STOCK".equals(target.direction) && target.item != null;
+            }).toList();
+            if (pendingVerifications.isEmpty()) continue;
             var observed = project.jobs.stream().filter(job -> job.work.kind == Kind.TRANSFER && job.chest != null
                             && job.chest.observedAt >= 1 && project.supplyChest.equals(job.chest.report.location))
                     .max(Comparator.comparingLong(job -> job.chest.observedAt)).orElse(null);
-            if (observed == null) continue;
+            if (observed == null) {
+                if (requestRepairedStorageInspection(project, storage)) return true;
+                continue;
+            }
             var access = JSON.fromJson(observed.work.payload, StationTarget.class);
             if (access == null || access.target == null || access.stand == null
                     || !project.supplyChest.equals(ProjectBlock.key(access.target.checked()))
                     || !ProjectBlock.validStand(access.target.checked(), access.stand.checked())) continue;
-            for (var verify : project.jobs) {
+            for (var verify : pendingVerifications) {
                 var target = transferTarget(verify);
-                if (verify.state != State.WAITING || target == null || !"VERIFY_STOCK".equals(target.direction)
-                        || !verify.work.locks.contains(project.supplyChest) || target.item == null) continue;
                 int current = stockCount(observed.chest.report, target.item);
                 if (current < target.stock && reopenLostManifestStock(project, verify, target, current, access.stand)) return true;
             }
         }
         return false;
+    }
+
+    private boolean requestRepairedStorageInspection(Project project, Job storage) throws IOException {
+        if (project.jobs.size() >= MAX_JOBS || find(project, REPAIRED_STORAGE_INSPECTION) != null) return false;
+        var location = JSON.fromJson(storage.work.payload, StationTarget.class);
+        if (location.target == null || location.stand == null
+                || !ProjectBlock.validStand(location.target.checked(), location.stand.checked())) return false;
+        var payload = JSON.fromJson(storage.work.payload, com.google.gson.JsonObject.class);
+        payload.addProperty("direction", "INSPECT");
+        var locks = Set.copyOf(ProjectBlock.stationCells(location.target.checked(), location.stand.checked()));
+        var inspect = new Work(REPAIRED_STORAGE_INSPECTION, Kind.TRANSFER, JSON.toJson(payload),
+                List.of(storage.work.id), locks);
+        var jobs = new ArrayList<>(project.jobs);
+        jobs.add(freshStockWork(inspect));
+        commit(project.withJobs(jobs));
+        return true;
     }
 
     private boolean reopenLostManifestStock(Project project, Job verify, PickupTarget target, int current,
@@ -1157,6 +1182,7 @@ final class ProjectQueue {
         var revised = new ArrayList<Job>();
         var recoveries = new HashMap<>(project.supplyRecoveries);
         for (var job : project.jobs) {
+            if (key.equals(project.supplyChest) && job.work.id.equals(REPAIRED_STORAGE_INSPECTION)) continue;
             var work = job.work;
             if (job == station && !footing.isEmpty()) {
                 for (var step : footing) {

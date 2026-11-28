@@ -3134,6 +3134,36 @@ class ProjectQueueTest {
         assertEquals("deliver", restored.claim(WORLD, "hauler", Set.of(TRANSFER), now).job().work().id());
     }
 
+    @Test void failedStationHandoffCanChangeStandWithoutTakingAnActiveLock() throws Exception {
+        var queue = new ProjectQueue(directory.resolve("station-replacement-stand.json"));
+        String chest = "block:3,64,0";
+        var craft = job("craft", CRAFT, List.of()).withPayload("{\"recipe\":\"minecraft:chest\",\"count\":1}");
+        var station = job("setup-storage", BUILD, List.of("craft"),
+                chest, "block:3,63,0", "block:3,64,-2", "block:3,65,-2", "block:3,63,-2");
+        station = new ProjectQueue.Work(station.id(), station.kind(), """
+                {"target":{"x":3,"y":64,"z":0},"stand":{"x":3,"y":64,"z":-2},"block":"minecraft:chest"}
+                """, station.needs(), station.locks(), craft.id());
+        queue.submitSupplied("stock", WORLD, List.of(craft, station), chest);
+        var crafted = queue.claim(WORLD, "builder", Set.of(CRAFT), 1).job();
+        assertTrue(queue.finish("stock", craft.id(), crafted.lease(), true, "Crafted a chest", 2));
+        for (int now = 3; now < 9; now += 2) {
+            var placement = queue.claim(WORLD, "builder", Set.of(BUILD), now).job();
+            assertTrue(queue.finish("stock", station.id(), placement.lease(), false, ProjectQueue.TARGET_TIMEOUT, now + 1));
+        }
+        var replacement = new ProjectBlock.Position(1, 64, 0);
+        var request = queue.stalledStations(WORLD).get(0);
+        queue.submit("other", WORLD, List.of(job("occupied", VERIFY, List.of(), "block:1,64,0")));
+        var occupied = queue.claim(WORLD, "survey", Set.of(VERIFY), 9).job();
+        assertNull(queue.claim(WORLD, "helper", Set.of(BUILD), 10));
+        assertFalse(queue.handoffStalledStation(WORLD, request, replacement, "helper", true, Set.of(), 11));
+        assertTrue(queue.finish("other", occupied.work().id(), occupied.lease(), true, "Checked", 12));
+        assertTrue(queue.handoffStalledStation(WORLD, request, replacement, "helper", true, Set.of(), 13));
+        var placement = queue.claim(WORLD, "helper", Set.of(BUILD), 14).job();
+        assertEquals(Set.of(chest, "block:3,63,0", "block:1,64,0", "block:1,63,0", "block:1,65,0"),
+                placement.work().locks());
+        assertEquals(craft.id(), placement.work().sameWorkerAs());
+    }
+
     @Test void repairsALostChestFromAnExhaustedJournalAndForgetsItsOldStock() throws Exception {
         var journal = directory.resolve("lost-chest-attempts.json");
         String chest = "block:3,64,0";

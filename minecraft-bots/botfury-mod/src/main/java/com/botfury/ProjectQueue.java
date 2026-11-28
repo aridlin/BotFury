@@ -1104,7 +1104,7 @@ final class ProjectQueue {
 
     private static String stationHandoffKey(Job placement) { return "station-handoff:" + placement.work.id; }
 
-    synchronized boolean handoffStalledStation(String world, StalledStation request, String worker,
+    synchronized boolean handoffStalledStation(String world, StalledStation request, ProjectBlock.Position stand, String worker,
                                                 boolean carriesStation, Set<String> ingredients, long now) throws IOException {
         var project = projects.get(request.project);
         if (project == null || !world.equals(project.world) || cancelled(project) || !availableProjectWorker(project, worker, now)) {
@@ -1117,6 +1117,9 @@ final class ProjectQueue {
                 && projects.values().stream().anyMatch(other -> other != project && world.equals(other.world)
                         && project.supplyChest.equals(reservedStorage(other)))) return false;
         var target = JSON.fromJson(placement.work.payload, StationTarget.class);
+        if (!ProjectBlock.validStand(target.target.checked(), stand.checked())) return false;
+        var updatedPlacement = stand.equals(target.stand) ? placement.work : withStorageStand(placement.work, target, stand);
+        if (!Collections.disjoint(updatedPlacement.locks, leasedKeys(world, now))) return false;
         var supplies = carriesStation ? Set.of(target.block) : ingredients;
         if (supplies.isEmpty() || !Collections.disjoint(supplies, pendingBuildMaterials(world, worker))
                 || supplies.stream().anyMatch(item -> hasPendingDepositOf(world, worker, item))) return false;
@@ -1134,7 +1137,7 @@ final class ProjectQueue {
                     "Preparation satisfied by observed station ingredients", input.chest, input.resourceSite));
             jobs.set(jobs.indexOf(recipe), freshStockWork(recipe.work));
         }
-        jobs.set(jobs.indexOf(placement), freshStockWork(placement.work));
+        jobs.set(jobs.indexOf(placement), freshStockWork(updatedPlacement));
         var recoveries = new HashMap<>(project.supplyRecoveries);
         recoveries.put(stationHandoffKey(placement), 1);
         commit(project.withRecovery(jobs, recoveries));

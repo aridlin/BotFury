@@ -3,6 +3,7 @@ package com.botfury;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import java.nio.file.Files;
@@ -2951,6 +2952,41 @@ class ProjectQueueTest {
                 new ProjectQueue.ChestReport(chest, java.util.Map.of(dirt, 96)), 16));
         assertEquals(verify, recovered.claim(WORLD, "helper", Set.of(TRANSFER), 17).job().work());
         assertEquals(gathered.lease(), recovered.snapshot(18).get(0).jobs().get(1).lease());
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = ProjectQueue.Kind.class, names = {"CRAFT", "SMELT"})
+    void timedOutProductionDepositCanUseObservedCargoWithoutReopeningProduction(ProjectQueue.Kind kind) throws Exception {
+        String id = "house";
+        String chest = "block:33,65,-1";
+        String item = kind == SMELT ? "minecraft:glass" : "minecraft:oak_planks";
+        var producer = new ProjectQueue.Work("produce", kind,
+                "{\"recipe\":\"" + item + "\",\"count\":7}", List.of(), Set.of());
+        var deposit = new ProjectQueue.Work("store", TRANSFER, """
+                {"target":{"x":33,"y":65,"z":-1},"direction":"DEPOSIT","item":"%s","stock":7}
+                """.formatted(item), List.of(producer.id()), Set.of(chest), producer.id());
+        var dependent = job("place", BUILD, List.of(deposit.id()));
+        var queue = new ProjectQueue(directory.resolve("failed-production-deposit.json"));
+        queue.submitSupplied(id, WORLD, List.of(producer, deposit, dependent), chest);
+        var produced = queue.claim(WORLD, "producer", Set.of(kind), 1).job();
+        assertTrue(queue.finish(id, producer.id(), produced.lease(), true, "Observed 7 " + item + " in worker inventory", 2));
+        for (int now = 3; now < 9; now += 2) {
+            var lease = queue.claim(WORLD, "producer", Set.of(TRANSFER), now).job();
+            assertTrue(queue.finish(id, deposit.id(), lease.lease(), false, ProjectQueue.TARGET_TIMEOUT, now + 1));
+        }
+        var nearby = new ProjectQueue.ResourceSite(33, 65, -2);
+        assertNull(queue.claim(WORLD, "courier", Set.of(TRANSFER), 9));
+        assertFalse(queue.rescueFailedDeposit(WORLD, new ProjectQueue.StockCarrier(
+                "courier", nearby, java.util.Map.of(item, 6)), 9));
+        assertTrue(queue.rescueFailedDeposit(WORLD, new ProjectQueue.StockCarrier(
+                "courier", nearby, java.util.Map.of(item, 7)), 10));
+        var recovered = queue.claim(WORLD, "courier", Set.of(TRANSFER), 11).job();
+        assertEquals(deposit, recovered.work());
+        assertNull(queue.claim(WORLD, "producer", Set.of(TRANSFER, BUILD), 12));
+        assertTrue(queue.finish(id, deposit.id(), recovered.lease(), true, "Verified",
+                new ProjectQueue.ChestReport(chest, java.util.Map.of(item, 7)), 13));
+        assertEquals(dependent, queue.claim(WORLD, "courier", Set.of(BUILD), 14).job().work());
+        assertEquals(produced.lease(), queue.snapshot(15).get(0).jobs().get(0).lease());
     }
 
     @Test void laterCargoFillsStalledManifestBatchAndReopensItsOwnGather() throws Exception {

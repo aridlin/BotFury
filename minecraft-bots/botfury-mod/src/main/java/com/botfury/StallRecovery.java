@@ -112,7 +112,7 @@ final class StallRecovery {
         if (overlapSince == 0) overlapSince = now;
         if (now - overlapSince < IDLE_OVERLAP) return false;
 
-        var step = idleStep(client, outward(player, blocker), candidate ->
+        var step = safeAdjacentStep(client, outward(player, blocker), candidate ->
                 blocker.squaredDistanceTo(Vec3d.ofBottomCenter(candidate)) >= .81);
         if (step == null || !beginDetour(step, now)) {
             retryAt = now + COOLDOWN;
@@ -134,7 +134,7 @@ final class StallRecovery {
                 || player.currentScreenHandler != player.playerScreenHandler
                 || !readyToClearPlacement(now) || !blocked.intersects(player.getBoundingBox())) return false;
         var away = player.getPos().subtract(Vec3d.ofBottomCenter(target)).multiply(1, 0, 1).normalize();
-        var step = idleStep(client, away, candidate -> !blocked.intersects(player.getBoundingBox()
+        var step = safeAdjacentStep(client, away, candidate -> !blocked.intersects(player.getBoundingBox()
                 .offset(Vec3d.ofBottomCenter(candidate).subtract(player.getPos()))));
         if (step == null || !beginDetour(step, now)) {
             retryAt = now + COOLDOWN;
@@ -167,7 +167,7 @@ final class StallRecovery {
                 .map(PlayerEntity.class::cast).min(java.util.Comparator.comparingDouble(player::squaredDistanceTo)).orElse(null);
     }
 
-    private static BlockPos idleStep(MinecraftClient client, Vec3d away, Predicate<BlockPos> allowed) {
+    static BlockPos safeAdjacentStep(MinecraftClient client, Vec3d away, Predicate<BlockPos> allowed) {
         var player = client.player;
         var origin = player.getBlockPos();
         double bestScore = -Double.MAX_VALUE;

@@ -254,15 +254,20 @@ final class ProjectBroker {
         for (var request : board.stalledStations(world)) {
             var station = ProjectBlock.parse(request.placement().payload());
             var target = station.target();
-            var stand = station.stand();
             var level = client.world;
             if (!level.isChunkLoaded(target.getX() >> 4, target.getZ() >> 4)
-                    || !level.isChunkLoaded(stand.getX() >> 4, stand.getZ() >> 4) || !level.isAir(target)
-                    || BuildProtection.blocked(world, target, request.project())
-                    || !ProjectWorker.usableInteractionStand(client, stand, target)
-                    || ProjectPlacement.supportHit(client, station, Vec3d.ofBottomCenter(stand).add(0, 1.62, 0)) == null) {
+                    || !level.isAir(target) || BuildProtection.blocked(world, target, request.project())) {
                 continue;
             }
+            java.util.function.Predicate<BlockPos> usable = pos ->
+                    level.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)
+                    && !BuildProtection.blocked(world, pos, request.project())
+                    && ProjectWorker.usableInteractionStand(client, pos, target)
+                    && ProjectPlacement.supportHit(client, station, Vec3d.ofBottomCenter(pos).add(0, 1.62, 0)) != null;
+            var stand = usable.test(station.stand()) ? station.stand()
+                    : StructureProject.chooseStand(client, target, Map.of(), station.face(), usable);
+            if (stand == null) continue;
+            var replacement = new ProjectBlock.Position(stand.getX(), stand.getY(), stand.getZ());
             var material = station.block().toString();
             var recipe = ProjectProduction.parse(request.recipe().payload(), ProjectQueue.Kind.CRAFT);
             var candidates = BotTracker.all().stream()
@@ -277,7 +282,8 @@ final class ProjectBroker {
                 if (!carries && !canUseCraftingStation(client, recipe, bot)) continue;
                 var ingredients = carries ? Set.<String>of()
                         : ProjectProduction.carriedCraftingIngredients(client, request.recipe().payload(), bot.items());
-                if (board.handoffStalledStation(world, request, bot.name(), carries, ingredients, System.currentTimeMillis())) {
+                if (board.handoffStalledStation(world, request, replacement, bot.name(), carries, ingredients,
+                        System.currentTimeMillis())) {
                     BotEvents.add("info", "projects", bot.name() + " took over station setup at " + target.toShortString());
                     return;
                 }

@@ -57,6 +57,26 @@ class ProjectDiagnosticsTest {
         assertTrue(steps.stream().anyMatch(step -> step.job() == diamond && step.next().contains("required pickaxe")));
     }
 
+    @Test void exhaustedMiningNamesTheLastWorkerAndThePlannedHarvestAndRouteTools() {
+        var tool = job("pickaxe", CRAFT, """
+                {"recipe":"minecraft:iron_pickaxe","count":1}
+                """, List.of(), null, DONE, "Supplier", null);
+        var sword = job("defense", CRAFT, """
+                {"recipe":"minecraft:stone_sword","count":1}
+                """, List.of("pickaxe"), "pickaxe", DONE, "Supplier", null);
+        var ore = job("ore", GATHER, """
+                {"resource":"diamond","item":"minecraft:diamond","count":6}
+                """, List.of("defense"), "defense", FAILED, "Miner",
+                ProjectQueue.GATHER_TOOLS_NEEDED + " after 2 supply recoveries");
+        var project = new ProjectQueue.Project("order", "world", List.of(tool, sword, ore),
+                null, "block:6,100,3", Map.of());
+        var step = ProjectDiagnostics.steps(project, 8).get(0);
+        assertEquals("Miner", step.worker());
+        assertEquals("Gather 6 × diamond", step.requirement());
+        assertTrue(step.next().contains("iron pickaxe or better"));
+        assertTrue(step.next().contains("spare stone pickaxes for tunneling"));
+    }
+
     private static ProjectQueue.Job job(String id, ProjectQueue.Kind kind, String payload, List<String> needs,
                                         String previous, ProjectQueue.State state, String worker, String evidence) {
         var work = new ProjectQueue.Work(id, kind, payload, needs, Set.of(), previous);

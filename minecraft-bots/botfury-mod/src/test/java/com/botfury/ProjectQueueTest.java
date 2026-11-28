@@ -1075,8 +1075,14 @@ class ProjectQueueTest {
         var stone = java.util.Map.of("minecraft:stone_pickaxe", 100);
         assertNull(queue.offerEquippedMiner(WORLD, "helper", null, stone, now++));
         queue = new ProjectQueue(journal);
+        var failure = queue.snapshot(now).get(0).jobs().stream()
+                .filter(job -> job.work().id().equals("ore")).findFirst().orElseThrow();
+        assertEquals(ProjectQueue.State.FAILED, failure.state());
+        assertEquals("miner", failure.worker());
+        assertNull(failure.lease());
         var rescue = queue.offerEquippedMiner(WORLD, "helper", null, iron, now++).job();
         assertEquals(site, rescue.resourceSite());
+        assertEquals("helper", rescue.worker());
         assertTrue(queue.finish("stock", "ore", rescue.lease(), false, ProjectQueue.GATHER_TOOLS_NEEDED, null, site, now++));
         queue = new ProjectQueue(journal);
         assertNull(queue.offerEquippedMiner(WORLD, "helper", null, iron, now++));

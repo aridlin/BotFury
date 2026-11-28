@@ -99,21 +99,7 @@ jobs:
           echo "$!" > "$RUNNER_TEMP/survival.pid"
       - name: Wait for the ten-worker startup checkpoint
         if: inputs.scenario == 'ten-worker-survival'
-        run: |
-          pid="$(cat "$RUNNER_TEMP/survival.pid")"
-          evidence="$RUNNER_TEMP/survival-benchmark"
-          while [[ ! -f "$RUNNER_TEMP/survival.exit" ]]; do
-            if [[ -s "$evidence/orders.json" && -f "$evidence/progress.jsonl" ]] &&
-               [[ "$(wc -l < "$evidence/progress.jsonl")" -ge 5 ]]; then
-              break
-            fi
-            if ! kill -0 "$pid" 2>/dev/null; then
-              [[ -f "$RUNNER_TEMP/survival.exit" ]]
-              break
-            fi
-            sleep 3
-          done
-          tail -n 12 "$RUNNER_TEMP/survival-runner.log"
+        run: bash tests/paper/wait_for_checkpoint.sh 5
       - uses: actions/upload-artifact@v4
         if: always() && inputs.scenario == 'ten-worker-survival'
         with:
@@ -122,6 +108,17 @@ jobs:
             ${{ runner.temp }}/survival-benchmark/orders.json
             ${{ runner.temp }}/survival-benchmark/progress.jsonl
             ${{ runner.temp }}/survival-runner.log
+      - name: Preserve the first 30 fleet observations
+        if: inputs.scenario == 'ten-worker-survival'
+        id: survival-progress
+        run: bash tests/paper/wait_for_checkpoint.sh 30
+      - uses: actions/upload-artifact@v4
+        if: inputs.scenario == 'ten-worker-survival' && steps.survival-progress.outputs.ready == 'true'
+        with:
+          name: ten-worker-survival-progress
+          path: |
+            ${{ runner.temp }}/survival-benchmark/orders.json
+            ${{ runner.temp }}/survival-benchmark/progress.jsonl
       - name: Wait for Paper's final verification
         if: inputs.scenario == 'ten-worker-survival'
         run: |

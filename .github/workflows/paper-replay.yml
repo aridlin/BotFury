@@ -97,13 +97,18 @@ jobs:
           ' run "$RUNNER_TEMP/paper.jar" "$RUNNER_TEMP/survival-benchmark" --minutes 120 "${args[@]}" \
             > "$RUNNER_TEMP/survival-runner.log" 2>&1 < /dev/null &
           echo "$!" > "$RUNNER_TEMP/survival.pid"
-      - name: Wait for the first two minutes of fleet observations
+      - name: Wait for the ten-worker startup checkpoint
         if: inputs.scenario == 'ten-worker-survival'
         run: |
-          for _ in {1..150}; do
-            progress="$RUNNER_TEMP/survival-benchmark/progress.jsonl"
-            if [[ -f "$RUNNER_TEMP/survival.exit" ]] ||
-               [[ -f "$progress" && "$(wc -l < "$progress")" -ge 5 ]]; then
+          pid="$(cat "$RUNNER_TEMP/survival.pid")"
+          evidence="$RUNNER_TEMP/survival-benchmark"
+          while [[ ! -f "$RUNNER_TEMP/survival.exit" ]]; do
+            if [[ -s "$evidence/orders.json" && -f "$evidence/progress.jsonl" ]] &&
+               [[ "$(wc -l < "$evidence/progress.jsonl")" -ge 5 ]]; then
+              break
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              [[ -f "$RUNNER_TEMP/survival.exit" ]]
               break
             fi
             sleep 3

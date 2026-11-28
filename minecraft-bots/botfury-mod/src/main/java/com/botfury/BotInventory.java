@@ -152,6 +152,10 @@ final class BotInventory {
         if (client.player.currentScreenHandler != client.player.playerScreenHandler) {
             status = "Close the bot's container to continue"; return;
         }
+        if (projectDelivery != null && delivered == 0 && count(client, task.item) == 0) {
+            finish(ProjectQueue.ROUTE_PREPARATION_FAILED + "courier no longer carries " + Registries.ITEM.getId(task.item));
+            return;
+        }
         if (followSupplyTrail(client)) return;
         if (spreadGoal != null) {
             if (client.player.getPos().squaredDistanceTo(spreadGoal) < (projectDelivery == null ? 2 : .36)) {

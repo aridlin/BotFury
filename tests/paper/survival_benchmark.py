@@ -165,10 +165,37 @@ def describe_work(project):
     }
 
 
+def audit_active_leases(projects, observed_at):
+    worker_claims = {}
+    lock_claims = {}
+    conflicts = []
+    for project in projects:
+        for job in project["jobs"]:
+            if job["state"] != "LEASED" or job["expiresAt"] <= observed_at * 1000:
+                continue
+            work = job["work"]
+            claim = {"project": project["id"], "job": work["id"],
+                     "worker": job["worker"], "lease": job["lease"],
+                     "evidence": job.get("evidence")}
+            worker_key = job["worker"].casefold()
+            keys = [(worker_claims, "worker", worker_key)]
+            if job.get("evidence") != "Traveling with a partial stock contribution":
+                keys.extend((lock_claims, "lock", lock) for lock in work["locks"])
+            for claims, kind, key in keys:
+                other = claims.setdefault(key, claim)
+                # A single lease can reserve a batch of steps for the same worker.
+                if (other["project"], other["lease"], other["worker"].casefold()) == (
+                        claim["project"], claim["lease"], worker_key):
+                    continue
+                conflicts.append({"kind": kind, "key": key, "claims": [other, claim]})
+    return conflicts
+
+
 def observe(connect, out, journal, house_id, manifest_id, cells, site, minutes):
     deadline = time.monotonic() + 60 * minutes
     next_audit = 0
     while time.monotonic() < deadline:
+        observed_at = time.time()
         projects = json.loads(journal.read_text())["projects"]
         house = projects[house_id]
         manifest = projects[manifest_id]
@@ -177,9 +204,14 @@ def observe(connect, out, journal, house_id, manifest_id, cells, site, minutes):
         try:
             stock = audit_chest_stock(connection, chests)
             chest = manifest["supplyChest"].removeprefix("block:").replace(",", " ")
-            row = {"time": time.time(), "chest": chest,
+            row = {"time": observed_at, "chest": chest,
                    "chestParts": chests, "stock": stock,
-                   "house": describe_work(house), "manifest": describe_work(manifest)}
+                   "house": describe_work(house), "manifest": describe_work(manifest),
+                   "leaseConflicts": audit_active_leases((house, manifest), observed_at)}
+            if row["leaseConflicts"]:
+                with (out / "progress.jsonl").open("a") as trace:
+                    trace.write(json.dumps(row) + "\n")
+                raise RuntimeError(f"Conflicting project leases: {row['leaseConflicts']}")
             stock_ready = all(stock[item] >= count for item, count in TARGETS.items())
             ready_to_verify = stock_ready and completed_project(house) and completed_project(manifest)
             if time.monotonic() >= next_audit or ready_to_verify:

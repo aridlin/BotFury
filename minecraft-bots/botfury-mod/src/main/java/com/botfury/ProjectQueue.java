@@ -1692,7 +1692,7 @@ final class ProjectQueue {
                 if (recovered != null) return recovered;
             }
             if (toolUses != null) {
-                var mining = offerEquippedMiner(world, worker, projectId, toolUses, now, position, true, false);
+                var mining = offerEquippedMiner(world, worker, projectId, toolUses, now, position, true, false, item -> 0);
                 if (mining != null) return mining;
             }
             if (recoverStalledGathering(world, projectId, now, heldCount)
@@ -1744,6 +1744,12 @@ final class ProjectQueue {
 
     synchronized boolean reuseToolDuringGathering(String projectId, String jobId, UUID token,
                                                   Map<String, Integer> toolUses, long now) throws IOException {
+        return reuseToolDuringGathering(projectId, jobId, token, toolUses, item -> 0, now);
+    }
+
+    synchronized boolean reuseToolDuringGathering(String projectId, String jobId, UUID token,
+                                                  Map<String, Integer> toolUses,
+                                                  java.util.function.ToIntFunction<String> held, long now) throws IOException {
         if (toolUses == null || toolUses.isEmpty()) return false;
         var project = projects.get(projectId);
         var active = find(project, jobId);
@@ -1769,7 +1775,8 @@ final class ProjectQueue {
             }
             if (step != active) continue;
             stages.add(jobId);
-            if (!privatePreparationReady(project, target, stages)) continue;
+            if (!privatePreparationReady(project, target, stages)
+                    || !carriedProspectingKit(project, target, craft, stages, toolUses, held)) continue;
             commit(project.withJobs(project.jobs.stream().map(job -> stages.contains(job.work.id)
                     ? new Job(job.work, State.DONE, job.attempts, active.worker, null, 0,
                             "Tool preparation satisfied by carried " + tool, job.chest, job.resourceSite)
@@ -2552,18 +2559,26 @@ final class ProjectQueue {
 
     synchronized Assignment offerEquippedMiner(String world, String worker, String projectId,
                                                 Map<String, Integer> toolUses, long now, ResourceSite position) throws IOException {
-        return offerEquippedMiner(world, worker, projectId, toolUses, now, position, false, false);
+        return offerEquippedMiner(world, worker, projectId, toolUses, now, position, false);
     }
 
     synchronized Assignment offerEquippedMiner(String world, String worker, String projectId,
                                                 Map<String, Integer> toolUses, long now, ResourceSite position,
                                                 boolean checkpointApproach) throws IOException {
-        return offerEquippedMiner(world, worker, projectId, toolUses, now, position, false, checkpointApproach);
+        return offerEquippedMiner(world, worker, projectId, toolUses, now, position, checkpointApproach, item -> 0);
+    }
+
+    synchronized Assignment offerEquippedMiner(String world, String worker, String projectId,
+                                                Map<String, Integer> toolUses, long now, ResourceSite position,
+                                                boolean checkpointApproach,
+                                                java.util.function.ToIntFunction<String> held) throws IOException {
+        return offerEquippedMiner(world, worker, projectId, toolUses, now, position, false, checkpointApproach, held);
     }
 
     private Assignment offerEquippedMiner(String world, String worker, String projectId,
                                           Map<String, Integer> toolUses, long now, ResourceSite position,
-                                          boolean exhaustedOnly, boolean checkpointApproach) throws IOException {
+                                          boolean exhaustedOnly, boolean checkpointApproach,
+                                          java.util.function.ToIntFunction<String> held) throws IOException {
         if (toolUses == null || toolUses.isEmpty() || projects.values().stream().flatMap(project -> project.jobs.stream())
                 .anyMatch(job -> workerCommittedToLease(job, worker))) return null;
         for (var project : projects.values()) {
@@ -2598,7 +2613,8 @@ final class ProjectQueue {
                 if (stalled && (worker.equalsIgnoreCase(craft.worker) || worker.equalsIgnoreCase(gather.worker))) continue;
                 if (reopening && gather.work.needs.stream().anyMatch(need -> find(project, need).state != State.DONE)) continue;
                 var prep = reopening ? Set.<String>of() : stalledPrivatePreparation(project, gather, craft);
-                if (!reopening && prep.isEmpty()) continue;
+                if (!reopening && (prep.isEmpty()
+                        || !carriedProspectingKit(project, gather, craft, prep, toolUses, held))) continue;
                 var site = retryFromHere && position != null ? position : gatheringSite(project, gather, position);
                 var lease = new Job(gather.work, State.LEASED, gather.attempts + 1, worker, UUID.randomUUID(),
                         now + LEASE_MS, null, gather.chest, site);
@@ -3573,6 +3589,34 @@ final class ProjectQueue {
                 ? SubsurfaceAccess.miningHarvestReserve(0) + 1 : SubsurfaceAccess.miningHarvestReserve(checkpoint);
         return PICKAXE_TIERS.subList(tier, PICKAXE_TIERS.size()).stream()
                 .filter(tool -> toolUses.getOrDefault(tool, 0) >= minimumUses).findFirst().orElse(null);
+    }
+
+    private static boolean carriedProspectingKit(Project project, Job gather, Job harvestTool, Set<String> skipped,
+                                                  Map<String, Integer> toolUses,
+                                                  java.util.function.ToIntFunction<String> held) {
+        var source = gatherSource(gather.work.payload);
+        if (source == null || !SubsurfaceAccess.deepResource(source.resource)) return true;
+        boolean suppliesPortableTable = false;
+        for (String id : skipped) {
+            var stage = find(project, id);
+            if (stage.work.kind != Kind.CRAFT) continue;
+            var recipe = JSON.fromJson(stage.work.payload, InventoryRecipe.class);
+            if (recipe == null || recipe.count == null) continue;
+            if ("minecraft:stone_pickaxe".equals(recipe.recipe) && recipe.count > 1
+                    && toolUses.getOrDefault(recipe.recipe, 0) < SubsurfaceAccess.PROSPECTING_ROUTE_USES) return false;
+            if ("minecraft:crafting_table".equals(recipe.recipe) && recipe.inventory) {
+                if (held.applyAsInt(recipe.recipe) < recipe.count) return false;
+                suppliesPortableTable = true;
+            }
+        }
+        String predecessor = harvestTool.work.sameWorkerAs;
+        if (!suppliesPortableTable || predecessor == null || !skipped.contains(predecessor)) return true;
+        var sticks = find(project, predecessor);
+        if (sticks.work.kind != Kind.CRAFT) return true;
+        var recipe = JSON.fromJson(sticks.work.payload, InventoryRecipe.class);
+        // The carried harvest pickaxe replaces the final craft, which would consume two sticks.
+        return recipe == null || !"minecraft:stick".equals(recipe.recipe) || recipe.count == null
+                || held.applyAsInt(recipe.recipe) >= recipe.count - 2;
     }
 
     private static int cargoCheckpoint(Project project, Job gather) {

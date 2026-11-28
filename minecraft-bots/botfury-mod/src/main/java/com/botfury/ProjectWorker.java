@@ -2016,7 +2016,10 @@ final class ProjectWorker {
                 if (readyToBank) args.put("readyToBank", true);
                 if (assignment.job().work().kind() == ProjectQueue.Kind.GATHER) {
                     var tools = carriedToolUses(client);
-                    if (!tools.isEmpty()) args.put("toolUses", tools);
+                    if (!tools.isEmpty()) {
+                        args.put("toolUses", tools);
+                        args.put("claimItems", ProjectInventory.transferableItems(client));
+                    }
                 }
                 if (TaskDefense.requestsMeal(client)) {
                     args.put("needsMeal", true);

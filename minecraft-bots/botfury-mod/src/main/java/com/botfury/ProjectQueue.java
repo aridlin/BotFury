@@ -240,7 +240,7 @@ final class ProjectQueue {
     private static final int MAX_PROJECTS = 32;
     private static final int MAX_DEPENDENCIES = 250_000;
     static final String FURNACE_BATCH_STAGED = "Full batch staged at the furnace";
-    private static final String LEASE_EXPIRED = "Worker lease expired";
+    static final String LEASE_EXPIRED = "Worker lease expired";
     private static final String COORDINATOR_RESTARTED = "Coordinator restarted during work";
     private static final String GATHER_STOCK_CONFIRMED = "Gathering target confirmed by chest stock";
     private static final String GATHER_HANDOFF = "Gathering handoff to ";

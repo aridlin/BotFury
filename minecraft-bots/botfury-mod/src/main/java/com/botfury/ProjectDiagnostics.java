@@ -11,7 +11,11 @@ import java.util.Map;
 
 /** Turns the persisted job graph into the steps that can move the project forward. */
 final class ProjectDiagnostics {
-    record Entry(ProjectQueue.Job job, String requirement, String worker, String next) {}
+    record Entry(ProjectQueue.Job job, String requirement, String worker, String next) {
+        boolean interrupted() {
+            return job.state() == ProjectQueue.State.WAITING && ProjectQueue.LEASE_EXPIRED.equals(job.evidence());
+        }
+    }
 
     private ProjectDiagnostics() {}
 
@@ -57,6 +61,10 @@ final class ProjectDiagnostics {
         if ((job.state() == ProjectQueue.State.WAITING || job.state() == ProjectQueue.State.FAILED)
                 && job.evidence() != null) {
             var evidence = job.evidence();
+            if (ProjectQueue.LEASE_EXPIRED.equals(evidence)) {
+                return worker == null ? "Check Fleet and keep a bot available for this order."
+                        : "Check " + worker + " in Fleet. Keep another bot available for this order.";
+            }
             if (evidence.startsWith("No reachable ") && evidence.contains(" while scouting loaded terrain")) {
                 return "Move an available bot to a reachable source for this item.";
             }
@@ -94,7 +102,6 @@ final class ProjectDiagnostics {
         }
         if (evidence.startsWith("Delivery is short by")) return "Check the counted stock in Chests and the bot’s cargo.";
         if (ProjectQueue.GATHER_PICKUP_MISSED.equals(evidence)) return "Keep any bot carrying the drop available for this order.";
-        if (evidence.equals("Worker lease expired")) return "Check Fleet for a disconnected, paused, or respawning bot.";
         return "Check Activity for details before changing the order.";
     }
 

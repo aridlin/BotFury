@@ -57,6 +57,20 @@ class ProjectDiagnosticsTest {
         assertTrue(steps.stream().anyMatch(step -> step.job() == diamond && step.next().contains("required pickaxe")));
     }
 
+    @Test void interruptedCraftShowsTheLastWorkerAndAnActionToPrepareForRecovery() {
+        var logs = job("logs", GATHER, "{}", List.of(), null, DONE, "OakOne", null);
+        var planks = job("planks", CRAFT, "{\"recipe\":\"minecraft:oak_planks\",\"count\":4}",
+                List.of("logs"), "logs", WAITING, "OakOne", ProjectQueue.LEASE_EXPIRED);
+        var project = new ProjectQueue.Project("order", "world", List.of(logs, planks),
+                null, "block:3,100,0", Map.of());
+
+        var step = ProjectDiagnostics.steps(project, 8).get(0);
+        assertTrue(step.interrupted());
+        assertEquals("Craft 4 × oak planks", step.requirement());
+        assertEquals("OakOne", step.worker());
+        assertEquals("Check OakOne in Fleet. Keep another bot available for this order.", step.next());
+    }
+
     @Test void exhaustedMiningNamesTheLastWorkerAndThePlannedHarvestAndRouteTools() {
         var tool = job("pickaxe", CRAFT, """
                 {"recipe":"minecraft:iron_pickaxe","count":1}

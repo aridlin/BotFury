@@ -3591,6 +3591,9 @@ class ProjectQueueTest {
         board = new ProjectQueue(journal);
         assertNull(board.claim(WORLD, "scout", Set.of(GATHER), 5));
         assertNull(board.claim(WORLD, "helper", Set.of(GATHER), original.expiresAt() - 1));
+        assertNull(board.claim(WORLD, "helper", Set.of(GATHER), "other", original.expiresAt() - 1));
+        var independent = board.claim(WORLD, "collector", Set.of(GATHER), "other", original.expiresAt() - 1).job();
+        assertEquals("stone", independent.work().id());
         assertNull(board.renew("order", "logs", original.lease(), 5));
         board.submitSupplied("second", WORLD, List.of(wood, ladder), "block:2,64,0");
         board.claim(WORLD, "second-scout", Set.of(GATHER), "second", original.expiresAt() - 1);

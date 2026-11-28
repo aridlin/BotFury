@@ -1555,8 +1555,8 @@ final class ProjectQueue {
                 if (pendingRecipeHandoff(job, now) && worker.equalsIgnoreCase(job.worker)
                         && world.equals(project.world)) return null;
                 if (job.state != State.LEASED) continue;
-                if (world.equals(project.world) && (projectId == null || projectId.equals(project.id))
-                        && worker.equalsIgnoreCase(handoffWorker(job))) return null;
+                // A promised handoff reserves the worker across this world's projects.
+                if (world.equals(project.world) && worker.equalsIgnoreCase(handoffWorker(job))) return null;
                 if (worker.equalsIgnoreCase(job.worker) && !BATCH_RESERVED.equals(job.evidence)) {
                     // A claim response can be lost. Normally a repeated claim returns the same assignment.
                     boolean canResume = handoffWorker(job) == null && world.equals(project.world)

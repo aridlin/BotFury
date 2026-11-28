@@ -1949,7 +1949,9 @@ final class ProjectQueue {
                 var stalled = find(project, first.work.sameWorkerAs);
                 if (stalled == null || stalled.state != State.FAILED || stalled.work.kind != Kind.GATHER
                         || stalled.work.sameWorkerAs != null || !GATHER_STALLED.equals(stalled.evidence)
-                        || now < stalled.expiresAt || !privatePreparationReady(project, first, Set.of(stalled.work.id))) continue;
+                        || !privatePreparationReady(project, first, Set.of(stalled.work.id))) continue;
+                // The gatherer's cooldown does not hold up cargo already carried by another worker.
+                if (now < stalled.expiresAt && worker.equalsIgnoreCase(stalled.worker)) continue;
                 var source = gatherSource(stalled.work.payload);
                 if (source == null || !target.item.equals(source.item)) continue;
                 var keys = stockReservationKeys(target.item);

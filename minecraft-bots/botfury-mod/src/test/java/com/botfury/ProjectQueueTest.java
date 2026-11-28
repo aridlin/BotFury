@@ -2989,7 +2989,7 @@ class ProjectQueueTest {
         assertEquals(produced.lease(), queue.snapshot(15).get(0).jobs().get(0).lease());
     }
 
-    @Test void laterCargoFillsStalledManifestBatchAndReopensItsOwnGather() throws Exception {
+    @Test void laterCargoFillsStalledManifestBatchDuringGatherCooldownAndReopensItsOwnGather() throws Exception {
         var journal = directory.resolve("bank-ready-cargo.json");
         String projectId = "manifest-stock";
         String chest = "block:3,64,0";
@@ -3003,7 +3003,7 @@ class ProjectQueueTest {
         var laterBank = new ProjectQueue.Work("later-bank", TRANSFER, deposit.formatted(26),
                 List.of(laterGather.id(), firstBank.id()), Set.of(chest), laterGather.id());
         var project = new ProjectQueue.Project(projectId, WORLD, List.of(
-                new ProjectQueue.Job(firstGather, ProjectQueue.State.FAILED, 3, "stalled", null, 0, ProjectQueue.GATHER_STALLED, null),
+                new ProjectQueue.Job(firstGather, ProjectQueue.State.FAILED, 3, "stalled", null, 30_000, ProjectQueue.GATHER_STALLED, null),
                 new ProjectQueue.Job(firstBank, ProjectQueue.State.WAITING, 0, null, null, 0, null, null),
                 new ProjectQueue.Job(laterGather, ProjectQueue.State.DONE, 1, "carrier", null, 0, "Gathered", null),
                 new ProjectQueue.Job(laterBank, ProjectQueue.State.WAITING, 0, null, null, 0, null, null)), null, chest, java.util.Map.of());

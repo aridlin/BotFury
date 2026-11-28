@@ -1,0 +1,1 @@
+{"schemaVersion":1,"id":"botfury_benchmark_input","version":"1","environment":"client","entrypoints":{"client":["com.botfury.replay.BenchmarkInput"]}}

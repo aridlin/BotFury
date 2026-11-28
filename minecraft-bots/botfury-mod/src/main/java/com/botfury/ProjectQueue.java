@@ -1858,8 +1858,10 @@ final class ProjectQueue {
                 var chest = JSON.fromJson(deposit.work.payload, StationTarget.class).target;
                 if (chest == null || distance(carrier.position, chest) > STOCK_RECOVERY_RADIUS
                         || chest.y() - carrier.position.y > CONSTRUCTION_PICKUP_RETRY_CLIMB) continue;
-                var gather = privateDepositCargo(project, deposit, target.item);
-                if (gather == null || ownChestContributionBlocked(project, gather, deposit)) continue;
+                var cargo = privateFinishedDepositCargo(project, deposit);
+                if (cargo == null || !(matchesGatheredCargo(cargo, target.item)
+                        || target.item.equals(observedProductionItem(cargo)))
+                        || ownChestContributionBlocked(project, cargo, deposit)) continue;
                 var items = stockReservationKeys(target.item);
                 if (!Collections.disjoint(pendingBuildMaterials(world, carrier.worker), items)
                         || items.stream().anyMatch(item -> hasPendingDepositOf(world, carrier.worker, item))) continue;
@@ -1982,13 +1984,21 @@ final class ProjectQueue {
     }
 
     private static Job privateDepositCargo(Project project, Job deposit, String item) {
+        var cargo = privateFinishedDepositCargo(project, deposit);
+        return cargo != null && matchesGatheredCargo(cargo, item) ? cargo : null;
+    }
+
+    private static Job privateFinishedDepositCargo(Project project, Job deposit) {
         var cargo = find(project, deposit.work.sameWorkerAs);
-        if (cargo == null || cargo.state != State.DONE || cargo.worker == null || cargo.work.kind != Kind.GATHER
-                || !privatePreparationReady(project, deposit, Set.of(cargo.work.id))) return null;
+        return cargo != null && cargo.state == State.DONE && cargo.worker != null
+                && privatePreparationReady(project, deposit, Set.of(cargo.work.id)) ? cargo : null;
+    }
+
+    private static boolean matchesGatheredCargo(Job cargo, String item) {
+        if (cargo.work.kind != Kind.GATHER) return false;
         var source = gatherSource(cargo.work.payload);
         var quantity = JSON.fromJson(cargo.work.payload, GatherQuantity.class);
-        return source != null && item.equals(source.item) && quantity != null && quantity.count != null && quantity.count > 0
-                ? cargo : null;
+        return source != null && item.equals(source.item) && quantity != null && quantity.count != null && quantity.count > 0;
     }
 
     private static Job firstUnbankedDeposit(Project project, Job later, String item) {
@@ -4844,16 +4854,22 @@ final class ProjectQueue {
     }
 
     private static boolean holdsProductionOutput(Job supplier, java.util.function.ToIntBiFunction<String, String> heldCount) {
-        if (supplier == null || supplier.state != State.DONE || !productionWork(supplier.work)
-                || supplier.evidence == null || supplier.worker == null) return false;
-        var output = PRODUCED_INVENTORY.matcher(supplier.evidence);
+        if (supplier == null || supplier.worker == null) return false;
+        String item = observedProductionItem(supplier);
+        if (item == null) return false;
         var required = JSON.fromJson(supplier.work.payload, GatherQuantity.class);
-        if (!output.matches() || required == null || required.count == null || required.count < 1) return false;
+        if (required == null || required.count == null || required.count < 1) return false;
         try {
-            return heldCount.applyAsInt(supplier.worker, output.group(1)) >= required.count;
+            return heldCount.applyAsInt(supplier.worker, item) >= required.count;
         } catch (IllegalArgumentException invalidItem) {
             return false;
         }
+    }
+
+    private static String observedProductionItem(Job job) {
+        if (job.state != State.DONE || !productionWork(job.work) || job.evidence == null) return null;
+        var output = PRODUCED_INVENTORY.matcher(job.evidence);
+        return output.matches() ? output.group(1) : null;
     }
 
     private static String stalledSupplyKey(Job job) {

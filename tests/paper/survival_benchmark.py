@@ -194,7 +194,8 @@ def audit_active_leases(projects, observed_at):
 def observe(connect, out, journal, house_id, manifest_id, cells, site, minutes):
     deadline = time.monotonic() + 60 * minutes
     next_audit = 0
-    while time.monotonic() < deadline:
+    while True:
+        timed_out = time.monotonic() >= deadline
         observed_at = time.time()
         projects = json.loads(journal.read_text())["projects"]
         house = projects[house_id]
@@ -208,13 +209,15 @@ def observe(connect, out, journal, house_id, manifest_id, cells, site, minutes):
                    "chestParts": chests, "stock": stock,
                    "house": describe_work(house), "manifest": describe_work(manifest),
                    "leaseConflicts": audit_active_leases((house, manifest), observed_at)}
+            if timed_out:
+                row["atTimeout"] = True
             if row["leaseConflicts"]:
                 with (out / "progress.jsonl").open("a") as trace:
                     trace.write(json.dumps(row) + "\n")
                 raise RuntimeError(f"Conflicting project leases: {row['leaseConflicts']}")
             stock_ready = all(stock[item] >= count for item, count in TARGETS.items())
-            ready_to_verify = stock_ready and completed_project(house) and completed_project(manifest)
-            if time.monotonic() >= next_audit or ready_to_verify:
+            ready_to_verify = not timed_out and stock_ready and completed_project(house) and completed_project(manifest)
+            if timed_out or time.monotonic() >= next_audit or ready_to_verify:
                 checks = audit_house(connection, cells, site)
                 clearance = audit_temporary_blocks(connection, house, cells, site)
                 row["houseCellsMatched"] = sum(check[-1] == "Test passed" for check in checks)
@@ -243,8 +246,9 @@ def observe(connect, out, journal, house_id, manifest_id, cells, site, minutes):
         }), flush=True)
         with (out / "progress.jsonl").open("a") as trace:
             trace.write(json.dumps(row) + "\n")
-        time.sleep(30)
-    raise RuntimeError("The survival benchmark reached its time limit before Paper verified the house and stock")
+        if timed_out:
+            raise RuntimeError("The survival benchmark reached its time limit before Paper verified the house and stock")
+        time.sleep(min(30, max(0, deadline - time.monotonic())))
 
 
 def run(args):

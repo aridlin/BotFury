@@ -1054,7 +1054,8 @@ final class ProjectWorker {
         int riseToStation = stand.getY() - currentCell.getY();
         boolean shortStationClimb = needsStationApproach && riseToStation > 0 && riseToStation < 5
                 && (stationReturn.active() || stationReturn.continuingLocalAscent() || stationReturn.openingReturnStep()
-                    || routeFailed && SubsurfaceAccess.hasFooting(client) && !client.world.isSkyVisible(currentCell.up()));
+                    || routeFailed && SubsurfaceAccess.hasFooting(client)
+                        && (holdsDepositCargo(client) || !client.world.isSkyVisible(currentCell.up())));
         if (shortStationClimb && tryElevatedApproach(client, stand, now, false, true)) {
             approachAge++;
             return;
@@ -1629,6 +1630,10 @@ final class ProjectWorker {
         return true;
     }
 
+    private static boolean holdsDepositCargo(MinecraftClient client) {
+        return chest != null && chest.depositing() && projectCargoItem != null && projectCargoItem.count(client) > 0;
+    }
+
     private static boolean tryElevatedApproach(MinecraftClient client, BlockPos destination, long now,
                                                boolean placement, boolean shortStationClimb) {
         var position = client.player.getBlockPos();
@@ -1682,9 +1687,8 @@ final class ProjectWorker {
                     && !client.player.getInventory().contains(net.minecraft.item.Items.CRAFTING_TABLE.getDefaultStack());
         }
         boolean alreadyClimbing = stationReturn.active();
-        boolean carryingDeposit = !placement && chest != null && chest.depositing()
-                && projectCargoItem != null && projectCargoItem.count(client) > 0;
-        if (!stationReturn.advanceToward(client, approachAge, destination, excluded, !placement, carryingDeposit)) return false;
+        if (!stationReturn.advanceToward(client, approachAge, destination, excluded, !placement,
+                !placement && holdsDepositCargo(client))) return false;
         String detail = placement ? "Opening a short climb to the placement stand"
                 : stationReturn.followingNaturalAscent() ? "Following a natural ascent to the station"
                 : stationReturn.openingReturnStep() ? "Opening a protected return step" : "Opening a return route to the station";

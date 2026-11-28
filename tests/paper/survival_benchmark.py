@@ -10,6 +10,7 @@ import math
 import os
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import subprocess as sp
@@ -251,6 +252,22 @@ def observe(connect, out, journal, house_id, manifest_id, cells, site, minutes):
         time.sleep(min(30, max(0, deadline - time.monotonic())))
 
 
+def prepare_coordinator_args(out):
+    source = FIXTURE / "benchmark-input"
+    classes = out / "benchmark-input"
+    classes.mkdir()
+    client_args = shlex.split((RUNTIME / "client.args").read_text())
+    slot = client_args.index("-classpath") + 1
+    classpath = client_args[slot]
+    sp.run(["javac", "--release", "17", "-cp", classpath, "-d", str(classes),
+            str(source / "BenchmarkInput.java")], check=True)
+    shutil.copyfile(source / "fabric.mod.json", classes / "fabric.mod.json")
+    client_args[slot] = os.pathsep.join((classpath, str(classes)))
+    args = out / "coordinator.args"
+    args.write_text("".join(json.dumps(arg, ensure_ascii=False) + "\n" for arg in client_args))
+    return args
+
+
 def run(args):
     out = args.output.resolve()
     out.mkdir()
@@ -274,6 +291,7 @@ def run(args):
     display = ":178"
     environment = dict(os.environ, DISPLAY=display, ALSOFT_DRIVERS="null", LP_NUM_THREADS="1")
     java = (RUNTIME / "java-path.txt").read_text().strip()
+    coordinator_args = prepare_coordinator_args(out)
     journal = out / MASTER / "config/botfury-projects.json"
     processes = []
     connection = None
@@ -313,9 +331,10 @@ def run(args):
             "formationPortCount": len(WORKERS),
             "disableRendering": str(not visible).lower(), "advancedModulesFile": out / "botfury-advanced.txt",
         }
+        client_args = coordinator_args if index == 0 else RUNTIME / "client.args"
         return run_process(name, [
             java, "-Xms128m", "-Xmx720m", "-XX:ActiveProcessorCount=1", "-XX:+UseSerialGC",
-            *[f"-Dbotfury.{key}={value}" for key, value in flags.items()], f"@{RUNTIME / 'client.args'}",
+            *[f"-Dbotfury.{key}={value}" for key, value in flags.items()], f"@{client_args}",
             "--username", name, "--width", "480", "--height", "270",
         ], profile)
 
@@ -339,7 +358,7 @@ def run(args):
                     raise RuntimeError(f"Could not enroll {name} for both projects")
 
         wait(lambda: all(enrolled(name, None) for name in WORKERS), 90)
-        print("All ten workers saved their shared project enrollment.", flush=True)
+        print(f"{len(WORKERS)} workers saved their shared project enrollment.", flush=True)
 
     def master_at(position):
         status = read_status(0)
@@ -348,23 +367,20 @@ def run(args):
             for axis, expected in zip("xz", (position[0], position[2]))
         )
 
-    def order(master_window, text, reply, allow_chunk_retry=False):
+    def order(text, reply, allow_chunk_retry=False):
         log = out / MASTER / "logs/latest.log"
+        inbox = out / MASTER / "benchmark-order.txt"
 
         def master_ready_for_input():
             status = read_status(0)
-            return (status.get("connected") and status.get("player") == MASTER and status.get("gameInputReady")
-                    and MASTER in connection.command("list"))
+            return status.get("connected") and status.get("player") == MASTER and MASTER in connection.command("list")
 
         for attempt in range(3 if allow_chunk_retry else 1):
             wait(master_ready_for_input, 120)
             position = log.stat().st_size
-            x("windowfocus", "--sync", master_window)
-            x("key", "slash")
-            time.sleep(0.65)
-            x("type", "--clearmodifiers", "--delay", "18", text)
-            time.sleep(0.4)
-            x("key", "Return")
+            pending = inbox.with_suffix(".tmp")
+            pending.write_text(text + "\n")
+            pending.replace(inbox)
 
             def accepted():
                 with log.open() as stream:
@@ -422,7 +438,7 @@ def run(args):
         site_chunks = sorted({((site[0] + x) // 16, (site[2] + z) // 16) for x, _, z, _ in cells})
         loaded_conditions = " ".join(f"if loaded {cx * 16} {site[1]} {cz * 16}" for cx, cz in site_chunks)
         wait(lambda: command(f"execute {loaded_conditions}") == "Test passed", 120)
-        master_window = window(master, 0, 0)
+        window(master, 0, 0)
         captured = run_process("capture", [
             "ffmpeg", "-nostdin", "-loglevel", "error", "-n", "-f", "x11grab", "-draw_mouse", "0",
             "-framerate", "8", "-video_size", "960x540", "-i", display + ".0+0,0",
@@ -432,7 +448,7 @@ def run(args):
         time.sleep(1)
         if captured.poll() is not None:
             raise RuntimeError("Failed to record the hosted survival benchmark")
-        house_id = order(master_window, f"bf project build {SCHEMATIC.name} {' '.join(map(str, site))} supplied",
+        house_id = order(f"bf project build {SCHEMATIC.name} {' '.join(map(str, site))} supplied",
                          r"Queued (village-homestead-[a-f0-9]{8})", allow_chunk_retry=True)
         print(f"Paper accepted house order {house_id}.", flush=True)
         command(f"gamemode spectator {MASTER}")
@@ -452,7 +468,7 @@ def run(args):
         initial = {name: command(f"data get entity {name} Inventory") for name in WORKERS}
         if not all(value.endswith(" []") for value in initial.values()):
             raise RuntimeError(f"Expected empty starting inventories, got {initial}")
-        manifest_id = order(master_window, STOCK_ORDER, r"Queued (manifest-[a-f0-9]{8}) for 10 bots")
+        manifest_id = order(STOCK_ORDER, rf"Queued (manifest-[a-f0-9]{{8}}) for {len(WORKERS)} bots?")
         print(f"Paper accepted stock order {manifest_id}.", flush=True)
         (out / "orders.json").write_text(json.dumps({
             "seed": world_seed, "site": site, "relocatedSpawn": relocated_spawn, "inventories": initial,

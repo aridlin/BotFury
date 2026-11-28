@@ -87,6 +87,37 @@ def read_status(index):
         return json.load(response)
 
 
+def wait_for_discovered_workers():
+    missing = set(WORKERS)
+
+    def roster_ready():
+        nonlocal missing
+        master = read_status(0)
+        if not (master.get("server") and master.get("dimension")):
+            return None
+        with urlopen(f"http://127.0.0.1:{CONTROL_PORT}/bots", timeout=3) as response:
+            roster = json.load(response)
+        now = time.time_ns() // 1_000_000
+        eligible = {
+            (bot["port"], bot["name"]) for bot in roster["bots"]
+            if bot["reachable"] and bot["connected"] and bot["alive"]
+            and now - bot["contactAt"] < 3000
+            and bot["server"] == master["server"] and bot["dimension"] == master["dimension"]
+        }
+        missing = {
+            name for i, name in enumerate(WORKERS, 1)
+            if (CONTROL_PORT + i, name) not in eligible
+        }
+        return not missing and roster["selectedPort"] == -1
+
+    try:
+        wait(roster_ready, 90)
+    except RuntimeError as error:
+        reason = ", ".join(sorted(missing)) if missing else "master has a single bot selected"
+        raise RuntimeError(f"Master did not discover the full available fleet: {reason}") from error
+    print(f"Master discovered all {len(WORKERS)} live workers in its own world.", flush=True)
+
+
 def start(name, args, directory, output, environment):
     with (output / f"{name}.log").open("w") as log:
         return sp.Popen(args, cwd=directory, env=environment, stdout=log, stderr=sp.STDOUT)
@@ -367,7 +398,7 @@ def run(args):
             for axis, expected in zip("xz", (position[0], position[2]))
         )
 
-    def order(text, reply, allow_chunk_retry=False):
+    def order(text, reply, allow_chunk_retry=False, expect_workers=None):
         log = out / MASTER / "logs/latest.log"
         inbox = out / MASTER / "benchmark-order.txt"
 
@@ -395,6 +426,8 @@ def run(args):
             except RuntimeError as error:
                 raise RuntimeError(f"Could not verify /{text}: {error}") from error
             if isinstance(result, re.Match):
+                if expect_workers is not None and int(result.group(2)) != expect_workers:
+                    raise RuntimeError(f"Stock order expected {expect_workers} workers, got: {result.group(0)}")
                 return result.group(1)
             if not allow_chunk_retry or "Load the entire build site first" not in result or attempt == 2:
                 raise RuntimeError(f"Paper replay order /{text} was rejected: {result}")
@@ -468,7 +501,10 @@ def run(args):
         initial = {name: command(f"data get entity {name} Inventory") for name in WORKERS}
         if not all(value.endswith(" []") for value in initial.values()):
             raise RuntimeError(f"Expected empty starting inventories, got {initial}")
-        manifest_id = order(STOCK_ORDER, rf"Queued (manifest-[a-f0-9]{{8}}) for {len(WORKERS)} bots?")
+        # A Paper login and the worker's own HTTP status can precede a poll by the master.
+        wait_for_discovered_workers()
+        manifest_id = order(STOCK_ORDER, r"Queued (manifest-[a-f0-9]{8}) for (\d+) bots? at",
+                            expect_workers=len(WORKERS))
         print(f"Paper accepted stock order {manifest_id}.", flush=True)
         (out / "orders.json").write_text(json.dumps({
             "seed": world_seed, "site": site, "relocatedSpawn": relocated_spawn, "inventories": initial,

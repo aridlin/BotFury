@@ -574,7 +574,9 @@ final class BotRosterScreen extends FleetPanel {
             };
             lines.add(pressText(state + "  /  " + step.requirement(),
                     job.state() == ProjectQueue.State.FAILED ? PRESS_RED : PRESS_INK));
-            var worker = pressText(step.worker() == null ? "Unassigned" : step.worker(), PRESS_MUTED);
+            String workerName = step.worker() == null ? "Unassigned" : job.state() == ProjectQueue.State.FAILED
+                    ? "Last worker " + step.worker() : step.worker();
+            var worker = pressText(workerName, PRESS_MUTED);
             if (job.evidence() != null) worker.append("  ·  " + job.evidence());
             lines.add(worker);
             lines.add(pressText(step.next(), PRESS_INK));

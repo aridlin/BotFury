@@ -2763,6 +2763,11 @@ final class ProjectQueue {
         return recipe == null || recipe.recipe == null ? -1 : PICKAXE_TIERS.indexOf(recipe.recipe);
     }
 
+    static String plannedPickaxe(Job job) {
+        int tier = pickaxeRecipeTier(job);
+        return tier < 0 ? null : PICKAXE_TIERS.get(tier);
+    }
+
     private static String equippedRescueKey(Job gather) {
         return "equipped-miner:" + gather.work.id;
     }
@@ -5342,7 +5347,8 @@ final class ProjectQueue {
         }
         if (starter != null && attempts > 0) return false;
         if (attempts >= MAX_SUPPLY_RECOVERIES) {
-            replace(project, new Job(waiting.work, State.FAILED, waiting.attempts, null, null, 0,
+            String lastWorker = GATHER_TOOLS_NEEDED.equals(evidence) ? waiting.worker : null;
+            replace(project, new Job(waiting.work, State.FAILED, waiting.attempts, lastWorker, null, 0,
                     evidence + " after " + attempts + " supply recoveries", observation, site));
             return true;
         }

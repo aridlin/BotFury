@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 
 /** Turns the persisted job graph into the steps that can move the project forward. */
 final class ProjectDiagnostics {
@@ -42,13 +43,13 @@ final class ProjectDiagnostics {
                 if (worker == null && state == ProjectQueue.State.WAITING && previous != null) {
                     worker = previous.worker();
                 }
-                entries.add(new Entry(job, requirement(job.work()), worker, next(job, worker)));
+                entries.add(new Entry(job, requirement(job.work()), worker, next(job, worker, jobs)));
             }
         }
         return List.copyOf(entries);
     }
 
-    private static String next(ProjectQueue.Job job, String worker) {
+    private static String next(ProjectQueue.Job job, String worker, Map<String, ProjectQueue.Job> jobs) {
         if (ProjectQueue.FURNACE_BATCH_STAGED.equals(job.evidence())) {
             if (job.state() == ProjectQueue.State.WAITING) return "An available headless bot can finish this furnace batch.";
             if (job.state() == ProjectQueue.State.LEASED) return "Let " + worker + " collect the full batch from the furnace.";
@@ -69,12 +70,17 @@ final class ProjectDiagnostics {
             case WAITING -> job.work().kind().coordinatorOnly() ? "The coordinator will settle this step."
                     : worker != null ? "Keep " + worker + " connected with the previous step’s supplies."
                     : "Assign available bots if none are working on this order.";
-            case FAILED -> failureAction(job.evidence());
+            case FAILED -> failureAction(job, jobs);
         };
     }
 
-    private static String failureAction(String evidence) {
+    private static String failureAction(ProjectQueue.Job job, Map<String, ProjectQueue.Job> jobs) {
+        String evidence = job.evidence();
         if (evidence == null) return "Check Activity for the worker’s last report.";
+        if (job.work().kind() == ProjectQueue.Kind.GATHER && evidence.startsWith(ProjectQueue.GATHER_TOOLS_NEEDED)) {
+            String required = miningRecoveryEquipment(job, jobs);
+            if (required != null) return "Equip a bot with " + required + ", then assign it to this order.";
+        }
         if (evidence.startsWith(ProjectQueue.GATHER_TOOLS_NEEDED)
                 || evidence.startsWith(ProjectQueue.EXCAVATION_TOOL_NEEDED)) {
             return "Equip an available bot with a suitable tool and check whether recovery resumes.";
@@ -90,6 +96,21 @@ final class ProjectDiagnostics {
         if (ProjectQueue.GATHER_PICKUP_MISSED.equals(evidence)) return "Keep any bot carrying the drop available for this order.";
         if (evidence.equals("Worker lease expired")) return "Check Fleet for a disconnected, paused, or respawning bot.";
         return "Check Activity for details before changing the order.";
+    }
+
+    private static String miningRecoveryEquipment(ProjectQueue.Job job, Map<String, ProjectQueue.Job> jobs) {
+        String resource = field(payload(job.work().payload()), "resource");
+        boolean deep = resource != null && SubsurfaceAccess.deepResource(resource);
+        for (var step = jobs.get(job.work().sameWorkerAs()); step != null;
+             step = jobs.get(step.work().sameWorkerAs())) {
+            String pickaxe = ProjectQueue.plannedPickaxe(step);
+            if (pickaxe != null) {
+                String tool = pickaxe.substring("minecraft:".length()).replace('_', ' ');
+                String article = tool.startsWith("iron ") ? "an " : "a ";
+                return article + tool + " or better" + (deep ? " and spare stone pickaxes for tunneling" : "");
+            }
+        }
+        return null;
     }
 
     private static String requirement(ProjectQueue.Work work) {

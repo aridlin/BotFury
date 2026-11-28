@@ -2103,6 +2103,36 @@ class ProjectQueueTest {
                 new ProjectQueue.Job(deposit, ProjectQueue.State.WAITING, 0, null, null, 0, null, null));
         var project = new ProjectQueue.Project("stock", WORLD, jobs, null, chest, java.util.Map.of());
         Files.writeString(journal, new com.google.gson.Gson().toJson(java.util.Map.of("schema", 1, "projects", java.util.Map.of("stock", project))));
+        var equippedJournal = Files.copy(journal, directory.resolve("expired-equipped-miner.json"));
+        var equipped = new ProjectQueue(equippedJournal);
+        var goodTool = java.util.Map.of("minecraft:iron_pickaxe", 200);
+        assertNull(equipped.claim(WORLD, "original", Set.of(GATHER), "stock", 1, site, item -> false,
+                null, goodTool));
+        assertNull(equipped.claim(WORLD, "replacement", Set.of(GATHER), "stock", 2, site, item -> false,
+                null, java.util.Map.of("minecraft:stone_pickaxe", 130)));
+        var takeover = equipped.claim(WORLD, "replacement", Set.of(GATHER), "stock", 3, site, item -> false,
+                null, goodTool).job();
+        assertEquals(mining.id(), takeover.work().id());
+        assertEquals(site, takeover.resourceSite());
+        assertEquals(jobs.get(1), equipped.snapshot(4).get(0).jobs().get(1));
+        assertNull(equipped.claim(WORLD, "another", Set.of(GATHER), "stock", 5, site, item -> false,
+                null, goodTool));
+        // A partial deposit leaves the gather WAITING with the replacement as its last worker.
+        var afterCheckpoint = com.google.gson.JsonParser.parseString(Files.readString(equippedJournal)).getAsJsonObject();
+        var waiting = afterCheckpoint.getAsJsonObject("projects").getAsJsonObject("stock")
+                .getAsJsonArray("jobs").get(2).getAsJsonObject();
+        waiting.addProperty("state", "WAITING");
+        waiting.addProperty("expiresAt", 0);
+        waiting.remove("lease");
+        var resumedJournal = directory.resolve("expired-miner-checkpoint.json");
+        Files.writeString(resumedJournal, afterCheckpoint.toString());
+        var resumed = new ProjectQueue(resumedJournal);
+        assertNull(resumed.claim(WORLD, "original", Set.of(GATHER), 6));
+        assertEquals(mining.id(), resumed.claim(WORLD, "replacement", Set.of(GATHER), 7).job().work().id());
+
+        assertTrue(equipped.finish("stock", mining.id(), takeover.lease(), true, "Observed diamonds", 6));
+        assertEquals(deposit.id(), equipped.claim(WORLD, "replacement", Set.of(TRANSFER), 7).job().work().id());
+
         var queue = new ProjectQueue(journal);
         assertNull(queue.claim(WORLD, "replacement", Set.of(GATHER), "stock", 1, site, item -> false,
                 (worker, item) -> -1, null));

@@ -742,6 +742,45 @@ class ProjectQueueTest {
         }
     }
 
+    @Test void aHarvestPickaxeAloneCannotReplaceAProspectingKit() throws Exception {
+        var queue = new ProjectQueue(directory.resolve("prospecting-kit.json"));
+        queue.submitSupplied("stock", WORLD, List.of(
+                job("wood", GATHER, List.of()),
+                new ProjectQueue.Work("route-tools", CRAFT, """
+                        {"recipe":"minecraft:stone_pickaxe","count":4}
+                        """, List.of("wood"), Set.of(), "wood"),
+                new ProjectQueue.Work("portable-table", CRAFT, """
+                        {"recipe":"minecraft:crafting_table","count":1,"inventory":true}
+                        """, List.of("route-tools"), Set.of(), "route-tools"),
+                new ProjectQueue.Work("spare-sticks", CRAFT, """
+                        {"recipe":"minecraft:stick","count":8,"inventory":true}
+                        """, List.of("portable-table"), Set.of(), "portable-table"),
+                new ProjectQueue.Work("harvest-tool", CRAFT, """
+                        {"recipe":"minecraft:iron_pickaxe","count":1}
+                        """, List.of("spare-sticks"), Set.of(), "spare-sticks"),
+                new ProjectQueue.Work("ore", GATHER, """
+                        {"resource":"diamond","variant":"both","item":"minecraft:diamond","count":6}
+                        """, List.of("harvest-tool"), Set.of(), "harvest-tool")),
+                "block:3,64,0");
+        var wood = queue.claim(WORLD, "miner", Set.of(GATHER), 1).job();
+        assertFalse(queue.reuseToolDuringGathering("stock", "wood", wood.lease(),
+                java.util.Map.of("minecraft:iron_pickaxe", 50), 2));
+        var stillActive = queue.claim(WORLD, "miner", Set.of(GATHER), 3).job();
+        assertEquals(wood.lease(), stillActive.lease());
+        assertNull(queue.claim(WORLD, "other", Set.of(GATHER, CRAFT), 4));
+
+        var picks = java.util.Map.of("minecraft:iron_pickaxe", 50, "minecraft:stone_pickaxe", 512);
+        assertFalse(queue.reuseToolDuringGathering("stock", "wood", wood.lease(), picks,
+                item -> 0, 5));
+        assertFalse(queue.reuseToolDuringGathering("stock", "wood", wood.lease(), picks,
+                item -> item.equals("minecraft:crafting_table") ? 1 : 0, 6));
+        var supplies = java.util.Map.of("minecraft:crafting_table", 1, "minecraft:stick", 6);
+        assertTrue(queue.reuseToolDuringGathering("stock", "wood", wood.lease(), picks,
+                item -> supplies.getOrDefault(item, 0), 7));
+        assertEquals("ore", queue.claim(WORLD, "miner", Set.of(GATHER), 8).job().work().id());
+        assertFalse(queue.finish("stock", "wood", wood.lease(), true, "Late gather report", 9));
+    }
+
     @Test void aWornPickaxeCanReachAnExistingMiningCheckpoint() throws Exception {
         var queue = new ProjectQueue(directory.resolve("mining-checkpoint-tool.json"));
         String chest = "block:3,64,0";

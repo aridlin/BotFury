@@ -186,7 +186,7 @@ final class MaterialRecipe {
             int copies = tier == highest ? 1 + (miningUses - 1) / pickaxe.getMaxDamage() : 1;
             if (tier == 1 && deepProspecting) {
                 // Reserve a separate route budget for descent and branching through natural terrain.
-                copies = Math.max(copies, 1 + (512 - 1) / pickaxe.getMaxDamage());
+                copies = Math.max(copies, 1 + (SubsurfaceAccess.PROSPECTING_ROUTE_USES - 1) / pickaxe.getMaxDamage());
             }
             var tools = quantities(item, copies, false, resolveSteps(item, false)).quantities;
             if (tier == highest && deepProspecting && recipes.containsKey(mc("crafting_table"))) {

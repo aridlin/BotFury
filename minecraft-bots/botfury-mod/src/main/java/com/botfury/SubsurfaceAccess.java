@@ -38,6 +38,7 @@ final class SubsurfaceAccess {
     private static final int REACH = 12;
     private static final int HARVEST_RESERVE = 32;
     static final int MIN_ROUTE_TOOL_USES = 21;
+    static final int PROSPECTING_ROUTE_USES = 512;
     private int harvestReserve = HARVEST_RESERVE;
     private static final int ASCENT_CHECKPOINT = 12;
     private static final int DESCENT_RECOVERY_TICKS = 240;

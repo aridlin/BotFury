@@ -826,11 +826,9 @@ final class ProjectBroker {
                         break;
                     }
                     var position = workerPosition(request.worker);
-                    var reported = request.claimItems;
-                    boolean hasClaimInventory = reported != null && reported.size() <= 36
-                            && reported.values().stream().allMatch(count -> count != null && count > 0 && count <= 36 * 64);
+                    var reported = reportedInventory(request.claimItems);
                     java.util.function.ToIntBiFunction<String, String> claimStock = (worker, item) ->
-                            hasClaimInventory && request.worker.equalsIgnoreCase(worker)
+                            reported != null && request.worker.equalsIgnoreCase(worker)
                                     ? ProjectItem.parse(item).count(reported) : heldCount(worker, item);
                     int returnRevision = Math.max(0, Math.min(request.returnRouteRevision, SubsurfaceAccess.RETURN_ROUTE_REVISION));
                     var assignment = request.kinds.contains(ProjectQueue.Kind.TRANSFER)
@@ -887,7 +885,7 @@ final class ProjectBroker {
                         }
                         if (assignment == null) {
                             assignment = board.offerEquippedMiner(world, request.worker, request.project, request.toolUses, now,
-                                    position, request.checkpointApproach);
+                                    position, request.checkpointApproach, item -> claimStock.applyAsInt(request.worker, item));
                         }
                         if (assignment == null) {
                             assignment = board.offerSmeltingRefill(world, request.worker, request.project, request.toolUses, now);
@@ -922,7 +920,9 @@ final class ProjectBroker {
                     reply(exchange, 200, assignment);
                 }
                 case "renew" -> {
-                    if (board.reuseToolDuringGathering(request.project, request.job, request.token, request.toolUses, now)) {
+                    var reported = reportedInventory(request.claimItems);
+                    if (board.reuseToolDuringGathering(request.project, request.job, request.token, request.toolUses,
+                            item -> reported == null ? 0 : reported.getOrDefault(item, 0), now)) {
                         BotEvents.add("info", "projects", "Skipped private tool preparation for an equipped worker");
                         reply(exchange, 409, "Gathering tool already carried");
                         break;
@@ -994,6 +994,12 @@ final class ProjectBroker {
                         new ProjectQueue.ResourceSite((int)Math.floor(bot.x()), (int)Math.floor(bot.y()), (int)Math.floor(bot.z())),
                         bot.items()))
                 .toList();
+    }
+
+    private static Map<String, Integer> reportedInventory(Map<String, Integer> items) {
+        return items != null && items.size() <= 36
+                && items.values().stream().allMatch(count -> count != null && count > 0 && count <= 36 * 64)
+                ? items : null;
     }
 
     private static int heldCount(String worker, String item) {

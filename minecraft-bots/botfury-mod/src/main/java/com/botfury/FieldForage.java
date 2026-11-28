@@ -81,9 +81,7 @@ final class FieldForage {
         lastSeenAt = age;
         if (player.squaredDistanceTo(animal) <= 9 && player.canSee(animal)) {
             stopApproach();
-            if (TaskDefense.equipWeapon(client) && player.getAttackCooldownProgress(.5f) >= .95f) {
-                LocalFormation.punch(client, animal);
-            }
+            TaskDefense.attackThreat(client, animal);
         } else if (age % 10 == 1) {
             var stands = attackStands(client, animal, pos);
             if (stands.isEmpty()) {

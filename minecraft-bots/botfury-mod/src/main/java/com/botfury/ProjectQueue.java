@@ -3019,6 +3019,8 @@ final class ProjectQueue {
         for (var stage = find(project, craft.work.sameWorkerAs); stage != null;
              stage = stage.work.sameWorkerAs == null ? null : find(project, stage.work.sameWorkerAs)) {
             if (stage.work.kind != Kind.GATHER && stage.work.kind != Kind.CRAFT) return List.of();
+            // Ingredients for a later recipe do not prove the worker has its planned mining tools.
+            if (pickaxeRecipeTier(stage) >= 0) return List.of();
             path.add(stage);
             if (!pendingRecipeHandoff(stage, now)) {
                 if (stage.state == State.WAITING) continue;

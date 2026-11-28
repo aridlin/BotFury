@@ -3814,6 +3814,28 @@ class ProjectQueueTest {
         assertEquals("diamonds", restarted.claim(WORLD, "worker", Set.of(GATHER), "independent", 6).job().work().id());
     }
 
+    @Test void carriedSwordIngredientsDoNotStandInForMiningPickaxes() throws Exception {
+        var board = new ProjectQueue(directory.resolve("separate-mining-equipment.json"));
+        var stone = new ProjectQueue.Work("stone", GATHER, """
+                {"resource":"stone","item":"minecraft:cobblestone","count":12}
+                """, List.of(), Set.of());
+        var picks = new ProjectQueue.Work("pickaxes", CRAFT, """
+                {"recipe":"minecraft:stone_pickaxe","count":4}
+                """, List.of("stone"), Set.of(), "stone");
+        var sword = new ProjectQueue.Work("sword", CRAFT, """
+                {"recipe":"minecraft:stone_sword","count":1}
+                """, List.of("pickaxes"), Set.of(), "pickaxes");
+        var iron = new ProjectQueue.Work("iron", GATHER, """
+                {"resource":"iron","item":"minecraft:raw_iron","count":3}
+                """, List.of("sword"), Set.of(), "sword");
+        board.submitSupplied("ore", WORLD, List.of(stone, picks, sword, iron), "block:1,64,0");
+
+        var gathering = board.claim(WORLD, "miner", Set.of(GATHER), 1).job();
+        assertTrue(board.carriedCraftCandidates(WORLD, 2).isEmpty());
+        assertTrue(board.finish("ore", "stone", gathering.lease(), true, "Observed 12 cobblestone", 3));
+        assertEquals("pickaxes", board.claim(WORLD, "miner", Set.of(CRAFT), 4).job().work().id());
+    }
+
     @Test void equippedReplacementWorkerRefillsFailedSmeltingWithoutRebuildingTools() throws Exception {
         checkEquippedSmeltingRefill("Missing furnace input minecraft:raw_iron after 2 supply recoveries");
     }

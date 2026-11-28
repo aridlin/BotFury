@@ -1673,7 +1673,7 @@ final class ProjectQueue {
                 boolean pinned = job.work.sameWorkerAs != null;
                 if (CARRIED_SMELT_ASSIGNED.equals(job.evidence)) {
                     if (job.expiresAt <= now || !worker.equalsIgnoreCase(job.worker)) continue;
-                } else if (pinned && !worker.equalsIgnoreCase(byId.get(job.work.sameWorkerAs).worker)) continue;
+                } else if (pinned && !worker.equalsIgnoreCase(inventoryOwner(project, job, byId.get(job.work.sameWorkerAs)))) continue;
                 var missingRaw = missingRebuiltFurnaceInput(job, byId, worker, heldCount);
                 if (missingRaw != null && recoverMissingProduction(project, job, missingRaw)) {
                     return claim(world, worker, kinds, projectId, now, position, hasExcavationTool, heldCount, toolUses,
@@ -2626,18 +2626,27 @@ final class ProjectQueue {
             if (project.supplyChest == null || !world.equals(project.world) || cancelled(project)
                     || projectId != null && !project.id.equals(projectId)) continue;
             for (var gather : project.jobs) {
+                if (gather.work.kind != Kind.GATHER || gather.work.sameWorkerAs == null
+                        || gather.work.needs.size() != 1) continue;
                 boolean exhausted = exhaustedPinnedGathering(gather);
                 boolean stalled = stalledPinnedGathering(gather);
-                boolean reopening = exhausted || stalled;
-                if ((!reopening && (exhaustedOnly || gather.state != State.WAITING)) || gather.work.kind != Kind.GATHER
-                        || gather.work.sameWorkerAs == null || gather.work.needs.size() != 1
-                        || gatherSource(gather.work.payload) == null || checkpointDepositActive(project, gather)) continue;
+                // An equipped replacement can keep the completed preparation after the miner's lease expires.
+                boolean expired = gather.state == State.FAILED
+                        && LEASE_EXPIRED.equals(gather.evidence) && gather.work.locks.isEmpty();
+                boolean reassigning = stalled || expired;
+                boolean reopening = exhausted || reassigning;
+                if ((!reopening && (exhaustedOnly || gather.state != State.WAITING))
+                        || checkpointDepositActive(project, gather)) continue;
+                var source = gatherSource(gather.work.payload);
+                if (source == null || expired && (!ResourceCatalog.isOre(source.resource)
+                        || !availableProjectWorker(project, worker, now))) continue;
                 var craft = find(project, gather.work.sameWorkerAs);
                 int tier = reopening ? completedPickaxeTier(project, craft) : pickaxeRecipeTier(craft);
                 if (tier < 0) continue;
                 String carriedTool = carriedMiningPickaxe(project, gather, tier, toolUses);
                 if (carriedTool == null) continue;
-                var key = stalled ? "stalled-equipped-miner:" + gather.work.id : equippedRescueKey(gather);
+                var key = expired ? expiredEquippedMinerKey(gather)
+                        : stalled ? "stalled-equipped-miner:" + gather.work.id : equippedRescueKey(gather);
                 String workerRetry = key + ":" + worker.toLowerCase(java.util.Locale.ROOT);
                 int recoveriesUsed = project.supplyRecoveries.getOrDefault(key, 0);
                 String durabilityKey = key + ":durability";
@@ -2649,9 +2658,9 @@ final class ProjectQueue {
                             && durability < SubsurfaceAccess.miningHarvestReserve(0));
                 if (reopening && craft.state != State.DONE
                         || exhausted && recoveriesUsed > 0 && !retryFromHere
-                        || stalled && (recoveriesUsed >= 3 || project.supplyRecoveries.containsKey(workerRetry))) continue;
+                        || reassigning && (recoveriesUsed >= 3 || project.supplyRecoveries.containsKey(workerRetry))) continue;
                 if (!reopening && craft.state == State.DONE) continue;
-                if (stalled && (worker.equalsIgnoreCase(craft.worker) || worker.equalsIgnoreCase(gather.worker))) continue;
+                if (reassigning && (worker.equalsIgnoreCase(craft.worker) || worker.equalsIgnoreCase(gather.worker))) continue;
                 if (reopening && gather.work.needs.stream().anyMatch(need -> find(project, need).state != State.DONE)) continue;
                 var prep = reopening ? Set.<String>of() : stalledPrivatePreparation(project, gather, craft);
                 if (!reopening && (prep.isEmpty()
@@ -2669,7 +2678,7 @@ final class ProjectQueue {
                     var recoveries = new HashMap<>(project.supplyRecoveries);
                     recoveries.put(key, recoveriesUsed + 1);
                     if (exhausted) recoveries.put(durabilityKey, durability);
-                    if (stalled) recoveries.put(workerRetry, 1);
+                    if (reassigning) recoveries.put(workerRetry, 1);
                     commit(project.withRecovery(jobs, recoveries));
                 } else commit(project.withJobs(jobs));
                 return assignment(project, lease);
@@ -2811,6 +2820,17 @@ final class ProjectQueue {
 
     private static String equippedRescueKey(Job gather) {
         return "equipped-miner:" + gather.work.id;
+    }
+
+    private static String expiredEquippedMinerKey(Job gather) {
+        return "expired-equipped-miner:" + gather.work.id;
+    }
+
+    private static String inventoryOwner(Project project, Job job, Job preparation) {
+        if (job.work.kind == Kind.GATHER && job.worker != null
+                && project.supplyRecoveries.containsKey(expiredEquippedMinerKey(job) + ":"
+                        + job.worker.toLowerCase(java.util.Locale.ROOT))) return job.worker;
+        return preparation.worker;
     }
 
     private static Set<String> stalledPrivatePreparation(Project project, Job consumer, Job preparation) {
@@ -5253,12 +5273,13 @@ final class ProjectQueue {
                 if (job.state != State.WAITING || job.work.sameWorkerAs == null || resumesLoadedFurnace(job.work)
                         || !job.work.needs.stream().allMatch(id -> jobs.get(id).state == State.DONE)) continue;
                 var supplier = jobs.get(job.work.sameWorkerAs);
-                var key = workerKey(world, supplier.worker, project.id);
+                String owner = inventoryOwner(project, job, supplier);
+                var key = workerKey(world, owner, project.id);
                 // After a coordinator restart, give workers the full window to reconnect.
                 long seen = Math.max(workerSeen.computeIfAbsent(key, ignored -> now),
-                        workerSeen.getOrDefault(workerKey(world, supplier.worker, null), 0L));
-                if (now - Math.max(seen, lastSafetyWait(world, supplier.worker, project.id)) < SUPPLIER_OFFLINE_MS) continue;
-                if (rewindSupply(project, job, supplier, jobs, "Supplier " + supplier.worker + " went offline",
+                        workerSeen.getOrDefault(workerKey(world, owner, null), 0L));
+                if (now - Math.max(seen, lastSafetyWait(world, owner, project.id)) < SUPPLIER_OFFLINE_MS) continue;
+                if (rewindSupply(project, job, supplier, jobs, "Supplier " + owner + " went offline",
                         job.chest)) break;
             }
         }
